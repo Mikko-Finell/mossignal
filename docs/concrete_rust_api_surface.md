@@ -2,7 +2,7 @@
 
 **Status:** Design specification, version 1  
 **Defines:** Concrete public Rust types, ownership model, construction APIs, lifecycle transitions, runtime transaction APIs, inspection, explanation, bindings, snapshots, replay, and reconfiguration entry points  
-**Does not define:** Processor internals, serialized wire encodings, the exhaustive diagnostic-code catalogue, the exhaustive topology-patch operation language, performance targets, standard-module catalogue, or application integration
+**Does not define:** Processor internals, serialized wire encodings, the exhaustive diagnostic-code catalogue, performance targets, standard-module catalogue, or application integration
 
 ---
 
@@ -106,7 +106,10 @@ ForecastResult
 MachineSnapshot
 ReplayFrame
 NetworkPatch
+PatchOperation
 PreparedPatch
+StaticMigrationPlan
+MigrationReport
 InspectionQuery
 InspectionSnapshot
 Explanation
@@ -137,7 +140,9 @@ Machine<D>
 InputSnapshot<D>
 InputDelta<D>
 Transaction<D>
+NetworkPatch<D>
 PreparedPatch<D>
+StaticMigrationPlan<D>
 MachineSnapshot<D>
 CauseRef
 PendingEventKey
@@ -1376,7 +1381,19 @@ pub struct ExternalOutputDef {
     pub source: AnySignalSourceKey,
     pub meta: DiagnosticMeta,
 }
+
+pub struct ModuleBindingSet { /* owned stable-keyed interface bindings */ }
+
+pub struct ModuleInstanceDef<D> {
+    pub key: ModuleInstanceKey,
+    pub module: ModuleDef<D>,
+    pub bindings: ModuleBindingSet,
+    pub parent: Option<ModuleInstanceKey>,
+    pub meta: DiagnosticMeta,
+}
 ```
+
+`ModuleBindingSet` MUST represent every module input binding explicitly and MUST preserve signal kind and stable interface identity. It contains no evaluator callbacks or borrowed builder signals.
 
 The dynamic representation MAY contain kind mismatches and dangling references. Validation is responsible for rejecting them.
 
@@ -1762,10 +1779,10 @@ pub enum Schedule<D> {
 
 impl<D> Machine<D> {
     pub fn schedule(&self)
-        -> Result<Schedule<D>, LifecycleFailure>;
+        -> Result<Schedule<D>, LifecycleFailure<D>>;
 
     pub fn next_deadline(&self)
-        -> Result<Option<Time<D>>, LifecycleFailure>;
+        -> Result<Option<Time<D>>, LifecycleFailure<D>>;
 }
 ```
 
@@ -1945,7 +1962,7 @@ impl<D> Transaction<D> {
         self,
         prepared: PreparedPatch<D>,
         policy: ReconfigurationPolicy,
-    ) -> Result<Self, TransactionBuildFailure>;
+    ) -> Result<Self, TransactionBuildFailure<D>>;
 
     pub fn with_meta(
         self,
@@ -1993,7 +2010,7 @@ impl<D> Machine<D> {
     pub fn apply(
         &mut self,
         transaction: Transaction<D>,
-    ) -> Result<TransactionResult<D>, RuntimeFailure>;
+    ) -> Result<TransactionResult<D>, RuntimeFailure<D>>;
 }
 ```
 
@@ -2017,7 +2034,7 @@ impl<D> Machine<D> {
     pub fn forecast(
         &self,
         transaction: Transaction<D>,
-    ) -> Result<ForecastResult<D>, RuntimeFailure>;
+    ) -> Result<ForecastResult<D>, RuntimeFailure<D>>;
 }
 ```
 
@@ -2151,22 +2168,26 @@ A dynamic schema view MAY accompany them for generic tooling.
 Runtime execution uses:
 
 ```rust
-Result<TransactionResult<D>, RuntimeFailure>
+Result<TransactionResult<D>, RuntimeFailure<D>>
 ```
 
 The public failure hierarchy SHOULD be layered:
 
 ```rust
 #[non_exhaustive]
-pub enum RuntimeFailure {
-    Lifecycle(LifecycleFailure),
-    StaleRevision(StaleRevisionFailure),
-    StaleExecutionState(StaleExecutionStateFailure),
-    Time(TimeFailure),
-    Input(InputFailure),
-    Reconfiguration(ReconfigurationFailure),
-    SemanticRejection(SemanticRejection),
-    Budget(BudgetFailure),
+pub enum RuntimeFailure<D> {
+    Lifecycle(LifecycleFailure<D>),
+    StaleRevision(StaleRevisionFailure<D>),
+    StaleExecutionState(StaleExecutionStateFailure<D>),
+    Time(TimeFailure<D>),
+    Input(InputFailure<D>),
+    Reconfiguration(ReconfigurationFailure<D>),
+    SemanticRejection(SemanticRejection<D>),
+    Budget(BudgetFailure<D>),
+}
+
+impl<D> RuntimeFailure<D> {
+    pub fn problem(&self) -> &Problem<D>;
 }
 ```
 
@@ -2528,39 +2549,145 @@ The bound façade MUST NOT become the only way to use the machine.
 
 # Part XXIII — Reconfiguration
 
-## 84. Patch values
+## 84. Patch values and canonical operations
+
+The public patch model is an owned declarative graph rewrite:
 
 ```rust
-pub struct NetworkPatch<D> { /* owned stable-keyed graph rewrite */ }
-pub struct NetworkPatchBuilder<D> { /* opaque */ }
+pub struct NetworkPatch<D> { /* opaque normalized rewrite */ }
+pub struct NetworkPatchBuilder<D> { /* opaque owned builder */ }
+pub struct PatchOperationIter<'a, D> { /* canonical borrowed iterator */ }
 ```
 
-The exact exhaustive patch-operation catalogue is defined separately.
+The canonical operation language is:
 
-This API specification requires that the builder support the operation families:
+```rust
+#[non_exhaustive]
+pub enum PatchOperation<D> {
+    AddNode(NodeDef<D>),
+    RemoveNode {
+        node: NodeKey,
+    },
+    ReplaceNode {
+        node: NodeKey,
+        replacement: NodeDef<D>,
+        migration: NodeMigrationDirective<D>,
+    },
 
-```text
-add or remove node
-add or remove connection
-add or remove external endpoint
-change built-in semantic parameters
-change module membership or hierarchy
-change diagnostic metadata
-explicitly preserve or reassociate stable identity where allowed
-select node-specific pending-event migration policy
+    AddConnection(ConnectionDef),
+    RemoveConnection {
+        connection: ConnectionKey,
+    },
+    ReplaceConnection {
+        connection: ConnectionKey,
+        replacement: ConnectionDef,
+    },
+
+    AddExternalInput(ExternalInputDef),
+    RemoveExternalInput {
+        input: AnyExternalInputKey,
+    },
+    ReplaceExternalInput {
+        input: AnyExternalInputKey,
+        replacement: ExternalInputDef,
+    },
+
+    AddExternalOutput(ExternalOutputDef),
+    RemoveExternalOutput {
+        output: AnyExternalOutputKey,
+    },
+    ReplaceExternalOutput {
+        output: AnyExternalOutputKey,
+        replacement: ExternalOutputDef,
+    },
+
+    AddModuleInstance(ModuleInstanceDef<D>),
+    RemoveModuleInstance {
+        module: ModuleInstanceKey,
+    },
+    ReplaceModuleInstance {
+        module: ModuleInstanceKey,
+        replacement: ModuleInstanceDef<D>,
+        migration: ModuleMigrationDirective<D>,
+    },
+
+    SetParent {
+        subject: HierarchicalSubjectRef,
+        parent: Option<ModuleInstanceKey>,
+    },
+    SetDiagnosticMeta {
+        subject: StructuralSubjectRef,
+        meta: DiagnosticMeta,
+    },
+    Reassociate(SubjectReassociation<D>),
+}
 ```
 
-## 85. Patch construction
+Supporting structural references are:
 
-A patch records both the base topology fingerprint and an explicit machine-local base revision. A low-level builder is created from compiled topology plus that revision:
+```rust
+#[non_exhaustive]
+pub enum StructuralSubjectRef {
+    Network(NetworkKey),
+    Module(ModuleInstanceKey),
+    Node(NodeKey),
+    InPort(AnyInPortKey),
+    OutPort(AnyOutPortKey),
+    Connection(ConnectionKey),
+    ExternalInput(AnyExternalInputKey),
+    ExternalOutput(AnyExternalOutputKey),
+}
+
+#[non_exhaustive]
+pub enum HierarchicalSubjectRef {
+    Node(NodeKey),
+    ModuleInstance(ModuleInstanceKey),
+}
+
+#[non_exhaustive]
+pub enum SubjectReassociation<D> {
+    Node {
+        from: NodeKey,
+        to: NodeKey,
+        migration: NodeMigrationDirective<D>,
+    },
+    ModuleInstance {
+        from: ModuleInstanceKey,
+        to: ModuleInstanceKey,
+        migration: ModuleMigrationDirective<D>,
+    },
+    InPort {
+        from: AnyInPortKey,
+        to: AnyInPortKey,
+    },
+    OutPort {
+        from: AnyOutPortKey,
+        to: AnyOutPortKey,
+    },
+    ExternalInput {
+        from: AnyExternalInputKey,
+        to: AnyExternalInputKey,
+    },
+    ExternalOutput {
+        from: AnyExternalOutputKey,
+        to: AnyExternalOutputKey,
+    },
+}
+```
+
+A patch is interpreted all at once. Builder insertion order is not semantic, and no intermediate graph produced by applying operations sequentially is observable.
+
+Every removal, redirection, replacement, hierarchy change, reassociation, state reset, and pending-work policy MUST be explicit in the canonical operation set. The core MUST NOT infer correspondence from names, cascade removals, reconnect dangling incidence, reset state, cancel pending work, or establish a new external level as `Low` merely to make a patch valid.
+
+The complete correspondence relation formed by stable-key preservation and explicit reassociation MUST be a partial injection in both directions. Categories, signal kinds, port directions, and fixed-port semantic roles must remain compatible.
+
+## 85. Patch construction, normalization, and access
+
+A builder is bound to one network identity, base fingerprint, and explicit machine-local revision:
 
 ```rust
 let builder = compiled.patch(base_revision);
-```
 
-A machine convenience seeds the current revision automatically:
-
-```rust
 impl<D> Machine<D> {
     pub fn patch(&self) -> NetworkPatchBuilder<D> {
         self.compiled().patch(self.revision())
@@ -2568,69 +2695,294 @@ impl<D> Machine<D> {
 }
 ```
 
-The builder exposes:
+The local patch-construction failure family is:
+
+```rust
+#[non_exhaustive]
+pub enum PatchBuildFailure<D> {
+    ForeignArtifact(Problem<D>),
+    DuplicateOperation(Problem<D>),
+    ConflictingEdit(Problem<D>),
+    InvalidReplacementKey(Problem<D>),
+    InvalidReassociation(Problem<D>),
+    ContradictoryHierarchy(Problem<D>),
+}
+
+impl<D> PatchBuildFailure<D> {
+    pub fn problem(&self) -> &Problem<D>;
+}
+```
+
+Each variant corresponds one-to-one with the applicable `reconfiguration.*` construction code. Full target-graph defects remain preparation diagnostics rather than local builder failures.
+
+The builder MUST provide every canonical operation family:
 
 ```rust
 impl<D> NetworkPatchBuilder<D> {
     pub fn base_revision(&self) -> NetworkRevision;
     pub fn base_fingerprint(&self) -> NetworkFingerprint;
+
+    pub fn add_node(self, node: NodeDef<D>)
+        -> Result<Self, PatchBuildFailure<D>>;
+    pub fn remove_node(self, node: NodeKey)
+        -> Result<Self, PatchBuildFailure<D>>;
+    pub fn replace_node(
+        self,
+        node: NodeKey,
+        replacement: NodeDef<D>,
+        migration: NodeMigrationDirective<D>,
+    ) -> Result<Self, PatchBuildFailure<D>>;
+
+    pub fn add_connection(self, connection: ConnectionDef)
+        -> Result<Self, PatchBuildFailure<D>>;
+    pub fn remove_connection(self, connection: ConnectionKey)
+        -> Result<Self, PatchBuildFailure<D>>;
+    pub fn replace_connection(
+        self,
+        connection: ConnectionKey,
+        replacement: ConnectionDef,
+    ) -> Result<Self, PatchBuildFailure<D>>;
+
+    pub fn add_external_input(self, input: ExternalInputDef)
+        -> Result<Self, PatchBuildFailure<D>>;
+    pub fn remove_external_input(self, input: AnyExternalInputKey)
+        -> Result<Self, PatchBuildFailure<D>>;
+    pub fn replace_external_input(
+        self,
+        input: AnyExternalInputKey,
+        replacement: ExternalInputDef,
+    ) -> Result<Self, PatchBuildFailure<D>>;
+
+    pub fn add_external_output(self, output: ExternalOutputDef)
+        -> Result<Self, PatchBuildFailure<D>>;
+    pub fn remove_external_output(self, output: AnyExternalOutputKey)
+        -> Result<Self, PatchBuildFailure<D>>;
+    pub fn replace_external_output(
+        self,
+        output: AnyExternalOutputKey,
+        replacement: ExternalOutputDef,
+    ) -> Result<Self, PatchBuildFailure<D>>;
+
+    pub fn add_module_instance(self, module: ModuleInstanceDef<D>)
+        -> Result<Self, PatchBuildFailure<D>>;
+    pub fn remove_module_instance(self, module: ModuleInstanceKey)
+        -> Result<Self, PatchBuildFailure<D>>;
+    pub fn replace_module_instance(
+        self,
+        module: ModuleInstanceKey,
+        replacement: ModuleInstanceDef<D>,
+        migration: ModuleMigrationDirective<D>,
+    ) -> Result<Self, PatchBuildFailure<D>>;
+
+    pub fn set_parent(
+        self,
+        subject: HierarchicalSubjectRef,
+        parent: Option<ModuleInstanceKey>,
+    ) -> Result<Self, PatchBuildFailure<D>>;
+
+    pub fn set_diagnostic_meta(
+        self,
+        subject: StructuralSubjectRef,
+        meta: DiagnosticMeta,
+    ) -> Result<Self, PatchBuildFailure<D>>;
+
+    pub fn reassociate(self, mapping: SubjectReassociation<D>)
+        -> Result<Self, PatchBuildFailure<D>>;
+
     pub fn finish(self) -> NetworkPatch<D>;
 }
 ```
 
-Representative methods MAY include:
+Builder methods SHOULD reject locally decidable contradictions immediately, including conflicting edits of one subject, invalid replacement keys, contradictory parent assignments, non-injective reassociation, visible kind or direction mismatch, and foreign-network artifacts.
+
+`finish` is infallible because those local contradictions are rejected by the operation that introduces them. It produces a deterministically normalized operation set by canonical sorting, deduplicating equivalent assignments, and deriving one effective edit per subject and property.
+
+Conveniences such as changing one parameter, redirecting a connection, removing a node with its incident connections, or adding a typed external level input MAY exist. Each convenience MUST expand deterministically into the canonical operation language before completion.
+
+The completed patch exposes its exact normalized rewrite:
 
 ```rust
-pub fn add_node(self, node: NodeDef<D>) -> Result<Self, PatchBuildFailure>;
-pub fn remove_node(self, node: NodeKey) -> Result<Self, PatchBuildFailure>;
-pub fn add_connection(self, connection: ConnectionDef) -> Result<Self, PatchBuildFailure>;
-pub fn remove_connection(self, connection: ConnectionKey) -> Result<Self, PatchBuildFailure>;
-```
-
-Patch construction SHOULD diagnose immediate internal contradictions but full semantic validation occurs during preparation. `CompiledNetwork::prepare_patch` MUST reject a patch whose base fingerprint does not match the compiled topology. `Machine::prepare_patch` MUST additionally reject a patch whose base revision does not equal the machine's current revision.
-
-## 86. Structural patch preparation
-
-```rust
-pub struct PreparedPatch<D> { /* immutable target topology and migration program */ }
-```
-
-Required accessors:
-
-```rust
-impl<D> PreparedPatch<D> {
+impl<D> NetworkPatch<D> {
+    pub fn network_key(&self) -> NetworkKey;
     pub fn base_revision(&self) -> NetworkRevision;
-    pub fn proposed_revision(&self) -> NetworkRevision;
-    pub fn resulting_fingerprint(&self) -> NetworkFingerprint;
-    pub fn resulting_compiled(&self) -> &CompiledNetwork<D>;
-    pub fn static_plan(&self) -> &StaticMigrationPlan<D>;
+    pub fn base_fingerprint(&self) -> NetworkFingerprint;
+    pub fn operations(&self) -> PatchOperationIter<'_, D>;
 }
 ```
 
-`PreparedPatch<D>` SHOULD be cheaply cloneable through immutable shared ownership.
+## 86. Structural preparation and static migration plan
 
-It is bound to one exact base topology revision but not to one exact execution-state digest.
-
-## 87. Preparation placement
-
-The canonical preparation method belongs to `CompiledNetwork<D>` because preparation is topology-dependent and not state-dependent.
-
-A convenience method MAY exist:
+Successful structural preparation produces:
 
 ```rust
+pub struct PreparedPatch<D> { /* immutable target and migration program */ }
+pub struct StaticMigrationPlan<D> { /* opaque deterministic plan */ }
+```
+
+The supporting public record categories are owned closed values:
+
+```rust
+pub struct StaticSubjectPlan<D> { /* structural continuity and state rule */ }
+pub struct StaticEventRule<D> { /* total pending-work rule */ }
+pub struct ExternalInputPlan { /* valuation continuity or establishment */ }
+pub struct ExternalOutputPlan { /* baseline continuity */ }
+pub struct DiagnosticEpisodePlan { /* episode continuity */ }
+pub struct ProvenanceMigrationPlan { /* required causal continuity */ }
+pub struct PotentialSemanticLoss<D> { /* state-dependent loss predicate */ }
+pub struct ArtifactInvalidation { /* exact invalidated artifact category */ }
+```
+
+`StaticMigrationPlan<D>` MUST classify every relevant structural subject. Every surviving stateful or temporal node has exactly one compatibility rule, and every temporal owner has a total event-migration rule even when no matching event exists at preparation time.
+
+Representative accessors are:
+
+```rust
+impl<D> StaticMigrationPlan<D> {
+    pub fn subjects(&self) -> &[StaticSubjectPlan<D>];
+    pub fn event_rules(&self) -> &[StaticEventRule<D>];
+    pub fn external_inputs(&self) -> &[ExternalInputPlan];
+    pub fn external_outputs(&self) -> &[ExternalOutputPlan];
+    pub fn diagnostic_episodes(&self) -> &[DiagnosticEpisodePlan];
+    pub fn provenance(&self) -> &[ProvenanceMigrationPlan];
+    pub fn potential_losses(&self) -> &[PotentialSemanticLoss<D>];
+}
+
+impl<D> PreparedPatch<D> {
+    pub fn network_key(&self) -> NetworkKey;
+    pub fn base_revision(&self) -> NetworkRevision;
+    pub fn proposed_revision(&self) -> NetworkRevision;
+    pub fn base_fingerprint(&self) -> NetworkFingerprint;
+    pub fn resulting_fingerprint(&self) -> NetworkFingerprint;
+    pub fn resulting_compiled(&self) -> &CompiledNetwork<D>;
+    pub fn operations(&self) -> PatchOperationIter<'_, D>;
+    pub fn static_plan(&self) -> &StaticMigrationPlan<D>;
+    pub fn invalidated_artifacts(&self) -> &[ArtifactInvalidation];
+    pub fn region_changes(&self) -> &[RegionChange];
+}
+```
+
+Preparation constructs the complete target definition as a pure rewrite of the base definition and normalized patch, then runs the ordinary complete validation and compilation path on that target. A target topology that would not compile independently produces no prepared artifact.
+
+Preparation MUST also derive stable correspondence, target input schema, potential semantic-loss predicates, invalidated-artifact analysis, and region merge or split analysis. A syntactically empty or semantically ineffective patch produces a blocking diagnostic and no artifact.
+
+`PreparedPatch<D>` SHOULD be cheaply cloneable through immutable shared ownership.
+
+## 87. Preparation placement, freshness, and target input
+
+The canonical preparation method belongs to `CompiledNetwork<D>` because preparation depends on topology but not machine runtime state:
+
+```rust
+impl<D> CompiledNetwork<D> {
+    pub fn prepare_patch(
+        &self,
+        patch: NetworkPatch<D>,
+    ) -> Report<PreparedPatch<D>, D>;
+}
+
 impl<D> Machine<D> {
     pub fn prepare_patch(
         &self,
         patch: NetworkPatch<D>,
     ) -> Report<PreparedPatch<D>, D> {
-        self.compiled().prepare_patch(patch)
+        /* verify current revision, then delegate structurally */
     }
 }
 ```
 
-The convenience MUST NOT imply that current runtime state participates in structural preparation.
+The compiled-network form rejects a foreign base network or fingerprint. The machine convenience additionally rejects a base revision other than the machine's current revision.
 
-## 88. Reconfiguration policy
+Structural preparation MUST NOT read or depend on current logical time, external values, node state, temporal state, pending events, output baselines, active diagnostic episodes, provenance roots, or execution-state digest. State-dependent conditions are represented as predicates in the static plan and finalized only at the transaction's effective time.
+
+A prepared patch is bound to one exact base network, fingerprint, and revision, but not to one execution-state digest. It becomes stale when applied against another revision and is never implicitly rebased or merged.
+
+Target-bound input builders are:
+
+```rust
+impl<D> PreparedPatch<D> {
+    pub fn input_snapshot(&self) -> InputSnapshotBuilder<D>;
+    pub fn input_delta(&self) -> InputDeltaBuilder<D>;
+}
+```
+
+A target snapshot is used when the patch participates in machine initialization. A target delta is used on a ready machine and requires explicit `establish` observations for every newly introduced external level input. Removed inputs are absent from the target schema and must be rejected if referenced.
+
+Every resolved handle, compiled inspection plan, or other revision-bound artifact made stale by the proposed topology MUST be listed by category in the prepared invalidation analysis. Such artifacts never silently retarget.
+
+## 88. Migration directives, commitment, and reporting
+
+Node migration is selected only from the closed built-in family:
+
+```rust
+#[non_exhaustive]
+pub enum NodeMigrationDirective<D> {
+    Standard,
+    RequirePreserve,
+    Reset,
+    TransferStoredLevel,
+    PulseDelay(PulseDelayMigration),
+    TransportDelay(TransportDelayMigration),
+    InertialDelay(InertialDelayMigration),
+    Periodic(PeriodicMigration),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OverdueMigrationPolicy {
+    Reject,
+    MatureAtPatchTime,
+}
+
+#[non_exhaustive]
+pub enum PulseDelayMigration {
+    PreserveDeadlines,
+    RecomputeFromOrigin { overdue: OverdueMigrationPolicy },
+    RestartFromPatchTime,
+    CancelPending,
+    RejectIfPending,
+}
+
+#[non_exhaustive]
+pub enum TransportDelayMigration {
+    PreserveDeadlines,
+    RecomputeFromOrigin { overdue: OverdueMigrationPolicy },
+    RestartFromPatchTime,
+    CancelPending,
+    RejectIfPending,
+}
+
+#[non_exhaustive]
+pub enum InertialDelayMigration {
+    PreserveDeadline,
+    RecomputeFromOrigin { overdue: OverdueMigrationPolicy },
+    RestartFromPatchTime,
+    CancelCandidate,
+    RejectIfCandidate,
+}
+
+#[non_exhaustive]
+pub enum PeriodicMigration {
+    PreserveNextDeadline,
+    RecomputeFromExistingAnchor,
+    ReanchorAtPatchTime,
+    CancelSchedule,
+    RejectIfAnchored,
+}
+
+#[non_exhaustive]
+pub enum ModuleMigrationDirective<D> {
+    Standard,
+    Explicit {
+        node_overrides: Vec<ModuleNodeMigrationDirective<D>>,
+        internal_reassociations: Vec<ModuleInternalReassociation<D>>,
+    },
+}
+
+pub struct ModuleNodeMigrationDirective<D> { /* internal key and node directive */ }
+pub struct ModuleInternalReassociation<D> { /* module-qualified mapping */ }
+```
+
+No arbitrary migration callback, implicit state reset, inferred deadline rule, or name-based structural matching is permitted.
+
+Transaction-level state-loss policy is:
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2640,7 +2992,109 @@ pub enum ReconfigurationPolicy {
 }
 ```
 
-Node-specific migration-policy values are carried in the patch or preparation artifact, not inferred from implementation convenience at application time.
+A prepared patch commits only through an ordinary initialization or advancement transaction. `Transaction::with_patch` MUST validate every determinable base-revision, network, target-schema, lifecycle, and time-domain mismatch before application.
+
+At the effective time, the runtime finalizer applies the static plan to the exact pre-patch machine state, classifies every state component and pending event, installs the target topology, and runs the ordinary complete target reaction. The patch transaction is atomic: any finalization, checked-time, budget, semantic-rejection, or state-loss failure leaves the published machine unchanged.
+
+The principal finalized outcome enums are:
+
+```rust
+#[non_exhaustive]
+pub enum StateMigrationOutcome<D> {
+    Preserve,
+    Migrate { rule: NodeMigrationRule<D> },
+    Reset { reason: ResetReason },
+    Reject { reason: MigrationRejection },
+}
+
+#[non_exhaustive]
+pub enum PendingEventMigrationOutcome<D> {
+    PreserveDeadline,
+    RecomputeDeadline { from: Time<D>, to: Time<D> },
+    TransformPayload { rule: EventPayloadMigration },
+    Cancel { reason: EventCancellationReason },
+    Reject { reason: EventMigrationRejection },
+}
+
+#[non_exhaustive]
+pub enum NodeMigrationRule<D> { /* closed built-in migration rules */ }
+#[non_exhaustive]
+pub enum ResetReason { /* catalogue-backed reset reasons */ }
+#[non_exhaustive]
+pub enum MigrationRejection { /* closed rejection reasons */ }
+#[non_exhaustive]
+pub enum EventPayloadMigration { /* closed payload transformations */ }
+#[non_exhaustive]
+pub enum EventCancellationReason { /* closed cancellation reasons */ }
+#[non_exhaustive]
+pub enum EventMigrationRejection { /* closed rejection reasons */ }
+
+pub struct SubjectMigrationOutcome<D> { /* structural source/target outcome */ }
+pub struct StateMigrationRecord<D> { /* owner, rule, and finalized outcome */ }
+pub struct PendingEventMigrationRecord<D> { /* source event and exact outcome */ }
+pub struct ExternalInputMigrationRecord { /* valuation or establishment outcome */ }
+pub struct ExternalOutputMigrationRecord { /* baseline outcome */ }
+pub struct DiagnosticEpisodeMigrationRecord<D> { /* episode continuity outcome */ }
+pub struct ProvenanceMigrationRecord { /* causal continuity outcome */ }
+pub struct SemanticLoss<D> { /* stable loss identity and evidence */ }
+```
+
+The detailed rule and reason families are closed owned enums. Every actual pending event receives exactly one canonical outcome; no event may disappear without an individual record or an explicitly equivalent aggregate identity.
+
+A successful patch transaction returns one complete migration report:
+
+```rust
+pub struct MigrationReport<D> {
+    pub base_revision: NetworkRevision,
+    pub target_revision: NetworkRevision,
+    pub base_fingerprint: NetworkFingerprint,
+    pub target_fingerprint: NetworkFingerprint,
+    pub subject_outcomes: Vec<SubjectMigrationOutcome<D>>,
+    pub state_outcomes: Vec<StateMigrationRecord<D>>,
+    pub pending_event_outcomes: Vec<PendingEventMigrationRecord<D>>,
+    pub input_outcomes: Vec<ExternalInputMigrationRecord>,
+    pub output_outcomes: Vec<ExternalOutputMigrationRecord>,
+    pub diagnostic_outcomes: Vec<DiagnosticEpisodeMigrationRecord<D>>,
+    pub provenance_outcomes: Vec<ProvenanceMigrationRecord>,
+    pub losses: Vec<SemanticLoss<D>>,
+    pub invalidated_artifacts: Vec<ArtifactInvalidation>,
+    pub region_changes: Vec<RegionChange>,
+}
+```
+
+The migration record types are owned structured values and MUST expose stable source and target identities, the selected rule, and the exact outcome. `SemanticLoss<D>` has stable identity based on loss category, source subject, source state or event identity, and the responsible migration rule or removal operation.
+
+Under `RejectStateLoss`, any nonempty finalized loss set rejects the complete transaction. Under `AllowReportedStateLoss`, every actual loss must appear in the committed report and no unclassified loss may be accepted.
+
+Finalized migration records are canonically ordered by semantic category, source identity, target identity, state or pending-event identity, and a rule-specific canonical tie-breaker.
+
+Exact future preview uses ordinary `Machine::forecast` with the patch-bearing transaction. A forecast is not a reservation or commit token; later commitment requires a new explicit transaction against the then-current revision and optional expected execution-state digest.
+
+The reconfiguration failure family is:
+
+```rust
+#[non_exhaustive]
+pub enum ReconfigurationFailure<D> {
+    StalePreparedPatch(Problem<D>),
+    TargetInputSchemaMismatch(Problem<D>),
+    StateMigrationRejected(Problem<D>),
+    PendingEventMigrationRejected(Problem<D>),
+    RequirePreserveFailed(Problem<D>),
+    EpisodeMigrationRejected(Problem<D>),
+    ProvenanceMigrationRejected(Problem<D>),
+    AmbiguousEventMigration(Problem<D>),
+    ConflictingMigratedTransitions(Problem<D>),
+    StateLossRejected(Problem<D>),
+    TimeArithmeticFailure(Problem<D>),
+    MigrationBudgetExceeded(Problem<D>),
+}
+
+impl<D> ReconfigurationFailure<D> {
+    pub fn problem(&self) -> &Problem<D>;
+}
+```
+
+Each variant contains the exact catalogue-backed problem for the rejected condition. Internal migration-plan inconsistency or unclassified state is an `InternalDefect<D>`, not an ordinary reconfiguration failure.
 
 ---
 
@@ -2735,7 +3189,7 @@ impl<D> Machine<D> {
     pub fn apply_recorded(
         &mut self,
         transaction: Transaction<D>,
-    ) -> Result<RecordedTransaction<D>, RuntimeFailure>;
+    ) -> Result<RecordedTransaction<D>, RuntimeFailure<D>>;
 }
 
 pub struct RecordedTransaction<D> {
@@ -3158,7 +3612,6 @@ This specification does not freeze:
 
 - the generated Rust spelling and module placement of exhaustive catalogue code constants;
 - the generated spelling of exhaustive code-specific evidence and suggestion variants;
-- the complete topology-patch operation enum;
 - standard-module constructor catalogue;
 - serialized encodings and serde feature shape;
 - observer subscription types;
