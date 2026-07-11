@@ -39,7 +39,7 @@ Code shown in this specification is representative of the required public shape.
 
 Public responsibilities, ownership relationships, type distinctions, and failure boundaries are normative.
 
-Where earlier specifications contain illustrative Rust signatures, this specification governs the concrete Rust surface. The API and node specifications remain authoritative for semantics, and the processor specification remains authoritative for internal invariants.
+Where earlier specifications contain illustrative Rust signatures, this specification governs the concrete Rust surface. The API and node specifications remain authoritative for semantics, the processor specification remains authoritative for internal invariants, and the Exhaustive Diagnostic Code Catalogue remains authoritative for problem-code identity, severity, responsibility, evidence, delivery, ordering, and persistent-episode rules.
 
 ---
 
@@ -110,7 +110,11 @@ PreparedPatch
 InspectionQuery
 InspectionSnapshot
 Explanation
+Problem
 Diagnostic
+DiagnosticOccurrence
+DiagnosticEpisode
+InternalDefect
 ```
 
 This permits storage, replay, persistence, transfer between subsystems, and deterministic testing without borrowing a live builder or machine.
@@ -1178,13 +1182,13 @@ impl<D> ModuleBuilder<D> {
         source: Signal<Pulse>,
     ) -> Result<ModuleOutputKey<Pulse>, AuthoringFailure>;
 
-    pub fn finish(self) -> Report<ModuleDef<D>>;
+    pub fn finish(self) -> Report<ModuleDef<D>, D>;
     pub fn into_unchecked(self) -> UncheckedModule<D>;
 }
 
 impl<D> UncheckedModule<D> {
-    pub fn validate(self) -> Report<ModuleDef<D>>;
-    pub fn validate_ref(&self) -> Report<ModuleDef<D>>;
+    pub fn validate(self) -> Report<ModuleDef<D>, D>;
+    pub fn validate_ref(&self) -> Report<ModuleDef<D>, D>;
 }
 ```
 
@@ -1274,7 +1278,7 @@ Nested module instantiation is permitted. The module mechanism MUST preserve hie
 
 ```rust
 impl<D> NetworkBuilder<D> {
-    pub fn finish(self) -> Report<ValidatedNetwork<D>>;
+    pub fn finish(self) -> Report<ValidatedNetwork<D>, D>;
     pub fn into_unchecked(self) -> UncheckedNetwork<D>;
 }
 ```
@@ -1380,8 +1384,8 @@ The dynamic representation MAY contain kind mismatches and dangling references. 
 
 ```rust
 impl<D> UncheckedNetwork<D> {
-    pub fn validate(self) -> Report<ValidatedNetwork<D>>;
-    pub fn validate_ref(&self) -> Report<ValidatedNetwork<D>>;
+    pub fn validate(self) -> Report<ValidatedNetwork<D>, D>;
+    pub fn validate_ref(&self) -> Report<ValidatedNetwork<D>, D>;
 }
 ```
 
@@ -1393,61 +1397,132 @@ Validation MUST collect independent diagnostics where safe and MUST omit the art
 
 # Part IX — Reports and diagnostics
 
-## 40. `Report<T>`
+## 40. `Report<T, D>`
 
 ```rust
-pub struct Report<T> {
+pub struct Report<T, D> {
     artifact: Option<T>,
-    diagnostics: DiagnosticSet,
+    diagnostics: DiagnosticSet<D>,
 }
 ```
 
 Required methods:
 
 ```rust
-impl<T> Report<T> {
+impl<T, D> Report<T, D> {
     pub fn artifact(&self) -> Option<&T>;
-    pub fn diagnostics(&self) -> &DiagnosticSet;
+    pub fn diagnostics(&self) -> &DiagnosticSet<D>;
     pub fn has_errors(&self) -> bool;
     pub fn has_warnings(&self) -> bool;
 
-    pub fn into_parts(self) -> (Option<T>, DiagnosticSet);
+    pub fn into_parts(self) -> (Option<T>, DiagnosticSet<D>);
 
     pub fn require_artifact(self)
-        -> Result<T, ReportFailure>;
+        -> Result<T, ReportFailure<D>>;
 }
 ```
 
-`ReportFailure` MUST retain the complete diagnostic set.
+`ReportFailure<D>` MUST retain the complete diagnostic set. Calling `require_artifact` introduces no new problem code merely because the caller selected the artifact-requiring convenience.
 
-## 41. Structured diagnostics
+## 41. Unified problem records and report findings
+
+The common owned problem record is:
 
 ```rust
+pub struct Problem<D> { /* private owned fields */ }
+
+pub enum Severity {
+    Info,
+    Warning,
+    Error,
+}
+
+pub enum Responsibility {
+    Advisory,
+    CallerInput,
+    SemanticRejection,
+    Compatibility,
+    ResourceLimit,
+    CorruptData,
+    UnsupportedFeature,
+    ExternalIntegration,
+    LibraryDefect,
+}
+
 #[non_exhaustive]
-pub struct Diagnostic {
-    pub code: DiagnosticCode,
-    pub severity: Severity,
-    pub summary: DiagnosticMessage,
-    pub primary: SubjectRef,
-    pub related: Vec<RelatedSubject>,
-    pub evidence: Vec<Evidence>,
-    pub suggestions: Vec<Suggestion>,
+pub enum ProblemEvidence<D> {
+    /* exactly one code-specific variant per catalogue entry */
 }
 ```
 
-`DiagnosticCode` MUST be a stable structured identifier, not an arbitrary string selected at emission time.
+`Problem<D>` MUST expose accessors broadly equivalent to:
 
-Rendered prose MAY evolve without changing the code.
+```rust
+impl<D> Problem<D> {
+    pub fn code(&self) -> DiagnosticCode;
+    pub fn severity(&self) -> Severity;
+    pub fn responsibility(&self) -> Responsibility;
+    pub fn primary(&self) -> &SubjectRef;
+    pub fn related(&self) -> &[RelatedSubject];
+    pub fn evidence(&self) -> &ProblemEvidence<D>;
+    pub fn suggestions(&self) -> &[Suggestion];
+}
+```
+
+Its fields SHOULD remain private so arbitrary code-to-evidence, severity, responsibility, and delivery combinations cannot be constructed accidentally. A checked dynamic decoder MAY construct a problem only after validating the combination against the diagnostic catalogue.
+
+`DiagnosticCode` MUST be a catalogue-backed structured identifier, not an arbitrary string selected at emission time. Its compatibility status follows the diagnostic schema: codes may change through intentional schema revision while the schema is experimental, and acquire permanence only after an explicit future freeze.
+
+Severity and responsibility are fixed by the code. Emitters MUST NOT choose them dynamically.
+
+`ProblemEvidence<D>` is a closed typed family. Each catalogue code has one exact code-specific variant, even when several variants wrap the same reusable payload record. An untyped map such as `HashMap<String, String>` MUST NOT be the canonical evidence representation.
+
+A report finding is a delivery-specific wrapper:
+
+```rust
+pub struct Diagnostic<D> {
+    problem: Problem<D>,
+}
+
+impl<D> Diagnostic<D> {
+    pub fn problem(&self) -> &Problem<D>;
+    pub fn into_problem(self) -> Problem<D>;
+}
+```
+
+`Diagnostic<D>` may contain only codes whose catalogue entry permits `ReportFinding` delivery.
+
+Rendered summaries, localized messages, and `Display` output are derived presentation. They MUST NOT be stored as authoritative semantic fields and MAY evolve without changing the code or evidence.
+
+Transient successful-runtime findings use a distinct owned delivery form:
+
+```rust
+pub struct DiagnosticOccurrence<D> {
+    problem: Problem<D>,
+    at: Time<D>,
+    revision: NetworkRevision,
+}
+
+impl<D> DiagnosticOccurrence<D> {
+    pub fn problem(&self) -> &Problem<D>;
+    pub fn at(&self) -> Time<D>;
+    pub fn revision(&self) -> NetworkRevision;
+}
+```
+
+A `DiagnosticOccurrence<D>` may contain only codes whose catalogue entry permits `RuntimeOccurrence` delivery.
 
 ## 42. Diagnostic collections
 
 ```rust
-pub struct DiagnosticSet { /* deterministic owned collection */ }
+pub struct DiagnosticSet<D> { /* deterministic owned collection */ }
 ```
 
-It SHOULD provide iteration in canonical deterministic order and filtering by severity or code.
+It SHOULD provide iteration over `&Diagnostic<D>` in the catalogue's canonical order, filtering by severity or code, and ordinary collection accessors such as `len` and `is_empty`.
 
-Callers MUST NOT need to parse diagnostic prose to handle known conditions.
+One set contains at most one finding for each catalogue-defined condition key. Repeated detection MUST merge according to the code-defined evidence merge law rather than whichever validator ran first.
+
+Callers MUST NOT need to parse rendered prose to identify, order, deduplicate, or handle known conditions.
 
 ---
 
@@ -1468,8 +1543,8 @@ impl<D> ValidatedNetwork<D> {
     pub fn network_key(&self) -> NetworkKey;
     pub fn graph(&self) -> DefinitionGraphView<'_, D>;
     pub fn into_unchecked(self) -> UncheckedNetwork<D>;
-    pub fn compile(self) -> Report<CompiledNetwork<D>>;
-    pub fn compile_ref(&self) -> Report<CompiledNetwork<D>>;
+    pub fn compile(self) -> Report<CompiledNetwork<D>, D>;
+    pub fn compile_ref(&self) -> Report<CompiledNetwork<D>, D>;
 }
 ```
 
@@ -1506,7 +1581,7 @@ impl<D> CompiledNetwork<D> {
     pub fn prepare_patch(
         &self,
         patch: NetworkPatch<D>,
-    ) -> Report<PreparedPatch<D>>;
+    ) -> Report<PreparedPatch<D>, D>;
 
     pub fn restore(
         &self,
@@ -1998,7 +2073,7 @@ pub struct TransactionResult<D> {
     pub after_revision: NetworkRevision,
     pub changes: SemanticChangeSet<D>,
     pub migration: Option<MigrationReport<D>>,
-    pub diagnostics: DiagnosticSet,
+    pub occurrences: Vec<DiagnosticOccurrence<D>>,
     pub schedule: Schedule<D>,
     pub before_execution_digest: ExecutionStateDigest,
     pub after_execution_digest: ExecutionStateDigest,
@@ -2095,19 +2170,43 @@ pub enum RuntimeFailure {
 }
 ```
 
-The exact nested enums may evolve, but callers MUST be able to distinguish the major categories without parsing strings.
+Wrapper variants are ergonomic categories, not additional semantic conditions. Every leaf failure variant MUST map one-to-one to one catalogue code and its exact typed evidence variant, and MUST expose the complete `Problem<D>` or an exact lossless typed projection of it.
+
+Failure types MUST provide common access to code, severity, responsibility, primary subject, related subjects, and suggestions without requiring `Display` or `Debug` parsing. Variant matching MAY provide the code-specific evidence payload.
+
+Catch-all leaf variants such as `Other(String)` or `UnknownFailure { message: String }` MUST NOT be used for conditions that belong to the catalogue.
 
 ## 69. Internal defects
 
 Internal invariant violations MUST NOT be represented as ordinary `RuntimeFailure` values intended to blame caller-controlled data.
 
-They follow the processor defect policy through assertions, panics, or another explicit internal mechanism.
+The structured defect form is:
 
-The public API guarantees atomicity for structured failures, not arbitrary recovery from internal panics or undefined behavior.
+```rust
+pub struct DefectContext<D> { /* standard non-semantic reproduction envelope */ }
+
+pub struct InternalDefect<D> {
+    problem: Problem<D>,
+    context: DefectContext<D>,
+}
+
+impl<D> InternalDefect<D> {
+    pub fn problem(&self) -> &Problem<D>;
+    pub fn context(&self) -> &DefectContext<D>;
+}
+```
+
+The contained problem MUST use an `internal.*` code with `LibraryDefect` responsibility and `InternalDefect` delivery. `DefectContext<D>` MAY carry the standard non-semantic reproduction envelope defined by the diagnostic catalogue.
+
+An implementation MAY expose internal defects through a dedicated verification result, test or debug API, or structured panic payload according to the processor defect policy. In every case, the complete `InternalDefect<D>` MUST be constructed before delivery and made available to tests and support tooling.
+
+Bare assertions, arbitrary panic strings, or ordinary runtime-failure variants are insufficient for named catalogue invariants.
+
+The public API guarantees atomicity for structured operation failures. It does not promise arbitrary recovery from an internal panic or process corruption.
 
 ## 70. Non-exhaustive public enums
 
-Public failure, diagnostic-evidence, inspection, explanation, and change enums SHOULD be marked `#[non_exhaustive]` unless exhaustive matching is an intentional long-term compatibility promise.
+Public failure, problem-evidence, inspection, explanation, and change enums SHOULD be marked `#[non_exhaustive]` unless exhaustive matching is an intentional long-term compatibility promise.
 
 Core semantic enums whose closed set is itself part of the model, such as `LogicLevel`, MAY remain exhaustive.
 
@@ -2523,7 +2622,7 @@ impl<D> Machine<D> {
     pub fn prepare_patch(
         &self,
         patch: NetworkPatch<D>,
-    ) -> Report<PreparedPatch<D>> {
+    ) -> Report<PreparedPatch<D>, D> {
         self.compiled().prepare_patch(patch)
     }
 }
@@ -2673,17 +2772,38 @@ A separate atomic replay convenience MAY clone the machine and publish only on c
 Inspection exposes active episodes through owned records:
 
 ```rust
+pub struct DiagnosticConditionKey { /* opaque canonical condition identity */ }
+
 pub struct DiagnosticEpisode<D> {
     pub identity: DiagnosticEpisodeId,
-    pub code: DiagnosticCode,
-    pub primary: SubjectRef,
+    pub condition: DiagnosticConditionKey,
+    pub current: Problem<D>,
     pub began_at: Time<D>,
     pub last_material_change: Time<D>,
-    pub evidence: Vec<Evidence>,
+}
+
+#[non_exhaustive]
+pub enum DiagnosticEpisodeChangeKind {
+    Began,
+    Changed,
+    Resolved,
+    Terminated,
+}
+
+pub struct DiagnosticEpisodeChange<D> {
+    pub identity: DiagnosticEpisodeId,
+    pub kind: DiagnosticEpisodeChangeKind,
+    pub at: Time<D>,
+    pub before: Option<Problem<D>>,
+    pub after: Option<Problem<D>>,
 }
 ```
 
-Episode identity MUST be opaque and stable across compatible machine state transitions.
+The condition key contains the code, primary subject, and catalogue-defined condition discriminator. The `current` problem MUST agree with that code and primary subject and may contain only a code permitting `PersistentEpisode` delivery.
+
+The code remains the underlying condition code across begin, change, resolution, and termination. Those are change kinds, not separate diagnostic codes.
+
+Episode identity MUST be opaque and stable across compatible machine state transitions. An unchanged active condition MUST NOT emit a repeated change on an unrelated transaction.
 
 ## 96. Observer separation
 
@@ -2986,10 +3106,10 @@ Stale use MUST fail structurally rather than retarget.
 Public stages use:
 
 ```text
-Report<T>
+Report<T, D>
 ```
 
-when independent diagnostics can safely accumulate, and:
+when independent report findings can safely accumulate, and:
 
 ```text
 Result<T, Failure>
@@ -2997,7 +3117,15 @@ Result<T, Failure>
 
 when the operation has one atomic success or failure outcome.
 
-The same condition MUST NOT become a warning in one API and a silent correction in another.
+Successful runtime occurrences, persistent episode changes, and implementation defects remain distinct delivery forms:
+
+```text
+DiagnosticOccurrence<D>
+DiagnosticEpisodeChange<D>
+InternalDefect<D>
+```
+
+All forms share the catalogue-backed `Problem<D>` model. The same condition MUST NOT acquire a different severity or responsibility merely because another API surface detected it.
 
 ## 111. No semantic callbacks
 
@@ -3028,8 +3156,8 @@ Named convenience constructors MAY provide explicit documented policy bundles, b
 
 This specification does not freeze:
 
-- exhaustive diagnostic-code variants;
-- exhaustive evidence and suggestion variants;
+- the generated Rust spelling and module placement of exhaustive catalogue code constants;
+- the generated spelling of exhaustive code-specific evidence and suggestion variants;
 - the complete topology-patch operation enum;
 - standard-module constructor catalogue;
 - serialized encodings and serde feature shape;
@@ -3043,6 +3171,8 @@ This specification does not freeze:
 - feature flags and platform support.
 
 These additions must preserve the ownership, identity, lifecycle, and failure boundaries defined here.
+
+The common `Problem<D>`, `Diagnostic<D>`, `DiagnosticOccurrence<D>`, `DiagnosticEpisode<D>`, and `InternalDefect<D>` distinctions are not deferred.
 
 ## 114. Permitted ergonomic additions
 
@@ -3094,6 +3224,8 @@ results and change sets are owned deterministic artifacts
 stable keys and revision-bound resolved handles remain distinct
 stale handles and plans fail without retargeting
 reports accumulate structural diagnostics
+problem evidence is code-specific and typed
+report findings, runtime occurrences, persistent episodes, and internal defects remain distinct
 runtime failures remain structured and atomic
 inspection and explanations are owned semantic projections
 bindings remain outside machine semantics
@@ -3115,9 +3247,9 @@ Its normal flow is:
 ```text
 NetworkBuilder<D>
         ↓ finish
-Report<ValidatedNetwork<D>>
+Report<ValidatedNetwork<D>, D>
         ↓ compile
-Report<CompiledNetwork<D>>
+Report<CompiledNetwork<D>, D>
         ↓ spawn(RuntimePolicy)
 Machine<D>
         ↓ apply(Transaction<D>)
