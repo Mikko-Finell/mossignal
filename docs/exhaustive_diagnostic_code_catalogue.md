@@ -45,6 +45,33 @@ A **diagnostic episode** is committed semantic state representing one continuous
 
 An **internal defect** is a problem record establishing that `mossignal` violated an invariant that valid caller-controlled input was entitled to rely upon.
 
+## 3. Relationship to the other specifications
+
+This specification is authoritative for:
+
+- diagnostic code identity and namespace;
+- severity and responsibility assignment;
+- allowed delivery forms;
+- condition identity and deduplication;
+- structured evidence requirements;
+- persistent episode identity and lifecycle;
+- canonical diagnostic ordering;
+- diagnostic-schema compatibility.
+
+The API and semantics specification remains authoritative for which operations, conditions, and state transitions exist.
+
+The built-in-node and standard-module specifications remain authoritative for the semantic conditions attached to those nodes and modules.
+
+The processor specification remains authoritative for internal invariants and execution boundaries.
+
+The reconfiguration specification remains authoritative for migration, loss, and patch-finalization semantics.
+
+The persistence specification remains authoritative for artifact encoding and compatibility, while this specification defines the diagnostic structures encoded within those artifacts.
+
+The testing and verification policy remains authoritative for verification strategy, while this specification defines the structured codes and evidence produced when those obligations fail.
+
+Where another specification requires a diagnostic or structured failure but does not assign a code, this catalogue supplies the code and evidence contract. Where this catalogue appears to alter the underlying semantic condition, the domain specification remains authoritative and the catalogue must be revised.
+
 ---
 
 # Part I — Unified problem model
@@ -403,6 +430,17 @@ ProblemEvidence::ValidationCurrentReactionCycle(
 ```
 
 Reusable payload records MAY be shared internally, but the public code-to-evidence association remains exact.
+
+The evidence-family names used in the catalogue tables, such as `TimeEvidence` or `MigrationEvidence`, identify reusable payload schemas. They do not permit arbitrary pairing between any code and any member of that family.
+
+The generated Rust surface SHOULD therefore expose one code-specific variant per catalogue entry, even when several variants wrap the same reusable payload type. For example:
+
+```rust
+ProblemEvidence::RuntimeTimeOverflow(TimeEvidence)
+ProblemEvidence::RuntimeInvalidTimeSubtraction(TimeEvidence)
+```
+
+A generic schema projection MAY collapse those variants to their shared family for tooling, but the canonical typed representation must retain the exact code-to-variant relationship.
 
 Evidence MUST contain enough information to:
 
@@ -1782,22 +1820,45 @@ After a future diagnostic-schema freeze, the release gates must additionally enf
 
 ## 62. Authoritative registry
 
-The code catalogue SHOULD be represented once in a declarative registry from which the implementation derives:
+The implementation MUST represent the catalogue once in an authoritative declarative registry.
+
+Each registered code MUST declare at least:
 
 ```text
-DiagnosticCode constants
-severity and responsibility lookup
+code string
+diagnostic schema version introduced
+severity
+responsibility
 allowed delivery forms
-condition discriminators
-evidence schemas
+blocking behavior where report delivery is allowed
+primary-subject requirements
+allowed related-subject roles
+condition-discriminator schema
+exact code-specific evidence variant and payload schema
+allowed machine-readable suggestions
+occurrence or episode behavior
+persistence and digest participation
+rendering key and documentation reference
+```
+
+The implementation SHOULD derive from that registry:
+
+```text
+DiagnosticCode constants or enum variants
+ProblemEvidence variants and validation
+severity and responsibility lookup
+report ordering and condition-key logic
 canonical ordering and encoding
 rendering templates
-documentation links
 failure mappings
+documentation tables
+persistence schemas
 conformance tests
 ```
 
-Hand-maintained duplicate registries SHOULD be avoided.
+The registry is the implementation form of this specification, not an independent semantic source. Generated checks MUST detect disagreement between the registry and this document while the catalogue remains manually maintained.
+
+Hand-maintained duplicate code lists, evidence mappings, or severity tables MUST be avoided.
 
 ## 63. Rendering
 
