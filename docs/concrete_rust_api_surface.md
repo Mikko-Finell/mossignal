@@ -1,8 +1,8 @@
 # `mossignal` Concrete Rust API Surface
 
 **Status:** Design specification, version 1  
-**Defines:** Concrete public Rust types, ownership model, construction APIs, lifecycle transitions, runtime transaction APIs, inspection, explanation, bindings, snapshots, replay, and reconfiguration entry points  
-**Does not define:** Processor internals, serialized wire encodings, the exhaustive diagnostic-code catalogue, performance targets, standard-module catalogue, or application integration
+**Defines:** Concrete public Rust types, ownership model, construction APIs, standard-module discovery and construction, lifecycle transitions, runtime transaction APIs, inspection, explanation, bindings, snapshots, replay, and reconfiguration entry points<br>
+**Does not define:** Processor internals, serialized wire encodings, performance targets, or application integration
 
 ---
 
@@ -39,7 +39,7 @@ Code shown in this specification is representative of the required public shape.
 
 Public responsibilities, ownership relationships, type distinctions, and failure boundaries are normative.
 
-Where earlier specifications contain illustrative Rust signatures, this specification governs the concrete Rust surface. The API and node specifications remain authoritative for semantics, the processor specification remains authoritative for internal invariants, and the Exhaustive Diagnostic Code Catalogue remains authoritative for problem-code identity, severity, responsibility, evidence, delivery, ordering, and persistent-episode rules.
+Where earlier specifications contain illustrative Rust signatures, this specification governs the concrete Rust surface. The API and node specifications remain authoritative for primitive semantics, the Standard Module Catalogue remains authoritative for standard-module identity, descriptors, canonical expansion, and compatibility, the processor specification remains authoritative for internal invariants, and the Exhaustive Diagnostic Code Catalogue remains authoritative for problem-code identity, severity, responsibility, evidence, delivery, ordering, and persistent-episode rules.
 
 ---
 
@@ -82,6 +82,10 @@ The library MUST NOT introduce lifetime-heavy or typestate-heavy APIs merely to 
 
 The core signal and built-in-node universe is closed.
 
+Standard modules do not extend that evaluator universe. They are named, versioned, canonically expanded compositions of the closed primitive language with stable public interfaces and compatibility contracts.
+
+A user-authored module and a standard module with the same expanded primitive graph remain distinct semantic artifacts because standard origin, descriptor identity, and canonical expansion are observable.
+
 The public API MUST use:
 
 - marker types for `Level` and `Pulse`;
@@ -110,6 +114,9 @@ PatchOperation
 PreparedPatch
 StaticMigrationPlan
 MigrationReport
+StandardModuleRequest
+StandardModuleDeclaration
+AddedStandardModule
 InspectionQuery
 InspectionSnapshot
 Explanation
@@ -143,6 +150,9 @@ Transaction<D>
 NetworkPatch<D>
 PreparedPatch<D>
 StaticMigrationPlan<D>
+StandardModuleId
+StandardModuleDescriptor<D>
+StandardModuleDeclaration<D>
 MachineSnapshot<D>
 CauseRef
 PendingEventKey
@@ -189,6 +199,7 @@ pub mod inspect;
 pub mod explain;
 pub mod graph;
 pub mod binding;
+pub mod standard;
 pub mod reconfigure;
 pub mod persistence;
 pub mod replay;
@@ -538,6 +549,8 @@ Diagnostics, graph results, migration reports, and explanations use:
 pub enum SubjectRef {
     Network(NetworkKey),
     Module(ModuleInstanceKey),
+    ModuleDefinition(ModuleFingerprint),
+    StandardModule(StandardModuleRef),
     ModuleInput(AnyModuleInputKey),
     ModuleOutput(AnyModuleOutputKey),
     Node(NodeKey),
@@ -1112,7 +1125,9 @@ For every method above, an explicit keyed form named `add_<method>` MUST exist. 
 
 For variadic explicit forms, callers MAY additionally provide stable variadic input-port keys. If omitted, the builder allocates them locally in iterator order. Durable reconfiguration that depends on preserving individual variadic ports SHOULD supply or retain those keys explicitly.
 
-## 31. Convenience aliases
+## 31. Primitive aliases and standard modules
+
+### 31.1 Primitive aliases
 
 A primitive alias such as `xor` or `debounce` MAY have a concise method:
 
@@ -1124,9 +1139,317 @@ pub fn xor(
 ) -> Result<Signal<Level>, AuthoringFailure>;
 ```
 
-The resulting canonical node kind remains `Parity` or `InertialDelay` respectively.
+The resulting canonical node kind remains `Parity` or `InertialDelay` respectively. Primitive aliases do not introduce descriptor identity, hierarchy, or a module instance.
 
-Named standard-module conveniences belong to the future standard-module catalogue and MUST remain distinguishable from primitive aliases.
+Standard-module conveniences are different: they instantiate an ordinary module definition carrying an exact standard declaration and remain visible as modules in graph, inspection, explanation, diagnostics, persistence, and reconfiguration.
+
+### 31.2 Catalogue identity
+
+The public identity types are:
+
+```rust
+pub struct StandardCatalogueVersion(u32);
+pub struct StandardModuleId(/* validated owned lowercase ASCII id */);
+pub struct StandardModuleSemanticVersion(u32);
+pub struct StandardModuleExpansionVersion(u32);
+pub struct StandardModuleExpansionFingerprint(/* opaque fixed digest */);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StandardModuleRef {
+    pub id: StandardModuleId,
+    pub semantic_version: StandardModuleSemanticVersion,
+    pub expansion_version: StandardModuleExpansionVersion,
+}
+```
+
+The numeric version wrappers MUST provide checked constructors or crate-generated constants and read-only numeric accessors. Numeric adjacency MUST NOT imply compatibility.
+
+`StandardModuleId` MUST validate the reserved `mossignal.standard.*` syntax. It is machine-readable identity, not a display name or Rust symbol.
+
+### 31.3 Catalogue and descriptors
+
+```rust
+pub struct StandardCatalogue<D> { /* immutable built-in catalogue view */ }
+pub struct StandardModuleDescriptor<D> { /* immutable descriptor */ }
+pub struct StandardModuleDescriptorIter<'a, D> { /* canonical iterator */ }
+
+#[non_exhaustive]
+pub enum StandardModuleCategory {
+    Combinational,
+    Stateful,
+    Temporal,
+}
+
+#[non_exhaustive]
+pub enum StandardModuleAvailability {
+    Available,
+    Deprecated,
+}
+```
+
+The current catalogue is obtained explicitly:
+
+```rust
+impl<D> StandardCatalogue<D> {
+    pub fn current() -> Self;
+    pub fn version(&self) -> StandardCatalogueVersion;
+
+    pub fn descriptors(
+        &self,
+    ) -> StandardModuleDescriptorIter<'_, D>;
+
+    pub fn descriptor(
+        &self,
+        module: &StandardModuleRef,
+    ) -> Result<&StandardModuleDescriptor<D>, CatalogueFailure<D>>;
+
+    pub fn latest(
+        &self,
+        id: &StandardModuleId,
+    ) -> Result<&StandardModuleDescriptor<D>, CatalogueFailure<D>>;
+
+    pub fn build(
+        &self,
+        request: StandardModuleRequest<D>,
+    ) -> Report<ModuleDef<D>, D>;
+}
+```
+
+`latest` is an authoring convenience only. Persisted definitions, replay, restoration, and topology patches MUST retain an exact `StandardModuleRef`.
+
+A descriptor MUST expose read-only access to at least:
+
+```text
+exact StandardModuleRef
+catalogue version introduced
+availability and deprecation state
+display and documentation metadata
+category
+public typed input and output schemas
+parameter schemas
+public current-reaction dependency signature
+stateful and temporal classification
+diagnostic-code links
+migration compatibility summaries
+canonical diagram data
+canonical expansion fingerprint
+```
+
+Concrete iterator and schema-view type names may remain narrowly scoped, but descriptor information MUST be structured and MUST NOT require parsing generated documentation.
+
+### 31.4 Dynamic requests and parameter values
+
+```rust
+pub struct StandardParameterKey(/* validated stable key */);
+pub struct StandardEnumValue(/* validated descriptor-defined value */);
+
+#[non_exhaustive]
+pub enum StandardParameterValue<D> {
+    LogicLevel(LogicLevel),
+    U64(u64),
+    Span(Span<D>),
+    NonZeroSpan(NonZeroSpan<D>),
+    Enum(StandardEnumValue),
+}
+
+pub struct StandardModuleRequest<D> { /* owned unchecked request */ }
+```
+
+Construction MUST preserve malformed combinations long enough for catalogue validation to report independent findings:
+
+```rust
+impl<D> StandardModuleRequest<D> {
+    pub fn new(module: StandardModuleRef) -> Self;
+
+    pub fn with_parameter(
+        self,
+        key: StandardParameterKey,
+        value: StandardParameterValue<D>,
+    ) -> Self;
+
+    pub fn with_variadic_input(
+        self,
+        input: AnyModuleInputKey,
+    ) -> Self;
+
+    pub fn module_ref(&self) -> &StandardModuleRef;
+}
+```
+
+The request contains one exact descriptor reference, explicit parameter assignments, and explicit variadic public input keys. Fixed public keys come from the descriptor.
+
+`StandardCatalogue::build` diagnoses unknown ids, unavailable versions, missing or unexpected parameters, parameter-kind mismatch, invalid values, duplicate public keys, wrong signal kinds, invalid arity, and canonical-key collision through `Report<ModuleDef<D>, D>`.
+
+Catalogue lookup failures are ordinary structured failures:
+
+```rust
+#[non_exhaustive]
+pub enum CatalogueFailure<D> {
+    UnknownId(Problem<D>),
+    UnsupportedVersion(Problem<D>),
+}
+
+impl<D> CatalogueFailure<D> {
+    pub fn problem(&self) -> &Problem<D>;
+}
+```
+
+### 31.5 Typed construction results
+
+```rust
+pub struct AddedStandardModule<O> {
+    instance: AddedModuleInstance,
+    outputs: O,
+    module_ref: StandardModuleRef,
+}
+
+pub struct KeyedModuleInput<S> {
+    pub key: ModuleInputKey<S>,
+    pub source: Signal<S>,
+}
+
+impl<O> AddedStandardModule<O> {
+    pub fn instance(&self) -> &AddedModuleInstance;
+    pub fn key(&self) -> ModuleInstanceKey;
+    pub fn outputs(&self) -> &O;
+    pub fn module_ref(&self) -> &StandardModuleRef;
+    pub fn into_outputs(self) -> O;
+}
+```
+
+A one-output standard module uses `Signal<S>` as `O`. The result exposes instance identity without exposing canonical internal primitive keys.
+
+### 31.6 Concise standard-module constructors
+
+`NetworkBuilder<D>` MUST provide:
+
+```rust
+impl<D> NetworkBuilder<D> {
+    pub fn exactly<I>(
+        &mut self,
+        threshold: u64,
+        inputs: I,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>;
+
+    pub fn at_most<I>(
+        &mut self,
+        threshold: u64,
+        inputs: I,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>;
+
+    pub fn all_equal<I>(
+        &mut self,
+        inputs: I,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>;
+
+    pub fn pulse_resettable_toggle(
+        &mut self,
+        toggle: Signal<Pulse>,
+        reset: Signal<Pulse>,
+        initial: LogicLevel,
+    ) -> Result<Signal<Level>, AuthoringFailure>;
+
+    pub fn level_resettable_toggle(
+        &mut self,
+        toggle: Signal<Pulse>,
+        reset: Signal<Level>,
+        initial: LogicLevel,
+    ) -> Result<Signal<Level>, AuthoringFailure>;
+
+    pub fn level_resettable_sample_hold(
+        &mut self,
+        value: Signal<Level>,
+        sample: Signal<Pulse>,
+        reset: Signal<Level>,
+        initial: LogicLevel,
+        reset_to: LogicLevel,
+    ) -> Result<Signal<Level>, AuthoringFailure>;
+}
+```
+
+`ModuleBuilder<D>` MUST provide the same inherent methods with the same signatures so user-defined modules may contain standard modules.
+
+Concise variadic methods allocate module-instance and public variadic-port keys locally. Callers requiring durable reconstruction or stable independent rebuilds SHOULD use the explicit keyed forms.
+
+### 31.7 Explicit keyed standard-module constructors
+
+`NetworkBuilder<D>` MUST also provide:
+
+```rust
+impl<D> NetworkBuilder<D> {
+    pub fn add_exactly<I>(
+        &mut self,
+        key: ModuleInstanceKey,
+        threshold: u64,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = KeyedModuleInput<Level>>;
+
+    pub fn add_at_most<I>(
+        &mut self,
+        key: ModuleInstanceKey,
+        threshold: u64,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = KeyedModuleInput<Level>>;
+
+    pub fn add_all_equal<I>(
+        &mut self,
+        key: ModuleInstanceKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = KeyedModuleInput<Level>>;
+
+    pub fn add_pulse_resettable_toggle(
+        &mut self,
+        key: ModuleInstanceKey,
+        toggle: Signal<Pulse>,
+        reset: Signal<Pulse>,
+        initial: LogicLevel,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>;
+
+    pub fn add_level_resettable_toggle(
+        &mut self,
+        key: ModuleInstanceKey,
+        toggle: Signal<Pulse>,
+        reset: Signal<Level>,
+        initial: LogicLevel,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>;
+
+    pub fn add_level_resettable_sample_hold(
+        &mut self,
+        key: ModuleInstanceKey,
+        value: Signal<Level>,
+        sample: Signal<Pulse>,
+        reset: Signal<Level>,
+        initial: LogicLevel,
+        reset_to: LogicLevel,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>;
+}
+```
+
+`ModuleBuilder<D>` MUST expose the same explicit family. Fixed-interface constructors use catalogue-defined public keys. Variadic forms consume caller-supplied `ModuleInputKey<Level>` values and canonicalize them by stable-key order rather than iterator order.
+
+### 31.8 Canonical equivalence of construction paths
+
+Typed convenience methods, explicit keyed methods, and generic instantiation of a catalogue-generated `ModuleDef<D>` MUST converge on the same exact standard declaration and canonical expanded module structure for equivalent identities, parameters, and public keys.
+
+Implementations MUST NOT substitute a behaviorally equivalent primitive graph, silently flatten away module identity, or classify a standard module as a primitive alias.
 
 ## 32. Signal and port metadata
 
@@ -1197,18 +1520,62 @@ impl<D> UncheckedModule<D> {
 }
 ```
 
-The module builder MUST support the same built-in primitive constructor family and explicit internal stable keys as the network builder.
+The module builder MUST support the same built-in primitive constructor family, standard-module constructor family, and explicit internal stable keys as the network builder.
+
+Module origin is explicit:
+
+```rust
+#[non_exhaustive]
+pub enum ModuleOrigin<D> {
+    User,
+    Standard(StandardModuleDeclaration<D>),
+}
+
+pub struct StandardModuleDeclaration<D> { /* validated exact declaration */ }
+pub struct StandardParameterAssignmentIter<'a, D> { /* canonical iterator */ }
+pub struct StandardVariadicInputIter<'a> { /* canonical iterator */ }
+```
+
+A standard declaration retains:
+
+```text
+exact StandardModuleRef
+canonical parameter assignments
+public variadic-port stable keys
+canonical expansion fingerprint
+```
+
+Required accessors are:
+
+```rust
+impl<D> StandardModuleDeclaration<D> {
+    pub fn module_ref(&self) -> &StandardModuleRef;
+    pub fn parameters(&self) -> StandardParameterAssignmentIter<'_, D>;
+    pub fn variadic_inputs(&self) -> StandardVariadicInputIter<'_>;
+    pub fn expansion_fingerprint(
+        &self,
+    ) -> StandardModuleExpansionFingerprint;
+}
+```
 
 `ModuleDef<D>` SHOULD be cheaply cloneable through immutable shared ownership and MUST expose:
 
 ```rust
 impl<D> ModuleDef<D> {
     pub fn fingerprint(&self) -> ModuleFingerprint;
+    pub fn origin(&self) -> &ModuleOrigin<D>;
+    pub fn standard_declaration(
+        &self,
+    ) -> Option<&StandardModuleDeclaration<D>>;
     pub fn inputs(&self) -> ModuleInputIter<'_, D>;
     pub fn outputs(&self) -> ModuleOutputIter<'_, D>;
     pub fn graph(&self) -> DefinitionGraphView<'_, D>;
 }
 ```
+
+A user module with an identical primitive graph remains `ModuleOrigin::User` and has a distinct `ModuleFingerprint`. Standard origin, descriptor versions, parameters, public keys, and canonical expansion participate in module identity.
+
+A standard `ModuleDef<D>` contains the complete ordinary expanded graph as well as the declaration. Dynamic validation and persistence decoding MUST regenerate the canonical expansion from the exact descriptor and reject any semantic mismatch before the definition can validate or compile.
 
 ## 34. Module instantiation
 
@@ -1278,6 +1645,8 @@ Module internals retain stable identity logically as:
 The compiled network MAY derive network-global private or public structural keys from that pair, but compatible module revisions MUST preserve identity according to the pair rather than insertion order or dense position.
 
 Nested module instantiation is permitted. The module mechanism MUST preserve hierarchy for inspection, diagnostics, explanation, and reconfiguration even if execution is internally flattened.
+
+A `ModuleDef<D>` produced by `StandardCatalogue::build` is instantiated through this same generic API. Generic instantiation and the typed standard-module constructors MUST produce the same canonical instance structure when supplied equivalent keys, parameters, bindings, and metadata.
 
 ## 35. Builder completion
 
@@ -1528,6 +1897,12 @@ impl<D> DiagnosticOccurrence<D> {
 ```
 
 A `DiagnosticOccurrence<D>` may contain only codes whose catalogue entry permits `RuntimeOccurrence` delivery.
+
+Standard-module catalogue conditions use the `standard_module.*` code family and the ordinary problem model. Descriptor-level conditions use `SubjectRef::StandardModule`; definition-level conditions use `SubjectRef::ModuleDefinition`; instance-level conditions use `SubjectRef::Module`.
+
+Static standard-module warnings and blocking construction or validation conditions are report findings or operation failures, not a new runtime occurrence or persistent-episode family. Primitive occurrences and episodes arising inside a standard expansion retain their primitive condition codes and canonical internal subjects, while default presentation groups them beneath the owning module instance.
+
+Canonical case-split structure MUST NOT emit redundant primitive warnings merely because a standard module is implemented from lower-level nodes.
 
 ## 42. Diagnostic collections
 
@@ -2239,6 +2614,11 @@ Core semantic enums whose closed set is itself part of the model, such as `Logic
 
 ```rust
 impl<D> Machine<D> {
+    pub fn inspect_module(
+        &self,
+        module: ModuleInstanceKey,
+    ) -> Result<ModuleInspection<D>, InspectionFailure>;
+
     pub fn inspect_node(
         &self,
         node: NodeKey,
@@ -2263,6 +2643,7 @@ Equivalent methods SHOULD exist on `ForecastState<D>`.
 Canonical inspection results are owned:
 
 ```rust
+pub struct ModuleInspection<D> { /* owned public and expanded module view */ }
 pub struct NodeInspection<D> { /* owned structured result */ }
 pub struct OutputInspection<S, D> { /* owned structured result */ }
 pub struct PendingEventInspection<D> { /* owned structured result */ }
@@ -2282,6 +2663,13 @@ current causal support
 latest transition cause
 ```
 
+`ModuleInspection<D>` MUST preserve the module boundary and expose both:
+
+1. a public module view containing instance identity, `ModuleOrigin<D>`, descriptor reference where standard, parameters, public ports and values, aggregate public state, module-level diagnostics, and expansion fingerprint; and
+2. an expanded internal view containing canonical primitive subjects, state owners, pending work, primitive diagnostics, and causal support grouped under the module.
+
+A standard module MUST remain inspectable as a standard module even when the runtime executes a flattened internal representation.
+
 ## 73. Stable queries
 
 ```rust
@@ -2297,6 +2685,7 @@ Representative builder methods:
 
 ```rust
 impl<D> InspectionQueryBuilder<D> {
+    pub fn module(self, module: ModuleInstanceKey) -> Self;
     pub fn node(self, node: NodeKey) -> Self;
     pub fn output(self, output: AnyExternalOutputKey) -> Self;
     pub fn pending_for(self, node: NodeKey) -> Self;
@@ -2368,6 +2757,7 @@ impl<D> ProvenanceView<D> {
 ```rust
 #[non_exhaustive]
 pub enum Explain<D> {
+    CurrentModule(ModuleInstanceKey),
     CurrentNode(NodeKey),
     CurrentOutput(AnyExternalOutputKey),
     Pending(PendingEventKey),
@@ -2413,6 +2803,8 @@ pub struct Explanation<D> {
 
 The explanation API MUST return structured data independent from rendered prose.
 
+For a standard module, the primary explanation MUST describe the module's public behavioral law and public ports first. Canonical internal primitive support remains available as structured subordinate paths and MUST retain module hierarchy rather than appearing as unrelated top-level nodes.
+
 Provenance supporters that are semantically unordered MUST remain unordered semantically even if stored in canonical representation order.
 
 ---
@@ -2427,6 +2819,8 @@ pub struct DefinitionGraphView<'a, D> { /* immutable authored view */ }
 ```
 
 These views borrow immutable artifacts and MUST NOT permit mutation.
+
+Module hierarchy, `ModuleOrigin<D>`, exact standard declarations, public module interfaces, and canonical expanded internal subjects MUST remain discoverable through graph views. A flattened evaluator representation MUST NOT erase those relationships from the public graph.
 
 They MAY provide iterators borrowing the underlying artifact to avoid copying complete graph structures.
 
@@ -2680,6 +3074,10 @@ A patch is interpreted all at once. Builder insertion order is not semantic, and
 Every removal, redirection, replacement, hierarchy change, reassociation, state reset, and pending-work policy MUST be explicit in the canonical operation set. The core MUST NOT infer correspondence from names, cascade removals, reconnect dangling incidence, reset state, cancel pending work, or establish a new external level as `Low` merely to make a patch valid.
 
 The complete correspondence relation formed by stable-key preservation and explicit reassociation MUST be a partial injection in both directions. Categories, signal kinds, port directions, and fixed-port semantic roles must remain compatible.
+
+A standard module is an encapsulation boundary for semantic patch operations. While retaining `ModuleOrigin::Standard`, a patch MUST NOT add, remove, replace, reconnect, or semantically reconfigure one of its internal canonical subjects. Such an edit is rejected as `standard_module.noncanonical_internal_edit`.
+
+A patch may instead replace the complete module instance with another canonical declaration, change public bindings or hierarchy, alter presentation metadata, or replace it with a user-defined module and thereby end standard identity.
 
 ## 85. Patch construction, normalization, and access
 
@@ -2982,6 +3380,14 @@ pub struct ModuleInternalReassociation<D> { /* module-qualified mapping */ }
 
 No arbitrary migration callback, implicit state reset, inferred deadline rule, or name-based structural matching is permitted.
 
+A whole-module topology-migration reset is expressed through `ModuleMigrationDirective::Explicit` with `NodeMigrationDirective::Reset` selected for every canonical internal state owner. The target descriptor's declared initial state is installed before the ordinary patch-time target reaction. Every discarded state cell remains subject to the transaction's state-loss policy and appears in the migration report.
+
+For standard-module replacement, preparation compares module id, semantic version, expansion version, module instance key, fixed and variadic public keys, parameters, bindings, and hierarchy. Equal internal permanent role keys and qualifying public variadic keys provide automatic internal correspondence only where the descriptor compatibility table permits it.
+
+Catalogue version 1 provides exact-version self-compatibility only. A descriptor-version change requires an explicit declared migration entry; a different module id receives no catalogue-supplied correspondence. A changed module instance key additionally requires explicit module-instance reassociation.
+
+Parameter migration follows the descriptor-defined matrix. In particular, `initial` changes preserve existing compatible state unless the explicit whole-module reset described above is selected, while `LevelResettableSampleHold.reset_to` may require state-dependent migration when reset is currently asserted.
+
 Transaction-level state-loss policy is:
 
 ```rust
@@ -3064,6 +3470,8 @@ pub struct MigrationReport<D> {
 
 The migration record types are owned structured values and MUST expose stable source and target identities, the selected rule, and the exact outcome. `SemanticLoss<D>` has stable identity based on loss category, source subject, source state or event identity, and the responsible migration rule or removal operation.
 
+When a standard module is replaced, the report MUST retain module-level grouping and the complete internal correspondence, state, diagnostic-episode, provenance, and loss outcomes. A standard-module convenience MUST NOT hide the underlying target graph or collapse several internal outcomes into an unstructured module-level message.
+
 Under `RejectStateLoss`, any nonempty finalized loss set rejects the complete transaction. Under `AllowReportedStateLoss`, every actual loss must appear in the committed report and no unclassified loss may be accepted.
 
 Finalized migration records are canonically ordered by semantic category, source identity, target identity, state or pending-event identity, and a rule-specific canonical tie-breaker.
@@ -3137,6 +3545,8 @@ impl<D> MachineSnapshot<D> {
 ```
 
 Serialized encoding is defined separately.
+
+The compiled topology associated with a snapshot retains every exact standard declaration and canonical expanded module definition. Restoration MUST reject an unavailable descriptor version, declaration/interface mismatch, or expansion mismatch before creating a machine.
 
 ## 91. Restoration
 
@@ -3612,7 +4022,7 @@ This specification does not freeze:
 
 - the generated Rust spelling and module placement of exhaustive catalogue code constants;
 - the generated spelling of exhaustive code-specific evidence and suggestion variants;
-- standard-module constructor catalogue;
+- exact auxiliary schema-view types used beneath descriptor accessors;
 - serialized encodings and serde feature shape;
 - observer subscription types;
 - exact async integration helpers;
@@ -3662,6 +4072,10 @@ builder signals cannot silently cross builder boundaries
 Signal<S> remains builder-only
 ordinary and explicit-key authoring are both supported
 typed builder and dynamic definition produce one semantic model
+primitive aliases remain distinct from standard-module instances
+standard modules carry exact descriptor and canonical expansion identity
+typed, keyed, dynamic, and generic standard-module construction converge
+standard modules remain visible through hierarchy, inspection, explanation, and reconfiguration
 unchecked, validated, and compiled artifacts are distinct types
 compiled topology is immutable and cheaply shareable
 machine owns its current topology and runtime policy
