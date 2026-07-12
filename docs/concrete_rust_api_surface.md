@@ -1,8 +1,8 @@
 # `mossignal` Concrete Rust API Surface
 
-**Status:** Design specification, version 1  
-**Defines:** Concrete public Rust types, ownership model, construction APIs, standard-module discovery and construction, lifecycle transitions, runtime transaction APIs, inspection, explanation, bindings, snapshots, replay, and reconfiguration entry points<br>
-**Does not define:** Processor internals, serialized wire encodings, performance targets, or application integration
+**Status:** Design specification, version 2
+**Defines:** Concrete public Rust types, ownership model, construction APIs, standard-module discovery and construction, standard catalogue API, lifecycle transitions, runtime transaction APIs, diagnostic-code model, inspection, explanation, bindings, snapshots, replay, topology-patch operation language, and reconfiguration entry points<br>
+**Does not define:** Processor internals, serialized wire encodings, performance targets, application integration, or rendered diagnostic prose
 
 ---
 
@@ -116,6 +116,7 @@ StaticMigrationPlan
 MigrationReport
 StandardModuleRequest
 StandardModuleDeclaration
+StandardModuleDescriptor
 AddedStandardModule
 InspectionQuery
 InspectionSnapshot
@@ -123,7 +124,7 @@ Explanation
 Problem
 Diagnostic
 DiagnosticOccurrence
-DiagnosticEpisode
+ActiveDiagnosticEpisode
 InternalDefect
 ```
 
@@ -548,6 +549,7 @@ Diagnostics, graph results, migration reports, and explanations use:
 #[non_exhaustive]
 pub enum SubjectRef {
     Network(NetworkKey),
+    Region(RegionSubjectRef),
     Module(ModuleInstanceKey),
     ModuleDefinition(ModuleFingerprint),
     StandardModule(StandardModuleRef),
@@ -559,13 +561,173 @@ pub enum SubjectRef {
     Connection(ConnectionKey),
     ExternalInput(AnyExternalInputKey),
     ExternalOutput(AnyExternalOutputKey),
-    PendingEvent(PendingEventKey),
+    RuntimePolicy(RuntimePolicyId),
+    InputSchema(InputSchemaFingerprint),
     Revision(NetworkRevision),
+    ResolvedHandle {
+        fingerprint: NetworkFingerprint,
+        revision: NetworkRevision,
+        identity: ResolvedSubjectIdentity,
+    },
+    InspectionPlan {
+        fingerprint: NetworkFingerprint,
+        revision: NetworkRevision,
+        query_digest: InspectionQueryDigest,
+    },
+    PendingEvent(PendingEventKey),
+    ProvenanceRecord(CauseDigest),
+    ActiveDiagnosticEpisode(DiagnosticEpisodeId),
     Snapshot(SnapshotDigest),
+    PersistedArtifact(PersistedArtifactRef),
+    SemanticVersionComponent(SemanticVersionComponentRef),
+    TimeDomain(TimeDomainId),
+    Binding(BindingSubjectRef),
+    Transaction(TransactionSubjectRef),
+    ReplayLog(ReplayLogSubjectRef),
+    ReplayChunk(ReplayChunkSubjectRef),
+    ReplayFrame(ReplayFrameSubjectRef),
 }
 ```
 
 `SubjectRef` is semantic identity, not a rendered label.
+
+### 19.1 Non-structural diagnostic subject identities
+
+Canonical stable keys defined in Part V represent authored structural keys allocated via `KeyAllocator`. The following identities used in `SubjectRef` represent non-structural diagnostic subject identities:
+
+```rust
+pub struct RegionId(/* opaque deterministic revision-local identity */);
+
+pub struct RegionSubjectRef {
+    pub fingerprint: NetworkFingerprint,
+    pub revision: NetworkRevision,
+    pub id: RegionId,
+}
+
+pub struct InputSchemaFingerprint(/* deterministic digest of the external input schema */);
+pub struct InspectionQueryDigest(/* deterministic digest of the inspection query */);
+pub struct TimeDomainId(/* opaque canonical time domain identifier */);
+pub struct ArtifactContentDigest(/* opaque digest */);
+pub struct CauseDigest(/* opaque canonical provenance digest */);
+
+pub struct EnvelopeSchemaVersion(u32);
+pub struct CanonicalEncodingVersion(u32);
+pub struct DigestSuiteVersion(u32);
+pub struct ArtifactSchemaVersion(u32);
+pub struct CoreSemanticsVersion(u32);
+pub struct BuiltInNodeSemanticsVersion(u32);
+pub struct TopologyPatchSemanticsVersion(u32);
+pub struct ProvenanceSemanticsVersion(u32);
+pub struct DiagnosticSchemaVersion(u32);
+
+#[non_exhaustive]
+pub enum ArtifactKind {
+    ModuleDefinition,
+    NetworkDefinition,
+    RuntimePolicy,
+    InputSnapshot,
+    InputDelta,
+    NetworkPatch,
+    TransactionRecord,
+    MachineSnapshot,
+    ReplayFrame,
+    ReplayLog,
+    TransactionResult,
+    MigrationReport,
+    CheckpointBundle,
+}
+
+pub struct PersistedArtifactRef {
+    pub kind: ArtifactKind,
+    pub content: ArtifactContentDigest,
+}
+
+#[non_exhaustive]
+pub enum SemanticVersionComponentRef {
+    EnvelopeSchema(EnvelopeSchemaVersion),
+    CanonicalEncoding(CanonicalEncodingVersion),
+    DigestSuite(DigestSuiteVersion),
+    ArtifactSchema {
+        artifact: ArtifactKind,
+        version: ArtifactSchemaVersion,
+    },
+    CoreSemantics(CoreSemanticsVersion),
+    BuiltInNodeSemantics(BuiltInNodeSemanticsVersion),
+    TopologyPatchSemantics(TopologyPatchSemanticsVersion),
+    ProvenanceSemantics(ProvenanceSemanticsVersion),
+    DiagnosticSchema(DiagnosticSchemaVersion),
+    StandardModuleSemantic {
+        module: StandardModuleId,
+        version: StandardModuleSemanticVersion,
+    },
+    StandardModuleExpansion {
+        module: StandardModuleId,
+        version: StandardModuleExpansionVersion,
+    },
+}
+
+#[non_exhaustive]
+pub enum ResolvedSubjectIdentity {
+    Node(NodeKey),
+    ExternalInput(AnyExternalInputKey),
+    ExternalOutput(AnyExternalOutputKey),
+    InPort(AnyInPortKey),
+    OutPort(AnyOutPortKey),
+}
+
+#[non_exhaustive]
+pub enum BindingSubjectRef {
+    Input {
+        fingerprint: NetworkFingerprint,
+        endpoint: AnyExternalInputKey,
+    },
+    Output {
+        fingerprint: NetworkFingerprint,
+        endpoint: AnyExternalOutputKey,
+    },
+}
+
+pub struct TransactionSubjectRef {
+    pub content: ArtifactContentDigest,
+}
+
+pub struct ReplayLogSubjectRef {
+    pub content: ArtifactContentDigest,
+}
+
+pub struct ReplayFrameSubjectRef {
+    pub content: ArtifactContentDigest,
+}
+
+pub struct ReplayChunkSubjectRef {
+    pub log: ArtifactContentDigest,
+    pub first_frame: u64,
+    pub frame_count: u64,
+}
+
+#[non_exhaustive]
+pub enum GraphSubjectRef {
+    Module(ModuleInstanceKey),
+    Node(NodeKey),
+    InPort(AnyInPortKey),
+    OutPort(AnyOutPortKey),
+    Connection(ConnectionKey),
+    ExternalInput(AnyExternalInputKey),
+    ExternalOutput(AnyExternalOutputKey),
+}
+```
+
+These identities are not authored structural keys, are not allocated by `KeyAllocator`, and have category-specific construction and compatibility rules.
+
+- `RegionId` is derived from the canonical ordered membership of one weak component. It is never caller allocated, and identifies a region only together with the network fingerprint and topology revision. Merge or split operations create new region identities. It makes no assumption that the component contains a node.
+- `InputSchemaFingerprint` is defined over the canonical sorted target input schema, including typed external-input stable keys, signal kinds, level-establishment requirements where applicable, other semantically relevant input-schema fields, and the schema projection version. It explicitly excludes `DiagnosticMeta`, names, descriptions, paths, origins, tags, and display order. It remains distinct from `NetworkFingerprint`.
+- `InspectionQueryDigest` represents a deterministic cryptographic digest of the query description itself.
+- `PersistedArtifactRef` identifies one canonical persisted artifact envelope by its artifact kind and verified content digest.
+- `CauseDigest` is the domain-separated canonical provenance-record digest defined by the persistence specification. Do not expose private provenance arena identity as a diagnostic subject.
+- `BindingSubjectRef` represents standard input or output binding slots. A duplicate caller-owned external key can identify the involved endpoint bindings through primary and related subjects. Arbitrary `I` or `O` values do not become core semantic identity.
+- `TransactionSubjectRef` represents transaction subject identity through the canonical content digest of its `TransactionRecordArtifact`. The digest includes the artifact kind, time-domain identity, transaction contents, and version vector through canonical encoding. Do not invent an incrementing transaction index.
+- A replay chunk is a contiguous frame range within one canonically identified ordered replay log. Range arithmetic must be checked.
+- The exact semantic version wrapper declarations may be placed in the persistence section, but their identities must remain distinct typed `u32` components. Numeric adjacency must imply nothing.
 
 ---
 
@@ -1835,6 +1997,34 @@ pub enum Responsibility {
     LibraryDefect,
 }
 
+pub struct RelatedSubject {
+    pub role: RelatedSubjectRole,
+    pub subject: SubjectRef,
+}
+
+#[non_exhaustive]
+pub enum RelatedSubjectRole {
+    Source,
+    Target,
+    Owner,
+    Driver,
+    ConflictingDriver,
+    FirstDefinition,
+    DuplicateDefinition,
+    MissingReference,
+    ExpectedSubject,
+    ActualSubject,
+    BaseSubject,
+    TargetSubject,
+    MigrationSource,
+    MigrationTarget,
+    CyclePredecessor,
+    CycleSuccessor,
+    Supporter,
+    Blocker,
+    InvalidatedArtifact,
+}
+
 #[non_exhaustive]
 pub enum ProblemEvidence<D> {
     /* exactly one code-specific variant per catalogue entry */
@@ -1979,7 +2169,7 @@ impl<D> CompiledNetwork<D> {
         &self,
         snapshot: MachineSnapshot<D>,
         policy: RuntimePolicy,
-    ) -> Result<Machine<D>, RestoreFailure>;
+    ) -> Result<Machine<D>, RestoreFailure<D>>;
 }
 ```
 
@@ -2748,7 +2938,7 @@ impl<D> ProvenanceView<D> {
     pub fn inspect(
         &self,
         cause: CauseRef,
-    ) -> Result<CauseInspection<D>, ExplanationFailure>;
+    ) -> Result<CauseInspection<D>, ExplanationFailure<D>>;
 }
 ```
 
@@ -2779,7 +2969,7 @@ impl<D> Machine<D> {
     pub fn explain(
         &self,
         request: Explain<D>,
-    ) -> Result<Explanation<D>, ExplanationFailure>;
+    ) -> Result<Explanation<D>, ExplanationFailure<D>>;
 }
 ```
 
@@ -2849,8 +3039,8 @@ impl<D> CompiledNetwork<D> {
 
     pub fn slice_between(
         &self,
-        source: SubjectRef,
-        destination: SubjectRef,
+        source: GraphSubjectRef,
+        destination: GraphSubjectRef,
     ) -> Result<NetworkSlice, GraphQueryFailure>;
 }
 ```
@@ -3470,7 +3660,7 @@ pub struct MigrationReport<D> {
 
 The migration record types are owned structured values and MUST expose stable source and target identities, the selected rule, and the exact outcome. `SemanticLoss<D>` has stable identity based on loss category, source subject, source state or event identity, and the responsible migration rule or removal operation.
 
-When a standard module is replaced, the report MUST retain module-level grouping and the complete internal correspondence, state, diagnostic-episode, provenance, and loss outcomes. A standard-module convenience MUST NOT hide the underlying target graph or collapse several internal outcomes into an unstructured module-level message.
+When a standard module is replaced, the report MUST retain module-level grouping and the complete internal correspondence, state, active diagnostic episode, provenance, and loss outcomes. A standard-module convenience MUST NOT hide the underlying target graph or collapse several internal outcomes into an unstructured module-level message.
 
 Under `RejectStateLoss`, any nonempty finalized loss set rejects the complete transaction. Under `AllowReportedStateLoss`, every actual loss must appear in the committed report and no unclassified loss may be accepted.
 
@@ -3554,7 +3744,7 @@ Restoration remains:
 
 ```rust
 CompiledNetwork::restore(snapshot, policy)
-    -> Result<Machine<D>, RestoreFailure>
+    -> Result<Machine<D>, RestoreFailure<D>>
 ```
 
 Restoration MUST return a complete machine or a structured failure. It MUST NOT return a partially restored machine accompanied by warnings.
@@ -3588,7 +3778,7 @@ impl<D> ReplayFrame<D> {
     pub fn from_success(
         transaction: Transaction<D>,
         result: &TransactionResult<D>,
-    ) -> Result<Self, ReplayFrameFailure>;
+    ) -> Result<Self, ReplayFrameFailure<D>>;
 }
 ```
 
@@ -3616,7 +3806,7 @@ pub struct RecordedTransaction<D> {
 pub fn replay<D, I>(
     machine: &mut Machine<D>,
     frames: I,
-) -> Result<ReplayResult<D>, ReplayFailure>
+) -> Result<ReplayResult<D>, ReplayFailure<D>>
 where
     I: IntoIterator<Item = ReplayFrame<D>>;
 ```
@@ -3638,7 +3828,7 @@ Inspection exposes active episodes through owned records:
 ```rust
 pub struct DiagnosticConditionKey { /* opaque canonical condition identity */ }
 
-pub struct DiagnosticEpisode<D> {
+pub struct ActiveDiagnosticEpisode<D> {
     pub identity: DiagnosticEpisodeId,
     pub condition: DiagnosticConditionKey,
     pub current: Problem<D>,
@@ -3665,7 +3855,7 @@ pub struct DiagnosticEpisodeChange<D> {
 
 The condition key contains the code, primary subject, and catalogue-defined condition discriminator. The `current` problem MUST agree with that code and primary subject and may contain only a code permitting `PersistentEpisode` delivery.
 
-The code remains the underlying condition code across begin, change, resolution, and termination. Those are change kinds, not separate diagnostic codes.
+The code remains the underlying condition code across begin, change, resolution, and termination. Those are change kinds, not separate diagnostic codes. Rendered diagnostic wording MUST NOT be persisted as authoritative semantic data.
 
 Episode identity MUST be opaque and stable across compatible machine state transitions. An unchanged active condition MUST NOT emit a repeated change on an unrelated transaction.
 
@@ -3906,13 +4096,13 @@ let new_input_key = ExternalInputKey::<Level>::from_u128(0x1000);
 
 let patch = machine
     .patch()
-    .add_external_level_input(
-        new_input_key,
-        DiagnosticMeta {
+    .add_external_input(ExternalInputDef {
+        key: AnyExternalInputKey::Level(new_input_key),
+        meta: DiagnosticMeta {
             name: Some("enable".into()),
             ..Default::default()
         },
-    )?
+    })?
     .finish();
 
 let prepared = machine
@@ -4035,7 +4225,7 @@ This specification does not freeze:
 
 These additions must preserve the ownership, identity, lifecycle, and failure boundaries defined here.
 
-The common `Problem<D>`, `Diagnostic<D>`, `DiagnosticOccurrence<D>`, `DiagnosticEpisode<D>`, and `InternalDefect<D>` distinctions are not deferred.
+The common `Problem<D>`, `Diagnostic<D>`, `DiagnosticOccurrence<D>`, `ActiveDiagnosticEpisode<D>`, and `InternalDefect<D>` distinctions are not deferred.
 
 ## 114. Permitted ergonomic additions
 
