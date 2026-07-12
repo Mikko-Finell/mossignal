@@ -1,7 +1,7 @@
 # `mossignal` Built-in Node Semantics
 
 **Status:** Consolidated design specification, version 2  
-**Scope:** Built-in nodes, boundary endpoints, shared laws, inspection, explanation, diagnostics, initialization, and reconfiguration  
+**Defines:** Built-in nodes, boundary endpoints, shared laws, inspection, explanation, diagnostics, initialization, and reconfiguration  
 **Excluded:** Processor implementation, testing policy, model checking, contracts, serialized wire formats, and application-specific modules
 
 ---
