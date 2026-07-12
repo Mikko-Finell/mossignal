@@ -1,0 +1,18 @@
+[package]
+name = "mossignal"
+description = "Core library for the Mossignal project."
+edition.workspace = true
+license.workspace = true
+publish = false
+rust-version.workspace = true
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Add core dependencies here as the design settles
+serde = { version = "1.0.228", features = ["derive"] }
