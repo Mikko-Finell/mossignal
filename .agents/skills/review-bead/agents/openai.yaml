@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Bead"
+  short_description: "Audit and commit a planning result"
+  default_prompt: "Use $review-bead to independently audit this Pending Approval bead and commit the clean planning result."

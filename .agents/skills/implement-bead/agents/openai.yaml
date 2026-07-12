@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implement Bead"
+  short_description: "Complete a Ready bead uncommitted"
+  default_prompt: "Use $implement-bead to implement this committed Ready mossignal bead and leave implementation approval Pending Approval."
