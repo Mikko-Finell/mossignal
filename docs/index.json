@@ -1,6 +1,86 @@
 {
   "documents": [
     {
+      "defines": "Sensible default directions and guidance for early implementation",
+      "headings": [
+        {
+          "end_line": 331,
+          "level": 1,
+          "start_line": 1,
+          "title": "Initial Implementation Orientation"
+        },
+        {
+          "end_line": 23,
+          "level": 2,
+          "start_line": 8,
+          "title": "Purpose"
+        },
+        {
+          "end_line": 54,
+          "level": 2,
+          "start_line": 24,
+          "title": "1. Organize around real responsibilities"
+        },
+        {
+          "end_line": 103,
+          "level": 2,
+          "start_line": 55,
+          "title": "2. Default early compiled model"
+        },
+        {
+          "end_line": 178,
+          "level": 2,
+          "start_line": 104,
+          "title": "3. What it mechanically means for a signal to pass through a gate"
+        },
+        {
+          "end_line": 208,
+          "level": 2,
+          "start_line": 179,
+          "title": "4. Implement primitive semantics through shared machinery"
+        },
+        {
+          "end_line": 239,
+          "level": 2,
+          "start_line": 209,
+          "title": "5. Build reference behavior before optimization"
+        },
+        {
+          "end_line": 269,
+          "level": 2,
+          "start_line": 240,
+          "title": "6. Prefer thin vertical progress"
+        },
+        {
+          "end_line": 286,
+          "level": 2,
+          "start_line": 270,
+          "title": "7. Let the implementation reveal abstractions"
+        },
+        {
+          "end_line": 303,
+          "level": 2,
+          "start_line": 287,
+          "title": "8. Keep future requirements visible but inactive"
+        },
+        {
+          "end_line": 316,
+          "level": 2,
+          "start_line": 304,
+          "title": "9. Departing from these defaults"
+        },
+        {
+          "end_line": 331,
+          "level": 2,
+          "start_line": 317,
+          "title": "10. Practical starting posture"
+        }
+      ],
+      "line_count": 331,
+      "path": "docs/initial_implementation_orientation.md",
+      "title": "Initial Implementation Orientation"
+    },
+    {
       "defines": "Public semantics, API responsibilities, diagnostics, inspection, persistence, and reconfiguration",
       "headings": [
         {

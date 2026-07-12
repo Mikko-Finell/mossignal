@@ -1,6 +1,7 @@
 # Initial Implementation Orientation
 
 **Status:** Provisional, non-normative implementation guidance  
+**Defines:** Sensible default directions and guidance for early implementation  
 **Audience:** Agents working on the initial `mossignal` implementation  
 **Authority:** The specifications under `docs/specs/` remain authoritative
 
