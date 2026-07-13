@@ -84,6 +84,19 @@ A warning, unavailable command, timeout, flaky result, or failing mandatory
 check is not a pass. Do not weaken a test, oracle, lint, or gate merely to clear
 the current task.
 
+## Specification trace comments
+
+Use `// SPEC:` comments where a non-obvious implementation choice directly enforces a normative specification requirement or invariant that a future maintainer might otherwise weaken, remove, or “simplify” incorrectly.
+
+Keep comments brief. Reference the specification path and section heading, then state the implementation consequence. NEVER add `SPEC:` comments for obvious code, repeat rustdoc, quote long passages, or use line numbers.
+
+Example:
+
+```rust
+// SPEC: docs/specs/concrete_rust_api_surface.md §16 "Stable keys"
+// Structural category remains part of identity even when opaque payloads are equal.
+```
+
 ## Beads and commits
 
 Use `br` for issue mutation and `br ... --json` for machine-readable inspection.
