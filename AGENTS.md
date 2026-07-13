@@ -4,10 +4,18 @@
 
 Normative mossignal specifications live under `docs/specs/`. Other material
 under `docs/` is not authoritative unless this file or a specification says it
-is. Always use `docs/index.json` as the entry point when searching the
-documentation for relevant information, documents, or headings. From the
-index, read the specifications that directly govern the task and search
-adjacent specifications for affected invariants.
+is.
+
+Search `docs/.index/` first by symbol or concept to locate relevant spec
+sections quickly. Files in `docs/.index/` are generated navigation aids, not
+authority. After finding a relevant indexed section, read the corresponding
+section in `docs/specs/` before making semantic, API, architecture,
+validation, or testing decisions.
+
+Example:
+- search `docs/.index/` for `NetworkBuilder<D>` or `topology patch`
+- then read the cited section in `docs/specs/concrete_rust_api_surface.md` or
+  the relevant authoritative spec
 
 Do not invent architecture or semantics when the documents are missing,
 contradictory, or genuinely undecided. Surface the exact design blocker.

@@ -1,6 +1,6 @@
 .PHONY: fmt fmt-check compile-check static-guardrails-check clippy test nextest \
 	nextest-quiet doctest doc-check deny acceptance-record-check check-dev \
-	check-final doc-index doc-index-check run
+	check-final doc-index run
 
 QUIET_CHECK = python3 scripts/run_check.py
 
@@ -40,11 +40,12 @@ deny:
 	@$(QUIET_CHECK) dependency-policy cargo deny check advisories bans sources
 
 doc-index:
-	python3 scripts/generate_docs_index.py
-
-doc-index-check:
-	@$(QUIET_CHECK) documentation-index-tests python3 scripts/test_generate_docs_index.py
-	@$(QUIET_CHECK) documentation-index python3 scripts/generate_docs_index.py --check
+	rm -rf docs/.index
+	mkdir -p docs/.index
+	for spec in docs/specs/*.md; do \
+		python3 scripts/generate_docs_markdown_index.py "$$spec" \
+			--output "docs/.index/$$(basename "$$spec")"; \
+	done
 
 acceptance-record-check:
 	@if [ -z "$(BEAD_ID)" ]; then \
@@ -60,7 +61,7 @@ check-dev: fmt-check compile-check nextest-quiet
 
 # Add new finite repository-wide checks here when their underlying facilities
 # exist. Long fuzz campaigns and other scheduled verification remain separate.
-check-final: fmt-check compile-check static-guardrails-check clippy nextest-quiet doctest doc-check deny doc-index-check
+check-final: fmt-check compile-check static-guardrails-check clippy nextest-quiet doctest doc-check deny
 	@echo "OK: final checks passed"
 
 run:
