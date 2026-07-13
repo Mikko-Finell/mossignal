@@ -61,6 +61,17 @@ impl SignalType for Pulse {
     const KIND: SignalKind = SignalKind::Pulse;
 }
 
+#[cfg(test)]
+pub(crate) enum TraitHostileSignal {}
+
+#[cfg(test)]
+impl private::Sealed for TraitHostileSignal {}
+
+#[cfg(test)]
+impl SignalType for TraitHostileSignal {
+    const KIND: SignalKind = SignalKind::Level;
+}
+
 /// An established binary level signal value.
 ///
 /// Both variants are real values: [`LogicLevel::Low`] is not absence or an
