@@ -1,4 +1,0 @@
-interface:
-  display_name: "Review Implementation"
-  short_description: "Review or accept uncommitted work"
-  default_prompt: "Use $review-implementation to independently review this Pending Approval implementation and either revise it or complete final acceptance."

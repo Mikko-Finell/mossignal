@@ -1,4 +1,0 @@
-interface:
-  display_name: "Author Bead"
-  short_description: "Author a complete bead for approval"
-  default_prompt: "Use $author-bead to author a complete mossignal implementation bead in Pending Approval."
