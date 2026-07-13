@@ -24,21 +24,6 @@ contradictory, or genuinely undecided. Surface the exact design blocker.
 product work. `docs/specs/testing_and_verification_policy.md` governs
 verification depth.
 
-## Role skills
-
-Repository-local Agent Skills live under `.agents/skills/` and are available to
-Codex and Gemini. Use the skill matching the role assigned by the user:
-
-- `author-bead`: derive one complete implementation bead in `Pending Approval`.
-- `review-bead`: independently audit and commit a clean planning result as
-  `Ready`, materially revised `Pending Approval`, or blocked.
-- `implement-bead`: implement an approved bead and leave it uncommitted.
-- `review-implementation`: independently review proposed work; material changes
-  remain pending, while a clean pass completes final acceptance and commit.
-
-Read the selected `SKILL.md` completely before acting. Detailed procedures
-belong in skills rather than this always-loaded file.
-
 ## Repository model
 
 - Ordinary work happens directly on `main`.
