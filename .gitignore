@@ -33,3 +33,6 @@ Icon
 
 # Python stuff
 */__pycache__/*
+
+# Misc
+.qmd/*
