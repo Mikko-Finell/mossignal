@@ -64,7 +64,7 @@ use core::marker::PhantomData;
 const KIND_LEVEL: u8 = 0;
 const KIND_PULSE: u8 = 1;
 const SOURCE_EXTERNAL_INPUT: u8 = 0;
-const SOURCE_OUT_PORT: u8 = 1;
+const SOURCE_NODE_OUTPUT: u8 = 1;
 
 const DOMAIN_NETWORK: u8 = 1;
 const DOMAIN_NODE: u8 = 2;
@@ -281,7 +281,7 @@ pub enum SignalSourceKey<S: SignalType> {
     /// A signal supplied through a typed external input.
     ExternalInput(ExternalInputKey<S>),
     /// A signal produced by a typed node output port.
-    OutPort(OutPortKey<S>),
+    NodeOutput(OutPortKey<S>),
 }
 
 impl<S: SignalType> Clone for SignalSourceKey<S> {
@@ -296,7 +296,7 @@ impl<S: SignalType> PartialEq for SignalSourceKey<S> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::ExternalInput(left), Self::ExternalInput(right)) => left == right,
-            (Self::OutPort(left), Self::OutPort(right)) => left == right,
+            (Self::NodeOutput(left), Self::NodeOutput(right)) => left == right,
             _ => false,
         }
     }
@@ -314,9 +314,9 @@ impl<S: SignalType> Ord for SignalSourceKey<S> {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Self::ExternalInput(left), Self::ExternalInput(right)) => left.cmp(right),
-            (Self::ExternalInput(_), Self::OutPort(_)) => Ordering::Less,
-            (Self::OutPort(_), Self::ExternalInput(_)) => Ordering::Greater,
-            (Self::OutPort(left), Self::OutPort(right)) => left.cmp(right),
+            (Self::ExternalInput(_), Self::NodeOutput(_)) => Ordering::Less,
+            (Self::NodeOutput(_), Self::ExternalInput(_)) => Ordering::Greater,
+            (Self::NodeOutput(left), Self::NodeOutput(right)) => left.cmp(right),
         }
     }
 }
@@ -330,8 +330,8 @@ impl<S: SignalType> Hash for SignalSourceKey<S> {
                 state.write_u8(SOURCE_EXTERNAL_INPUT);
                 state.write_u128(key.value);
             }
-            Self::OutPort(key) => {
-                state.write_u8(SOURCE_OUT_PORT);
+            Self::NodeOutput(key) => {
+                state.write_u8(SOURCE_NODE_OUTPUT);
                 state.write_u128(key.value);
             }
         }
@@ -345,8 +345,8 @@ impl<S: SignalType> fmt::Debug for SignalSourceKey<S> {
                 .debug_tuple("SignalSourceKey::ExternalInput")
                 .field(key)
                 .finish(),
-            Self::OutPort(key) => formatter
-                .debug_tuple("SignalSourceKey::OutPort")
+            Self::NodeOutput(key) => formatter
+                .debug_tuple("SignalSourceKey::NodeOutput")
                 .field(key)
                 .finish(),
         }
@@ -361,7 +361,7 @@ impl<S: SignalType> From<ExternalInputKey<S>> for SignalSourceKey<S> {
 
 impl<S: SignalType> From<OutPortKey<S>> for SignalSourceKey<S> {
     fn from(key: OutPortKey<S>) -> Self {
-        Self::OutPort(key)
+        Self::NodeOutput(key)
     }
 }
 
@@ -400,8 +400,8 @@ macro_rules! erased_key {
 
         impl Ord for $any {
             fn cmp(&self, other: &Self) -> Ordering {
-                // SPEC: docs/specs/concrete_rust_api_surface.md §18 "Erased stable keys"
-                // Kind order is explicit rather than an enum-discriminant accident.
+                // Canonicalize explicitly as Level before Pulse rather than relying on
+                // compiler-selected enum discriminants.
                 match (self, other) {
                     (Self::Level(left), Self::Level(right)) => left.cmp(right),
                     (Self::Level(_), Self::Pulse(_)) => Ordering::Less,
@@ -567,8 +567,8 @@ fn hash_erased_source<S: SignalType, H: Hasher>(
             state.write_u8(SOURCE_EXTERNAL_INPUT);
             state.write_u128(key.value);
         }
-        SignalSourceKey::OutPort(key) => {
-            state.write_u8(SOURCE_OUT_PORT);
+        SignalSourceKey::NodeOutput(key) => {
+            state.write_u8(SOURCE_NODE_OUTPUT);
             state.write_u128(key.value);
         }
     }
@@ -1017,7 +1017,7 @@ mod tests {
         assert_eq!(unique.len(), direct_inputs.len());
 
         let external = SignalSourceKey::<Level>::ExternalInput(ExternalInputKey::from_u128(value));
-        let out_port = SignalSourceKey::<Level>::OutPort(OutPortKey::from_u128(value));
+        let out_port = SignalSourceKey::<Level>::NodeOutput(OutPortKey::from_u128(value));
         assert_ne!(hash_input(&external), hash_input(&out_port));
 
         let erased_inputs = [
@@ -1069,7 +1069,7 @@ mod tests {
         );
 
         let external = SignalSourceKey::<Level>::ExternalInput(ExternalInputKey::from_u128(value));
-        let out_port = SignalSourceKey::<Level>::OutPort(OutPortKey::from_u128(value));
+        let out_port = SignalSourceKey::<Level>::NodeOutput(OutPortKey::from_u128(value));
         assert_ne!(external, out_port);
         assert!(external < out_port);
     }
@@ -1082,8 +1082,9 @@ mod tests {
                     SignalSourceKey::<$kind>::ExternalInput(ExternalInputKey::from_u128(0));
                 let external_high =
                     SignalSourceKey::<$kind>::ExternalInput(ExternalInputKey::from_u128(u128::MAX));
-                let out_low = SignalSourceKey::<$kind>::OutPort(OutPortKey::from_u128(0));
-                let out_high = SignalSourceKey::<$kind>::OutPort(OutPortKey::from_u128(u128::MAX));
+                let out_low = SignalSourceKey::<$kind>::NodeOutput(OutPortKey::from_u128(0));
+                let out_high =
+                    SignalSourceKey::<$kind>::NodeOutput(OutPortKey::from_u128(u128::MAX));
 
                 assert!(external_low < external_high);
                 assert!(external_high < out_low);
@@ -1129,9 +1130,10 @@ mod tests {
             ExternalInputKey::from_u128(u128::MAX),
         ));
         let level_out_low =
-            AnySignalSourceKey::Level(SignalSourceKey::OutPort(OutPortKey::from_u128(0)));
-        let level_out_high =
-            AnySignalSourceKey::Level(SignalSourceKey::OutPort(OutPortKey::from_u128(u128::MAX)));
+            AnySignalSourceKey::Level(SignalSourceKey::NodeOutput(OutPortKey::from_u128(0)));
+        let level_out_high = AnySignalSourceKey::Level(SignalSourceKey::NodeOutput(
+            OutPortKey::from_u128(u128::MAX),
+        ));
         let pulse_external_low = AnySignalSourceKey::Pulse(SignalSourceKey::ExternalInput(
             ExternalInputKey::from_u128(0),
         ));
@@ -1139,9 +1141,10 @@ mod tests {
             ExternalInputKey::from_u128(u128::MAX),
         ));
         let pulse_out_low =
-            AnySignalSourceKey::Pulse(SignalSourceKey::OutPort(OutPortKey::from_u128(0)));
-        let pulse_out_high =
-            AnySignalSourceKey::Pulse(SignalSourceKey::OutPort(OutPortKey::from_u128(u128::MAX)));
+            AnySignalSourceKey::Pulse(SignalSourceKey::NodeOutput(OutPortKey::from_u128(0)));
+        let pulse_out_high = AnySignalSourceKey::Pulse(SignalSourceKey::NodeOutput(
+            OutPortKey::from_u128(u128::MAX),
+        ));
 
         assert!(level_external_low < level_external_high);
         assert!(level_external_high < level_out_low);
@@ -1215,8 +1218,8 @@ mod tests {
                         AnySignalSourceKey::Level(SignalSourceKey::ExternalInput(converted)),
                     ) => assert_eq!(original, converted),
                     (
-                        SignalSourceKey::OutPort(original),
-                        AnySignalSourceKey::Level(SignalSourceKey::OutPort(converted)),
+                        SignalSourceKey::NodeOutput(original),
+                        AnySignalSourceKey::Level(SignalSourceKey::NodeOutput(converted)),
                     ) => assert_eq!(original, converted),
                     _ => panic!("level source category changed during erasure"),
                 }
@@ -1240,8 +1243,8 @@ mod tests {
                         AnySignalSourceKey::Pulse(SignalSourceKey::ExternalInput(converted)),
                     ) => assert_eq!(original, converted),
                     (
-                        SignalSourceKey::OutPort(original),
-                        AnySignalSourceKey::Pulse(SignalSourceKey::OutPort(converted)),
+                        SignalSourceKey::NodeOutput(original),
+                        AnySignalSourceKey::Pulse(SignalSourceKey::NodeOutput(converted)),
                     ) => assert_eq!(original, converted),
                     _ => panic!("pulse source category changed during erasure"),
                 }
