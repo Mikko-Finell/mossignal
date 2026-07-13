@@ -1,6 +1,6 @@
 .PHONY: fmt fmt-check compile-check static-guardrails-check clippy test nextest \
 	nextest-quiet doctest doc-check deny acceptance-record-check check-dev \
-	check-final doc-index run
+	check-final run
 
 QUIET_CHECK = python3 scripts/run_check.py
 
@@ -38,14 +38,6 @@ doc-check:
 
 deny:
 	@$(QUIET_CHECK) dependency-policy cargo deny check advisories bans sources
-
-doc-index:
-	rm -rf docs/.index
-	mkdir -p docs/.index
-	for spec in docs/specs/*.md; do \
-		python3 scripts/generate_docs_markdown_index.py "$$spec" \
-			--output "docs/.index/$$(basename "$$spec")"; \
-	done
 
 acceptance-record-check:
 	@if [ -z "$(BEAD_ID)" ]; then \

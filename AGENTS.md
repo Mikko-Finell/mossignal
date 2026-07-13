@@ -6,16 +6,16 @@ Normative mossignal specifications live under `docs/specs/`. Other material
 under `docs/` is not authoritative unless this file or a specification says it
 is.
 
-Search `docs/.index/` first by symbol or concept to locate relevant spec
-sections quickly. Files in `docs/.index/` are generated navigation aids, not
-authority. After finding a relevant indexed section, read the corresponding
-section in `docs/specs/` before making semantic, API, architecture,
-validation, or testing decisions.
+Search `docs/specs/` directly by symbol or concept to locate relevant
+authoritative sections quickly. Read the governing sections before making
+semantic, API, architecture, validation, or testing decisions.
 
 Example:
-- search `docs/.index/` for `NetworkBuilder<D>` or `topology patch`
-- then read the cited section in `docs/specs/concrete_rust_api_surface.md` or
-  the relevant authoritative spec
+```bash
+rg 'NetworkBuilder<D>|topology patch' docs/specs/
+```
+
+Then read the cited section in the authoritative spec file.
 
 Do not invent architecture or semantics when the documents are missing,
 contradictory, or genuinely undecided. Surface the exact design blocker.
