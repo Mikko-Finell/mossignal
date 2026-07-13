@@ -748,14 +748,55 @@ pub struct DiagnosticMeta {
 }
 ```
 
+The fields above are the exact initial public metadata shape. Their values are
+owned, and derived equality compares every field structurally. In particular,
+tag order, duplicate tags, empty tags, and exact tag text are part of the
+metadata value. The core does not sort, deduplicate, parse, or normalize tags.
+
+The standard owned diagnostic-path type is:
+
+```rust
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiagnosticPath {
+    /* private owned segment sequence */
+}
+
+impl DiagnosticPath {
+    pub const fn new() -> Self;
+
+    pub fn from_segments<I, S>(segments: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>;
+
+    pub fn segments(&self) -> &[String];
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+    pub fn into_segments(self) -> Vec<String>;
+}
+```
+
+`DiagnosticPath` represents an owned, semantically ordered sequence of string
+segments. Segment order, duplicates, empty segments, an empty sequence, and
+exact segment text are preserved and participate in value equality. The core
+does not parse separators, infer hierarchy from segment text, or apply Unicode,
+case, whitespace, line-ending, or path normalization. `None` metadata and an
+explicitly present empty `DiagnosticPath` remain distinct values.
+
+The private representation may differ from a `Vec<String>` provided that the
+public API and all observable ownership and value semantics above remain exact.
+The persistence specification's sections **Sequences**, **Text**, **Metadata**,
+and **Order sensitivity** govern canonical persistence of this value.
+
 The initial public runtime types MUST NOT become generic over arbitrary metadata payloads.
 
 Callers needing richer data SHOULD retain it in their own tables keyed by stable structural keys.
 
-`OriginRef` SHOULD be a small standardized owned value suitable for source correlation, for example:
+The exact initial standardized owned source-correlation family is:
 
 ```rust
 #[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OriginRef {
     Text(String),
     SourceLocation {
@@ -764,9 +805,28 @@ pub enum OriginRef {
         column: u32,
     },
 }
+
+impl OriginRef {
+    pub fn text(text: impl Into<String>) -> Self;
+
+    pub fn source_location(
+        source: impl Into<String>,
+        line: u32,
+        column: u32,
+    ) -> Self;
+}
 ```
 
-Metadata MUST NOT affect execution or semantic fingerprints.
+`Text` and `SourceLocation` are the exact initial public variants. Origin text
+is owned and preserved exactly. `line` and `column` are opaque caller-supplied
+`u32` coordinates; every `u32` value is representable, and the core neither
+declares a zero-based or one-based convention nor verifies coordinates against
+a source. Their interpretation belongs to the caller and its source adapters.
+`OriginRef` is authored source correlation, not runtime causal provenance.
+
+Metadata MUST NOT affect execution or semantic fingerprints. This does not make
+metadata values structureless: diagnostic-path and tag order remain significant
+to their respective value equality and canonical persistence.
 
 ## 21. Metadata inputs
 
