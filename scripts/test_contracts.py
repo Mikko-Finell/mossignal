@@ -62,10 +62,14 @@ class ContractsToolTests(unittest.TestCase):
             contracts.require_yaml().safe_dump(document, output, sort_keys=False)
         return path
 
-    def source(self, reviewed_hash: str | None = None) -> dict[str, object]:
+    def source(
+        self,
+        reviewed_hash: str | None = None,
+        heading_path: list[str] | None = None,
+    ) -> dict[str, object]:
         result: dict[str, object] = {
             "document": "docs/specs/example.md",
-            "heading_path": ["Part", "Subject"],
+            "heading_path": heading_path or ["Part", "Subject"],
         }
         if reviewed_hash is not None:
             result["reviewed_hash"] = reviewed_hash
@@ -162,6 +166,94 @@ class ContractsToolTests(unittest.TestCase):
         after = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in self.root.rglob("*") if path.is_file()}
         self.assertEqual(before, after)
         self.assertIn("example_source: sha256:", output)
+
+    def test_normative_paragraphs_ignore_fenced_code_and_headings(self) -> None:
+        text = (
+            "# MUST-like heading\n"
+            "Ordinary prose.\n\n"
+            "The implementation MUST preserve this.\n\n"
+            "```text\n"
+            "This apparent rule MUST be ignored.\n"
+            "```\n"
+            "A caller MAY select this.\n"
+        )
+
+        paragraphs = contracts.normative_paragraphs(text)
+
+        self.assertEqual(
+            [paragraph.text for paragraph in paragraphs],
+            ["The implementation MUST preserve this.", "A caller MAY select this."],
+        )
+
+    def test_coverage_separates_draft_and_unchanged_reviewed_sources(self) -> None:
+        document = self.write_document(
+            "# Part\n"
+            "intro\n"
+            "## Subject\n"
+            "The subject MUST be stable.\n"
+            "### Nested\n"
+            "The nested behavior SHOULD be deterministic.\n"
+            "## Other\n"
+            "The other behavior MAY vary.\n"
+        )
+        subject_source = self.source()
+        subject_hash = contracts.section_hash(
+            contracts.resolve_section(document, subject_source["heading_path"])
+        )
+        self.write_contract("reviewed.yaml", self.source(subject_hash), status="reviewed")
+        self.write_contract(
+            "draft.yaml",
+            self.source(heading_path=["Part", "Other"]),
+            status="draft",
+        )
+
+        report = contracts.coverage_report(
+            documents=[document],
+            contracts=contracts.contract_paths(),
+        )
+
+        result = report["documents"][0]
+        self.assertEqual(result["totals"]["headings"], 4)
+        self.assertEqual(result["totals"]["normative_paragraphs"], 3)
+        self.assertEqual(result["coverage"]["referenced"]["headings"], 3)
+        self.assertEqual(result["coverage"]["reviewed"]["headings"], 2)
+        self.assertEqual(result["coverage"]["draft"]["headings"], 1)
+        self.assertEqual(result["coverage"]["referenced"]["normative_paragraphs"], 3)
+        self.assertEqual(result["coverage"]["reviewed"]["normative_paragraphs"], 2)
+        self.assertEqual(result["coverage"]["draft"]["normative_paragraphs"], 1)
+
+    def test_coverage_json_is_machine_readable(self) -> None:
+        document = self.write_document("# Part\n## Subject\nThe value MUST be stable.\n")
+        self.write_contract("example.yaml", self.source(), status="draft")
+
+        _, output = self.capture(contracts.coverage, [document], "json")
+
+        report = contracts.json.loads(output)
+        self.assertEqual(report["documents"][0]["document"], "docs/specs/example.md")
+        self.assertEqual(report["totals"]["coverage"]["draft"]["normative_paragraphs"], 1)
+
+    def test_coverage_text_uses_percentage_tables(self) -> None:
+        document = self.write_document("# Part\n## Subject\nThe value MUST be stable.\n")
+        self.write_contract("example.yaml", self.source(), status="draft")
+
+        _, output = self.capture(contracts.coverage, [document], "text")
+
+        self.assertIn("Coverage percentages", output)
+        self.assertIn("Referenced H/B/N (%)", output)
+        self.assertIn("docs/specs/example.md", output)
+        self.assertIn("50.0 /", output)
+        self.assertIn("/ 100.0", output)
+        self.assertIn("Citation diagnostics", output)
+
+    def test_coverage_dump_retains_detailed_output(self) -> None:
+        document = self.write_document("# Part\n## Subject\nThe value MUST be stable.\n")
+        self.write_contract("example.yaml", self.source(), status="draft")
+
+        _, output = self.capture(contracts.coverage, [document], "dump")
+
+        self.assertIn("population: headings 2", output)
+        self.assertIn("draft: headings 1 (50.0%)", output)
+        self.assertIn("normative paragraphs 1 (100.0%)", output)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 .PHONY: fmt fmt-check compile-check static-guardrails-check clippy test nextest \
-	nextest-quiet contract-tools-test doctest doc-check deny acceptance-record-check \
+	nextest-quiet contract-tools-test contract-coverage doctest doc-check deny acceptance-record-check \
 	setup check-dev check-final run
 
 UV_RUN = uv run --locked
@@ -37,6 +37,9 @@ nextest-quiet:
 
 contract-tools-test:
 	@$(QUIET_CHECK) contract-tools $(PYTHON) -m unittest scripts/test_contracts.py
+
+contract-coverage:
+	@$(PYTHON) scripts/contracts.py coverage
 
 doctest:
 	@$(QUIET_CHECK) doctests cargo test --workspace --doc --quiet

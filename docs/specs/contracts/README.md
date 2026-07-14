@@ -45,9 +45,19 @@ Use the repository's locked `uv` environment:
 uv run --locked python scripts/contracts.py catalog
 uv run --locked python scripts/contracts.py status docs/specs/contracts/<contract>.yaml
 uv run --locked python scripts/contracts.py fingerprint docs/specs/contracts/<contract>.yaml
+uv run --locked python scripts/contracts.py coverage
 ```
 
 `catalog` lists compact metadata for contract selection and ignores `_template.yaml`. `status` is read-only and reports source status plus citing rule IDs. `fingerprint` prints current hashes without writing them. None of these commands decides semantic meaning, audits every contract, promotes a contract, or changes stored hashes.
+
+`coverage` reports the approximate specification evidence footprint of rule-backed
+contract citations. It separates all references, draft references, and unchanged
+reviewed references, and counts headings, normalized bytes, and paragraphs using
+normative keywords. This is a research-gap heuristic, not a semantic completeness
+claim. Use `--format json` for machine-readable output or repeat `--document` to
+limit the report to selected specification files. Use `--format dump` for detailed
+per-document counts instead of the default percentage tables. The same default
+report is available as `make contract-coverage`.
 
 ## What belongs here
 
