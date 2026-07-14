@@ -41,27 +41,28 @@ Do not create an implementation patch.
 
 - Run `git rev-parse HEAD` and `git status --short`.
 - Record whether governing specifications or existing contracts have working-tree changes.
-- Read `docs/specs/contracts/README.md` and inspect existing contract records.
-- Read `references/concept-boundaries.md` before deciding contract boundaries.
-- Determine provisionally whether the task:
-  - uses existing contracts unchanged;
-  - expands existing contracts;
-  - requires new coherent-subject contracts;
-  - combines several contracts.
+- Read `docs/specs/contracts/README.md`.
+- Run `python3 scripts/contracts.py catalog`.
+- Use contract IDs, titles, summaries, aliases, and declared scope to select likely relevant contracts. Do not open or audit every contract.
+- Run `python3 scripts/contracts.py status <selected-contracts>`.
+- For selected reviewed contracts, reuse rules backed only by unchanged sources. Recheck only rules citing changed, missing, ambiguous, or unfingerprinted sources; do not re-audit unchanged rules.
+- Treat selected draft contracts as candidate research rather than approved authority. Extend them when useful, but keep them `draft`.
 - Treat any existing bead as provisional evidence, not specification authority.
 
 ### 2. Research and author the contracts
 
 - Read `references/contract-authoring.md` and `docs/specs/contracts/_template.yaml`.
-- Search every authoritative specification that may define, constrain, encode, migrate, diagnose, or verify the subject.
+- Read `references/concept-boundaries.md` before deciding contract boundaries.
+- Perform task-scoped specification discovery for the requested feature. Search its symbols, terms, aliases, operations, and relevant cross-cutting concerns across the authoritative specifications.
+- Map each newly discovered applicable requirement to an unchanged existing rule, a new or corrected existing-contract rule, a new coherent-subject contract, or an explicit determination that it is outside the task.
 - Reconcile terminology, ownership, normative strength, scope, exclusions, and implementation freedom.
 - Create or update the smallest coherent set of reusable contract records.
 - State every unique contract fact once.
-- Attach exact document-and-heading source references.
+- Attach exact document-and-heading-path source references.
 - Mark every changed contract `draft`.
 - Record the source baseline and any relevant dirty specification paths.
 - Preserve genuine uncertainty in `open_questions`; do not invent a resolution.
-- If the complete subject was not researched, mark coverage `partial` and identify the uncovered facets.
+- Use `known_uncovered` only for a specific missing facet already known to be absent; do not claim a contract is globally complete.
 
 ### 3. Derive or refine the bead
 
@@ -93,6 +94,7 @@ Before stopping, verify:
 - each contract represents a coherent reusable subject;
 - every bead requirement is supported by a referenced contract;
 - every changed contract identifies its exact source baseline;
+- task-scoped research mapped each applicable discovered requirement;
 - implementation freedom and open questions are not conflated;
 - no task-specific detail polluted the reusable contract;
 - the result is compact enough to be useful to a future agent.

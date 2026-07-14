@@ -5,10 +5,13 @@ The current specifications remain authoritative. A contract record is a reusable
 ## Research order
 
 1. Capture the exact repository baseline and working-tree state.
-2. Inspect existing contracts and aliases before creating a new record.
-3. Search all product specifications for the subject, its symbols, aliases, adjacent concepts, and standard contract facets.
-4. Read complete governing sections, not isolated search snippets.
-5. Reconcile the sources before writing the record.
+2. Run `python3 scripts/contracts.py catalog` and select likely contracts by metadata and scope; do not inspect every record.
+3. Run `python3 scripts/contracts.py status` for only those selected records.
+4. Reuse reviewed rules backed only by unchanged sources. Recheck rules citing changed, missing, ambiguous, or unfingerprinted sources.
+5. Search the task's applicable product specifications for its symbols, aliases, adjacent concepts, and standard contract facets.
+6. Read complete governing sections, not isolated search snippets.
+7. Map each applicable discovered requirement to an unchanged rule, a new or corrected rule, a new coherent contract, or an explicit outside-task determination.
+8. Reconcile the sources before writing the record.
 
 Search beyond the obvious API section when applicable:
 
@@ -33,16 +36,17 @@ Every changed contract records:
 
 Do not describe a dirty working-tree contract as if the commit alone contained its sources.
 
-## Status and coverage
+## Status, scope, and reviewed evidence
 
-Use separate fields:
+Use one status field:
 
 - `status`: `draft` or `reviewed`;
-- `coverage.state`: `complete` or `partial`.
 
 Any contract created or changed by this skill is `draft`.
 
-Use `complete` only after researching the full coherent subject across all applicable specifications. Otherwise use `partial` and name the uncovered facets. A bead must not rely on a partial contract outside its recorded coverage.
+Use `scope.includes` and `scope.excludes` to state explicit reusable subject boundaries. Use `known_uncovered` only when a specific missing facet is already known, and omit it when empty. Never claim that a contract is globally complete.
+
+Reviewed hashes are evidence fingerprints, not completeness claims. Only independent review records them. An unchanged source permits reuse of the previously reviewed evidence; a changed, missing, ambiguous, or unfingerprinted source requires semantic rechecking only for rules that cite it. A different repository `HEAD` alone does not make a contract stale. Task preparation must never silently refresh reviewed hashes.
 
 ## Rule organization
 
@@ -71,10 +75,11 @@ Define compact source aliases once under `sources` and cite those aliases from r
 Each source entry should include:
 
 - repository-relative document path;
-- exact heading or heading path;
+- exact heading path from outermost parent to cited heading;
+- a `reviewed_hash` only when independent review has recorded it;
 - optional authority note when the relationship is not obvious.
 
-Prefer headings and a baseline commit over fragile line numbers.
+The utility parses ATX Markdown headings, includes a matched heading and nested subsections through the next same-or-higher heading, normalizes only line endings and trailing horizontal whitespace, ensures one final newline, then hashes UTF-8 bytes with SHA-256. Duplicate full heading paths are ambiguous. Prefer this deterministic evidence over fragile line numbers.
 
 ## Scope
 

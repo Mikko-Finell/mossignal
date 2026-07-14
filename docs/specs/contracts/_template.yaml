@@ -4,14 +4,6 @@ title: <Canonical subject name>
 kind: <concept | family | node | artifact | lifecycle | other>
 status: draft
 
-coverage:
-  state: complete # or partial
-  included:
-    - <facet or boundary covered by this record>
-  # Delete `uncovered` for complete records.
-  uncovered:
-    - <facet not yet researched>
-
 source_baseline:
   commit: <git rev-parse HEAD>
   working_tree: clean # or dirty
@@ -22,12 +14,16 @@ source_baseline:
 summary: >-
   <One or two sentences defining the coherent reusable subject.>
 
-# Keep only when it clarifies the subject boundary.
+# Keep only when it clarifies the reusable subject boundary.
 scope:
   includes:
     - <reusable subject responsibility>
   excludes:
     - <adjacent subject owned elsewhere>
+
+# Omit when no specific missing facet is already known.
+known_uncovered:
+  - <known reusable facet not represented by this record>
 
 # Optional: terms needed to resolve source vocabulary.
 aliases:
@@ -65,5 +61,9 @@ open_questions: []
 sources:
   <source-alias>:
     document: docs/specs/<specification>.md
-    heading: <Exact heading or heading path>
+    heading_path:
+      - <top-level heading text>
+      - <exact nested heading text>
+    # Add only after independent review; task preparation must not add or refresh it.
+    # reviewed_hash: sha256:<normalized-section-sha256>
     authority: <Optional short explanation; delete if obvious>
