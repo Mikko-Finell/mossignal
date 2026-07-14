@@ -1,8 +1,14 @@
 .PHONY: fmt fmt-check compile-check static-guardrails-check clippy test nextest \
 	nextest-quiet contract-tools-test doctest doc-check deny acceptance-record-check \
-	check-dev check-final run
+	setup check-dev check-final run
 
-QUIET_CHECK = python3 scripts/run_check.py
+UV_RUN = uv run --locked
+PYTHON = $(UV_RUN) python
+QUIET_CHECK = $(PYTHON) scripts/run_check.py
+
+setup:
+	@uv sync --locked
+	@echo "OK: Python tooling is synchronized"
 
 fmt:
 	cargo fmt --all
@@ -14,7 +20,7 @@ compile-check:
 	@$(QUIET_CHECK) compilation cargo check --workspace --all-targets --all-features --quiet
 
 static-guardrails-check:
-	@$(QUIET_CHECK) static-guardrails python3 scripts/check_static_guardrails.py
+	@$(QUIET_CHECK) static-guardrails $(PYTHON) scripts/check_static_guardrails.py
 
 clippy:
 	@$(QUIET_CHECK) clippy cargo clippy --workspace --all-targets --all-features --quiet -- -D warnings
@@ -30,7 +36,7 @@ nextest-quiet:
 		--failure-output final --success-output never --status-level fail --final-status-level fail
 
 contract-tools-test:
-	@$(QUIET_CHECK) contract-tools python3 -m unittest scripts/test_contracts.py
+	@$(QUIET_CHECK) contract-tools $(PYTHON) -m unittest scripts/test_contracts.py
 
 doctest:
 	@$(QUIET_CHECK) doctests cargo test --workspace --doc --quiet
@@ -47,7 +53,7 @@ acceptance-record-check:
 		echo "ERROR: set BEAD_ID, for example: make acceptance-record-check BEAD_ID=ms-123" >&2; \
 		exit 2; \
 	fi
-	@$(QUIET_CHECK) acceptance-record python3 scripts/check_acceptance_record.py "$(BEAD_ID)"
+	@$(QUIET_CHECK) acceptance-record $(PYTHON) scripts/check_acceptance_record.py "$(BEAD_ID)"
 	@echo "OK: acceptance record is synchronized"
 
 # Keep this gate fast enough to run repeatedly during implementation.

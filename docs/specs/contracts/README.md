@@ -39,12 +39,12 @@ Only independent review records `reviewed_hash` values. Task preparation never s
 
 ## Contract utility
 
-Install the agent-tool dependencies listed in `scripts/requirements-agent-tools.txt`, then use:
+Use the repository's locked `uv` environment:
 
 ```text
-python3 scripts/contracts.py catalog
-python3 scripts/contracts.py status docs/specs/contracts/<contract>.yaml
-python3 scripts/contracts.py fingerprint docs/specs/contracts/<contract>.yaml
+uv run --locked python scripts/contracts.py catalog
+uv run --locked python scripts/contracts.py status docs/specs/contracts/<contract>.yaml
+uv run --locked python scripts/contracts.py fingerprint docs/specs/contracts/<contract>.yaml
 ```
 
 `catalog` lists compact metadata for contract selection and ignores `_template.yaml`. `status` is read-only and reports source status plus citing rule IDs. `fingerprint` prints current hashes without writing them. None of these commands decides semantic meaning, audits every contract, promotes a contract, or changes stored hashes.

@@ -5,8 +5,8 @@ The current specifications remain authoritative. A contract record is a reusable
 ## Research order
 
 1. Capture the exact repository baseline and working-tree state.
-2. Run `python3 scripts/contracts.py catalog` and select likely contracts by metadata and scope; do not inspect every record.
-3. Run `python3 scripts/contracts.py status` for only those selected records.
+2. Run `uv run --locked python scripts/contracts.py catalog` and select likely contracts by metadata and scope; do not inspect every record.
+3. Run `uv run --locked python scripts/contracts.py status` for only those selected records.
 4. Reuse reviewed rules backed only by unchanged sources. Recheck rules citing changed, missing, ambiguous, or unfingerprinted sources.
 5. Search the task's applicable product specifications for its symbols, aliases, adjacent concepts, and standard contract facets.
 6. Read complete governing sections, not isolated search snippets.

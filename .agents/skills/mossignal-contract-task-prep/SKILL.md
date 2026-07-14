@@ -42,9 +42,9 @@ Do not create an implementation patch.
 - Run `git rev-parse HEAD` and `git status --short`.
 - Record whether governing specifications or existing contracts have working-tree changes.
 - Read `docs/specs/contracts/README.md`.
-- Run `python3 scripts/contracts.py catalog`.
+- Run `uv run --locked python scripts/contracts.py catalog`.
 - Use contract IDs, titles, summaries, aliases, and declared scope to select likely relevant contracts. Do not open or audit every contract.
-- Run `python3 scripts/contracts.py status <selected-contracts>`.
+- Run `uv run --locked python scripts/contracts.py status <selected-contracts>`.
 - For selected reviewed contracts, reuse rules backed only by unchanged sources. Recheck only rules citing changed, missing, ambiguous, or unfingerprinted sources; do not re-audit unchanged rules.
 - Treat selected draft contracts as candidate research rather than approved authority. Extend them when useful, but keep them `draft`.
 - Treat any existing bead as provisional evidence, not specification authority.

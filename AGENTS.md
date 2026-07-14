@@ -84,6 +84,10 @@ A warning, unavailable command, timeout, flaky result, or failing mandatory
 check is not a pass. Do not weaken a test, oracle, lint, or gate merely to clear
 the current task.
 
+## Python tooling
+
+Repository Python scripts use the locked `uv` environment. Run them with `uv run --locked python`; Make targets already do this. Do not install their dependencies with `pip` or system Python.
+
 ## Specification trace comments
 
 Use `// SPEC:` comments where a non-obvious implementation choice directly enforces a normative specification requirement or invariant that a future maintainer might otherwise weaken, remove, or “simplify” incorrectly.
