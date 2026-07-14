@@ -56,17 +56,21 @@ For each promoted contract:
 
 Leave unresolved contracts as `draft`. A reviewed hash records independently checked evidence; it is not a completeness claim.
 
-## Review derived beads last
+## Review the derived bead last
 
-Only after the contracts are settled, locate open beads that explicitly cite a changed contract ID or path. Do not require the user to provide a bead ID.
+Only after the contracts are settled, locate the open bead that explicitly cites the changed contract IDs or paths. Do not require the user to provide its ID.
 
-Treat the bead only as an implementation slice derived from the reviewed contracts. Correct its objective, contract basis, scope, exclusions, freedoms, verification, blockers, dependencies, and readiness. Remove claims or blockers not supported by the contracts. A blocking question may remain only when it corresponds to a genuine unresolved contract question.
+Treat the bead as a bounded implementation slice derived from the contracts, not as contract authority.
 
-Do not repeat full specification research during bead review unless the bead introduces a product claim absent from the contracts.
+Preserve the bead's identity, decomposition, and intended scope. A bead may deliberately implement only the contract facets needed for its stated objective. Do not broaden it to complete an entire reusable contract.
 
-Split a bead only when it clearly combines separately implementable responsibilities with separable contract bases and verification obligations. Preserve dependencies between the resulting beads.
+Correct unsupported requirements, omissions within the stated scope, contradictions with the contracts, false blockers, inaccurate exclusions, verification requirements, dependencies, and readiness.
 
-The absence of a directly derived bead does not prevent contract promotion.
+Do not create, split, or replace beads. Do not add new implementation responsibilities merely because they appear in a governing contract.
+
+Check that every required cross-contract effect within the bead's scope has an owner. Do not approve a bead that requires behavior which all of its governing contracts or dependencies exclude.
+
+When the existing task cannot be made coherent without changing its fundamental scope or decomposition, leave it unready and report the exact replanning need.
 
 ## Editorial authority
 
