@@ -87,6 +87,14 @@ The contract scope describes the reusable subject, not the current implementatio
 
 Use `scope.includes` and `scope.excludes` only when they clarify the subject boundary. Task file lists, sequencing, milestone exclusions, and implementation staging belong in the bead.
 
+### Task artifacts are provisional
+
+Roadmaps and beads define task scope, not reusable product truth.
+
+* Keep task sequencing, implementation staging, file scope, and bead-specific questions out of contracts.
+* Treat a question as a contract open question only when the authoritative specifications genuinely leave product behavior unresolved.
+* When roadmap wording conflicts with the specifications, record the mismatch in the handoff and refine the bead. Treat the roadmap as a temporary bootstrapping artifact and do not edit it based on contracts being authored in the same run.
+
 ## Compactness
 
 Soft expectations:
