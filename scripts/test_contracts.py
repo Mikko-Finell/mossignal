@@ -97,6 +97,34 @@ class ContractsToolTests(unittest.TestCase):
             b"## Subject\nbody\n### Nested\nchild\n",
         )
 
+    def test_fenced_heading_like_lines_are_not_headings(self) -> None:
+        document = self.write_document(
+            "# Part\n"
+            "## Public API\n"
+            "```text\n"
+            "### Generated example\n"
+            "```\n"
+            "### Stable keys\n"
+            "nested body\n"
+            "## Stable keys\n"
+            "actual body\n"
+            "~~~markdown\n"
+            "## Stable keys\n"
+            "~~~\n"
+        )
+
+        headings = contracts.parse_headings(document.read_text(encoding="utf-8"))
+        stable_keys = [heading.path for heading in headings if heading.text == "Stable keys"]
+
+        self.assertEqual(
+            stable_keys,
+            [("Part", "Public API", "Stable keys"), ("Part", "Stable keys")],
+        )
+        self.assertEqual(
+            contracts.resolve_section(document, ["Part", "Stable keys"]),
+            "## Stable keys\nactual body\n~~~markdown\n## Stable keys\n~~~\n",
+        )
+
     def test_status_reports_unchanged_and_affected_rules(self) -> None:
         document = self.write_document("# Part\n## Subject\nbody\n")
         current_hash = contracts.section_hash(contracts.resolve_section(document, ["Part", "Subject"]))

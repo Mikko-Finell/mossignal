@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover - exercised when tooling is misconfigure
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 CONTRACTS_DIRECTORY = REPOSITORY_ROOT / "docs/specs/contracts"
 HEADING_PATTERN = re.compile(r"^(#{1,6})[ \t]+(.*?)(?:[ \t]+#+[ \t]*)?$")
+FENCE_OPENING_PATTERN = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})")
 
 
 class ContractError(ValueError):
@@ -66,10 +67,33 @@ def section_hash(text: str) -> str:
     return "sha256:" + hashlib.sha256(normalize_section(text)).hexdigest()
 
 
+def opening_fence(line: str) -> tuple[str, int] | None:
+    match = FENCE_OPENING_PATTERN.match(line)
+    if match is None:
+        return None
+    marker = match.group(1)
+    return marker[0], len(marker)
+
+
+def closes_fence(line: str, marker: str, minimum_length: int) -> bool:
+    return re.match(
+        rf"^[ ]{{0,3}}{re.escape(marker)}{{{minimum_length},}}[ \t]*$",
+        line,
+    ) is not None
+
+
 def parse_headings(text: str) -> list[Heading]:
     stack: list[tuple[int, str]] = []
     headings: list[Heading] = []
+    fence: tuple[str, int] | None = None
     for line_number, line in enumerate(text.splitlines(), start=1):
+        if fence is not None:
+            if closes_fence(line, *fence):
+                fence = None
+            continue
+        fence = opening_fence(line)
+        if fence is not None:
+            continue
         match = HEADING_PATTERN.match(line)
         if match is None:
             continue
