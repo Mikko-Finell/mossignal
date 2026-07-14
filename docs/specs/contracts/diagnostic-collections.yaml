@@ -1,0 +1,132 @@
+schema_version: "0.1"
+id: mossignal.diagnostics.collections
+title: Deterministic diagnostic collections
+kind: artifact
+status: draft
+
+source_baseline:
+  commit: 5a58a8f505b9b1707e87eac2394ba856022c3338
+  working_tree: dirty
+
+summary: >-
+  DiagnosticSet<D> is an owned collection of report findings with canonical
+  iteration, condition-key deduplication, and code-defined deterministic evidence
+  merging independent of discovery and storage order.
+
+scope:
+  includes:
+    - DiagnosticSet<D> collection behavior
+    - canonical diagnostic ordering
+    - condition identity, deduplication, and evidence merge laws
+  excludes:
+    - individual problem construction and catalogue classification
+    - report artifact presence and require_artifact behavior
+    - runtime occurrences and persistent episode state
+    - canonical persistence encoding itself
+
+aliases:
+  - DiagnosticSet<D>
+  - condition key
+  - diagnostic ordering
+
+requirements:
+  - id: owned-findings
+    kind: public_surface
+    statement: >-
+      DiagnosticSet<D> is a deterministic owned collection of Diagnostic<D>
+      report findings; callers must not parse rendered prose to identify, order,
+      deduplicate, or handle known conditions.
+    sources: [concrete-collections]
+
+  - id: canonical-order
+    kind: semantic
+    statement: >-
+      Default iteration, canonical serialization, and test comparison use severity
+      rank Error before Warning before Info, then code by ascending ASCII bytes,
+      primary subject by canonical subject order, code-defined condition
+      discriminator, and canonical encoded evidence bytes.
+    sources: [catalogue-order]
+
+  - id: order-independence
+    kind: prohibition
+    statement: >-
+      Collection order must not depend on hash iteration, graph traversal,
+      definition or patch insertion, evaluator worklists, validator execution,
+      diagnostic discovery order, or which independent detector ran first.
+    sources: [catalogue-order]
+
+  - id: one-condition
+    kind: semantic
+    statement: >-
+      A set contains at most one finding for each condition key composed of code,
+      primary subject, and the code-defined condition discriminator; equal prose
+      does not merge different semantic subjects or condition identities.
+    sources: [catalogue-dedup, concrete-collections]
+
+  - id: deterministic-merge
+    kind: semantic
+    statement: >-
+      Repeated detection of one condition merges using the code-defined law:
+      set-like evidence is unioned and canonically ordered, ordered witnesses
+      retain semantic order, and equivalent scalar evidence must agree rather than
+      taking whichever detector ran first.
+    sources: [catalogue-dedup, concrete-collections]
+
+  - id: contradictory-evidence
+    kind: system_effect
+    statement: >-
+      Contradictory scalar evidence for one condition key is represented by
+      internal.diagnostic_evidence_conflict.
+    sources: [catalogue-dedup]
+
+  - id: permutation-tests
+    kind: verification
+    statement: >-
+      Tests must permute diagnostic discovery and the other specified unordered
+      inputs and show that the canonical diagnostic set remains identical.
+    sources: [catalogue-permutation]
+
+  - id: dedup-tests
+    kind: verification
+    statement: >-
+      Each deduplicating opening code must cover repeated and independent
+      detection, same prose on different subjects, distinct discriminators on one
+      subject, mergeable set-like evidence, and contradictory scalar evidence.
+    sources: [catalogue-dedup-tests]
+
+recommendations:
+  - id: collection-access
+    statement: >-
+      DiagnosticSet<D> should provide canonical iteration, filtering by severity
+      or code, len, and is_empty.
+    sources: [concrete-collections]
+
+implementation_freedom:
+  - Internal storage and iterator concrete types are unconstrained if observable order and merge laws hold.
+
+open_questions:
+  - >-
+    The catalogue requires every entry to define a condition-discriminator schema
+    and evidence merge law, but the current catalogue entries do not specify those
+    per-code definitions.
+
+sources:
+  catalogue-order:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part III — Reports, failures, ordering, and identity
+      - 18. Deterministic ordering
+  catalogue-dedup:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part III — Reports, failures, ordering, and identity
+      - 19. Condition identity and deduplication
+  catalogue-permutation:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VIII — Verification obligations, 56. Determinism and permutation tests]
+  catalogue-dedup-tests:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VIII — Verification obligations, 57. Deduplication tests]
+  concrete-collections:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part IX — Reports and diagnostics, 42. Diagnostic collections]

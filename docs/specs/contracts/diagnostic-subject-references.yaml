@@ -1,0 +1,118 @@
+schema_version: "0.1"
+id: mossignal.diagnostics.subject_references
+title: Diagnostic subject references
+kind: family
+status: draft
+
+source_baseline:
+  commit: 5a58a8f505b9b1707e87eac2394ba856022c3338
+  working_tree: dirty
+
+summary: >-
+  Diagnostic subject references identify problem-bearing semantic subjects by
+  stable, category-aware identity rather than presentation labels or runtime
+  storage positions.
+
+scope:
+  includes:
+    - the public SubjectRef family and related-subject roles
+    - stable identity requirements for diagnostic subjects
+    - ordering-relevant subject identity
+  excludes:
+    - diagnostic metadata and rendered labels
+    - problem codes, evidence, and suggestions
+    - provenance records and runtime diagnostic lifecycles
+
+aliases:
+  - SubjectRef
+  - RelatedSubject
+  - RelatedSubjectRole
+  - GraphSubjectRef
+
+requirements:
+  - id: semantic-identity
+    kind: semantic
+    statement: >-
+      Subject references identify semantic subjects, not rendered names, paths,
+      dense indices, arena positions, allocation addresses, or hash slots.
+    sources: [catalogue-subjects, concrete-subjects]
+
+  - id: required-categories
+    kind: public_surface
+    statement: >-
+      The non-exhaustive SubjectRef family must cover every category listed by
+      the concrete API, including authored structural subjects and the specified
+      non-structural identities for regions, definitions, policies, schemas,
+      revisions, resolved handles, inspection plans, events, persisted artifacts,
+      versions, bindings, transactions, and replay artifacts.
+    sources: [concrete-subjects]
+
+  - id: stable-structural-keys
+    kind: system_effect
+    statement: >-
+      Authored structural subject variants must use the common stable structural
+      keys and preserve signal kind through the applicable erased key family.
+    sources:
+      - concrete-stable-keys
+      - concrete-erased-keys
+      - concrete-subjects
+      - concrete-shared-identity
+
+  - id: contextual-derived-identities
+    kind: semantic
+    statement: >-
+      Derived or revision-bound subjects must retain the fingerprint, revision,
+      digest, range, or other context required by their category-specific
+      identity; they must not be replaced with an incrementing generic index.
+    sources: [concrete-subjects]
+
+  - id: related-role
+    kind: public_surface
+    statement: >-
+      RelatedSubject pairs one SubjectRef with a typed, non-exhaustive
+      RelatedSubjectRole from the concrete role family; related-subject order is
+      semantic only when the evidence schema explicitly declares it ordered.
+    sources: [catalogue-related, concrete-problems]
+
+  - id: heterogeneous-order
+    kind: semantic
+    statement: >-
+      Canonical ordering of heterogeneous structural subjects compares subject
+      kind first, then stable key bytes, then a schema-defined role when needed.
+    sources: [persistence-order]
+
+implementation_freedom:
+  - Private representation and helper types may vary where the concrete API does not fix them.
+
+open_questions:
+  - >-
+    Diagnostic ordering requires a canonical order for every SubjectRef, but the
+    specifications define only a generic kind-first order for heterogeneous
+    structural subjects. They do not assign the subject-kind tag order or define
+    the canonical comparison of all non-structural SubjectRef variants.
+
+sources:
+  catalogue-subjects:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 11. Subjects]
+  catalogue-related:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 12. Related subjects]
+  concrete-stable-keys:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part V — Stable identity, 16. Stable keys]
+  concrete-erased-keys:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part V — Stable identity, 18. Erased stable keys]
+  concrete-subjects:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part V — Stable identity, 19. Subject references]
+  concrete-problems:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part IX — Reports and diagnostics, 41. Unified problem records and report findings]
+  concrete-shared-identity:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXX — Public API coherence requirements, 107. Shared identity model]
+  persistence-order:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]

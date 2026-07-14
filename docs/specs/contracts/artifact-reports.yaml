@@ -1,0 +1,107 @@
+schema_version: "0.1"
+id: mossignal.diagnostics.artifact_reports
+title: Artifact-bearing diagnostic reports
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 5a58a8f505b9b1707e87eac2394ba856022c3338
+  working_tree: dirty
+
+summary: >-
+  Report<T, D> carries an optional produced artifact together with its
+  deterministic diagnostic set, preserving blocking semantics while supporting
+  independent safe-finding collection.
+
+scope:
+  includes:
+    - Report<T, D> artifact and diagnostics ownership
+    - blocking and non-blocking artifact presence
+    - report access and artifact-requiring conversion
+    - safe independent-finding accumulation
+  excludes:
+    - individual problem and evidence construction
+    - DiagnosticSet ordering and deduplication internals
+    - atomic single-failure Result APIs
+    - runtime occurrences, persistent episodes, and rendering
+
+aliases:
+  - Report<T, D>
+  - ReportFailure<D>
+  - artifact-plus-findings
+
+requirements:
+  - id: owned-shape
+    kind: public_surface
+    statement: >-
+      Report<T, D> owns an Option<T> artifact and DiagnosticSet<D>, exposes
+      artifact and diagnostics borrowing, error and warning queries, consuming
+      decomposition, and an artifact-requiring conversion.
+    sources: [concrete-report]
+
+  - id: blocking-absence
+    kind: semantic
+    statement: >-
+      An artifact must be absent whenever a blocking Error finding remains;
+      Warning and Info findings may accompany an artifact.
+    sources: [catalogue-reports, concrete-report]
+
+  - id: require-artifact-retains
+    kind: public_surface
+    statement: >-
+      require_artifact returns the artifact or ReportFailure<D>; failure retains
+      the complete diagnostic set and introduces no new semantic problem code
+      merely because the caller selected this convenience.
+    sources: [catalogue-reports, concrete-report]
+
+  - id: shared-failure-model
+    kind: semantic
+    statement: >-
+      Report<T, D> is used where independent findings can safely accumulate,
+      while one atomic success-or-failure operation uses Result<T, Failure>;
+      both share the catalogue-backed Problem<D> model without changing a
+      condition's severity or responsibility by delivery surface.
+    sources: [concrete-shared-failure]
+
+  - id: report-tests
+    kind: verification
+    statement: >-
+      Tests must verify that blocking diagnostics omit artifacts, non-blocking
+      diagnostics may accompany artifacts, and one malformed condition does not
+      unnecessarily suppress unrelated findings that can be collected safely.
+    sources: [testing-report]
+
+recommendations:
+  - id: safe-accumulation
+    statement: >-
+      Validation, compilation, binding, and structural patch preparation should
+      collect independent findings where safe, and one malformed condition should
+      not suppress unrelated findings unless continuation is unsafe or misleading.
+    sources: [catalogue-reports, testing-report]
+
+implementation_freedom:
+  - Private field representation may differ from the conceptual shape while preserving ownership and behavior.
+
+open_questions: []
+
+sources:
+  catalogue-reports:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part III — Reports, failures, ordering, and identity
+      - 16. Reports
+    reviewed_hash: sha256:bff5cad3e12b4d82fe23d3f6f7c5a500563ff6b602bd10d51ad79ed3c73bb37f
+  concrete-report:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part IX — Reports and diagnostics
+      - 40. `Report<T, D>`
+    reviewed_hash: sha256:3bfb0a86fce172e071a68c07f454aecf0f15d5dbb5fd052cae3fdf81ffc509ad
+  concrete-shared-failure:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXX — Public API coherence requirements, 110. Shared failure model]
+    reviewed_hash: sha256:d95437914a843efb2ebd82514c793056288d0389bc07587e8c260a3c615760bb
+  testing-report:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIII — Diagnostic verification, 77. Validation report behavior]
+    reviewed_hash: sha256:de1999b5d46991c155959b33065654f33ff32b66bc431a4d24ab0165f5a97b9b

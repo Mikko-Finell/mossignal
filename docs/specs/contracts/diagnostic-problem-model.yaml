@@ -1,0 +1,248 @@
+schema_version: "0.1"
+id: mossignal.diagnostics.problem_model
+title: Catalogue-backed diagnostic problem model
+kind: family
+status: reviewed
+
+source_baseline:
+  commit: 5a58a8f505b9b1707e87eac2394ba856022c3338
+  working_tree: dirty
+
+summary: >-
+  A Problem<D> is the common owned, structured account of one catalogue-defined
+  condition, with fixed classification, stable subjects, exact typed evidence,
+  and machine-readable suggestions independent of delivery and rendering.
+
+scope:
+  includes:
+    - diagnostic codes and their authoritative registry
+    - severity, responsibility, subject attachment, typed evidence, and suggestions
+    - Problem<D> and the report-finding Diagnostic<D> wrapper
+  excludes:
+    - SubjectRef identity and canonical ordering
+    - deterministic collection, deduplication, and evidence merging
+    - artifact-bearing reports
+    - runtime occurrences, persistent episodes, and internal-defect delivery
+    - rendering, localization, logging, persistence, and provenance
+
+aliases:
+  - DiagnosticCode
+  - Problem<D>
+  - ProblemEvidence<D>
+  - Diagnostic<D>
+  - Severity
+  - Responsibility
+
+requirements:
+  - id: code-condition
+    kind: semantic
+    statement: >-
+      A diagnostic code names one semantic condition rather than a message,
+      call site, API method, Rust wrapper, or presentation choice, and its
+      lowercase dotted segments must satisfy [a-z][a-z0-9_]*.
+    sources: [catalogue-codes]
+
+  - id: experimental-schema
+    kind: compatibility
+    statement: >-
+      The diagnostic schema is experimental: coordinated schema revisions may
+      change codes, evidence, classifications, and organization until an explicit
+      future stabilization, while current tests and tools still use structured
+      codes rather than prose.
+    sources: [catalogue-schema]
+
+  - id: authoritative-registry
+    kind: public_surface
+    statement: >-
+      Catalogue entries must be represented once in an authoritative declarative
+      registry that supplies each code's string, schema introduction, severity,
+      responsibility, delivery forms, report blocking behavior, subject rules,
+      condition discriminator, exact evidence association, suggestions, lifecycle
+      behavior, persistence participation, and documentation identity; duplicate
+      hand-maintained mappings are prohibited.
+    sources: [catalogue-registry]
+
+  - id: fixed-classification
+    kind: semantic
+    statement: >-
+      Severity is exactly Info, Warning, or Error and responsibility is exactly
+      Advisory, CallerInput, SemanticRejection, Compatibility, ResourceLimit,
+      CorruptData, UnsupportedFeature, ExternalIntegration, or LibraryDefect;
+      both are fixed by code and cannot be selected by an emitter.
+    sources: [catalogue-problem, catalogue-severity, catalogue-responsibility]
+
+  - id: complete-problem
+    kind: public_surface
+    statement: >-
+      Problem<D> must own and expose its code, fixed severity, fixed responsibility,
+      primary SubjectRef, typed related subjects, code-specific ProblemEvidence<D>,
+      and machine-readable suggestions. These distinctions are normative even if
+      the exact private representation differs.
+    sources: [catalogue-problem, concrete-problems]
+
+  - id: safe-valid-combinations
+    kind: prohibition
+    statement: >-
+      Safe construction must not permit an invalid code/evidence, classification,
+      or delivery combination; dynamic decoding may construct a problem only after
+      checking the combination against the catalogue.
+    sources: [catalogue-problem, concrete-problems]
+
+  - id: exact-typed-evidence
+    kind: public_surface
+    statement: >-
+      ProblemEvidence<D> is a closed typed family with one exact code-specific
+      variant per catalogue code, even when variants share payload
+      records; an untyped string map is not the canonical representation.
+    sources: [catalogue-evidence, concrete-problems]
+
+  - id: useful-evidence
+    kind: semantic
+    statement: >-
+      Evidence must identify materially involved stable subjects and contain
+      enough structured information to understand and, where practical, reproduce
+      and regression-test the condition without parsing prose; private pointers
+      and unstable dense positions cannot be authoritative identity.
+    sources: [catalogue-evidence]
+
+  - id: suggestion-safety
+    kind: prohibition
+    statement: >-
+      Suggestions are closed machine-readable actions and may be attached only
+      when the correction is unambiguous; the library must not encode one arbitrary
+      choice when materially different corrections are possible.
+    sources: [catalogue-suggestions]
+
+  - id: report-finding-wrapper
+    kind: public_surface
+    statement: >-
+      Diagnostic<D> is the owned report-finding wrapper around Problem<D>, exposes
+      borrowed and consuming problem access, and accepts only codes whose registry
+      entry permits ReportFinding delivery.
+    sources: [concrete-problems]
+
+  - id: prose-derived
+    kind: prohibition
+    statement: >-
+      Rendered summaries, localized messages, and Display output are derived
+      presentation and must not be authoritative fields or determine handling.
+    sources: [concrete-problems, catalogue-unified]
+
+  - id: registry-conformance
+    kind: verification
+    statement: >-
+      Verification must establish complete one-to-one registry coverage for public
+      leaf failures, report-producing validation rules, runtime conditions, and
+      named internal invariants; every code must have exactly one classification,
+      evidence schema, condition discriminator, and allowed delivery set, and safe
+      APIs must not construct mismatched combinations.
+    sources: [catalogue-completeness]
+
+  - id: structured-comparison
+    kind: verification
+    statement: >-
+      Tests must compare the authoritative structured problem fields and exclude
+      rendered prose from semantic equality.
+    sources: [catalogue-structural, testing-conformance]
+
+  - id: suggestion-conformance
+    kind: verification
+    statement: >-
+      Tests must verify that machine-readable suggestions are absent when a
+      correction is ambiguous.
+    sources: [catalogue-suggestions, testing-report]
+
+  - id: golden-catalogue
+    kind: verification
+    statement: >-
+      CI must deterministically generate or validate code and evidence variants,
+      failure mappings, reference documentation, canonical persisted vectors,
+      editor schema data, and code ownership and delivery tables.
+    sources: [catalogue-golden]
+
+recommendations:
+  - id: private-fields
+    statement: >-
+      Problem<D> fields should remain private to prevent arbitrary invalid
+      combinations.
+    sources: [concrete-problems]
+  - id: non-exhaustive-evidence
+    statement: >-
+      Public problem-evidence enums should remain non-exhaustive while the
+      diagnostic schema is experimental.
+    sources: [concrete-non-exhaustive]
+
+implementation_freedom:
+  - The generated spelling and module placement of code constants and evidence variants are deferred.
+  - Reusable payload records may be shared while retaining exact public code-to-variant association.
+  - A generic schema projection may exist for tooling but cannot replace the typed canonical model.
+
+open_questions: []
+
+sources:
+  catalogue-unified:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part I — Unified problem model
+      - 3. One catalogue, distinct delivery forms
+    reviewed_hash: sha256:ed9a99f9eabe8010d801d28d7b808a7b1a2d2a4e4123983eae8261a21231c8b0
+  catalogue-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part I — Unified problem model, 5. Codes name conditions]
+    reviewed_hash: sha256:43de0359ac8feedba431c04b8029b95e673b1a177484b996dca3414f692ad2a6
+  catalogue-schema:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part I — Unified problem model, 6. Experimental and stabilized schemas]
+    reviewed_hash: sha256:85f0786a117d6cfc2a5fbf6353708e970ffbb1b458705299049eaef29524e512
+  catalogue-problem:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 7. Problem record]
+    reviewed_hash: sha256:d1107f0ea076ce67a9fc433c88ab48f4479ba2b73e1232a460ec112e04047b10
+  catalogue-severity:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 8. Severity]
+    reviewed_hash: sha256:971f1fc005ef60afbe1f21df0c85f1488545fea4615006c648c5e2a3d9f72121
+  catalogue-responsibility:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 9. Responsibility]
+    reviewed_hash: sha256:4edaa4c7f24f6075c9e731367417cc34249553b14148989f444925e1c7efb665
+  catalogue-evidence:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 13. Typed evidence]
+    reviewed_hash: sha256:1d899c32048892bab289fa9428a15c9600b322d4781e42466f6314f23192999d
+  catalogue-suggestions:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 15. Suggestions]
+    reviewed_hash: sha256:e755218bd0410b082d7854902cfcdbf6f8b3f8ecbfdeca5f8c9cd64a64df8d9e
+  catalogue-completeness:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VIII — Verification obligations, 53. Catalogue completeness]
+    reviewed_hash: sha256:f2668af9ed1dad3478e94f3cfca9d9753e95ca57dbcb270634075d70c272055c
+  catalogue-structural:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VIII — Verification obligations, 54. Structural comparison]
+    reviewed_hash: sha256:965c4b35ccf6d020e8f3842654e6378267950433766717f1d5b87fe7848b48cb
+  catalogue-golden:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VIII — Verification obligations, 55. Golden catalogue]
+    reviewed_hash: sha256:be436da7ed751a9fbb626369c7f7050c2ab42228e339678b1343abde7e98147b
+  catalogue-registry:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part IX — Implementation guidance, 62. Authoritative registry]
+    reviewed_hash: sha256:4d93fd5333ddc90589bd37d8bd14c428ad68bf0dad896e6cf9e9749942a91dbe
+  concrete-problems:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part IX — Reports and diagnostics, 41. Unified problem records and report findings]
+    reviewed_hash: sha256:4a48ff057784d84e778c4dea1fc24d0a2a3a00d07c6552788911f3b4f07bd164
+  concrete-non-exhaustive:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVIII — Runtime failures, 70. Non-exhaustive public enums]
+    reviewed_hash: sha256:3217e978b9be4bab359dbebd1bc36dca61e743d9b1feaad3789a4e94815da597
+  testing-conformance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIII — Diagnostic verification, 74. Structured diagnostic conformance]
+    reviewed_hash: sha256:da7e819527e86e7727fe3a752b035feb441dd639ac2f6b0c98803296ee754c00
+  testing-report:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIII — Diagnostic verification, 77. Validation report behavior]
+    reviewed_hash: sha256:de1999b5d46991c155959b33065654f33ff32b66bc431a4d24ab0165f5a97b9b
