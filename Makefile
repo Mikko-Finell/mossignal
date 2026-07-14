@@ -1,6 +1,6 @@
 .PHONY: fmt fmt-check compile-check static-guardrails-check clippy test nextest \
-	nextest-quiet doctest doc-check deny acceptance-record-check check-dev \
-	check-final run
+	nextest-quiet contract-tools-test doctest doc-check deny acceptance-record-check \
+	check-dev check-final run
 
 QUIET_CHECK = python3 scripts/run_check.py
 
@@ -29,6 +29,9 @@ nextest-quiet:
 	@$(QUIET_CHECK) tests cargo nextest run --workspace --all-features \
 		--failure-output final --success-output never --status-level fail --final-status-level fail
 
+contract-tools-test:
+	@$(QUIET_CHECK) contract-tools python3 -m unittest scripts/test_contracts.py
+
 doctest:
 	@$(QUIET_CHECK) doctests cargo test --workspace --doc --quiet
 
@@ -48,12 +51,12 @@ acceptance-record-check:
 	@echo "OK: acceptance record is synchronized"
 
 # Keep this gate fast enough to run repeatedly during implementation.
-check-dev: fmt-check compile-check nextest-quiet
+check-dev: fmt-check compile-check nextest-quiet contract-tools-test
 	@echo "OK: development checks passed"
 
 # Add new finite repository-wide checks here when their underlying facilities
 # exist. Long fuzz campaigns and other scheduled verification remain separate.
-check-final: fmt-check compile-check static-guardrails-check clippy nextest-quiet doctest doc-check deny
+check-final: fmt-check compile-check static-guardrails-check clippy nextest-quiet contract-tools-test doctest doc-check deny
 	@echo "OK: final checks passed"
 
 run:
