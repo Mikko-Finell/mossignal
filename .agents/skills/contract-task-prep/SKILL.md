@@ -1,9 +1,9 @@
 ---
-name: mossignal-contract-task-prep
-description: Prepare a mossignal feature or implementation task by identifying its applicable specification contracts, creating or updating compact draft contract records under docs/specs/contracts, and deriving or refining the implementation bead. Use before implementation. Do not use to implement code or independently approve the resulting contracts.
+name: contract-task-prep
+description: Prepare a feature or implementation task by identifying its applicable specification contracts, creating or updating compact draft contract records under docs/specs/contracts, and deriving or refining the implementation bead. Use before implementation. Do not use to implement code or independently approve the resulting contracts.
 ---
 
-# Mossignal contract task preparation
+# Contract task preparation
 
 Prepare one implementation task from the authoritative repository specifications while preserving the reusable research as compact contract records.
 
