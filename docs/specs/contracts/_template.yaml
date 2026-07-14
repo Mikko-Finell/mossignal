@@ -1,0 +1,69 @@
+schema_version: "0.1"
+id: mossignal.<domain>.<subject>
+title: <Canonical subject name>
+kind: <concept | family | node | artifact | lifecycle | other>
+status: draft
+
+coverage:
+  state: complete # or partial
+  included:
+    - <facet or boundary covered by this record>
+  # Delete `uncovered` for complete records.
+  uncovered:
+    - <facet not yet researched>
+
+source_baseline:
+  commit: <git rev-parse HEAD>
+  working_tree: clean # or dirty
+  # Keep only when relevant governing specs are modified.
+  modified_spec_paths:
+    - docs/specs/<modified-spec>.md
+
+summary: >-
+  <One or two sentences defining the coherent reusable subject.>
+
+# Keep only when it clarifies the subject boundary.
+scope:
+  includes:
+    - <reusable subject responsibility>
+  excludes:
+    - <adjacent subject owned elsewhere>
+
+# Optional: terms needed to resolve source vocabulary.
+aliases:
+  - <source term or public symbol>
+
+# State each mandatory fact once. Suggested kinds include semantic,
+# public_surface, prohibition, lifecycle, system_effect, persistence,
+# reconfiguration, compatibility, and verification.
+requirements:
+  - id: <stable-short-rule-id>
+    kind: <kind>
+    statement: >-
+      <Required contract statement.>
+    sources:
+      - <source-alias>
+    # Add only for a necessary consequence rather than a direct statement.
+    # basis: derived
+
+# Keep only for normative SHOULD/SHOULD NOT guidance.
+recommendations:
+  - id: <stable-short-rule-id>
+    statement: >-
+      <Recommended contract statement.>
+    sources:
+      - <source-alias>
+
+# List only freedoms worth making explicit to prevent unsupported commitments.
+implementation_freedom:
+  - <Unconstrained implementation choice>
+
+# Empty is acceptable only after checking for unresolved observable behavior.
+open_questions: []
+
+# Define each source once and cite aliases above.
+sources:
+  <source-alias>:
+    document: docs/specs/<specification>.md
+    heading: <Exact heading or heading path>
+    authority: <Optional short explanation; delete if obvious>
