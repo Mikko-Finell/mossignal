@@ -591,7 +591,43 @@ pub enum SubjectRef {
 
 `SubjectRef` is semantic identity, not a rendered label.
 
-### 19.1 Non-structural diagnostic subject identities
+### 19.1 Initial canonical diagnostic-subject order
+
+The opening authored-network and structural-validation surface defines canonical
+comparison for the following `SubjectRef` variants:
+
+| Variant | Permanent comparison tag |
+|---|---:|
+| `Network` | 0 |
+| `Node` | 7 |
+| `InPort` | 8 |
+| `OutPort` | 9 |
+| `Connection` | 10 |
+| `ExternalInput` | 11 |
+| `ExternalOutput` | 12 |
+
+These tags are permanent semantic comparison tags. They MUST NOT be renumbered.
+Tags 1 through 6 and tags 13 through 29 remain reserved for the intervening and
+later variants already declared by `SubjectRef`; this section does not yet define
+their payload comparison.
+
+Two initially supported subject references compare first by the explicit tag
+above and then by their stable-key payload's canonical order. Within an erased
+signal-bearing key, `Level` compares before `Pulse`, followed by the underlying
+stable key's canonical order.
+
+Comparison MUST NOT depend on Rust discriminants, enum declaration order,
+persisted variant spelling, diagnostic metadata, rendered labels, `Debug`
+output, allocation or insertion order, hash iteration, dense positions, or
+private storage identity. These comparison tags are not persisted enum
+representations.
+
+This rule defines the canonical order only when both operands use variants in
+the table. It does not define canonical payload comparison for the other
+`SubjectRef` variants. A private comparator or ordering key is sufficient;
+this section does not require a public `Ord` implementation.
+
+### 19.2 Non-structural diagnostic subject identities
 
 Canonical stable keys defined in Part V represent authored structural keys allocated via `KeyAllocator`. The following identities used in `SubjectRef` represent non-structural diagnostic subject identities:
 
@@ -2069,8 +2105,7 @@ pub enum RelatedSubjectRole {
     Owner,
     Driver,
     ConflictingDriver,
-    FirstDefinition,
-    DuplicateDefinition,
+    ConflictingClaim,
     MissingReference,
     ExpectedSubject,
     ActualSubject,

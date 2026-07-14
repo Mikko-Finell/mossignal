@@ -620,6 +620,13 @@ then stable key bytes
 then schema-defined role when required
 ```
 
+For the initially supported `SubjectRef` variants, the concrete Rust API
+specification's **Initial canonical diagnostic-subject order** is the
+schema-specific order. Its comparison tags order values but are not persisted
+enum representations. This reference does not define payload ordering for the
+remaining `SubjectRef` variants and does not replace the generic ordering rules
+for other schemas.
+
 The default order for time-indexed facts is:
 
 ```text

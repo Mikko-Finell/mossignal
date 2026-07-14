@@ -1258,6 +1258,12 @@ episode identity where persistent
 
 Diagnostic ordering must be deterministic.
 
+For every implemented diagnostic code, conformance tests must exercise its
+specified primary-subject rule, condition discriminator, and evidence merge law.
+Where only an initial `SubjectRef` ordering or diagnostic context is specified,
+tests must remain within that declared scope and must not imply completeness for
+future variants or contexts.
+
 ## 75. Persistent episode lifecycle
 
 For every persistent condition, tests must cover:

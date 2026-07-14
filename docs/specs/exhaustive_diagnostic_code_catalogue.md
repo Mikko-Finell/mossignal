@@ -399,8 +399,7 @@ target
 owner
 driver
 conflicting_driver
-first_definition
-duplicate_definition
+conflicting_claim
 missing_reference
 expected_subject
 actual_subject
@@ -457,6 +456,15 @@ Evidence MUST NOT include private pointers or unstable dense positions as author
 
 The catalogue uses the following recurring evidence shapes.
 
+Evidence may use private closed typed roles, categories, arity groups, or
+diagnostic projections when the public authored representation does not expose
+those distinctions directly. Such a projection MUST contain every semantic fact
+required for condition identity and evidence, exclude discovery order and
+unstable storage identity, have deterministic equality and canonical ordering,
+and never collapse semantically distinct cases. Private enum and struct names,
+variant spelling, storage layout, construction helpers, and algorithms remain
+implementation choices unless another specification makes them public.
+
 ### 14.1 `ForeignArtifactEvidence`
 
 ```text
@@ -469,19 +477,27 @@ requested operation
 ### 14.2 `KeyConflictEvidence`
 
 ```text
-key category
-stable key
-first subject and origin
-duplicate subject and origin
+authored network subject
+closed structural-key category
+stable key value in that category
+complete canonical multiset of conflicting claim projections
 ```
+
+Each conflicting claim projection contains the claimed subject category, the
+complete authored-record facts needed to distinguish malformed claims, and
+origin metadata when present. Claim projections are symmetric: none is
+designated first or duplicate. Their canonical multiset retains meaningful
+multiplicity and is independent of discovery, insertion, traversal, storage,
+and hash iteration order.
 
 ### 14.3 `MissingReferenceEvidence`
 
 ```text
 owning subject
-semantic role
-missing stable reference
-expected category and signal kind
+closed semantic reference role
+missing typed stable reference
+closed expected subject category
+expected signal kind where applicable
 ```
 
 ### 14.4 `DirectionEvidence`
@@ -491,30 +507,36 @@ connection or binding subject
 source subject and declared direction
 target subject and declared direction
 required direction relation
+closed offending endpoint role
 ```
 
 ### 14.5 `KindMismatchEvidence`
 
 ```text
 owning operation or connection
-expected kind
-encountered kind
-source and target subjects where applicable
+closed semantic relation
+ordered involved subjects
+encountered kind for each involved subject
+required kind relation
 ```
 
 ### 14.6 `DriverConflictEvidence`
 
 ```text
 target input port
-complete conflicting driver set
+detected conflicting driver set
 driver policy
 ```
+
+Individual detectors may contribute partial driver sets. The merged stored
+evidence contains the complete discovered conflicting-driver set.
 
 ### 14.7 `ArityEvidence`
 
 ```text
 node or module subject
 semantic kind
+closed typed arity role
 required arity constraint
 encountered arity
 relevant stable port keys
@@ -921,6 +943,10 @@ A wrapper MAY add non-semantic location context such as replay frame index. If t
 4. code-defined condition discriminator;
 5. canonical encoded evidence bytes.
 
+For initially supported diagnostic subjects, primary-subject comparison uses
+the concrete Rust API specification's **Initial canonical diagnostic-subject
+order**. No ordering for the remaining `SubjectRef` payloads is implied here.
+
 Presentation layers MAY regroup findings, but canonical serialization, test comparison, and default iteration use this order.
 
 Diagnostic ordering MUST NOT depend on:
@@ -948,7 +974,17 @@ One `DiagnosticSet` contains at most one finding per condition key.
 
 Repeated detection of the same condition merges evidence according to the code-defined merge law.
 
-Set-like evidence is unioned and canonically ordered. Ordered witnesses retain semantic order. Equivalent scalar evidence must agree.
+Unless a code states a more specific law:
+
+- exact-agreement values retain that value when equal and produce
+  `internal.diagnostic_evidence_conflict` when unequal;
+- set-like values merge by associative, commutative, idempotent canonical union,
+  with duplicates removed and the result canonically ordered;
+- multiset values merge canonically while retaining semantically meaningful
+  multiplicity.
+
+Ordered witnesses retain semantic order. No merge result may depend on detector,
+traversal, insertion, storage, or hash iteration order.
 
 Contradictory scalar evidence for one condition key is `internal.diagnostic_evidence_conflict`.
 
@@ -1106,7 +1142,7 @@ Duplicate stable keys, missing subjects, signal-kind mismatch, and other semanti
 
 | Code | Severity | Responsibility | Delivery | Evidence | Meaning |
 |---|---|---|---|---|---|
-| `validation.duplicate_key` | Error | CallerInput | Report, Failure | `KeyConflictEvidence` | Two subjects claim one stable key in a scope requiring uniqueness. |
+| `validation.duplicate_key` | Error | CallerInput | Report, Failure | `KeyConflictEvidence` | Two or more conflicting authored claims use one structural key in a scope requiring uniqueness. |
 | `validation.missing_node` | Error | CallerInput | Report | `MissingReferenceEvidence` | A definition references a node that does not exist. |
 | `validation.missing_port` | Error | CallerInput | Report | `MissingReferenceEvidence` | A definition references a port that does not exist. |
 | `validation.missing_endpoint` | Error | CallerInput | Report | `MissingReferenceEvidence` | A definition references an external or module endpoint that does not exist. |
@@ -1129,6 +1165,60 @@ Duplicate stable keys, missing subjects, signal-kind mismatch, and other semanti
 | `validation.incomplete_dependency_signature` | Error | CallerInput | Report | `DependencySignatureEvidence` | A node dependency declaration omits influence required by its semantic law. |
 | `validation.incompatible_network_reference` | Error | CallerInput | Report, Failure | `ForeignArtifactEvidence` | A definition contains a stable reference bound to another network identity. |
 | `validation.unsupported_node_kind` | Error | UnsupportedFeature | Report | `ParameterEvidence` | The definition names a node kind unavailable in the current semantic version. |
+
+### 26.1 Initial structural-validation condition laws
+
+This subsection defines condition identity and evidence merging only for the
+opening authored-network graph-validation contexts. A closed typed private role,
+category, arity group, or diagnostic projection MAY represent the semantic
+components below. Its concrete name and representation are not public API.
+
+Every discriminator is a closed typed value. Its listed components compare
+lexicographically in the order shown, using stable explicit tags for closed roles
+and categories and canonical stable-key order for keys. An empty discriminator
+has one value. Evidence MUST contain or losslessly project every fact used by its
+condition discriminator.
+
+The **nearest representable owning subject** is the existing initial
+`SubjectRef` for the authored record that contains the invalid reference, such as
+the owning node, connection, external endpoint, or network. A network is used
+only for a network-level record that has no separately identified authored
+owner. The closed semantic reference role distinguishes every reference position
+whose identity must remain separate; prose labels alone are insufficient.
+
+The initial duplicate-key category is one of node, input port, output port,
+connection, external input, or external output. Port and endpoint categories
+retain `Level` versus `Pulse`. Module and module-interface key scopes are not
+defined by this subsection.
+
+| Code | Primary subject | Condition discriminator | Evidence merge law |
+|---|---|---|---|
+| `validation.duplicate_key` | `SubjectRef::Network` for the authored network whose uniqueness rule is violated | closed structural-key category, then the stable key value in that category | Every detector supplies the complete canonical multiset of conflicting claim projections. Equal multisets agree; unequal multisets produce `internal.diagnostic_evidence_conflict`. Repeated detection does not multiply claims. |
+| `validation.missing_node` | nearest representable owning subject containing the reference | closed semantic reference role, missing `NodeKey`, and expected `Node` category | exact agreement |
+| `validation.missing_port` | nearest representable owning subject containing the reference | closed semantic reference role, missing typed input- or output-port key, expected port category, and expected signal kind | exact agreement |
+| `validation.missing_endpoint` | nearest representable owning subject containing the reference | closed semantic reference role, missing typed external-input or external-output key, expected endpoint category, and expected signal kind | exact agreement |
+| `validation.invalid_direction` | `SubjectRef::Connection` | closed offending endpoint role and required direction relation | exact agreement |
+| `validation.signal_kind_mismatch` | `SubjectRef::Connection` | empty | exact agreement; evidence contains source and target subjects and both encountered signal kinds |
+| `validation.unsupported_multiple_drivers` | target `SubjectRef::InPort` | empty | canonical set union of detected conflicting drivers; driver policy is exact-agreement |
+| `validation.missing_required_input` | `SubjectRef::Node` | a tagged closed value containing either the required fixed-input semantic role or stable input-port key, plus expected signal kind | exact agreement |
+| `validation.invalid_fixed_arity` | `SubjectRef::Node` | closed typed arity role | canonical set union of relevant stable port keys; semantic node kind, required arity constraint, and encountered arity are exact-agreement |
+
+The initial node arity roles distinguish the fixed input group from the fixed
+output group. A node semantic law that imposes more than one independently
+diagnosable fixed group MUST use distinct closed roles so those conditions cannot
+collapse. The role's private representation and spelling remain unconstrained.
+Relevant port-key sets use the corresponding initial `InPort` and `OutPort`
+subject ordering, including `Level` before `Pulse` within either category.
+
+The missing-reference laws apply only where the invalid authored record has an
+owner representable by the initial subject variants. Module-interface and module-
+binding references are not defined by this subsection. The direction and signal-
+kind laws above are connection-only; binding and reassociation cases remain
+undefined. Module-interface required-input and arity cases likewise remain
+undefined.
+
+This subsection does not define condition discriminators or merge laws for the
+remaining catalogue entries and does not claim catalogue completeness.
 
 ## 27. Validation — non-blocking conditions
 
@@ -1730,6 +1820,12 @@ diagnostic discovery order
 
 Canonical diagnostic sets must remain identical.
 
+For the opening structural-validation slice, tests MUST also permute the
+construction and discovery order of duplicate-key claims and verify stable
+ordering across every initially supported `SubjectRef` variant, including
+`Level` before `Pulse` for erased keys and tag comparison before payload
+comparison.
+
 ## 57. Deduplication tests
 
 For every deduplicating code, tests must cover:
@@ -1744,6 +1840,21 @@ contradictory scalar evidence
 ```
 
 Contradictory scalar evidence must produce `internal.diagnostic_evidence_conflict` in verification configurations.
+
+The opening structural-validation codes additionally require focused coverage
+for:
+
+```text
+discovery-order-independent duplicate-key claim multisets
+repeated equal exact-agreement evidence
+partial conflicting-driver set union
+partial relevant-port set union for fixed arity
+contradictory exact-agreement evidence
+```
+
+Duplicate-key tests must include two byte-identical malformed claims so
+meaningful multiplicity is retained without being multiplied by repeated
+detection.
 
 ## 58. Episode tests
 
