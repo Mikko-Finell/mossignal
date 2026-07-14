@@ -5,8 +5,8 @@ kind: family
 status: draft
 
 source_baseline:
-  commit: 5a58a8f505b9b1707e87eac2394ba856022c3338
-  working_tree: dirty
+  commit: 6b64c04ec050d7319473a0cd5a5bfea0d74d18c4
+  working_tree: clean
 
 summary: >-
   Diagnostic subject references identify problem-bearing semantic subjects by
@@ -74,22 +74,60 @@ requirements:
       semantic only when the evidence schema explicitly declares it ordered.
     sources: [catalogue-related, concrete-problems]
 
-  - id: heterogeneous-order
+  - id: symmetric-conflicting-claims
+    kind: prohibition
+    statement: >-
+      Duplicate-key claimants use the symmetric ConflictingClaim related-subject
+      role; discovery-order roles such as first definition and duplicate
+      definition are not part of semantic identity or evidence.
+    sources: [catalogue-related, catalogue-evidence-families, concrete-problems]
+
+  - id: initial-subject-tags
     kind: semantic
     statement: >-
-      Canonical ordering of heterogeneous structural subjects compares subject
-      kind first, then stable key bytes, then a schema-defined role when needed.
-    sources: [persistence-order]
+      The opening diagnostic surface assigns permanent comparison tags Network=0,
+      Node=7, InPort=8, OutPort=9, Connection=10, ExternalInput=11, and
+      ExternalOutput=12. These tags must never be renumbered and are not persisted
+      enum representations.
+    sources: [concrete-subjects]
+
+  - id: initial-subject-order
+    kind: semantic
+    statement: >-
+      Two initially supported subject references compare first by their explicit
+      comparison tags and then by canonical stable-key order. Erased
+      signal-bearing keys compare Level before Pulse and then by underlying stable
+      key; the result is independent of Rust discriminants, declaration or
+      insertion order, persisted spelling, metadata, labels, debug output, hash
+      iteration, dense positions, and private storage identity.
+    sources: [concrete-subjects, persistence-order]
+
+  - id: initial-order-scope
+    kind: prohibition
+    statement: >-
+      The initial ordering rule defines comparison only when both operands are
+      among the seven initially supported variants. It neither defines payload
+      comparison for other SubjectRef variants nor requires a public Ord
+      implementation.
+    sources: [concrete-subjects]
+
+  - id: initial-order-tests
+    kind: verification
+    statement: >-
+      Tests must verify stable ordering across all seven initial variants,
+      including tag-before-payload comparison and Level-before-Pulse erased-key
+      comparison, under permutations of construction and discovery order.
+    sources: [catalogue-permutation]
 
 implementation_freedom:
   - Private representation and helper types may vary where the concrete API does not fix them.
 
 open_questions:
   - >-
-    Diagnostic ordering requires a canonical order for every SubjectRef, but the
-    specifications define only a generic kind-first order for heterogeneous
-    structural subjects. They do not assign the subject-kind tag order or define
-    the canonical comparison of all non-structural SubjectRef variants.
+    Canonical payload comparison remains undefined for the SubjectRef variants
+    outside Network, Node, InPort, OutPort, Connection, ExternalInput, and
+    ExternalOutput. Their reserved comparison tags do not determine their payload
+    order.
 
 sources:
   catalogue-subjects:
@@ -98,6 +136,9 @@ sources:
   catalogue-related:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part II — Common structured representation, 12. Related subjects]
+  catalogue-evidence-families:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 14. Evidence families]
   concrete-stable-keys:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part V — Stable identity, 16. Stable keys]
@@ -116,3 +157,6 @@ sources:
   persistence-order:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]
+  catalogue-permutation:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VIII — Verification obligations, 56. Determinism and permutation tests]

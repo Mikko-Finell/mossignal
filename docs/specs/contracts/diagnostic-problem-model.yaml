@@ -5,8 +5,8 @@ kind: family
 status: reviewed
 
 source_baseline:
-  commit: 5a58a8f505b9b1707e87eac2394ba856022c3338
-  working_tree: dirty
+  commit: 6b64c04ec050d7319473a0cd5a5bfea0d74d18c4
+  working_tree: clean
 
 summary: >-
   A Problem<D> is the common owned, structured account of one catalogue-defined
@@ -233,7 +233,7 @@ sources:
   concrete-problems:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part IX — Reports and diagnostics, 41. Unified problem records and report findings]
-    reviewed_hash: sha256:4a48ff057784d84e778c4dea1fc24d0a2a3a00d07c6552788911f3b4f07bd164
+    reviewed_hash: sha256:a965b8ccf98ed45ad067b921de73a8cd0ec36e32e165257f8887beeee7de98c7
   concrete-non-exhaustive:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XVIII — Runtime failures, 70. Non-exhaustive public enums]
@@ -241,7 +241,7 @@ sources:
   testing-conformance:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part XIII — Diagnostic verification, 74. Structured diagnostic conformance]
-    reviewed_hash: sha256:da7e819527e86e7727fe3a752b035feb441dd639ac2f6b0c98803296ee754c00
+    reviewed_hash: sha256:2a9449312adf0c09ce27b88156e3e18d40fbbf73f489188b30f9376c88ab4005
   testing-report:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part XIII — Diagnostic verification, 77. Validation report behavior]

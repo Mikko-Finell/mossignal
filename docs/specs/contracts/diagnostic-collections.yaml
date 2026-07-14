@@ -5,8 +5,8 @@ kind: artifact
 status: draft
 
 source_baseline:
-  commit: 5a58a8f505b9b1707e87eac2394ba856022c3338
-  working_tree: dirty
+  commit: 6b64c04ec050d7319473a0cd5a5bfea0d74d18c4
+  working_tree: clean
 
 summary: >-
   DiagnosticSet<D> is an owned collection of report findings with canonical
@@ -43,9 +43,11 @@ requirements:
     statement: >-
       Default iteration, canonical serialization, and test comparison use severity
       rank Error before Warning before Info, then code by ascending ASCII bytes,
-      primary subject by canonical subject order, code-defined condition
-      discriminator, and canonical encoded evidence bytes.
-    sources: [catalogue-order]
+      primary subject by its applicable canonical subject order, code-defined
+      condition discriminator, and canonical encoded evidence bytes. For the
+      opening structural-validation slice, subject comparison is limited to the
+      seven variants whose canonical order is already specified.
+    sources: [catalogue-order, concrete-subject-order]
 
   - id: order-independence
     kind: prohibition
@@ -67,23 +69,100 @@ requirements:
     kind: semantic
     statement: >-
       Repeated detection of one condition merges using the code-defined law:
-      set-like evidence is unioned and canonically ordered, ordered witnesses
-      retain semantic order, and equivalent scalar evidence must agree rather than
-      taking whichever detector ran first.
+      exact-agreement values retain an equal value and conflict on unequal values;
+      set-like values use associative, commutative, idempotent canonical union;
+      multiset values merge canonically while retaining meaningful multiplicity;
+      and ordered witnesses retain semantic order.
     sources: [catalogue-dedup, concrete-collections]
 
   - id: contradictory-evidence
     kind: system_effect
     statement: >-
-      Contradictory scalar evidence for one condition key is represented by
-      internal.diagnostic_evidence_conflict.
+      Contradictory exact-agreement evidence for one condition key is represented
+      by internal.diagnostic_evidence_conflict.
     sources: [catalogue-dedup]
+
+  - id: initial-duplicate-key
+    kind: semantic
+    statement: >-
+      For an initial authored network's duplicate structural key, the primary
+      subject is that Network; the discriminator is the closed structural-key
+      category followed by its stable key; and evidence is the complete canonical
+      multiset of symmetric conflicting claim projections. A projection preserves
+      claimed subject category, all authored-record facts needed to distinguish
+      malformed claims, and origin metadata when present. Equal complete
+      multisets agree, unequal multisets conflict, repeated detection does not
+      multiply claims, and meaningful claim multiplicity is retained.
+    sources: [catalogue-initial-laws, catalogue-evidence-families]
+
+  - id: initial-missing-references
+    kind: semantic
+    statement: >-
+      For initial missing-node, missing-port, and missing-endpoint conditions, the
+      primary subject is the nearest representable authored owner containing the
+      bad reference. The discriminator contains a closed semantic reference role,
+      the applicable typed missing stable key, the closed expected subject
+      category, and expected signal kind where applicable; evidence merges by
+      exact agreement.
+    sources: [catalogue-initial-laws]
+
+  - id: initial-connection-conditions
+    kind: semantic
+    statement: >-
+      For an initial invalid-direction connection, the connection is primary and
+      the discriminator is the closed offending endpoint role plus required
+      direction relation. For an initial connection signal-kind mismatch, the
+      connection is primary, the discriminator is empty, and evidence identifies
+      source and target subjects and both encountered kinds. Both evidence shapes
+      merge by exact agreement.
+    sources: [catalogue-initial-laws]
+
+  - id: initial-multiple-drivers
+    kind: semantic
+    statement: >-
+      For unsupported multiple drivers, the target input port is primary and the
+      discriminator is empty. Detectors may contribute partial conflicting-driver
+      sets, which merge by canonical set union into the complete discovered set;
+      driver policy must agree exactly.
+    sources: [catalogue-initial-laws, catalogue-evidence-families]
+
+  - id: initial-required-input
+    kind: semantic
+    statement: >-
+      For the initial fixed-node missing-required-input condition, the node is
+      primary; the discriminator is a tagged closed value containing either the
+      required fixed-input semantic role or stable input-port key, plus expected
+      signal kind; and evidence merges by exact agreement.
+    sources: [catalogue-initial-laws]
+
+  - id: initial-fixed-arity
+    kind: semantic
+    statement: >-
+      For the initial node fixed-arity condition, the node is primary and the
+      discriminator is a closed typed arity role distinguishing fixed input and
+      fixed output groups, with distinct roles whenever a node law has more than
+      one independently diagnosable fixed group. Relevant stable port keys merge
+      by canonical set union, while semantic node kind, required arity constraint,
+      and encountered arity agree exactly.
+    sources: [catalogue-initial-laws, catalogue-evidence-families]
+
+  - id: private-diagnostic-projections
+    kind: semantic
+    statement: >-
+      Private closed typed roles, categories, arity groups, and diagnostic
+      projections may carry condition identity and evidence when they preserve
+      every required semantic fact, exclude discovery order and unstable storage
+      identity, have deterministic equality and canonical ordering, and cannot
+      collapse semantically distinct cases.
+    sources: [catalogue-evidence-families, catalogue-initial-laws]
 
   - id: permutation-tests
     kind: verification
     statement: >-
       Tests must permute diagnostic discovery and the other specified unordered
-      inputs and show that the canonical diagnostic set remains identical.
+      inputs and show that the canonical diagnostic set remains identical,
+      including discovery-order-independent duplicate claims and stable initial
+      subject ordering.
     sources: [catalogue-permutation]
 
   - id: dedup-tests
@@ -91,7 +170,9 @@ requirements:
     statement: >-
       Each deduplicating opening code must cover repeated and independent
       detection, same prose on different subjects, distinct discriminators on one
-      subject, mergeable set-like evidence, and contradictory scalar evidence.
+      subject, repeated equal evidence, partial driver and arity-port set unions,
+      meaningful duplicate-claim multiplicity, and contradictory exact-agreement
+      evidence.
     sources: [catalogue-dedup-tests]
 
 recommendations:
@@ -103,12 +184,14 @@ recommendations:
 
 implementation_freedom:
   - Internal storage and iterator concrete types are unconstrained if observable order and merge laws hold.
+  - Private enum and struct names, variant spelling, storage layout, helper types, construction APIs, and merge algorithms are unconstrained when the specified semantic distinctions and laws are preserved.
 
 open_questions:
   - >-
-    The catalogue requires every entry to define a condition-discriminator schema
-    and evidence merge law, but the current catalogue entries do not specify those
-    per-code definitions.
+    Condition discriminators and evidence merge laws remain undefined for
+    catalogue entries outside the nine opening structural-validation codes and
+    for their undeveloped module-binding, reassociation, and module-interface
+    contexts.
 
 sources:
   catalogue-order:
@@ -130,3 +213,12 @@ sources:
   concrete-collections:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part IX — Reports and diagnostics, 42. Diagnostic collections]
+  concrete-subject-order:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part V — Stable identity, 19. Subject references, 19.1 Initial canonical diagnostic-subject order]
+  catalogue-evidence-families:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 14. Evidence families]
+  catalogue-initial-laws:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions, 26.1 Initial structural-validation condition laws]
