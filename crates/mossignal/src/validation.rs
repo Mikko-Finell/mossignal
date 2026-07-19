@@ -9,7 +9,7 @@ use crate::diagnostics::{
 };
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, AnySignalSourceKey,
-    SignalSourceKey,
+    ConnectionKey, NodeKey, SignalSourceKey,
 };
 use crate::signal::SignalKind;
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,6 +25,119 @@ pub(crate) struct StructuralCandidate<'a, D> {
 impl<'a, D> StructuralCandidate<'a, D> {
     pub(crate) const fn network(&self) -> &'a UncheckedNetwork<D> {
         self.network
+    }
+
+    /// Derives the private current-reaction dependency relation.
+    pub(crate) fn reaction_dependencies(&self) -> ReactionDependencyGraph {
+        ReactionDependencyGraph::from_candidate(self)
+    }
+}
+
+/// One current-reaction fact or deterministic operation in the restricted graph.
+///
+/// This remains separate from authored connectivity: input ports are connection
+/// attachment points, while node operations consume their settled sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ReactionVertex {
+    ExternalInput(AnyExternalInputKey),
+    NodeOperation(NodeKey),
+    NodeOutput(AnyOutPortKey),
+    ExternalOutput(AnyExternalOutputKey),
+}
+
+/// The stable authored relation contributing a reaction dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ReactionDependencySubject {
+    Connection(ConnectionKey),
+    Node(NodeKey),
+    ExternalOutput(AnyExternalOutputKey),
+}
+
+/// One directed dependency in the restricted current-reaction graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ReactionDependency {
+    pub(crate) from: ReactionVertex,
+    pub(crate) to: ReactionVertex,
+    pub(crate) subject: ReactionDependencySubject,
+}
+
+/// Deterministic private inspection of the restricted dependency relation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReactionDependencyGraph {
+    vertices: BTreeSet<ReactionVertex>,
+    dependencies: BTreeSet<ReactionDependency>,
+}
+
+impl ReactionDependencyGraph {
+    fn from_candidate<D>(candidate: &StructuralCandidate<'_, D>) -> Self {
+        let network = candidate.network();
+        let mut vertices = BTreeSet::new();
+        let mut dependencies = BTreeSet::new();
+        let mut input_owners = BTreeMap::new();
+
+        for input in network.external_inputs() {
+            vertices.insert(ReactionVertex::ExternalInput(input.key()));
+        }
+
+        for node in network.nodes() {
+            let operation = ReactionVertex::NodeOperation(node.key());
+            vertices.insert(operation);
+            for input in node.ports().inputs() {
+                input_owners.insert(*input, node.key());
+            }
+            for output in node.ports().outputs() {
+                let output = ReactionVertex::NodeOutput(*output);
+                vertices.insert(output);
+                dependencies.insert(ReactionDependency {
+                    from: operation,
+                    to: output,
+                    subject: ReactionDependencySubject::Node(node.key()),
+                });
+            }
+        }
+
+        for connection in network.connections() {
+            let ConnectionEndpoint::NodeInput(input) = connection.to() else {
+                continue;
+            };
+            let Some(&owner) = input_owners.get(&input) else {
+                continue;
+            };
+            let Some(source) = reaction_source(connection.from()) else {
+                continue;
+            };
+            vertices.insert(source);
+            dependencies.insert(ReactionDependency {
+                from: source,
+                to: ReactionVertex::NodeOperation(owner),
+                subject: ReactionDependencySubject::Connection(connection.key()),
+            });
+        }
+
+        for output in network.external_outputs() {
+            let source = reaction_source_from_signal(output.source());
+            vertices.insert(source);
+            let observed = ReactionVertex::ExternalOutput(output.key());
+            vertices.insert(observed);
+            dependencies.insert(ReactionDependency {
+                from: source,
+                to: observed,
+                subject: ReactionDependencySubject::ExternalOutput(output.key()),
+            });
+        }
+
+        Self {
+            vertices,
+            dependencies,
+        }
+    }
+
+    pub(crate) fn vertices(&self) -> impl Iterator<Item = ReactionVertex> + '_ {
+        self.vertices.iter().copied()
+    }
+
+    pub(crate) fn dependencies(&self) -> impl Iterator<Item = ReactionDependency> + '_ {
+        self.dependencies.iter().copied()
     }
 }
 
@@ -394,6 +507,31 @@ fn is_target(endpoint: ConnectionEndpoint) -> bool {
     matches!(endpoint, ConnectionEndpoint::NodeInput(_))
 }
 
+fn reaction_source(endpoint: ConnectionEndpoint) -> Option<ReactionVertex> {
+    match endpoint {
+        ConnectionEndpoint::ExternalInput(key) => Some(ReactionVertex::ExternalInput(key)),
+        ConnectionEndpoint::NodeOutput(key) => Some(ReactionVertex::NodeOutput(key)),
+        ConnectionEndpoint::NodeInput(_) | ConnectionEndpoint::ExternalOutput(_) => None,
+    }
+}
+
+fn reaction_source_from_signal(source: AnySignalSourceKey) -> ReactionVertex {
+    match source {
+        AnySignalSourceKey::Level(SignalSourceKey::ExternalInput(key)) => {
+            ReactionVertex::ExternalInput(key.into())
+        }
+        AnySignalSourceKey::Pulse(SignalSourceKey::ExternalInput(key)) => {
+            ReactionVertex::ExternalInput(key.into())
+        }
+        AnySignalSourceKey::Level(SignalSourceKey::NodeOutput(key)) => {
+            ReactionVertex::NodeOutput(key.into())
+        }
+        AnySignalSourceKey::Pulse(SignalSourceKey::NodeOutput(key)) => {
+            ReactionVertex::NodeOutput(key.into())
+        }
+    }
+}
+
 fn endpoint_subject(endpoint: ConnectionEndpoint) -> SubjectRef {
     match endpoint {
         ConnectionEndpoint::ExternalInput(key) => SubjectRef::ExternalInput(key),
@@ -434,14 +572,213 @@ fn duplicate_claim_subject(claim: &DuplicateClaim) -> SubjectRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authored::{ConnectionDef, ExternalOutputDef, NodeDef, NodePorts};
+    use crate::authored::{ConnectionDef, ExternalInputDef, ExternalOutputDef, NodeDef, NodePorts};
     use crate::diagnostics::DiagnosticCode;
     use crate::key::{
-        ConnectionKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey, OutPortKey,
-        SignalSourceKey,
+        ConnectionKey, ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey,
+        OutPortKey, SignalSourceKey,
     };
     use crate::metadata::DiagnosticMeta;
     use crate::signal::{Level, LogicLevel};
+
+    #[test]
+    fn derives_current_reaction_dependencies_separately_from_authored_connections() {
+        let constant_output = OutPortKey::<Level>::from_u128(1);
+        let not_input = InPortKey::<Level>::from_u128(2);
+        let not_output = OutPortKey::<Level>::from_u128(3);
+        let network = UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            DiagnosticMeta::default(),
+            vec![
+                NodeDef::new(
+                    NodeKey::from_u128(10),
+                    NodeKind::<()>::constant(LogicLevel::High),
+                    NodePorts::new(vec![], vec![constant_output.into()]),
+                    DiagnosticMeta::default(),
+                ),
+                NodeDef::new(
+                    NodeKey::from_u128(20),
+                    NodeKind::<()>::not(),
+                    NodePorts::new(vec![not_input.into()], vec![not_output.into()]),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+            vec![],
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(4).into(),
+                SignalSourceKey::NodeOutput(not_output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(5),
+                constant_output.into(),
+                not_input.into(),
+                DiagnosticMeta::default(),
+            )],
+        );
+
+        let report = network.validate_structural();
+        let graph = report
+            .artifact()
+            .expect("the restricted graph is structurally valid")
+            .reaction_dependencies();
+
+        assert_eq!(
+            graph.dependencies().collect::<Vec<_>>(),
+            vec![
+                ReactionDependency {
+                    from: ReactionVertex::NodeOperation(NodeKey::from_u128(10)),
+                    to: ReactionVertex::NodeOutput(constant_output.into()),
+                    subject: ReactionDependencySubject::Node(NodeKey::from_u128(10)),
+                },
+                ReactionDependency {
+                    from: ReactionVertex::NodeOperation(NodeKey::from_u128(20)),
+                    to: ReactionVertex::NodeOutput(not_output.into()),
+                    subject: ReactionDependencySubject::Node(NodeKey::from_u128(20)),
+                },
+                ReactionDependency {
+                    from: ReactionVertex::NodeOutput(constant_output.into()),
+                    to: ReactionVertex::NodeOperation(NodeKey::from_u128(20)),
+                    subject: ReactionDependencySubject::Connection(ConnectionKey::from_u128(5)),
+                },
+                ReactionDependency {
+                    from: ReactionVertex::NodeOutput(not_output.into()),
+                    to: ReactionVertex::ExternalOutput(
+                        ExternalOutputKey::<Level>::from_u128(4).into(),
+                    ),
+                    subject: ReactionDependencySubject::ExternalOutput(
+                        ExternalOutputKey::<Level>::from_u128(4).into(),
+                    ),
+                },
+            ]
+        );
+        assert_eq!(graph.vertices().count(), 5);
+    }
+
+    #[test]
+    fn derives_external_input_roots_and_not_signature() {
+        let external_input = ExternalInputKey::<Level>::from_u128(1);
+        let not_input = InPortKey::<Level>::from_u128(2);
+        let not_output = OutPortKey::<Level>::from_u128(3);
+        let external_output = ExternalOutputKey::<Level>::from_u128(4);
+        let network = UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(10),
+                NodeKind::<()>::not(),
+                NodePorts::new(vec![not_input.into()], vec![not_output.into()]),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                external_input.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                external_output.into(),
+                SignalSourceKey::NodeOutput(not_output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(5),
+                external_input.into(),
+                not_input.into(),
+                DiagnosticMeta::default(),
+            )],
+        );
+
+        let graph = network
+            .validate_structural()
+            .artifact()
+            .expect("the restricted graph is structurally valid")
+            .reaction_dependencies();
+
+        assert_eq!(
+            graph.dependencies().collect::<Vec<_>>(),
+            vec![
+                ReactionDependency {
+                    from: ReactionVertex::ExternalInput(external_input.into()),
+                    to: ReactionVertex::NodeOperation(NodeKey::from_u128(10)),
+                    subject: ReactionDependencySubject::Connection(ConnectionKey::from_u128(5)),
+                },
+                ReactionDependency {
+                    from: ReactionVertex::NodeOperation(NodeKey::from_u128(10)),
+                    to: ReactionVertex::NodeOutput(not_output.into()),
+                    subject: ReactionDependencySubject::Node(NodeKey::from_u128(10)),
+                },
+                ReactionDependency {
+                    from: ReactionVertex::NodeOutput(not_output.into()),
+                    to: ReactionVertex::ExternalOutput(external_output.into()),
+                    subject: ReactionDependencySubject::ExternalOutput(external_output.into()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn dependency_inspection_is_invariant_under_authored_claim_permutation() {
+        let constant_output = OutPortKey::<Level>::from_u128(1);
+        let not_input = InPortKey::<Level>::from_u128(2);
+        let not_output = OutPortKey::<Level>::from_u128(3);
+        let constant = NodeDef::new(
+            NodeKey::from_u128(10),
+            NodeKind::<()>::constant(LogicLevel::High),
+            NodePorts::new(vec![], vec![constant_output.into()]),
+            DiagnosticMeta::default(),
+        );
+        let inverter = NodeDef::new(
+            NodeKey::from_u128(20),
+            NodeKind::<()>::not(),
+            NodePorts::new(vec![not_input.into()], vec![not_output.into()]),
+            DiagnosticMeta::default(),
+        );
+        let connection = ConnectionDef::new(
+            ConnectionKey::from_u128(5),
+            constant_output.into(),
+            not_input.into(),
+            DiagnosticMeta::default(),
+        );
+        let output = ExternalOutputDef::new(
+            ExternalOutputKey::<Level>::from_u128(4).into(),
+            SignalSourceKey::NodeOutput(not_output).into(),
+            DiagnosticMeta::default(),
+        );
+        let second_output = ExternalOutputDef::new(
+            ExternalOutputKey::<Level>::from_u128(5).into(),
+            SignalSourceKey::NodeOutput(constant_output).into(),
+            DiagnosticMeta::default(),
+        );
+
+        let first = UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            DiagnosticMeta::default(),
+            vec![constant.clone(), inverter.clone()],
+            vec![],
+            vec![output.clone(), second_output.clone()],
+            vec![connection.clone()],
+        );
+        let second = UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            DiagnosticMeta::default(),
+            vec![inverter, constant],
+            vec![],
+            vec![second_output, output],
+            vec![connection],
+        );
+
+        let first_graph = first
+            .validate_structural()
+            .artifact()
+            .expect("the first graph is structurally valid")
+            .reaction_dependencies();
+        let second_graph = second
+            .validate_structural()
+            .artifact()
+            .expect("the second graph is structurally valid")
+            .reaction_dependencies();
+
+        assert_eq!(first_graph, second_graph);
+    }
 
     #[test]
     fn accepts_a_structurally_valid_constant_and_not_graph() {
