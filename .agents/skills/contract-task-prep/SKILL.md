@@ -1,11 +1,14 @@
 ---
 name: contract-task-prep
-description: Prepare a feature or implementation task by identifying its applicable specification contracts, creating or updating compact draft contract records under docs/specs/contracts, and deriving or refining the implementation bead. Use before implementation. Do not use to implement code or independently approve the resulting contracts.
+description: Prepare a roadmap feature or implementation task by reusing applicable reviewed specification contracts, researching only changed or uncovered authoritative specification facets, creating or updating compact draft contract records, and deriving or refining the bounded implementation bead. Also use when implementation discovers reusable specification-backed knowledge or a material planning gap. Do not implement code or independently approve resulting contracts.
 ---
 
 # Contract task preparation
 
-Prepare one implementation task from the authoritative repository specifications while preserving the reusable research as compact contract records.
+Prepare one implementation task while preserving expensive specification
+research as compact reusable contract records. Contracts exist so later agents
+can reuse independently reviewed understanding instead of repeatedly reconciling
+the full specification corpus. Specifications remain authoritative.
 
 Stop before implementation.
 
@@ -45,7 +48,10 @@ Do not create an implementation patch.
 - Run `uv run --locked python scripts/contracts.py catalog`.
 - Use contract IDs, titles, summaries, aliases, and declared scope to select likely relevant contracts. Do not open or audit every contract.
 - Run `uv run --locked python scripts/contracts.py status <selected-contracts>`.
-- For selected reviewed contracts, reuse rules backed only by unchanged sources. Recheck only rules citing changed, missing, ambiguous, or unfingerprinted sources; do not re-audit unchanged rules.
+- For selected reviewed contracts, treat rules backed only by unchanged sources
+  as settled and reuse them without re-auditing source support, completeness, or
+  editorial quality. Recheck only rules citing changed, missing, ambiguous, or
+  unfingerprinted sources, or a rule implicated by a concrete contradiction.
 - Treat selected draft contracts as candidate research rather than approved authority. Extend them when useful, but keep them `draft`.
 - Treat any existing bead as provisional evidence, not specification authority.
 
@@ -61,8 +67,11 @@ Do not create an implementation patch.
 - Attach exact document-and-heading-path source references.
 - Mark every changed contract `draft`.
 - Record the source baseline and any relevant dirty specification paths.
-- Preserve genuine uncertainty in `open_questions`; do not invent a resolution.
-- Use `known_uncovered` only for a specific missing facet already known to be absent; do not claim a contract is globally complete.
+- Preserve unresolved observable behavior inside represented scope in
+  `open_questions`; do not invent a resolution.
+- Use `known_uncovered` for specific adjacent or future facets the contract does
+  not represent. It is compatible with later promotion and is not a blocker
+  unless the current bead depends on it.
 
 ### 3. Derive or refine the bead
 
@@ -71,8 +80,26 @@ Do not create an implementation patch.
 - Reference every governing contract by ID and path.
 - Include only task-relevant requirements, exclusions, freedoms, and verification expectations.
 - Keep reusable product truth in contracts and task-specific sequencing or file scope in the bead.
-- If an unresolved contract question blocks implementation, leave the bead unready and surface the decision.
+- Leave the bead unready only when unresolved observable behavior inside its
+  required represented scope blocks implementation and the blocker burden below
+  is satisfied.
 - Stop after the contracts and bead are internally consistent.
+
+### 4. Prove blockers rather than infer them
+
+Before calling a matter blocking, identify:
+
+```text
+represented contract requirement
+current bead obligation
+materially different observable outcomes
+authoritative specification ambiguity
+why implementation freedom cannot resolve it
+```
+
+If any item is missing, classify the matter as `known_uncovered`, implementation
+freedom, adjacent future work, an optional improvement, or outside the current
+slice. Do not withhold bead readiness.
 
 ## Guardrails
 
@@ -84,6 +111,7 @@ Do not create an implementation patch.
 - Do not duplicate one fact as a rule, prohibition, relation, and verification item.
 - Do not add tests that merely restate every rule unless the testing specification imposes a distinct obligation.
 - Do not promote a changed contract to `reviewed`.
+- Do not reopen an unchanged reviewed contract without a concrete trigger.
 - Do not make the bead an independent source of product truth.
 - Do not implement code.
 
@@ -96,5 +124,7 @@ Before stopping, verify:
 - every changed contract identifies its exact source baseline;
 - task-scoped research mapped each applicable discovered requirement;
 - implementation freedom and open questions are not conflated;
+- `known_uncovered` does not block facets the bead does not require;
+- every claimed blocker satisfies the complete blocker burden;
 - no task-specific detail polluted the reusable contract;
 - the result is compact enough to be useful to a future agent.

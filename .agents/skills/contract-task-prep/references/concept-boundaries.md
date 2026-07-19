@@ -8,7 +8,7 @@ Use these tests together.
 
 A subject is probably coherent when:
 
-- an agent could naturally ask, “What is the complete contract for X?”;
+- an agent could naturally ask, “What is the reusable contract for X?”;
 - future tasks are likely to reference X independently;
 - its rules should normally be inspected together when one of them changes;
 - it has a stable identity or name across documents;

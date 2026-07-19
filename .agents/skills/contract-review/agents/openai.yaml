@@ -1,7 +1,7 @@
 interface:
-display_name: "Review Contracts"
-short_description: "Audit contracts and their derived bead"
-default_prompt: "Use $review-contracts to audit and correct the current uncommitted draft contracts, then review any directly derived bead."
+  display_name: "Review Contracts"
+  short_description: "Audit contracts and their derived bead"
+  default_prompt: "Use $review-contracts to audit and promote the selected draft contracts as bounded reusable understanding, then review any directly derived bead."
 
 policy:
-allow_implicit_invocation: false
+  allow_implicit_invocation: false

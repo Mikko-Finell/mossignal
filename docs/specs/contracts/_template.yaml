@@ -21,6 +21,8 @@ scope:
   excludes:
     - <adjacent subject owned elsewhere>
 
+# Specific adjacent or future facets this record does not represent. Compatible
+# with status: reviewed and non-blocking unless the current bead needs the facet.
 # Omit when no specific missing facet is already known.
 known_uncovered:
   - <known reusable facet not represented by this record>
@@ -54,7 +56,9 @@ recommendations:
 implementation_freedom:
   - <Unconstrained implementation choice>
 
-# Empty is acceptable only after checking for unresolved observable behavior.
+# Only unresolved observable behavior or required public capability inside
+# scope.includes. Do not put adjacent future work, known missing coverage, or
+# private representation choices here. Empty is the normal reviewed state.
 open_questions: []
 
 # Define each source once and cite aliases above.

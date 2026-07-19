@@ -1,13 +1,18 @@
 # Authoring compact mossignal contracts
 
-The current specifications remain authoritative. A contract record is a reusable, source-grounded view of their combined requirements.
+The current specifications remain authoritative. A contract record is a
+reusable, source-grounded view of their combined requirements, preserved so
+future agents do not repeat the same reconciliation across the specification
+corpus.
 
 ## Research order
 
 1. Capture the exact repository baseline and working-tree state.
 2. Run `uv run --locked python scripts/contracts.py catalog` and select likely contracts by metadata and scope; do not inspect every record.
 3. Run `uv run --locked python scripts/contracts.py status` for only those selected records.
-4. Reuse reviewed rules backed only by unchanged sources. Recheck rules citing changed, missing, ambiguous, or unfingerprinted sources.
+4. Reuse reviewed rules backed only by unchanged sources as settled shared
+   understanding. Recheck only rules citing changed, missing, ambiguous, or
+   unfingerprinted sources, or rules implicated by a concrete contradiction.
 5. Search the task's applicable product specifications for its symbols, aliases, adjacent concepts, and standard contract facets.
 6. Read complete governing sections, not isolated search snippets.
 7. Map each applicable discovered requirement to an unchanged rule, a new or corrected rule, a new coherent contract, or an explicit outside-task determination.
@@ -44,9 +49,18 @@ Use one status field:
 
 Any contract created or changed by this skill is `draft`.
 
-Use `scope.includes` and `scope.excludes` to state explicit reusable subject boundaries. Use `known_uncovered` only when a specific missing facet is already known, and omit it when empty. Never claim that a contract is globally complete.
+Use `scope.includes` and `scope.excludes` to state explicit reusable subject
+boundaries. Use `known_uncovered` for a specific adjacent or future facet not
+represented by the record, and omit it when empty. A reviewed contract may have
+`known_uncovered`; never claim that a contract is globally complete.
 
-Reviewed hashes are evidence fingerprints, not completeness claims. Only independent review records them. An unchanged source permits reuse of the previously reviewed evidence; a changed, missing, ambiguous, or unfingerprinted source requires semantic rechecking only for rules that cite it. A different repository `HEAD` alone does not make a contract stale. Task preparation must never silently refresh reviewed hashes.
+Reviewed hashes are evidence fingerprints, not completeness claims. Only
+independent review records them. An unchanged reviewed contract is done and
+accepted for reuse at that baseline. A changed, missing, ambiguous, or
+unfingerprinted source requires semantic rechecking only for rules that cite it.
+A different repository `HEAD`, optional refinement, or generalized suspicion
+does not make a contract stale. Task preparation must never silently refresh
+reviewed hashes.
 
 ## Rule organization
 
@@ -57,9 +71,19 @@ Use:
 - `requirements` for mandatory semantics, exact public responsibilities, prohibitions, and required cross-system effects;
 - `recommendations` for normative `SHOULD`/`SHOULD NOT` guidance;
 - `implementation_freedom` for a small number of freedoms worth making explicit;
-- `open_questions` only for unresolved observable product behavior or required capabilities.
+- `open_questions` only for unresolved observable product behavior or required
+  capabilities inside `scope.includes`.
 
 A missing constructor name, accessor, private field, derive, module path, storage type, or convenience is not an open question unless the specifications require a stable observable commitment.
+
+## Good enough
+
+A draft is ready for independent promotion when its represented boundary is
+clear, each stated rule is supported, applicable rules are coherent, no
+unresolved observable behavior remains inside the boundary, and implementation
+freedom is preserved. It need not exhaust the eventual subject, cite every
+possibly relevant paragraph, define future variants, or choose private helper
+design. Further optional polish is not a reason to keep it draft.
 
 Preserve source strength:
 
@@ -92,7 +116,8 @@ Use `scope.includes` and `scope.excludes` only when they clarify the subject bou
 Roadmaps and beads define task scope, not reusable product truth.
 
 * Keep task sequencing, implementation staging, file scope, and bead-specific questions out of contracts.
-* Treat a question as a contract open question only when the authoritative specifications genuinely leave product behavior unresolved.
+* Treat a question as a contract open question only when the authoritative
+  specifications genuinely leave represented product behavior unresolved.
 * When roadmap wording conflicts with the specifications, record the mismatch in the handoff and refine the bead. Treat the roadmap as a temporary bootstrapping artifact and do not edit it based on contracts being authored in the same run.
 
 ## Compactness

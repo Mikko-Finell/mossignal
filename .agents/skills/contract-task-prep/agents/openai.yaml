@@ -1,7 +1,7 @@
 interface:
   display_name: "Contract Task Prep"
   short_description: "Research specification contracts and prepare an implementation bead"
-  default_prompt: "Prepare this implementation task by creating or updating compact specification contracts and deriving or refining the bead. Stop before implementation."
+  default_prompt: "Use $contract-task-prep to reuse reviewed contracts, research uncovered specification facets, preserve new shared understanding, and prepare the bounded implementation bead."
 
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

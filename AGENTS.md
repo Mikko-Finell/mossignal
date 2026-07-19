@@ -20,9 +20,64 @@ Then read the cited section in the authoritative spec file.
 Do not invent architecture or semantics when the documents are missing,
 contradictory, or genuinely undecided. Surface the exact design blocker.
 
-`docs/specs/bead_review_implementation_commit_process.md` governs ordinary
-product work. `docs/specs/testing_and_verification_policy.md` governs
-verification depth.
+The bead and commit rules in this file govern ordinary product work.
+`docs/testing_and_verification_policy.md` governs verification depth.
+
+## Specification contracts and bounded progress
+
+Specification contracts under `docs/specs/contracts/` exist so agents do not
+repeatedly rediscover and reconcile the same requirements across the full
+specification corpus. Each contract is a compact, source-linked, independently
+reviewed record of one coherent subject. Specifications remain authoritative;
+contracts preserve durable shared understanding for task preparation,
+implementation, and review.
+
+The working model is:
+
+```text
+authoritative specifications
+        ↓
+reusable reviewed contracts
+        ↓
+one bounded implementation bead
+        ↓
+implementation and verification
+```
+
+`reviewed` means done and accepted for reuse at the recorded evidence baseline,
+not globally complete. Reuse represented rules backed by unchanged cited sources
+without re-auditing their source support, completeness, or editorial quality.
+Reopen a reviewed contract only when a cited source changed, the current task
+needs an unrepresented facet, a concrete source contradiction is found, a
+represented rule permits materially different observable outcomes for the
+current bead, or applicable contracts concretely contradict each other.
+
+`known_uncovered` records specific adjacent or future coverage and is compatible
+with `reviewed`. It does not block work unless the current bead actually depends
+on that facet. Missing private representation details, optional refinements, and
+theoretical broader coverage are not blockers.
+
+Early foundational implementation is expected to uncover reusable
+specification-backed knowledge. An implementer may create or extend draft
+contracts to preserve it and may continue when the specifications and approved
+bead already determine the behavior. The implementer must not promote its own
+draft, invent product policy, or materially expand the bead without renewed
+planning review. All implementation-discovered contract changes require
+independent review before final implementation acceptance.
+
+A claimed design blocker must identify all of:
+
+```text
+represented contract requirement
+current bead obligation
+materially different observable outcomes
+authoritative specification ambiguity
+why implementation freedom cannot resolve it
+```
+
+If any item is missing, classify the matter as `known_uncovered`, implementation
+freedom, adjacent future work, an optional improvement, or irrelevant to the
+current slice, and continue.
 
 ## Repository model
 
