@@ -1,0 +1,142 @@
+schema_version: "0.1"
+id: mossignal.graph.structural_validation
+title: Restricted authored-graph structural validation
+kind: lifecycle
+status: draft
+
+source_baseline:
+  commit: 127880ff31faef7a21e307cd459b07ad38b7a885
+  working_tree: clean
+
+summary: >-
+  Structural validation losslessly examines the restricted Constant/Not authored
+  graph, reports its independently discoverable blocking defects in canonical
+  diagnostic form, and yields only a private candidate for later reaction-
+  dependency validation.
+
+scope:
+  includes:
+    - uniqueness and incidence validation for restricted authored graph records
+    - connection direction, signal-kind, fixed-port, and single-driver validation
+    - deterministic structural validation reports and private structurally usable candidate data
+  excludes:
+    - reaction-dependency extraction, cycle validation, and topological ordering
+    - public ValidatedNetwork construction, compilation, and execution
+    - modules, variadic nodes, temporal parameters, hierarchy, and persistence
+
+aliases:
+  - structural validation
+  - validation candidate
+  - restricted Constant/Not graph validation
+
+requirements:
+  - id: validates-restricted-structural-invariants
+    kind: semantic
+    statement: >-
+      The restricted validator must check structural-key uniqueness, referenced
+      node, port, and external-endpoint existence, connection direction,
+      connection signal-kind compatibility, input driver policy, and the fixed
+      input and output groups required by Constant and Not. It must neither add
+      implicit drivers nor default an unconnected required input.
+    sources: [api-ports, api-validation-coverage, runtime-validated, builtin-constant-not]
+
+  - id: reports-opening-blocking-conditions
+    kind: system_effect
+    statement: >-
+      Detected restricted-graph defects use the opening validation conditions
+      duplicate_key, missing_node, missing_port, missing_endpoint,
+      invalid_direction, signal_kind_mismatch, unsupported_multiple_drivers,
+      missing_required_input, and invalid_fixed_arity with their code-fixed
+      severity, responsibility, delivery, primary-subject, condition-discriminator,
+      and evidence-merge laws.
+    sources: [catalogue-validation, catalogue-initial-laws]
+
+  - id: accumulates-safe-independent-findings
+    kind: semantic
+    statement: >-
+      Structural validation must collect independent findings where doing so is
+      safe and non-misleading; the resulting report is canonically ordered and
+      omits its artifact whenever blocking Error findings remain.
+    sources: [concrete-validation, api-reports, verification-validation, verification-reports]
+
+  - id: preserves-stable-subjects
+    kind: prohibition
+    statement: >-
+      Validation diagnostics and candidate references must use stable authored
+      subjects and keys rather than dense positions, discovery order, or private
+      storage identity. Validation of malformed unchecked input must not panic.
+    sources: [api-unchecked-network, verification-validation, catalogue-initial-laws]
+
+  - id: candidate-is-private-and-pre-semantic
+    kind: lifecycle
+    statement: >-
+      This structural phase may construct private, structurally usable data for
+      the following reaction-dependency stage, but it must not construct or
+      expose ValidatedNetwork: that public type requires all static structural
+      and semantic requirements, including current-reaction causality.
+    sources: [api-lifecycle, api-validated-network, runtime-validated, concrete-validated-network]
+
+  - id: validation-test-obligations
+    kind: verification
+    statement: >-
+      Each enumerated restricted validation rule requires focused positive and
+      negative coverage. Generated invalid definitions must return structured,
+      deterministically ordered diagnostics, omit the validated artifact, avoid
+      panics, and identify stable subjects where available; implemented diagnostic
+      codes also require structural conformance tests for their subject,
+      discriminator, and evidence merge law.
+    sources: [verification-validation, verification-diagnostic-conformance]
+
+implementation_freedom:
+  - The private candidate's type name, storage, and module placement are unconstrained.
+  - Validators may use multiple passes provided observable diagnostics and safe accumulation are deterministic.
+  - A structurally valid candidate may retain stable-keyed views or maps internally; dense compiled indices remain outside this phase.
+
+open_questions: []
+
+sources:
+  api-ports:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 7. Ports and connections]
+  api-unchecked-network:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 12. `UncheckedNetwork<D>`]
+  api-lifecycle:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 10. Lifecycle]
+  api-validated-network:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]
+  api-validation-coverage:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 46. Required validation coverage]
+  api-reports:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 45. Reports]
+  runtime-validated:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 3. Lifecycle, 3.2 Validated definitions]
+  concrete-validation:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 39. Validation]
+  concrete-validated-network:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part X — Validation and compilation artifacts, 43. `ValidatedNetwork<D>`]
+  builtin-constant-not:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part II — Level combinational nodes]
+  catalogue-validation:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions]
+  catalogue-initial-laws:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions, 26.1 Initial structural-validation condition laws]
+  verification-validation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 18. Validation soundness]
+  verification-reports:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIII — Diagnostic verification, 77. Validation report behavior]
+  verification-diagnostic-conformance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIII — Diagnostic verification, 74. Structured diagnostic conformance]

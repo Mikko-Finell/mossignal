@@ -77,6 +77,7 @@ Do not create an implementation patch.
 
 - Read `references/bead-derivation.md`.
 - Use the researched contracts to finalize the implementation task.
+- When creating a bead with `br`, do not pass `--slug` or otherwise choose an ID; let `br` generate its compact identifier.
 - Reference every governing contract by ID and path.
 - Include only task-relevant requirements, exclusions, freedoms, and verification expectations.
 - Keep reusable product truth in contracts and task-specific sequencing or file scope in the bead.
