@@ -4,7 +4,8 @@
 
 use crate::authored::{ConnectionEndpoint, NodeKind, UncheckedNetwork};
 use crate::diagnostics::{
-    Diagnostic, DiagnosticSet, FixedArityRole, Problem, ProblemEvidence, Report, SubjectRef,
+    Diagnostic, DiagnosticSet, DuplicateClaim, DuplicateNodeKind, FixedArityRole, Problem,
+    ProblemEvidence, Report, SubjectRef,
 };
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, AnySignalSourceKey,
@@ -90,20 +91,37 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
             nodes
                 .entry(node.key())
                 .or_insert_with(Vec::new)
-                .push(SubjectRef::Node(node.key()));
+                .push(DuplicateClaim::Node {
+                    key: node.key(),
+                    kind: match node.kind() {
+                        NodeKind::Constant(config) => DuplicateNodeKind::Constant(config.value()),
+                        NodeKind::Not => DuplicateNodeKind::Not,
+                    },
+                    inputs: node.ports().inputs().to_vec(),
+                    outputs: node.ports().outputs().to_vec(),
+                    origin: node.meta().origin.clone(),
+                });
             self.nodes.insert(node.key());
             for key in node.ports().inputs() {
                 inputs
                     .entry(*key)
                     .or_insert_with(Vec::new)
-                    .push(SubjectRef::InPort(*key));
+                    .push(DuplicateClaim::InPort {
+                        key: *key,
+                        owner: node.key(),
+                        origin: node.meta().origin.clone(),
+                    });
                 self.inputs.insert(*key);
             }
             for key in node.ports().outputs() {
                 outputs
                     .entry(*key)
                     .or_insert_with(Vec::new)
-                    .push(SubjectRef::OutPort(*key));
+                    .push(DuplicateClaim::OutPort {
+                        key: *key,
+                        owner: node.key(),
+                        origin: node.meta().origin.clone(),
+                    });
                 self.outputs.insert(*key);
             }
         }
@@ -111,20 +129,32 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
             connections
                 .entry(connection.key())
                 .or_insert_with(Vec::new)
-                .push(SubjectRef::Connection(connection.key()));
+                .push(DuplicateClaim::Connection {
+                    key: connection.key(),
+                    source: endpoint_subject(connection.from()),
+                    target: endpoint_subject(connection.to()),
+                    origin: connection.meta().origin.clone(),
+                });
         }
         for endpoint in self.network.external_inputs() {
             external_inputs
                 .entry(endpoint.key())
                 .or_insert_with(Vec::new)
-                .push(SubjectRef::ExternalInput(endpoint.key()));
+                .push(DuplicateClaim::ExternalInput {
+                    key: endpoint.key(),
+                    origin: endpoint.meta().origin.clone(),
+                });
             self.external_inputs.insert(endpoint.key());
         }
         for endpoint in self.network.external_outputs() {
             external_outputs
                 .entry(endpoint.key())
                 .or_insert_with(Vec::new)
-                .push(SubjectRef::ExternalOutput(endpoint.key()));
+                .push(DuplicateClaim::ExternalOutput {
+                    key: endpoint.key(),
+                    source: signal_source_subject(endpoint.source()),
+                    origin: endpoint.meta().origin.clone(),
+                });
             self.external_outputs.insert(endpoint.key());
         }
         for claims in nodes.values().filter(|claims| claims.len() > 1) {
@@ -147,11 +177,11 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
         }
     }
 
-    fn duplicate(&mut self, claims: &[SubjectRef]) {
+    fn duplicate(&mut self, claims: &[DuplicateClaim]) {
         // The kernel preserves multiplicity and canonicalizes claim subjects.
         self.add(
             SubjectRef::Network(self.network.key()),
-            ProblemEvidence::duplicate_key(claims[0], claims.to_vec()),
+            ProblemEvidence::duplicate_key(duplicate_claim_subject(&claims[0]), claims.to_vec()),
         );
     }
 
@@ -226,8 +256,8 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
             let target = connection.to();
             let source_subject = endpoint_subject(source);
             let target_subject = endpoint_subject(target);
-            let source_valid = self.validate_source(connection.key(), source);
-            let target_valid = self.validate_target(connection.key(), target);
+            let source_valid = self.validate_endpoint(connection.key(), source);
+            let target_valid = self.validate_endpoint(connection.key(), target);
             if !is_source(source) || !is_target(target) {
                 self.add(
                     SubjectRef::Connection(connection.key()),
@@ -262,7 +292,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
         }
     }
 
-    fn validate_source(
+    fn validate_endpoint(
         &mut self,
         connection: crate::key::ConnectionKey,
         endpoint: ConnectionEndpoint,
@@ -282,17 +312,6 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 );
                 false
             }
-            ConnectionEndpoint::ExternalInput(_) | ConnectionEndpoint::NodeOutput(_) => true,
-            _ => true,
-        }
-    }
-
-    fn validate_target(
-        &mut self,
-        connection: crate::key::ConnectionKey,
-        endpoint: ConnectionEndpoint,
-    ) -> bool {
-        match endpoint {
             ConnectionEndpoint::NodeInput(key) if !self.inputs.contains(&key) => {
                 self.add(
                     SubjectRef::Connection(connection),
@@ -300,7 +319,13 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 );
                 false
             }
-            ConnectionEndpoint::NodeInput(_) => true,
+            ConnectionEndpoint::ExternalOutput(key) if !self.external_outputs.contains(&key) => {
+                self.add(
+                    SubjectRef::Connection(connection),
+                    ProblemEvidence::missing_endpoint(SubjectRef::ExternalOutput(key), key.kind()),
+                );
+                false
+            }
             _ => true,
         }
     }
@@ -375,6 +400,34 @@ fn endpoint_subject(endpoint: ConnectionEndpoint) -> SubjectRef {
         ConnectionEndpoint::NodeInput(key) => SubjectRef::InPort(key),
         ConnectionEndpoint::NodeOutput(key) => SubjectRef::OutPort(key),
         ConnectionEndpoint::ExternalOutput(key) => SubjectRef::ExternalOutput(key),
+    }
+}
+
+fn signal_source_subject(source: AnySignalSourceKey) -> SubjectRef {
+    match source {
+        AnySignalSourceKey::Level(SignalSourceKey::ExternalInput(key)) => {
+            SubjectRef::ExternalInput(key.into())
+        }
+        AnySignalSourceKey::Pulse(SignalSourceKey::ExternalInput(key)) => {
+            SubjectRef::ExternalInput(key.into())
+        }
+        AnySignalSourceKey::Level(SignalSourceKey::NodeOutput(key)) => {
+            SubjectRef::OutPort(key.into())
+        }
+        AnySignalSourceKey::Pulse(SignalSourceKey::NodeOutput(key)) => {
+            SubjectRef::OutPort(key.into())
+        }
+    }
+}
+
+fn duplicate_claim_subject(claim: &DuplicateClaim) -> SubjectRef {
+    match claim {
+        DuplicateClaim::Node { key, .. } => SubjectRef::Node(*key),
+        DuplicateClaim::InPort { key, .. } => SubjectRef::InPort(*key),
+        DuplicateClaim::OutPort { key, .. } => SubjectRef::OutPort(*key),
+        DuplicateClaim::Connection { key, .. } => SubjectRef::Connection(*key),
+        DuplicateClaim::ExternalInput { key, .. } => SubjectRef::ExternalInput(*key),
+        DuplicateClaim::ExternalOutput { key, .. } => SubjectRef::ExternalOutput(*key),
     }
 }
 
@@ -593,5 +646,77 @@ mod tests {
             forward.validate_structural().diagnostics(),
             reverse.validate_structural().diagnostics()
         );
+    }
+
+    #[test]
+    fn reports_missing_endpoints_even_when_connection_direction_is_invalid() {
+        let network = UncheckedNetwork::<()>::new(
+            NetworkKey::from_u128(1),
+            DiagnosticMeta::default(),
+            vec![],
+            vec![],
+            vec![],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(1),
+                InPortKey::<Level>::from_u128(10).into(),
+                OutPortKey::<Level>::from_u128(20).into(),
+                DiagnosticMeta::default(),
+            )],
+        );
+
+        let codes: Vec<_> = network
+            .validate_structural()
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| diagnostic.problem().code())
+            .collect();
+
+        assert!(codes.contains(&DiagnosticCode::ValidationMissingPort));
+        assert!(codes.contains(&DiagnosticCode::ValidationInvalidDirection));
+    }
+
+    #[test]
+    fn duplicate_claim_evidence_retains_conflicting_node_facts() {
+        let key = NodeKey::from_u128(1);
+        let network = UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            DiagnosticMeta::default(),
+            vec![
+                NodeDef::new(
+                    key,
+                    NodeKind::<()>::constant(LogicLevel::High),
+                    NodePorts::new(vec![], vec![OutPortKey::<Level>::from_u128(2).into()]),
+                    DiagnosticMeta::default(),
+                ),
+                NodeDef::new(
+                    key,
+                    NodeKind::<()>::not(),
+                    NodePorts::new(
+                        vec![InPortKey::<Level>::from_u128(3).into()],
+                        vec![OutPortKey::<Level>::from_u128(4).into()],
+                    ),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+            vec![],
+            vec![],
+            vec![],
+        );
+
+        let report = network.validate_structural();
+        let duplicate = report
+            .diagnostics()
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.problem().code() == DiagnosticCode::ValidationDuplicateKey
+            })
+            .unwrap_or_else(|| unreachable!("duplicate node key must be diagnosed"));
+        match duplicate.problem().evidence() {
+            ProblemEvidence::ValidationDuplicateKey { claims, .. } => {
+                assert_eq!(claims.len(), 2);
+                assert_ne!(claims[0], claims[1]);
+            }
+            _ => unreachable!("duplicate-key diagnostic has its registered evidence"),
+        }
     }
 }

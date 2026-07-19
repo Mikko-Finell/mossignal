@@ -7,13 +7,14 @@ use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, ConnectionKey,
     NetworkKey, NodeKey,
 };
-use crate::signal::SignalKind;
+use crate::metadata::OriginRef;
+use crate::signal::{LogicLevel, SignalKind};
 use core::cmp::Ordering;
 use core::marker::PhantomData;
 
 /// A stable subject to which a diagnostic condition applies.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SubjectRef {
     /// An authored network.
     Network(NetworkKey),
@@ -160,6 +161,55 @@ pub enum FixedArityRole {
     Output,
 }
 
+/// A lossless projection of one authored claim that conflicts on a stable key.
+///
+/// This keeps duplicate-key evidence independent of caller record order while
+/// retaining the authored facts needed to distinguish conflicting claims.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DuplicateClaim {
+    Node {
+        key: NodeKey,
+        kind: DuplicateNodeKind,
+        inputs: Vec<AnyInPortKey>,
+        outputs: Vec<AnyOutPortKey>,
+        origin: Option<OriginRef>,
+    },
+    InPort {
+        key: AnyInPortKey,
+        owner: NodeKey,
+        origin: Option<OriginRef>,
+    },
+    OutPort {
+        key: AnyOutPortKey,
+        owner: NodeKey,
+        origin: Option<OriginRef>,
+    },
+    Connection {
+        key: ConnectionKey,
+        source: SubjectRef,
+        target: SubjectRef,
+        origin: Option<OriginRef>,
+    },
+    ExternalInput {
+        key: AnyExternalInputKey,
+        origin: Option<OriginRef>,
+    },
+    ExternalOutput {
+        key: AnyExternalOutputKey,
+        source: SubjectRef,
+        origin: Option<OriginRef>,
+    },
+}
+
+/// The restricted node-kind facts retained by a duplicate node claim.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DuplicateNodeKind {
+    Constant(LogicLevel),
+    Not,
+}
+
 /// A safe, machine-readable correction.  The opening validation catalogue has
 /// no unambiguous automatic correction, so no constructors are exposed yet.
 #[non_exhaustive]
@@ -172,7 +222,7 @@ pub enum Suggestion {}
 pub enum ProblemEvidence<D> {
     ValidationDuplicateKey {
         key: SubjectRef,
-        claims: Vec<SubjectRef>,
+        claims: Vec<DuplicateClaim>,
         marker: PhantomData<fn() -> D>,
     },
     ValidationMissingNode {
@@ -227,7 +277,7 @@ pub enum ProblemEvidence<D> {
 impl<D> ProblemEvidence<D> {
     /// Evidence for a duplicate structural key condition.
     #[must_use]
-    pub fn duplicate_key(key: SubjectRef, claims: Vec<SubjectRef>) -> Self {
+    pub fn duplicate_key(key: SubjectRef, claims: Vec<DuplicateClaim>) -> Self {
         Self::ValidationDuplicateKey {
             key,
             claims,
@@ -335,9 +385,7 @@ impl<D> ProblemEvidence<D> {
         match self {
             // SPEC: docs/specs/contracts/diagnostic-collections.yaml
             // "initial-duplicate-key" — claims are a multiset, not a set.
-            Self::ValidationDuplicateKey { claims, .. } => {
-                claims.sort_by(SubjectRef::cmp_canonical);
-            }
+            Self::ValidationDuplicateKey { claims, .. } => claims.sort(),
             Self::ValidationUnsupportedMultipleDrivers { drivers, .. } => canonicalize(drivers),
             Self::ValidationInvalidFixedArity { ports, .. } => canonicalize(ports),
             _ => {}
@@ -881,9 +929,27 @@ mod tests {
         let evidence = ProblemEvidence::<()>::duplicate_key(
             SubjectRef::Node(NodeKey::from_u128(7)),
             vec![
-                SubjectRef::Node(NodeKey::from_u128(3)),
-                SubjectRef::Node(NodeKey::from_u128(3)),
-                SubjectRef::Node(NodeKey::from_u128(2)),
+                DuplicateClaim::Node {
+                    key: NodeKey::from_u128(3),
+                    kind: DuplicateNodeKind::Not,
+                    inputs: Vec::new(),
+                    outputs: Vec::new(),
+                    origin: None,
+                },
+                DuplicateClaim::Node {
+                    key: NodeKey::from_u128(3),
+                    kind: DuplicateNodeKind::Not,
+                    inputs: Vec::new(),
+                    outputs: Vec::new(),
+                    origin: None,
+                },
+                DuplicateClaim::Node {
+                    key: NodeKey::from_u128(2),
+                    kind: DuplicateNodeKind::Not,
+                    inputs: Vec::new(),
+                    outputs: Vec::new(),
+                    origin: None,
+                },
             ],
         );
         let problem = Problem::new(
@@ -895,9 +961,27 @@ mod tests {
             ProblemEvidence::ValidationDuplicateKey { claims, .. } => assert_eq!(
                 claims,
                 &[
-                    SubjectRef::Node(NodeKey::from_u128(2)),
-                    SubjectRef::Node(NodeKey::from_u128(3)),
-                    SubjectRef::Node(NodeKey::from_u128(3)),
+                    DuplicateClaim::Node {
+                        key: NodeKey::from_u128(2),
+                        kind: DuplicateNodeKind::Not,
+                        inputs: Vec::new(),
+                        outputs: Vec::new(),
+                        origin: None,
+                    },
+                    DuplicateClaim::Node {
+                        key: NodeKey::from_u128(3),
+                        kind: DuplicateNodeKind::Not,
+                        inputs: Vec::new(),
+                        outputs: Vec::new(),
+                        origin: None,
+                    },
+                    DuplicateClaim::Node {
+                        key: NodeKey::from_u128(3),
+                        kind: DuplicateNodeKind::Not,
+                        inputs: Vec::new(),
+                        outputs: Vec::new(),
+                        origin: None,
+                    },
                 ]
             ),
             _ => unreachable!("duplicate-key evidence was constructed"),

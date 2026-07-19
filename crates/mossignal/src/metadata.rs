@@ -90,7 +90,7 @@ impl DiagnosticPath {
 /// source label. The core library does not interpret or resolve it. An origin
 /// is not runtime provenance and does not describe causal execution history.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OriginRef {
     /// Arbitrary caller-defined source-correlation text.
     Text(String),
