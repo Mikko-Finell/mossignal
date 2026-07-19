@@ -2,10 +2,10 @@ schema_version: "0.1"
 id: mossignal.diagnostics.collections
 title: Deterministic diagnostic collections
 kind: artifact
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: 6b64c04ec050d7319473a0cd5a5bfea0d74d18c4
+  commit: 5491e4993dbc788d5240f62c874db146f07355cc
   working_tree: clean
 
 summary: >-
@@ -17,12 +17,17 @@ scope:
   includes:
     - DiagnosticSet<D> collection behavior
     - canonical diagnostic ordering
-    - condition identity, deduplication, and evidence merge laws
+    - common condition identity, deduplication, and evidence merge laws
+    - condition identity and merge laws for the nine opening structural-validation codes
   excludes:
     - individual problem construction and catalogue classification
     - report artifact presence and require_artifact behavior
     - runtime occurrences and persistent episode state
     - canonical persistence encoding itself
+
+known_uncovered:
+  - Condition discriminators and evidence merge laws for catalogue entries outside the nine opening structural-validation codes
+  - Module-binding, reassociation, and module-interface contexts not covered by the opening structural-validation laws
 
 aliases:
   - DiagnosticSet<D>
@@ -186,12 +191,7 @@ implementation_freedom:
   - Internal storage and iterator concrete types are unconstrained if observable order and merge laws hold.
   - Private enum and struct names, variant spelling, storage layout, helper types, construction APIs, and merge algorithms are unconstrained when the specified semantic distinctions and laws are preserved.
 
-open_questions:
-  - >-
-    Condition discriminators and evidence merge laws remain undefined for
-    catalogue entries outside the nine opening structural-validation codes and
-    for their undeveloped module-binding, reassociation, and module-interface
-    contexts.
+open_questions: []
 
 sources:
   catalogue-order:
@@ -199,26 +199,34 @@ sources:
     heading_path:
       - Part III — Reports, failures, ordering, and identity
       - 18. Deterministic ordering
+    reviewed_hash: sha256:90783b1eb53d943c08be043259440a5e180405a8a9c16ff4e001a43eee5fc0bf
   catalogue-dedup:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path:
       - Part III — Reports, failures, ordering, and identity
       - 19. Condition identity and deduplication
+    reviewed_hash: sha256:2efbd3f6e0d40ea076a88e9442a880fc32825ca6ecf711efc8d3a69f8fc0f783
   catalogue-permutation:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part VIII — Verification obligations, 56. Determinism and permutation tests]
+    reviewed_hash: sha256:f81bf0dfc8971eb6664629a0f8fb5164381c92b55232bf59f90f280d64022bd3
   catalogue-dedup-tests:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part VIII — Verification obligations, 57. Deduplication tests]
+    reviewed_hash: sha256:5df9c677e410949edd6c5119a1743914ab2a0126573ea03b46acec9598184b53
   concrete-collections:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part IX — Reports and diagnostics, 42. Diagnostic collections]
+    reviewed_hash: sha256:de2922954657583a5db2a6e25c43b3159981c692aeb19a8dcdbb2641912d5436
   concrete-subject-order:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part V — Stable identity, 19. Subject references, 19.1 Initial canonical diagnostic-subject order]
+    reviewed_hash: sha256:89ffd1a75a559912299acc71691fb93e14cfa8023685ffc983934c552e3585e7
   catalogue-evidence-families:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part II — Common structured representation, 14. Evidence families]
+    reviewed_hash: sha256:b3c64989f80820bde6700660664332fab797788ca9c3662b9b619fd2bf44a690
   catalogue-initial-laws:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions, 26.1 Initial structural-validation condition laws]
+    reviewed_hash: sha256:99122ea9f0cb739e535fe5a199c0dcf58fb2d399d1a4ab99798aeb7508238597

@@ -2,10 +2,10 @@ schema_version: "0.1"
 id: mossignal.diagnostics.subject_references
 title: Diagnostic subject references
 kind: family
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: 6b64c04ec050d7319473a0cd5a5bfea0d74d18c4
+  commit: 5491e4993dbc788d5240f62c874db146f07355cc
   working_tree: clean
 
 summary: >-
@@ -17,11 +17,14 @@ scope:
   includes:
     - the public SubjectRef family and related-subject roles
     - stable identity requirements for diagnostic subjects
-    - ordering-relevant subject identity
+    - canonical ordering for the seven initial authored-graph and structural-validation subject variants
   excludes:
     - diagnostic metadata and rendered labels
     - problem codes, evidence, and suggestions
     - provenance records and runtime diagnostic lifecycles
+
+known_uncovered:
+  - Canonical payload comparison for SubjectRef variants outside Network, Node, InPort, OutPort, Connection, ExternalInput, and ExternalOutput
 
 aliases:
   - SubjectRef
@@ -122,41 +125,46 @@ requirements:
 implementation_freedom:
   - Private representation and helper types may vary where the concrete API does not fix them.
 
-open_questions:
-  - >-
-    Canonical payload comparison remains undefined for the SubjectRef variants
-    outside Network, Node, InPort, OutPort, Connection, ExternalInput, and
-    ExternalOutput. Their reserved comparison tags do not determine their payload
-    order.
+open_questions: []
 
 sources:
   catalogue-subjects:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part II — Common structured representation, 11. Subjects]
+    reviewed_hash: sha256:9f8e9fc8d81edf929d398a0833aa1562a7416cda0745d7c9888b275c5fa58702
   catalogue-related:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part II — Common structured representation, 12. Related subjects]
+    reviewed_hash: sha256:fd8a6d572f8449d389c8f7f2d87d9f2845d2f1e7218ce0c98f30f49e0df21d4b
   catalogue-evidence-families:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part II — Common structured representation, 14. Evidence families]
+    reviewed_hash: sha256:b3c64989f80820bde6700660664332fab797788ca9c3662b9b619fd2bf44a690
   concrete-stable-keys:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part V — Stable identity, 16. Stable keys]
+    reviewed_hash: sha256:d25c413f9849a49c681f30c450c6784e57a59b707bdcfe8d1a465cc58f2a47a8
   concrete-erased-keys:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part V — Stable identity, 18. Erased stable keys]
+    reviewed_hash: sha256:0a0adf585a6bd71ed8c598fd49415df790597a2d0d59444f59f2da80e7166d0d
   concrete-subjects:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part V — Stable identity, 19. Subject references]
+    reviewed_hash: sha256:d5758ffef2453b1b2ef6cf396b6fdcfca0b3876797690269602674c843623480
   concrete-problems:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part IX — Reports and diagnostics, 41. Unified problem records and report findings]
+    reviewed_hash: sha256:a965b8ccf98ed45ad067b921de73a8cd0ec36e32e165257f8887beeee7de98c7
   concrete-shared-identity:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XXX — Public API coherence requirements, 107. Shared identity model]
+    reviewed_hash: sha256:f01cb262079618e45ee0a37f4b2df032e7c1119b9ba9c35686f6154ef7c4be90
   persistence-order:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]
+    reviewed_hash: sha256:5f6570e0c89a0135fe906534620d35ac9d378d28b9866a9e287cd2eeb96fdea1
   catalogue-permutation:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part VIII — Verification obligations, 56. Determinism and permutation tests]
+    reviewed_hash: sha256:f81bf0dfc8971eb6664629a0f8fb5164381c92b55232bf59f90f280d64022bd3
