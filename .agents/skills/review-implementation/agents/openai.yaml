@@ -1,0 +1,7 @@
+interface:
+  display_name: "Review Implementation"
+  short_description: "Correct and accept completed bead implementations"
+  default_prompt: "Use $review-implementation to inspect, correct, verify, and accept the completed implementation without reopening its bead."
+
+policy:
+  allow_implicit_invocation: true

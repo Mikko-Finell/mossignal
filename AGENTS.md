@@ -95,6 +95,30 @@ current slice, and continue.
   product commit contains implementation, tests, closed bead state, and the
   synchronized `.beads` record together.
 
+## Corrective implementation review
+
+In this repository, a request to review a completed bead means a corrective
+acceptance pass, not a findings-only code review. The implementation reviewer is
+authorized and expected to correct every in-scope defect it finds, add or repair
+verification, run the required checks, and leave the working tree in an
+acceptable state.
+
+Keep the completed bead closed while making review corrections. Finding defects
+does not invalidate the bead's scope or require reopening it. Do not change bead
+state merely to record that review work is underway, and do not create a new
+bead for corrections already required by the reviewed bead.
+
+Return findings without correction only when the user explicitly requests a
+read-only review or when correction requires a material scope change, unresolved
+observable product policy, new external authority, or changes to unrelated
+work. In the latter case, report the exact blocker and leave bead-state decisions
+to renewed planning or explicit user direction; do not independently reopen the
+bead.
+
+Use the `review-implementation` skill for the acceptance procedure. Reviewers
+must preserve unrelated work, reuse unchanged reviewed contracts, and avoid
+turning optional improvements or adjacent future work into acceptance blockers.
+
 ## Architecture and failure discipline
 
 - Start with modules. Add crates only for durable independent boundaries.
