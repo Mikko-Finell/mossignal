@@ -114,44 +114,9 @@ pub enum DiagnosticCode {
     InternalDiagnosticEvidenceConflict,
 }
 
-impl DiagnosticCode {
-    /// Returns the stable dotted spelling of this catalogue entry.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ValidationDuplicateKey => "validation.duplicate_key",
-            Self::ValidationMissingNode => "validation.missing_node",
-            Self::ValidationMissingPort => "validation.missing_port",
-            Self::ValidationMissingEndpoint => "validation.missing_endpoint",
-            Self::ValidationInvalidDirection => "validation.invalid_direction",
-            Self::ValidationSignalKindMismatch => "validation.signal_kind_mismatch",
-            Self::ValidationUnsupportedMultipleDrivers => "validation.unsupported_multiple_drivers",
-            Self::ValidationMissingRequiredInput => "validation.missing_required_input",
-            Self::ValidationInvalidFixedArity => "validation.invalid_fixed_arity",
-            Self::InternalDiagnosticEvidenceConflict => "internal.diagnostic_evidence_conflict",
-        }
-    }
-
-    const fn specification(self) -> CodeSpecification {
-        const VALIDATION: CodeSpecification = CodeSpecification {
-            severity: Severity::Error,
-            responsibility: Responsibility::CallerInput,
-            report_finding: true,
-        };
-        const DEFECT: CodeSpecification = CodeSpecification {
-            severity: Severity::Error,
-            responsibility: Responsibility::LibraryDefect,
-            report_finding: false,
-        };
-        match self {
-            Self::InternalDiagnosticEvidenceConflict => DEFECT,
-            _ => VALIDATION,
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 struct CodeSpecification {
+    code: &'static str,
     severity: Severity,
     responsibility: Responsibility,
     report_finding: bool,
@@ -242,6 +207,11 @@ pub enum ProblemEvidence<D> {
         ports: Vec<SubjectRef>,
         expected: usize,
         encountered: usize,
+        marker: PhantomData<fn() -> D>,
+    },
+    InternalDiagnosticEvidenceConflict {
+        conflicting_code: DiagnosticCode,
+        conflicting_primary: SubjectRef,
         marker: PhantomData<fn() -> D>,
     },
 }
@@ -347,38 +317,69 @@ impl<D> ProblemEvidence<D> {
         }
     }
 
-    fn code(&self) -> DiagnosticCode {
-        match self {
-            Self::ValidationDuplicateKey { .. } => DiagnosticCode::ValidationDuplicateKey,
-            Self::ValidationMissingNode { .. } => DiagnosticCode::ValidationMissingNode,
-            Self::ValidationMissingPort { .. } => DiagnosticCode::ValidationMissingPort,
-            Self::ValidationMissingEndpoint { .. } => DiagnosticCode::ValidationMissingEndpoint,
-            Self::ValidationInvalidDirection { .. } => DiagnosticCode::ValidationInvalidDirection,
-            Self::ValidationSignalKindMismatch { .. } => {
-                DiagnosticCode::ValidationSignalKindMismatch
-            }
-            Self::ValidationUnsupportedMultipleDrivers { .. } => {
-                DiagnosticCode::ValidationUnsupportedMultipleDrivers
-            }
-            Self::ValidationMissingRequiredInput { .. } => {
-                DiagnosticCode::ValidationMissingRequiredInput
-            }
-            Self::ValidationInvalidFixedArity { .. } => DiagnosticCode::ValidationInvalidFixedArity,
-        }
-    }
-
     fn canonicalize(&mut self) {
         let canonicalize = |subjects: &mut Vec<SubjectRef>| {
             subjects.sort_by(SubjectRef::cmp_canonical);
             subjects.dedup();
         };
         match self {
-            Self::ValidationDuplicateKey { claims, .. } => canonicalize(claims),
+            // SPEC: docs/specs/contracts/diagnostic-collections.yaml
+            // "initial-duplicate-key" — claims are a multiset, not a set.
+            Self::ValidationDuplicateKey { claims, .. } => {
+                claims.sort_by(SubjectRef::cmp_canonical);
+            }
             Self::ValidationUnsupportedMultipleDrivers { drivers, .. } => canonicalize(drivers),
             Self::ValidationInvalidFixedArity { ports, .. } => canonicalize(ports),
             _ => {}
         }
     }
+}
+
+// SPEC: docs/specs/contracts/diagnostic-problem-model.yaml
+// "authoritative-registry" — code spelling, classification, delivery, and
+// evidence association are declared together so they cannot drift apart.
+macro_rules! opening_diagnostic_registry {
+    ($( $code:ident, $evidence:pat, $spelling:literal, $severity:ident, $responsibility:ident, $report_finding:expr; )+) => {
+        impl DiagnosticCode {
+            /// Returns the stable dotted spelling of this catalogue entry.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                self.specification().code
+            }
+
+            const fn specification(self) -> CodeSpecification {
+                match self {
+                    $(Self::$code => CodeSpecification {
+                        code: $spelling,
+                        severity: Severity::$severity,
+                        responsibility: Responsibility::$responsibility,
+                        report_finding: $report_finding,
+                    },)+
+                }
+            }
+        }
+
+        impl<D> ProblemEvidence<D> {
+            fn code(&self) -> DiagnosticCode {
+                match self {
+                    $($evidence => DiagnosticCode::$code,)+
+                }
+            }
+        }
+    };
+}
+
+opening_diagnostic_registry! {
+    ValidationDuplicateKey, Self::ValidationDuplicateKey { .. }, "validation.duplicate_key", Error, CallerInput, true;
+    ValidationMissingNode, Self::ValidationMissingNode { .. }, "validation.missing_node", Error, CallerInput, true;
+    ValidationMissingPort, Self::ValidationMissingPort { .. }, "validation.missing_port", Error, CallerInput, true;
+    ValidationMissingEndpoint, Self::ValidationMissingEndpoint { .. }, "validation.missing_endpoint", Error, CallerInput, true;
+    ValidationInvalidDirection, Self::ValidationInvalidDirection { .. }, "validation.invalid_direction", Error, CallerInput, true;
+    ValidationSignalKindMismatch, Self::ValidationSignalKindMismatch { .. }, "validation.signal_kind_mismatch", Error, CallerInput, true;
+    ValidationUnsupportedMultipleDrivers, Self::ValidationUnsupportedMultipleDrivers { .. }, "validation.unsupported_multiple_drivers", Error, CallerInput, true;
+    ValidationMissingRequiredInput, Self::ValidationMissingRequiredInput { .. }, "validation.missing_required_input", Error, CallerInput, true;
+    ValidationInvalidFixedArity, Self::ValidationInvalidFixedArity { .. }, "validation.invalid_fixed_arity", Error, CallerInput, true;
+    InternalDiagnosticEvidenceConflict, Self::InternalDiagnosticEvidenceConflict { .. }, "internal.diagnostic_evidence_conflict", Error, LibraryDefect, false;
 }
 
 /// One structured, catalogue-valid problem record.
@@ -393,7 +394,7 @@ pub struct Problem<D> {
 
 impl<D> Problem<D> {
     /// Creates a problem only when its code and evidence are the catalogue pair.
-    pub fn new(
+    pub(crate) fn new(
         primary: SubjectRef,
         related: Vec<RelatedSubject>,
         mut evidence: ProblemEvidence<D>,
@@ -406,6 +407,21 @@ impl<D> Problem<D> {
             evidence,
             suggestions: Vec::new(),
         }
+    }
+
+    fn evidence_conflict(
+        conflicting_code: DiagnosticCode,
+        conflicting_primary: SubjectRef,
+    ) -> Self {
+        Self::new(
+            conflicting_primary,
+            Vec::new(),
+            ProblemEvidence::InternalDiagnosticEvidenceConflict {
+                conflicting_code,
+                conflicting_primary,
+                marker: PhantomData,
+            },
+        )
     }
     #[must_use]
     pub const fn code(&self) -> DiagnosticCode {
@@ -466,6 +482,7 @@ impl<D> Diagnostic<D> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiagnosticSet<D> {
     findings: Vec<Diagnostic<D>>,
+    internal_defects: Vec<Problem<D>>,
 }
 
 impl<D> DiagnosticSet<D> {
@@ -473,6 +490,7 @@ impl<D> DiagnosticSet<D> {
     pub const fn new() -> Self {
         Self {
             findings: Vec::new(),
+            internal_defects: Vec::new(),
         }
     }
     #[must_use]
@@ -486,11 +504,20 @@ impl<D> DiagnosticSet<D> {
     pub fn iter(&self) -> impl Iterator<Item = &Diagnostic<D>> {
         self.findings.iter()
     }
+    /// Returns internal invariant failures discovered while merging findings.
+    #[must_use]
+    pub fn internal_defects(&self) -> &[Problem<D>] {
+        &self.internal_defects
+    }
     #[must_use]
     pub fn has_severity(&self, severity: Severity) -> bool {
         self.findings
             .iter()
             .any(|finding| finding.problem().severity() == severity)
+            || self
+                .internal_defects
+                .iter()
+                .any(|defect| defect.severity() == severity)
     }
     pub fn insert(&mut self, diagnostic: Diagnostic<D>)
     where
@@ -501,15 +528,44 @@ impl<D> DiagnosticSet<D> {
             .iter()
             .position(|old| same_condition(old.problem(), diagnostic.problem()))
         {
-            if self.findings[existing] == diagnostic {
-                return;
+            let code = self.findings[existing].problem.code;
+            let primary = self.findings[existing].problem.primary;
+            let result = merge_evidence(
+                &mut self.findings[existing].problem.evidence,
+                diagnostic.problem.evidence,
+            );
+            match result {
+                Ok(()) => {}
+                Err(()) => self.record_evidence_conflict(code, primary),
             }
-            // The internal-defect delivery is deliberately not admitted to a report.
-            // Keep the existing finding rather than letting detector order choose a value.
+            self.findings.sort_by(compare_diagnostics);
             return;
         }
         self.findings.push(diagnostic);
         self.findings.sort_by(compare_diagnostics);
+    }
+
+    fn record_evidence_conflict(&mut self, code: DiagnosticCode, primary: SubjectRef) {
+        if self.internal_defects.iter().any(|defect| {
+            defect.code == DiagnosticCode::InternalDiagnosticEvidenceConflict
+                && defect.primary == primary
+                && matches!(
+                    defect.evidence,
+                    ProblemEvidence::InternalDiagnosticEvidenceConflict {
+                        conflicting_code,
+                        ..
+                    } if conflicting_code == code
+                )
+        }) {
+            return;
+        }
+        self.internal_defects
+            .push(Problem::evidence_conflict(code, primary));
+        self.internal_defects.sort_by(|left, right| {
+            left.primary
+                .cmp_canonical(&right.primary)
+                .then_with(|| left.code.as_str().cmp(right.code.as_str()))
+        });
     }
 }
 
@@ -522,7 +578,95 @@ impl<D> IntoIterator for DiagnosticSet<D> {
 }
 
 fn same_condition<D>(left: &Problem<D>, right: &Problem<D>) -> bool {
-    left.code == right.code && left.primary == right.primary
+    left.code == right.code
+        && left.primary == right.primary
+        && condition_discriminator(&left.evidence) == condition_discriminator(&right.evidence)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConditionDiscriminator {
+    Subject(SubjectRef),
+    SubjectAndKind(SubjectRef, SignalKind),
+    Subjects(SubjectRef, SubjectRef),
+    Required(SubjectRef, SignalKind),
+    Arity(usize, usize),
+    Empty,
+    Internal(DiagnosticCode, SubjectRef),
+}
+
+fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscriminator {
+    match evidence {
+        ProblemEvidence::ValidationDuplicateKey { key, .. } => {
+            ConditionDiscriminator::Subject(*key)
+        }
+        ProblemEvidence::ValidationMissingNode { missing, .. } => {
+            ConditionDiscriminator::Subject(SubjectRef::Node(*missing))
+        }
+        ProblemEvidence::ValidationMissingPort {
+            missing,
+            expected_kind,
+            ..
+        }
+        | ProblemEvidence::ValidationMissingEndpoint {
+            missing,
+            expected_kind,
+            ..
+        } => ConditionDiscriminator::SubjectAndKind(*missing, *expected_kind),
+        ProblemEvidence::ValidationInvalidDirection { source, target, .. } => {
+            ConditionDiscriminator::Subjects(*source, *target)
+        }
+        ProblemEvidence::ValidationSignalKindMismatch { .. }
+        | ProblemEvidence::ValidationUnsupportedMultipleDrivers { .. } => {
+            ConditionDiscriminator::Empty
+        }
+        ProblemEvidence::ValidationMissingRequiredInput {
+            required,
+            expected_kind,
+            ..
+        } => ConditionDiscriminator::Required(*required, *expected_kind),
+        ProblemEvidence::ValidationInvalidFixedArity {
+            expected,
+            encountered,
+            ..
+        } => ConditionDiscriminator::Arity(*expected, *encountered),
+        ProblemEvidence::InternalDiagnosticEvidenceConflict {
+            conflicting_code,
+            conflicting_primary,
+            ..
+        } => ConditionDiscriminator::Internal(*conflicting_code, *conflicting_primary),
+    }
+}
+
+fn merge_evidence<D: PartialEq>(
+    existing: &mut ProblemEvidence<D>,
+    incoming: ProblemEvidence<D>,
+) -> Result<(), ()> {
+    match (existing, incoming) {
+        (
+            ProblemEvidence::ValidationUnsupportedMultipleDrivers { drivers, .. },
+            ProblemEvidence::ValidationUnsupportedMultipleDrivers {
+                drivers: incoming, ..
+            },
+        ) => {
+            drivers.extend(incoming);
+            drivers.sort_by(SubjectRef::cmp_canonical);
+            drivers.dedup();
+            Ok(())
+        }
+        (
+            ProblemEvidence::ValidationInvalidFixedArity { ports, .. },
+            ProblemEvidence::ValidationInvalidFixedArity {
+                ports: incoming, ..
+            },
+        ) => {
+            ports.extend(incoming);
+            ports.sort_by(SubjectRef::cmp_canonical);
+            ports.dedup();
+            Ok(())
+        }
+        (existing, incoming) if *existing == incoming => Ok(()),
+        _ => Err(()),
+    }
 }
 fn compare_diagnostics<D>(left: &Diagnostic<D>, right: &Diagnostic<D>) -> Ordering {
     let left = left.problem();
@@ -532,6 +676,64 @@ fn compare_diagnostics<D>(left: &Diagnostic<D>, right: &Diagnostic<D>) -> Orderi
         .cmp(&right.severity().rank())
         .then_with(|| left.code.as_str().cmp(right.code.as_str()))
         .then_with(|| left.primary.cmp_canonical(&right.primary))
+        .then_with(|| {
+            compare_discriminators(
+                condition_discriminator(&left.evidence),
+                condition_discriminator(&right.evidence),
+            )
+        })
+}
+
+fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscriminator) -> Ordering {
+    fn tag(value: ConditionDiscriminator) -> u8 {
+        match value {
+            ConditionDiscriminator::Subject(_) => 0,
+            ConditionDiscriminator::SubjectAndKind(_, _) => 1,
+            ConditionDiscriminator::Subjects(_, _) => 2,
+            ConditionDiscriminator::Required(_, _) => 3,
+            ConditionDiscriminator::Arity(_, _) => 4,
+            ConditionDiscriminator::Empty => 5,
+            ConditionDiscriminator::Internal(_, _) => 6,
+        }
+    }
+    tag(left)
+        .cmp(&tag(right))
+        .then_with(|| match (left, right) {
+            (ConditionDiscriminator::Subject(left), ConditionDiscriminator::Subject(right)) => {
+                left.cmp_canonical(&right)
+            }
+            (
+                ConditionDiscriminator::SubjectAndKind(left_subject, left_kind),
+                ConditionDiscriminator::SubjectAndKind(right_subject, right_kind),
+            ) => left_subject
+                .cmp_canonical(&right_subject)
+                .then_with(|| left_kind.cmp(&right_kind)),
+            (
+                ConditionDiscriminator::Subjects(left_first, left_second),
+                ConditionDiscriminator::Subjects(right_first, right_second),
+            ) => left_first
+                .cmp_canonical(&right_first)
+                .then_with(|| left_second.cmp_canonical(&right_second)),
+            (
+                ConditionDiscriminator::Required(left_subject, left_kind),
+                ConditionDiscriminator::Required(right_subject, right_kind),
+            ) => left_subject
+                .cmp_canonical(&right_subject)
+                .then_with(|| left_kind.cmp(&right_kind)),
+            (
+                ConditionDiscriminator::Arity(left_expected, left_encountered),
+                ConditionDiscriminator::Arity(right_expected, right_encountered),
+            ) => left_expected
+                .cmp(&right_expected)
+                .then_with(|| left_encountered.cmp(&right_encountered)),
+            (
+                ConditionDiscriminator::Internal(left_code, left_subject),
+                ConditionDiscriminator::Internal(right_code, right_subject),
+            ) => left_code
+                .cmp(&right_code)
+                .then_with(|| left_subject.cmp_canonical(&right_subject)),
+            _ => Ordering::Equal,
+        })
 }
 
 /// An artifact together with all independently collectable findings.
@@ -652,5 +854,106 @@ mod tests {
         set.insert(missing::<()>(1, 2));
         set.insert(missing::<()>(1, 2));
         assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn distinct_missing_references_on_one_owner_do_not_collapse() {
+        let mut set = DiagnosticSet::new();
+        set.insert(missing::<()>(1, 2));
+        set.insert(missing::<()>(1, 3));
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_claims_remain_a_canonical_multiset() {
+        let evidence = ProblemEvidence::<()>::duplicate_key(
+            SubjectRef::Node(NodeKey::from_u128(7)),
+            vec![
+                SubjectRef::Node(NodeKey::from_u128(3)),
+                SubjectRef::Node(NodeKey::from_u128(3)),
+                SubjectRef::Node(NodeKey::from_u128(2)),
+            ],
+        );
+        let problem = Problem::new(
+            SubjectRef::Network(NetworkKey::from_u128(1)),
+            Vec::new(),
+            evidence,
+        );
+        match problem.evidence() {
+            ProblemEvidence::ValidationDuplicateKey { claims, .. } => assert_eq!(
+                claims,
+                &[
+                    SubjectRef::Node(NodeKey::from_u128(2)),
+                    SubjectRef::Node(NodeKey::from_u128(3)),
+                    SubjectRef::Node(NodeKey::from_u128(3)),
+                ]
+            ),
+            _ => unreachable!("duplicate-key evidence was constructed"),
+        }
+    }
+
+    #[test]
+    fn driver_evidence_merges_as_a_canonical_set() {
+        let primary = SubjectRef::InPort(AnyInPortKey::from(InPortKey::<Level>::from_u128(1)));
+        let make = |drivers| {
+            Diagnostic::new(Problem::new(
+                primary,
+                Vec::new(),
+                ProblemEvidence::<()>::unsupported_multiple_drivers(drivers),
+            ))
+            .unwrap_or_else(|_| unreachable!("validation code is reportable"))
+        };
+        let mut set = DiagnosticSet::new();
+        set.insert(make(vec![SubjectRef::Node(NodeKey::from_u128(3))]));
+        set.insert(make(vec![
+            SubjectRef::Node(NodeKey::from_u128(2)),
+            SubjectRef::Node(NodeKey::from_u128(3)),
+        ]));
+        assert_eq!(set.len(), 1);
+        match set
+            .iter()
+            .next()
+            .map(Diagnostic::problem)
+            .map(Problem::evidence)
+        {
+            Some(ProblemEvidence::ValidationUnsupportedMultipleDrivers { drivers, .. }) => {
+                assert_eq!(
+                    drivers,
+                    &[
+                        SubjectRef::Node(NodeKey::from_u128(2)),
+                        SubjectRef::Node(NodeKey::from_u128(3)),
+                    ]
+                );
+            }
+            _ => unreachable!("merged driver evidence is retained"),
+        }
+    }
+
+    #[test]
+    fn contradictory_exact_evidence_records_an_internal_defect() {
+        let primary = SubjectRef::Connection(ConnectionKey::from_u128(1));
+        let make = |source| {
+            Diagnostic::new(Problem::new(
+                primary,
+                Vec::new(),
+                ProblemEvidence::<()>::signal_kind_mismatch(
+                    source,
+                    SubjectRef::Node(NodeKey::from_u128(2)),
+                    SignalKind::Level,
+                    SignalKind::Pulse,
+                ),
+            ))
+            .unwrap_or_else(|_| unreachable!("validation code is reportable"))
+        };
+        let mut set = DiagnosticSet::new();
+        set.insert(make(SubjectRef::Node(NodeKey::from_u128(3))));
+        set.insert(make(SubjectRef::Node(NodeKey::from_u128(4))));
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.internal_defects().len(), 1);
+        assert_eq!(
+            set.internal_defects()[0].code(),
+            DiagnosticCode::InternalDiagnosticEvidenceConflict
+        );
+        assert_eq!(Report::new(Some(7), set).artifact(), None);
     }
 }
