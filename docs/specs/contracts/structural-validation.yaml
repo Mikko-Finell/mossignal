@@ -2,7 +2,7 @@ schema_version: "0.1"
 id: mossignal.graph.structural_validation
 title: Restricted authored-graph structural validation
 kind: lifecycle
-status: draft
+status: reviewed
 
 source_baseline:
   commit: 127880ff31faef7a21e307cd459b07ad38b7a885
@@ -98,45 +98,60 @@ sources:
   api-ports:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part I — Semantic model, 7. Ports and connections]
+    reviewed_hash: sha256:c30b22ff5539f17f253f589aff78f5cb40afd98f76ed72558cebef88922979df
   api-unchecked-network:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part II — Canonical object model, 12. `UncheckedNetwork<D>`]
+    reviewed_hash: sha256:77c62e3bd2aaa3fc36dba2670335e29fe6ad9999ba5dd32a9d785180e828a45b
   api-lifecycle:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part II — Canonical object model, 10. Lifecycle]
+    reviewed_hash: sha256:9fa79523eaa89adb07ecf350c93955cdea6fc67c2248fe048f7fac979c871f7c
   api-validated-network:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:d090849e1775829dc46e65e7009fd35260069c424ea5dddf8aba7afc4b43b8bd
   api-validation-coverage:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VIII — Diagnostics, 46. Required validation coverage]
+    reviewed_hash: sha256:4b67b4241f37763437a7523a4c99a3c729c9b9c4d72a2824b73e4b88b67cfc38
   api-reports:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VIII — Diagnostics, 45. Reports]
+    reviewed_hash: sha256:20197431f1ff31d0d39de2a9463f1688aea0f9e0f56323267fac4ef5177684e6
   runtime-validated:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part I — Representation and ownership, 3. Lifecycle, 3.2 Validated definitions]
+    reviewed_hash: sha256:bce0327b9e96a9bedb087bd44732edea91a77a9153e182800d37315172497da1
   concrete-validation:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VIII — Dynamic network definitions, 39. Validation]
+    reviewed_hash: sha256:4b3d66c17374bf711e897f416349df466f4a3c4f27967cbd0e0f0f0257e6476a
   concrete-validated-network:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part X — Validation and compilation artifacts, 43. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:c652c4df434ea33d94f3a03992d89119e169c18619c269d04137ea5bf4d66664
   builtin-constant-not:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part II — Level combinational nodes]
+    reviewed_hash: sha256:038545ba03a4ee0e252830eabbf9d20c7e9fecceffb7cbf590fca131ac711ef9
   catalogue-validation:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions]
+    reviewed_hash: sha256:54ed4c0802ae57302b12430869388ea3458ed3685823e34b95d2f35348bc7313
   catalogue-initial-laws:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions, 26.1 Initial structural-validation condition laws]
+    reviewed_hash: sha256:99122ea9f0cb739e535fe5a199c0dcf58fb2d399d1a4ab99798aeb7508238597
   verification-validation:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part V — Validation and compilation verification, 18. Validation soundness]
+    reviewed_hash: sha256:7e7bd7cced7e93356936c7bf1017af878f79a818d1532f705d40609f2d9e9ee5
   verification-reports:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part XIII — Diagnostic verification, 77. Validation report behavior]
+    reviewed_hash: sha256:de1999b5d46991c155959b33065654f33ff32b66bc431a4d24ab0165f5a97b9b
   verification-diagnostic-conformance:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part XIII — Diagnostic verification, 74. Structured diagnostic conformance]
+    reviewed_hash: sha256:2a9449312adf0c09ce27b88156e3e18d40fbbf73f489188b30f9376c88ab4005
