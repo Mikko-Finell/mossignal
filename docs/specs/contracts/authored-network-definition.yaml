@@ -1,0 +1,179 @@
+schema_version: "0.1"
+id: mossignal.graph.authored_network_definition
+title: Unchecked authored network definition
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 320318e8cda31aed65d2ce1bbd3e7d8f927111d5
+  working_tree: clean
+
+summary: >-
+  UncheckedNetwork<D> is the owned, stable-keyed authoritative structural graph
+  for dynamic, deserialized, generated, and low-level authored definitions. It
+  retains malformed claims for later structured validation rather than silently
+  repairing or discarding them.
+
+scope:
+  includes:
+    - unchecked network identity, nodes, typed ports, connections, and external endpoints
+    - stable-keyed dynamic definition records and diagnostic metadata attachment
+    - Constant and Not node-definition shapes
+    - preservation of malformed authored claims until validation
+  excludes:
+    - typed NetworkBuilder authoring
+    - structural validation and diagnostic emission
+    - reaction dependency extraction, causality validation, compilation, and execution
+    - modules, persistence encoding, and topology patches
+
+aliases:
+  - UncheckedNetwork<D>
+  - NodeDef<D>
+  - NodeKind<D>
+  - ConnectionDef
+  - ExternalInputDef
+  - ExternalOutputDef
+
+requirements:
+  - id: authoritative-structural-graph
+    kind: semantic
+    statement: >-
+      The authored network is the authoritative directed typed structural graph
+      for stable identity, persistence, diagnostics, patching, hierarchy, and
+      graph queries; it contains nodes, ports, connections, external endpoints,
+      modules, and stable keys, while not defining reaction evaluation order.
+    sources: [runtime-structural-graph]
+
+  - id: unchecked-owned-definition
+    kind: public_surface
+    statement: >-
+      UncheckedNetwork<D> is an owned dynamic definition and the canonical public
+      form for deserialized, editor-authored, generated, explicit low-level, and
+      malformed-fuzzing inputs; invalid instances must be constructible safely
+      and must neither compile nor instantiate directly.
+    sources: [api-unchecked-network, concrete-unchecked-network]
+
+  - id: stable-keyed-records
+    kind: public_surface
+    statement: >-
+      Dynamic definitions retain stable node, typed port, connection, and
+      external-endpoint keys; a connection owns its own key and diagnostic
+      metadata and links one signal source to one input endpoint, while an
+      external output owns a key, source, and metadata.
+    sources: [api-ports-connections, concrete-dynamic-ports]
+
+  - id: kind-aware-endpoints
+    kind: semantic
+    statement: >-
+      The authored representation must preserve level and pulse distinctions in
+      typed keys and erased heterogeneous endpoint forms. Connections may retain
+      dangling references, incompatible kinds, invalid direction, and conflicting
+      drivers for later validation instead of repairing them during construction.
+    sources: [api-ports-connections, concrete-dynamic-ports, catalogue-validation]
+    basis: derived
+
+  - id: direction-invalid-claims
+    kind: public_surface
+    statement: >-
+      The unchecked connection-claim representation must retain endpoint category
+      and signal kind in each position even when a supplied endpoint has the wrong
+      source or destination direction, so validation can report that claim without
+      constructor-time rejection or repair.
+    sources: [api-unchecked-network, concrete-dynamic-ports, catalogue-validation]
+    basis: derived
+
+  - id: malformed-claims-retained
+    kind: prohibition
+    statement: >-
+      Storage must preserve malformed authored claims, including duplicate keys,
+      rather than silently overwriting, deduplicating, defaulting missing fixed
+      inputs, or otherwise erasing the information needed for later structured
+      diagnostics.
+    sources: [api-unchecked-network, catalogue-validation]
+
+  - id: metadata-separate-from-semantics
+    kind: semantic
+    statement: >-
+      Relevant authored elements may carry DiagnosticMeta, whose human-readable
+      identity remains separate from structural identity and must not affect
+      execution, state compatibility, or semantic fingerprints.
+    sources: [api-diagnostic-metadata]
+
+  - id: constant-and-not-shapes
+    kind: public_surface
+    statement: >-
+      Constant has no inputs, one level output, and a LogicLevel configuration;
+      Not has one level input and one level output. Their complete runtime laws,
+      dependency signatures, validation, and evaluation are separate concerns.
+    sources: [builtins-constant-not]
+
+  - id: external-boundaries
+    kind: semantic
+    statement: >-
+      External inputs and outputs are level- or pulse-typed network boundaries,
+      not ordinary nodes. Inputs receive transaction-supplied values and outputs
+      expose internal signals without transforming or consuming them.
+    sources: [builtins-external-boundaries]
+
+  - id: future-validation-transition
+    kind: lifecycle
+    statement: >-
+      Validation is the one-way transition from UncheckedNetwork<D> to
+      ValidatedNetwork<D>; malformed definitions must produce structured
+      diagnostics without panicking, and only a validated network may compile.
+    sources: [api-lifecycle, concrete-validation]
+
+implementation_freedom:
+  - Private collection layout may use vectors or other lossless storage that retains duplicate claims.
+  - The exact Rust spelling and module placement of the restricted initial definition records are not fixed beyond the represented public concepts.
+  - Initial implementation slices may defer modules and node kinds without creating placeholder runtime semantics.
+
+open_questions: []
+
+sources:
+  api-ports-connections:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 7. Ports and connections]
+    reviewed_hash: sha256:c30b22ff5539f17f253f589aff78f5cb40afd98f76ed72558cebef88922979df
+  api-unchecked-network:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 12. `UncheckedNetwork<D>`]
+    reviewed_hash: sha256:77c62e3bd2aaa3fc36dba2670335e29fe6ad9999ba5dd32a9d785180e828a45b
+  api-lifecycle:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 10. Lifecycle]
+    reviewed_hash: sha256:9fa79523eaa89adb07ecf350c93955cdea6fc67c2248fe048f7fac979c871f7c
+  api-diagnostic-metadata:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 18. Diagnostic metadata
+    reviewed_hash: sha256:4e6ea6476f679fbc84a41b53a9f8107f63879ce17e32f024bf0a715716c13a69
+  concrete-unchecked-network:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 36. `UncheckedNetwork<D>`]
+    reviewed_hash: sha256:a358396830c4392be381644d06334a5b62e285d58471562d62b4273841492071
+  concrete-dynamic-ports:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 38. Dynamic ports and connections]
+    reviewed_hash: sha256:5fbea1f67eb6eea247e70168f60b4b3c3c348da10d98ab75e5b30406712e01ca
+  concrete-validation:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 39. Validation]
+    reviewed_hash: sha256:4b3d66c17374bf711e897f416349df466f4a3c4f27967cbd0e0f0f0257e6476a
+  runtime-structural-graph:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 13. Structural graph]
+    reviewed_hash: sha256:13afeacf095b272e64162817fd64fc0c363133b7a1cc39c6189bfc3a614ffc92
+  builtins-constant-not:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part II — Level combinational nodes]
+    reviewed_hash: sha256:038545ba03a4ee0e252830eabbf9d20c7e9fecceffb7cbf590fca131ac711ef9
+  builtins-external-boundaries:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VII — Boundaries and utilities, 56. External inputs and outputs]
+    reviewed_hash: sha256:b282a1bb18f53ca05fb926b663570703f7d21c3ad4d5f4499dc8246b0cb31749
+  catalogue-validation:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions]
+    reviewed_hash: sha256:54ed4c0802ae57302b12430869388ea3458ed3685823e34b95d2f35348bc7313
