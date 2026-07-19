@@ -1,0 +1,108 @@
+schema_version: "0.1"
+id: mossignal.graph.current_reaction_dependency_graph
+title: Current-reaction dependency graph
+kind: artifact
+status: draft
+
+source_baseline:
+  commit: 9818f93def8d77f0f4ee94a37a114ef36ac8c8dc
+  working_tree: clean
+
+summary: >-
+  The current-reaction dependency graph is the stable-subject correspondence
+  between authored signal flow and the operations whose current results may
+  depend on one another. It is derived from conservative node signatures,
+  separately from the authored structural graph and before cycle analysis or
+  executable compilation.
+
+scope:
+  includes:
+    - conceptual reaction facts, operations, and current-output vertices
+    - directed current-reaction dependency relation and its stable subject correspondence
+    - conservative static signature rules for the restricted Constant and Not nodes
+    - deterministic inspection of the derived dependency relation
+  excludes:
+    - SCC decomposition, cycle diagnostics, and topological ordering
+    - public ValidatedNetwork construction
+    - dense compiled layouts and reaction evaluation
+    - stateful, temporal, module, and variadic node signatures
+
+known_uncovered:
+  - Reaction facts for external inputs, previous state, and due events beyond the restricted Constant/Not slice
+  - Dependency signatures for all node kinds other than Constant and Not
+  - Cycle witnesses and deterministic topological metadata
+
+aliases:
+  - current-reaction graph
+  - reaction dependency graph
+  - static dependency signature
+
+requirements:
+  - id: graph-model
+    kind: semantic
+    statement: >-
+      The graph represents current-reaction facts and deterministic evaluation
+      operations, with an edge u -> v precisely when v's current-reaction result
+      may depend on u's current-reaction result. Authored structure and the
+      reaction dependency graph are distinct models.
+    sources: [runtime-graph, api-causality]
+
+  - id: conservative-static-signatures
+    kind: semantic
+    statement: >-
+      A node signature includes every current input-to-current output influence
+      possible under any valid state or parameter configuration; it does not
+      depend on current runtime values. For the restricted nodes, Constant has
+      no current input-to-output dependency and Not has one level-input to
+      level-output dependency.
+    sources: [runtime-signatures, builtin-signatures]
+
+  - id: stable-subject-correspondence
+    kind: semantic
+    statement: >-
+      The derived graph must retain a deterministic correspondence between its
+      operations and the relevant authored stable subjects, rather than using
+      insertion order or dense storage identity as authoritative identity.
+    sources: [verification-compilation, api-causality]
+
+  - id: pre-semantic-private-boundary
+    kind: lifecycle
+    statement: >-
+      Deriving the dependency relation before cycle validation may use private
+      data, but it does not establish ValidatedNetwork or authorize compilation:
+      the complete current-reaction graph must be acyclic before compilation.
+    sources: [api-causality, runtime-validated]
+
+  - id: graph-verification
+    kind: verification
+    statement: >-
+      Tests must cover the restricted signatures and show that semantically
+      equivalent stable-keyed definitions with different insertion order produce
+      the same reaction dependency relation.
+    sources: [verification-compilation]
+
+implementation_freedom:
+  - Private operation and graph type names, storage layout, and inspection helpers are unconstrained.
+  - The restricted extraction may defer reaction roots not represented by the current authored model.
+
+open_questions: []
+
+sources:
+  runtime-graph:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 15. Reaction dependency graph]
+  runtime-signatures:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 17. Static dependency signatures]
+  runtime-validated:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 3. Lifecycle, 3.2 Validated definitions]
+  api-causality:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 8. Current-reaction causality and cycles]
+  builtin-signatures:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+  verification-compilation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
