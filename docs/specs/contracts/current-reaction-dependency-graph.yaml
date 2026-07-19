@@ -2,7 +2,7 @@ schema_version: "0.1"
 id: mossignal.graph.current_reaction_dependency_graph
 title: Current-reaction dependency graph
 kind: artifact
-status: draft
+status: reviewed
 
 source_baseline:
   commit: 9818f93def8d77f0f4ee94a37a114ef36ac8c8dc
@@ -20,6 +20,7 @@ scope:
     - conceptual reaction facts, operations, and current-output vertices
     - directed current-reaction dependency relation and its stable subject correspondence
     - conservative static signature rules for the restricted Constant and Not nodes
+    - external-input root facts and external-output observation for the represented level boundaries
     - deterministic inspection of the derived dependency relation
   excludes:
     - SCC decomposition, cycle diagnostics, and topological ordering
@@ -28,7 +29,7 @@ scope:
     - stateful, temporal, module, and variadic node signatures
 
 known_uncovered:
-  - Reaction facts for external inputs, previous state, and due events beyond the restricted Constant/Not slice
+  - Previous-state and due-event reaction facts beyond the restricted Constant/Not slice
   - Dependency signatures for all node kinds other than Constant and Not
   - Cycle witnesses and deterministic topological metadata
 
@@ -56,6 +57,16 @@ requirements:
       no current input-to-output dependency and Not has one level-input to
       level-output dependency.
     sources: [runtime-signatures, builtin-signatures]
+
+  - id: represented-boundary-facts
+    kind: semantic
+    statement: >-
+      Every represented external input is a current-reaction root fact. A
+      represented external output observes its authored source without
+      transforming or consuming it, so the derived relation includes the
+      source-to-output observation dependency. These boundary facts use their
+      stable authored endpoint subjects.
+    sources: [runtime-graph, external-boundaries]
 
   - id: stable-subject-correspondence
     kind: semantic
@@ -91,18 +102,28 @@ sources:
   runtime-graph:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part III — Graph model and causality, 15. Reaction dependency graph]
+    reviewed_hash: sha256:bb051caaa0cd3627f58f17edca8b2e09df6b72c3b042238f523b0dfb40dcda9a
   runtime-signatures:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part III — Graph model and causality, 17. Static dependency signatures]
+    reviewed_hash: sha256:d3a3cb34550eccf2135629ae60a6dc5c629ddab2b1e0e58f23278913cff87e70
   runtime-validated:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part I — Representation and ownership, 3. Lifecycle, 3.2 Validated definitions]
+    reviewed_hash: sha256:bce0327b9e96a9bedb087bd44732edea91a77a9153e182800d37315172497da1
   api-causality:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part I — Semantic model, 8. Current-reaction causality and cycles]
+    reviewed_hash: sha256:2e50e375a8b29141d0adc2a9515570c1109c82a274fbcd7d38efefd9094f6b8c
   builtin-signatures:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
+  external-boundaries:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VII — Boundaries and utilities, 56. External inputs and outputs]
+    reviewed_hash: sha256:b282a1bb18f53ca05fb926b663570703f7d21c3ad4d5f4499dc8246b0cb31749
   verification-compilation:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:39c22bc378b50b6476f5e860d5dde98e73473b7279804bdcc78adbffc59e0aaa
