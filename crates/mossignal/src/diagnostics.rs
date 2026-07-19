@@ -153,6 +153,13 @@ pub struct RelatedSubject {
     pub subject: SubjectRef,
 }
 
+/// The fixed node port group that an arity condition addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FixedArityRole {
+    Input,
+    Output,
+}
+
 /// A safe, machine-readable correction.  The opening validation catalogue has
 /// no unambiguous automatic correction, so no constructors are exposed yet.
 #[non_exhaustive]
@@ -204,6 +211,7 @@ pub enum ProblemEvidence<D> {
         marker: PhantomData<fn() -> D>,
     },
     ValidationInvalidFixedArity {
+        role: FixedArityRole,
         ports: Vec<SubjectRef>,
         expected: usize,
         encountered: usize,
@@ -305,11 +313,13 @@ impl<D> ProblemEvidence<D> {
     /// Evidence for a fixed port-group arity mismatch.
     #[must_use]
     pub fn invalid_fixed_arity(
+        role: FixedArityRole,
         ports: Vec<SubjectRef>,
         expected: usize,
         encountered: usize,
     ) -> Self {
         Self::ValidationInvalidFixedArity {
+            role,
             ports,
             expected,
             encountered,
@@ -589,7 +599,7 @@ enum ConditionDiscriminator {
     SubjectAndKind(SubjectRef, SignalKind),
     Subjects(SubjectRef, SubjectRef),
     Required(SubjectRef, SignalKind),
-    Arity(usize, usize),
+    Arity(FixedArityRole, usize, usize),
     Empty,
     Internal(DiagnosticCode, SubjectRef),
 }
@@ -625,10 +635,11 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
             ..
         } => ConditionDiscriminator::Required(*required, *expected_kind),
         ProblemEvidence::ValidationInvalidFixedArity {
+            role,
             expected,
             encountered,
             ..
-        } => ConditionDiscriminator::Arity(*expected, *encountered),
+        } => ConditionDiscriminator::Arity(*role, *expected, *encountered),
         ProblemEvidence::InternalDiagnosticEvidenceConflict {
             conflicting_code,
             conflicting_primary,
@@ -691,7 +702,7 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
             ConditionDiscriminator::SubjectAndKind(_, _) => 1,
             ConditionDiscriminator::Subjects(_, _) => 2,
             ConditionDiscriminator::Required(_, _) => 3,
-            ConditionDiscriminator::Arity(_, _) => 4,
+            ConditionDiscriminator::Arity(_, _, _) => 4,
             ConditionDiscriminator::Empty => 5,
             ConditionDiscriminator::Internal(_, _) => 6,
         }
@@ -721,10 +732,11 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
                 .cmp_canonical(&right_subject)
                 .then_with(|| left_kind.cmp(&right_kind)),
             (
-                ConditionDiscriminator::Arity(left_expected, left_encountered),
-                ConditionDiscriminator::Arity(right_expected, right_encountered),
-            ) => left_expected
-                .cmp(&right_expected)
+                ConditionDiscriminator::Arity(left_role, left_expected, left_encountered),
+                ConditionDiscriminator::Arity(right_role, right_expected, right_encountered),
+            ) => left_role
+                .cmp(&right_role)
+                .then_with(|| left_expected.cmp(&right_expected))
                 .then_with(|| left_encountered.cmp(&right_encountered)),
             (
                 ConditionDiscriminator::Internal(left_code, left_subject),
