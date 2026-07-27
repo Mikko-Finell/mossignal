@@ -10,6 +10,8 @@ use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, ConnectionKey,
     NetworkKey, NodeKey,
 };
+use crate::machine::Machine;
+use crate::policy::RuntimePolicy;
 #[cfg(test)]
 use crate::signal::Level;
 use crate::signal::{LogicLevel, SignalKind};
@@ -21,9 +23,17 @@ use std::sync::Arc;
 ///
 /// The public value deliberately exposes only stable identity. Dense execution
 /// positions and adjacency remain private to this compiled revision.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct CompiledNetwork<D> {
     inner: Arc<CompiledInner<D>>,
+}
+
+impl<D> Clone for CompiledNetwork<D> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -165,6 +175,12 @@ impl<D> CompiledNetwork<D> {
     #[must_use]
     pub fn input_schema_fingerprint(&self) -> InputSchemaFingerprint {
         self.inner.input_schema_fingerprint
+    }
+
+    /// Spawns an independent uninitialized machine with an explicit policy.
+    #[must_use]
+    pub fn spawn(&self, policy: RuntimePolicy) -> Machine<D> {
+        Machine::new(self.clone(), policy)
     }
 
     /// Starts a complete level-input snapshot bound to this exact topology.
