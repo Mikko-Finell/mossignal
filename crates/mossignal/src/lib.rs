@@ -7,6 +7,7 @@ pub mod identity;
 mod input;
 pub mod key;
 pub mod metadata;
+mod policy;
 pub mod signal;
 pub mod time;
 
@@ -15,4 +16,7 @@ mod validation;
 pub use compile::CompiledNetwork;
 pub use identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
 pub use input::{InputBuildFailure, InputSnapshot, InputSnapshotBuilder};
+pub use policy::{
+    PolicyFailure, RuntimePolicy, RuntimePolicyBuilder, RuntimePolicyId, RuntimePolicyLimit,
+};
 pub use validation::ValidatedNetwork;

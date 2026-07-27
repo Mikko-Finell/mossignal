@@ -367,14 +367,14 @@ fn level_external_output(key: AnyExternalOutputKey) -> u128 {
 }
 
 #[derive(Default)]
-struct Cbor(Vec<u8>);
+pub(crate) struct Cbor(Vec<u8>);
 
 impl Cbor {
-    fn finish(self) -> Vec<u8> {
+    pub(crate) fn finish(self) -> Vec<u8> {
         self.0
     }
 
-    fn uint(&mut self, value: u64) {
+    pub(crate) fn uint(&mut self, value: u64) {
         self.major(0, value);
     }
 
@@ -383,7 +383,7 @@ impl Cbor {
         self.0.extend_from_slice(value);
     }
 
-    fn text(&mut self, value: &str) {
+    pub(crate) fn text(&mut self, value: &str) {
         self.major(3, value.len() as u64);
         self.0.extend_from_slice(value.as_bytes());
     }
@@ -392,11 +392,11 @@ impl Cbor {
         self.major(4, length as u64);
     }
 
-    fn record_start(&mut self, fields: usize) {
+    pub(crate) fn record_start(&mut self, fields: usize) {
         self.array_start(fields);
     }
 
-    fn field(&mut self, name: &str, value: impl FnOnce(&mut Self)) {
+    pub(crate) fn field(&mut self, name: &str, value: impl FnOnce(&mut Self)) {
         self.array_start(2);
         self.text(name);
         value(self);
