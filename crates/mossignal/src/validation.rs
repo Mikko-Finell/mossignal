@@ -4,8 +4,8 @@
 
 use crate::authored::{ConnectionEndpoint, NodeKind, UncheckedNetwork};
 use crate::diagnostics::{
-    Diagnostic, DiagnosticSet, DuplicateClaim, DuplicateNodeKind, FixedArityRole, Problem,
-    ProblemEvidence, Report, SubjectRef,
+    CurrentReactionCycleStep, Diagnostic, DiagnosticSet, DuplicateClaim, DuplicateNodeKind,
+    FixedArityRole, Problem, ProblemEvidence, ReactionMemberRef, ReactionRole, Report, SubjectRef,
 };
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, AnySignalSourceKey,
@@ -66,6 +66,14 @@ pub(crate) struct ReactionDependency {
 pub(crate) struct ReactionDependencyGraph {
     vertices: BTreeSet<ReactionVertex>,
     dependencies: BTreeSet<ReactionDependency>,
+}
+
+/// An opaque network definition that has passed restricted structural and
+/// current-reaction causality validation.
+#[derive(Debug)]
+pub struct ValidatedNetwork<D> {
+    definition: UncheckedNetwork<D>,
+    topological_order: Vec<ReactionVertex>,
 }
 
 impl ReactionDependencyGraph {
@@ -139,9 +147,270 @@ impl ReactionDependencyGraph {
     pub(crate) fn dependencies(&self) -> impl Iterator<Item = ReactionDependency> + '_ {
         self.dependencies.iter().copied()
     }
+
+    fn cyclic_components(&self) -> Vec<BTreeSet<ReactionVertex>> {
+        let mut forward: BTreeMap<ReactionVertex, Vec<ReactionVertex>> = BTreeMap::new();
+        let mut reverse: BTreeMap<ReactionVertex, Vec<ReactionVertex>> = BTreeMap::new();
+        for vertex in &self.vertices {
+            forward.entry(*vertex).or_default();
+            reverse.entry(*vertex).or_default();
+        }
+        for dependency in &self.dependencies {
+            forward
+                .entry(dependency.from)
+                .or_default()
+                .push(dependency.to);
+            reverse
+                .entry(dependency.to)
+                .or_default()
+                .push(dependency.from);
+        }
+        for edges in forward.values_mut().chain(reverse.values_mut()) {
+            edges.sort();
+            edges.dedup();
+        }
+        let mut visited = BTreeSet::new();
+        let mut finish = Vec::new();
+        for vertex in &self.vertices {
+            dfs_finish(*vertex, &forward, &mut visited, &mut finish);
+        }
+        visited.clear();
+        let mut components = Vec::new();
+        for vertex in finish.into_iter().rev() {
+            if visited.contains(&vertex) {
+                continue;
+            }
+            let mut component = BTreeSet::new();
+            dfs_collect(vertex, &reverse, &mut visited, &mut component);
+            let cyclic = component.len() > 1
+                || component.iter().any(|member| {
+                    self.dependencies
+                        .iter()
+                        .any(|edge| edge.from == *member && edge.to == *member)
+                });
+            if cyclic {
+                components.push(component);
+            }
+        }
+        components.sort_by(|left, right| left.iter().cmp(right.iter()));
+        components
+    }
+
+    fn cycle_witness(&self, component: &BTreeSet<ReactionVertex>) -> Vec<ReactionDependency> {
+        let mut edges: Vec<_> = self
+            .dependencies
+            .iter()
+            .copied()
+            .filter(|edge| component.contains(&edge.from) && component.contains(&edge.to))
+            .collect();
+        edges.sort_by(compare_dependency_steps);
+        if component.len() == 1 {
+            return edges
+                .into_iter()
+                .filter(|edge| edge.from == edge.to)
+                .take(1)
+                .collect();
+        }
+        let first = edges
+            .iter()
+            .copied()
+            .find(|edge| edge.from != edge.to)
+            .unwrap_or_else(|| panic!("cyclic multi-member SCC must contain a non-self edge"));
+        let mut witness = vec![first];
+        witness.extend(shortest_path(first.to, first.from, &edges));
+        witness
+    }
+
+    fn topological_order(&self) -> Vec<ReactionVertex> {
+        let mut indegree: BTreeMap<_, usize> =
+            self.vertices.iter().copied().map(|v| (v, 0)).collect();
+        let mut outgoing: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for edge in &self.dependencies {
+            outgoing.entry(edge.from).or_default().push(edge.to);
+            *indegree.entry(edge.to).or_default() += 1;
+        }
+        for values in outgoing.values_mut() {
+            values.sort();
+            values.dedup();
+        }
+        let mut ready: BTreeSet<_> = indegree
+            .iter()
+            .filter_map(|(vertex, degree)| (*degree == 0).then_some(*vertex))
+            .collect();
+        let mut order = Vec::new();
+        while let Some(vertex) = ready.pop_first() {
+            order.push(vertex);
+            if let Some(targets) = outgoing.get(&vertex) {
+                for target in targets {
+                    let degree = indegree.get_mut(target).unwrap_or_else(|| {
+                        panic!("reaction graph targets must have an indegree entry")
+                    });
+                    *degree -= 1;
+                    if *degree == 0 {
+                        ready.insert(*target);
+                    }
+                }
+            }
+        }
+        order
+    }
+}
+
+fn dfs_finish(
+    vertex: ReactionVertex,
+    graph: &BTreeMap<ReactionVertex, Vec<ReactionVertex>>,
+    visited: &mut BTreeSet<ReactionVertex>,
+    finish: &mut Vec<ReactionVertex>,
+) {
+    if !visited.insert(vertex) {
+        return;
+    }
+    if let Some(next) = graph.get(&vertex) {
+        for target in next {
+            dfs_finish(*target, graph, visited, finish);
+        }
+    }
+    finish.push(vertex);
+}
+
+fn dfs_collect(
+    vertex: ReactionVertex,
+    graph: &BTreeMap<ReactionVertex, Vec<ReactionVertex>>,
+    visited: &mut BTreeSet<ReactionVertex>,
+    component: &mut BTreeSet<ReactionVertex>,
+) {
+    if !visited.insert(vertex) {
+        return;
+    }
+    component.insert(vertex);
+    if let Some(next) = graph.get(&vertex) {
+        for target in next {
+            dfs_collect(*target, graph, visited, component);
+        }
+    }
+}
+
+fn shortest_path(
+    start: ReactionVertex,
+    target: ReactionVertex,
+    edges: &[ReactionDependency],
+) -> Vec<ReactionDependency> {
+    let mut frontier = vec![(start, Vec::new())];
+    while !frontier.is_empty() {
+        frontier.sort_by(|left, right| compare_dependency_paths(&left.1, &right.1));
+        let mut next = Vec::new();
+        for (vertex, path) in frontier {
+            for edge in edges.iter().copied().filter(|edge| edge.from == vertex) {
+                let mut extended = path.clone();
+                extended.push(edge);
+                if edge.to == target {
+                    return extended;
+                }
+                if !path
+                    .iter()
+                    .any(|prior| prior.from == edge.to || prior.to == edge.to)
+                {
+                    next.push((edge.to, extended));
+                }
+            }
+        }
+        frontier = next;
+    }
+    panic!("a cyclic SCC witness start must have a return path")
+}
+
+fn compare_dependency_steps(
+    left: &ReactionDependency,
+    right: &ReactionDependency,
+) -> std::cmp::Ordering {
+    cycle_step(*left).cmp(&cycle_step(*right))
+}
+
+fn compare_dependency_paths(
+    left: &[ReactionDependency],
+    right: &[ReactionDependency],
+) -> std::cmp::Ordering {
+    left.iter()
+        .map(|edge| cycle_step(*edge))
+        .cmp(right.iter().map(|edge| cycle_step(*edge)))
+}
+
+fn reaction_member(vertex: ReactionVertex) -> ReactionMemberRef {
+    match vertex {
+        ReactionVertex::ExternalInput(key) => ReactionMemberRef {
+            subject: SubjectRef::ExternalInput(key),
+            role: ReactionRole::ExternalInput,
+        },
+        ReactionVertex::NodeOperation(key) => ReactionMemberRef {
+            subject: SubjectRef::Node(key),
+            role: ReactionRole::NodeOperation,
+        },
+        ReactionVertex::NodeOutput(key) => ReactionMemberRef {
+            subject: SubjectRef::OutPort(key),
+            role: ReactionRole::NodeOutput,
+        },
+        ReactionVertex::ExternalOutput(key) => ReactionMemberRef {
+            subject: SubjectRef::ExternalOutput(key),
+            role: ReactionRole::ExternalOutput,
+        },
+    }
+}
+
+fn cycle_step(edge: ReactionDependency) -> CurrentReactionCycleStep {
+    CurrentReactionCycleStep {
+        source: reaction_member(edge.from),
+        dependency: match edge.subject {
+            ReactionDependencySubject::Connection(key) => SubjectRef::Connection(key),
+            ReactionDependencySubject::Node(key) => SubjectRef::Node(key),
+            ReactionDependencySubject::ExternalOutput(key) => SubjectRef::ExternalOutput(key),
+        },
+        target: reaction_member(edge.to),
+    }
 }
 
 impl<D> UncheckedNetwork<D> {
+    /// Validates the restricted authored graph and returns an opaque artifact
+    /// only when its current-reaction graph is acyclic.
+    pub fn validate(self) -> Report<ValidatedNetwork<D>, D>
+    where
+        D: PartialEq,
+    {
+        let structural = self.validate_structural();
+        let (candidate, mut diagnostics) = structural.into_parts();
+        let graph = match candidate {
+            Some(candidate) => candidate.reaction_dependencies(),
+            None => return Report::new(None, diagnostics),
+        };
+        let cyclic_components = graph.cyclic_components();
+        for component in &cyclic_components {
+            let members = component.iter().copied().map(reaction_member).collect();
+            let witness = graph
+                .cycle_witness(component)
+                .into_iter()
+                .map(cycle_step)
+                .collect();
+            let problem = Problem::new(
+                SubjectRef::Network(self.key()),
+                Vec::new(),
+                ProblemEvidence::current_reaction_cycle(members, witness),
+            );
+            let diagnostic = Diagnostic::new(problem)
+                .unwrap_or_else(|_| panic!("current-reaction cycle must be a report finding"));
+            diagnostics.insert(diagnostic);
+        }
+        if !cyclic_components.is_empty() {
+            return Report::new(None, diagnostics);
+        }
+        let order = graph.topological_order();
+        Report::new(
+            Some(ValidatedNetwork {
+                definition: self,
+                topological_order: order,
+            }),
+            diagnostics,
+        )
+    }
+
     /// Performs only the opening, pre-semantic structural checks.
     pub(crate) fn validate_structural(&self) -> Report<StructuralCandidate<'_, D>, D>
     where
@@ -1010,6 +1279,389 @@ mod tests {
 
         assert!(codes.contains(&DiagnosticCode::ValidationMissingPort));
         assert!(codes.contains(&DiagnosticCode::ValidationInvalidDirection));
+    }
+
+    #[test]
+    fn validation_constructs_an_artifact_for_a_dag_and_rejects_a_two_node_cycle() {
+        let a_input = InPortKey::<Level>::from_u128(1);
+        let a_output = OutPortKey::<Level>::from_u128(2);
+        let b_input = InPortKey::<Level>::from_u128(3);
+        let b_output = OutPortKey::<Level>::from_u128(4);
+        let nodes = vec![
+            NodeDef::new(
+                NodeKey::from_u128(10),
+                NodeKind::<()>::not(),
+                NodePorts::new(vec![a_input.into()], vec![a_output.into()]),
+                DiagnosticMeta::default(),
+            ),
+            NodeDef::new(
+                NodeKey::from_u128(20),
+                NodeKind::<()>::not(),
+                NodePorts::new(vec![b_input.into()], vec![b_output.into()]),
+                DiagnosticMeta::default(),
+            ),
+        ];
+        let dag = UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            DiagnosticMeta::default(),
+            nodes.clone(),
+            vec![],
+            vec![],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(1),
+                a_output.into(),
+                b_input.into(),
+                DiagnosticMeta::default(),
+            )],
+        );
+        assert!(dag.validate().artifact().is_some());
+
+        let cyclic = UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            DiagnosticMeta::default(),
+            nodes,
+            vec![],
+            vec![],
+            vec![
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(1),
+                    a_output.into(),
+                    b_input.into(),
+                    DiagnosticMeta::default(),
+                ),
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(2),
+                    b_output.into(),
+                    a_input.into(),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+        );
+        let report = cyclic.validate();
+        assert!(report.artifact().is_none());
+        assert_eq!(report.diagnostics().len(), 1);
+        let evidence = report
+            .diagnostics()
+            .iter()
+            .next()
+            .map(|diagnostic| diagnostic.problem().evidence());
+        match evidence {
+            Some(ProblemEvidence::ValidationCurrentReactionCycle {
+                members, witness, ..
+            }) => {
+                assert!(members.len() >= 4);
+                assert!(!witness.is_empty());
+                assert_eq!(
+                    witness.first().map(|step| step.source),
+                    witness.last().map(|step| step.target)
+                );
+            }
+            _ => panic!("expected current-reaction cycle evidence"),
+        }
+    }
+
+    #[test]
+    fn self_loops_produce_one_diagnostic_per_cyclic_scc() {
+        let a_input = InPortKey::<Level>::from_u128(1);
+        let a_output = OutPortKey::<Level>::from_u128(2);
+        let b_input = InPortKey::<Level>::from_u128(3);
+        let b_output = OutPortKey::<Level>::from_u128(4);
+        let network = UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            DiagnosticMeta::default(),
+            vec![
+                NodeDef::new(
+                    NodeKey::from_u128(10),
+                    NodeKind::<()>::not(),
+                    NodePorts::new(vec![a_input.into()], vec![a_output.into()]),
+                    DiagnosticMeta::default(),
+                ),
+                NodeDef::new(
+                    NodeKey::from_u128(20),
+                    NodeKind::<()>::not(),
+                    NodePorts::new(vec![b_input.into()], vec![b_output.into()]),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+            vec![],
+            vec![],
+            vec![
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(1),
+                    a_output.into(),
+                    a_input.into(),
+                    DiagnosticMeta::default(),
+                ),
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(2),
+                    b_output.into(),
+                    b_input.into(),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+        );
+        let report = network.validate();
+        assert!(report.artifact().is_none());
+        assert_eq!(report.diagnostics().len(), 2);
+        assert!(report.diagnostics().iter().all(|diagnostic| {
+            diagnostic.problem().code() == DiagnosticCode::ValidationCurrentReactionCycle
+        }));
+    }
+
+    #[test]
+    fn witness_ties_use_dependency_before_target_order() {
+        let operation = |key| ReactionVertex::NodeOperation(NodeKey::from_u128(key));
+        let output = |key| ReactionVertex::NodeOutput(OutPortKey::<Level>::from_u128(key).into());
+        let connection = |from, to, key| ReactionDependency {
+            from,
+            to,
+            subject: ReactionDependencySubject::Connection(ConnectionKey::from_u128(key)),
+        };
+        let node = |from, to, key| ReactionDependency {
+            from,
+            to,
+            subject: ReactionDependencySubject::Node(NodeKey::from_u128(key)),
+        };
+        let start = node(operation(10), output(100), 10);
+        let preferred = connection(output(100), operation(30), 1);
+        let graph = ReactionDependencyGraph {
+            vertices: [
+                operation(10),
+                operation(20),
+                operation(30),
+                output(100),
+                output(200),
+                output(300),
+            ]
+            .into_iter()
+            .collect(),
+            dependencies: [
+                start,
+                connection(output(100), operation(20), 9),
+                node(operation(20), output(200), 20),
+                connection(output(200), operation(10), 50),
+                preferred,
+                node(operation(30), output(300), 30),
+                connection(output(300), operation(10), 60),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let component = graph
+            .cyclic_components()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("the graph is one cyclic SCC"));
+
+        let witness = graph.cycle_witness(&component);
+
+        assert_eq!(witness[0], start);
+        assert_eq!(witness[1], preferred);
+    }
+
+    #[test]
+    fn bounded_cycle_detection_matches_a_reachability_oracle() {
+        let vertices: Vec<_> = (0..3)
+            .map(|key| ReactionVertex::NodeOperation(NodeKey::from_u128(key)))
+            .collect();
+        for mask in 0_u16..(1 << 9) {
+            let dependencies: BTreeSet<_> = (0..3)
+                .flat_map(|from| (0..3).map(move |to| (from, to)))
+                .enumerate()
+                .filter(|(bit, _)| mask & (1 << bit) != 0)
+                .map(|(bit, (from, to))| ReactionDependency {
+                    from: vertices[from],
+                    to: vertices[to],
+                    subject: ReactionDependencySubject::Connection(ConnectionKey::from_u128(
+                        bit as u128,
+                    )),
+                })
+                .collect();
+            let graph = ReactionDependencyGraph {
+                vertices: vertices.iter().copied().collect(),
+                dependencies,
+            };
+
+            assert_eq!(graph.cyclic_components(), oracle_cyclic_components(&graph));
+        }
+    }
+
+    #[test]
+    fn witnesses_are_closed_real_and_confined_for_each_cyclic_scc() {
+        let vertex = |key| ReactionVertex::NodeOperation(NodeKey::from_u128(key));
+        let edge = |from, to, key| ReactionDependency {
+            from: vertex(from),
+            to: vertex(to),
+            subject: ReactionDependencySubject::Connection(ConnectionKey::from_u128(key)),
+        };
+        let graph = ReactionDependencyGraph {
+            vertices: (1..=4).map(vertex).collect(),
+            dependencies: [
+                edge(1, 1, 1),
+                edge(1, 2, 2),
+                edge(2, 1, 3),
+                edge(2, 3, 4),
+                edge(3, 2, 5),
+                edge(4, 4, 6),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        let components = graph.cyclic_components();
+        assert_eq!(components.len(), 2);
+        assert_eq!(components[0].len(), 3);
+        for component in components {
+            let witness = graph.cycle_witness(&component);
+            assert!(!witness.is_empty());
+            assert_eq!(
+                witness.first().map(|step| step.from),
+                witness.last().map(|step| step.to)
+            );
+            assert!(witness.windows(2).all(|steps| steps[0].to == steps[1].from));
+            assert!(witness.iter().all(|step| {
+                graph.dependencies.contains(step)
+                    && component.contains(&step.from)
+                    && component.contains(&step.to)
+            }));
+        }
+    }
+
+    #[test]
+    fn deterministic_topological_order_respects_every_dependency() {
+        let vertex = |key| ReactionVertex::NodeOperation(NodeKey::from_u128(key));
+        let edge = |from, to, key| ReactionDependency {
+            from: vertex(from),
+            to: vertex(to),
+            subject: ReactionDependencySubject::Connection(ConnectionKey::from_u128(key)),
+        };
+        let dependencies = [edge(1, 3, 1), edge(2, 3, 2), edge(2, 4, 3)];
+        let make_graph = |edges: &[ReactionDependency]| ReactionDependencyGraph {
+            vertices: (1..=5).map(vertex).collect(),
+            dependencies: edges.iter().copied().collect(),
+        };
+        let forward = make_graph(&dependencies);
+        let reverse = make_graph(&dependencies.into_iter().rev().collect::<Vec<_>>());
+
+        let order = forward.topological_order();
+        assert_eq!(order, reverse.topological_order());
+        assert_eq!(order.len(), forward.vertices.len());
+        for dependency in &forward.dependencies {
+            let source = order
+                .iter()
+                .position(|vertex| *vertex == dependency.from)
+                .unwrap_or_else(|| panic!("source is present"));
+            let target = order
+                .iter()
+                .position(|vertex| *vertex == dependency.to)
+                .unwrap_or_else(|| panic!("target is present"));
+            assert!(source < target);
+        }
+    }
+
+    #[test]
+    fn cycle_diagnostic_and_witness_ignore_authored_insertion_order() {
+        let a_input = InPortKey::<Level>::from_u128(1);
+        let a_output = OutPortKey::<Level>::from_u128(2);
+        let b_input = InPortKey::<Level>::from_u128(3);
+        let b_output = OutPortKey::<Level>::from_u128(4);
+        let nodes = vec![
+            NodeDef::new(
+                NodeKey::from_u128(10),
+                NodeKind::<()>::not(),
+                NodePorts::new(vec![a_input.into()], vec![a_output.into()]),
+                DiagnosticMeta::default(),
+            ),
+            NodeDef::new(
+                NodeKey::from_u128(20),
+                NodeKind::<()>::not(),
+                NodePorts::new(vec![b_input.into()], vec![b_output.into()]),
+                DiagnosticMeta::default(),
+            ),
+        ];
+        let connections = vec![
+            ConnectionDef::new(
+                ConnectionKey::from_u128(9),
+                a_output.into(),
+                b_input.into(),
+                DiagnosticMeta::default(),
+            ),
+            ConnectionDef::new(
+                ConnectionKey::from_u128(1),
+                b_output.into(),
+                a_input.into(),
+                DiagnosticMeta::default(),
+            ),
+        ];
+        let network = |nodes, connections| {
+            UncheckedNetwork::new(
+                NetworkKey::from_u128(1),
+                DiagnosticMeta::default(),
+                nodes,
+                vec![],
+                vec![],
+                connections,
+            )
+        };
+        let mut reversed_nodes = nodes.clone();
+        reversed_nodes.reverse();
+        let mut reversed_connections = connections.clone();
+        reversed_connections.reverse();
+
+        let forward = network(nodes, connections).validate();
+        let reverse = network(reversed_nodes, reversed_connections).validate();
+
+        assert_eq!(forward.diagnostics(), reverse.diagnostics());
+        assert_eq!(forward.diagnostics().len(), 1);
+    }
+
+    fn oracle_cyclic_components(graph: &ReactionDependencyGraph) -> Vec<BTreeSet<ReactionVertex>> {
+        let vertices: Vec<_> = graph.vertices().collect();
+        let mut reachable = vec![vec![false; vertices.len()]; vertices.len()];
+        for (index, row) in reachable.iter_mut().enumerate() {
+            row[index] = true;
+        }
+        for edge in graph.dependencies() {
+            let from = vertices
+                .iter()
+                .position(|vertex| *vertex == edge.from)
+                .unwrap_or_else(|| panic!("edge source is a graph vertex"));
+            let to = vertices
+                .iter()
+                .position(|vertex| *vertex == edge.to)
+                .unwrap_or_else(|| panic!("edge target is a graph vertex"));
+            reachable[from][to] = true;
+        }
+        for via in 0..vertices.len() {
+            for from in 0..vertices.len() {
+                for to in 0..vertices.len() {
+                    reachable[from][to] |= reachable[from][via] && reachable[via][to];
+                }
+            }
+        }
+        let mut assigned: BTreeSet<ReactionVertex> = BTreeSet::new();
+        let mut components = Vec::new();
+        for (index, vertex) in vertices.iter().enumerate() {
+            if assigned.contains(vertex) {
+                continue;
+            }
+            let component: BTreeSet<_> = vertices
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| reachable[index][*other] && reachable[*other][index])
+                .map(|(_, member)| *member)
+                .collect();
+            assigned.extend(component.iter().copied());
+            let cyclic = component.len() > 1
+                || graph
+                    .dependencies()
+                    .any(|edge| edge.from == *vertex && edge.to == *vertex);
+            if cyclic {
+                components.push(component);
+            }
+        }
+        components.sort_by(|left, right| left.iter().cmp(right.iter()));
+        components
     }
 
     #[test]

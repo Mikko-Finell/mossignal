@@ -8,3 +8,5 @@ pub mod signal;
 pub mod time;
 
 mod validation;
+
+pub use validation::ValidatedNetwork;

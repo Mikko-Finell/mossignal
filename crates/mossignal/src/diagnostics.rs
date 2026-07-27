@@ -32,6 +32,31 @@ pub enum SubjectRef {
     ExternalOutput(AnyExternalOutputKey),
 }
 
+/// The semantic role of a stable subject in the current-reaction graph.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReactionRole {
+    ExternalInput,
+    NodeOperation,
+    NodeOutput,
+    ExternalOutput,
+}
+
+/// A stable current-reaction graph member used in cycle diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ReactionMemberRef {
+    pub subject: SubjectRef,
+    pub role: ReactionRole,
+}
+
+/// One stable dependency step in a current-reaction cycle witness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CurrentReactionCycleStep {
+    pub source: ReactionMemberRef,
+    pub dependency: SubjectRef,
+    pub target: ReactionMemberRef,
+}
+
 impl SubjectRef {
     fn ordering_key(&self) -> (u8, SubjectPayload) {
         match self {
@@ -112,6 +137,7 @@ pub enum DiagnosticCode {
     ValidationUnsupportedMultipleDrivers,
     ValidationMissingRequiredInput,
     ValidationInvalidFixedArity,
+    ValidationCurrentReactionCycle,
     InternalDiagnosticEvidenceConflict,
 }
 
@@ -267,6 +293,11 @@ pub enum ProblemEvidence<D> {
         encountered: usize,
         marker: PhantomData<fn() -> D>,
     },
+    ValidationCurrentReactionCycle {
+        members: Vec<ReactionMemberRef>,
+        witness: Vec<CurrentReactionCycleStep>,
+        marker: PhantomData<fn() -> D>,
+    },
     InternalDiagnosticEvidenceConflict {
         conflicting_code: DiagnosticCode,
         conflicting_primary: SubjectRef,
@@ -377,6 +408,19 @@ impl<D> ProblemEvidence<D> {
         }
     }
 
+    /// Evidence for one cyclic current-reaction SCC.
+    #[must_use]
+    pub fn current_reaction_cycle(
+        members: Vec<ReactionMemberRef>,
+        witness: Vec<CurrentReactionCycleStep>,
+    ) -> Self {
+        Self::ValidationCurrentReactionCycle {
+            members,
+            witness,
+            marker: PhantomData,
+        }
+    }
+
     fn canonicalize(&mut self) {
         let canonicalize = |subjects: &mut Vec<SubjectRef>| {
             subjects.sort_by(SubjectRef::cmp_canonical);
@@ -388,6 +432,10 @@ impl<D> ProblemEvidence<D> {
             Self::ValidationDuplicateKey { claims, .. } => claims.sort(),
             Self::ValidationUnsupportedMultipleDrivers { drivers, .. } => canonicalize(drivers),
             Self::ValidationInvalidFixedArity { ports, .. } => canonicalize(ports),
+            Self::ValidationCurrentReactionCycle { members, .. } => {
+                members.sort();
+                members.dedup();
+            }
             _ => {}
         }
     }
@@ -437,6 +485,7 @@ opening_diagnostic_registry! {
     ValidationUnsupportedMultipleDrivers, Self::ValidationUnsupportedMultipleDrivers { .. }, "validation.unsupported_multiple_drivers", Error, CallerInput, true;
     ValidationMissingRequiredInput, Self::ValidationMissingRequiredInput { .. }, "validation.missing_required_input", Error, CallerInput, true;
     ValidationInvalidFixedArity, Self::ValidationInvalidFixedArity { .. }, "validation.invalid_fixed_arity", Error, CallerInput, true;
+    ValidationCurrentReactionCycle, Self::ValidationCurrentReactionCycle { .. }, "validation.current_reaction_cycle", Error, CallerInput, true;
     InternalDiagnosticEvidenceConflict, Self::InternalDiagnosticEvidenceConflict { .. }, "internal.diagnostic_evidence_conflict", Error, LibraryDefect, false;
 }
 
@@ -641,7 +690,7 @@ fn same_condition<D>(left: &Problem<D>, right: &Problem<D>) -> bool {
         && condition_discriminator(&left.evidence) == condition_discriminator(&right.evidence)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ConditionDiscriminator {
     Subject(SubjectRef),
     SubjectAndKind(SubjectRef, SignalKind),
@@ -650,6 +699,7 @@ enum ConditionDiscriminator {
     Arity(FixedArityRole, usize, usize),
     Empty,
     Internal(DiagnosticCode, SubjectRef),
+    Cycle(Vec<ReactionMemberRef>),
 }
 
 fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscriminator {
@@ -688,6 +738,9 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
             encountered,
             ..
         } => ConditionDiscriminator::Arity(*role, *expected, *encountered),
+        ProblemEvidence::ValidationCurrentReactionCycle { members, .. } => {
+            ConditionDiscriminator::Cycle(members.clone())
+        }
         ProblemEvidence::InternalDiagnosticEvidenceConflict {
             conflicting_code,
             conflicting_primary,
@@ -723,6 +776,14 @@ fn merge_evidence<D: PartialEq>(
             ports.dedup();
             Ok(())
         }
+        (existing, incoming)
+            if matches!(
+                existing,
+                ProblemEvidence::ValidationCurrentReactionCycle { .. }
+            ) && *existing == incoming =>
+        {
+            Ok(())
+        }
         (existing, incoming) if *existing == incoming => Ok(()),
         _ => Err(()),
     }
@@ -744,7 +805,7 @@ fn compare_diagnostics<D>(left: &Diagnostic<D>, right: &Diagnostic<D>) -> Orderi
 }
 
 fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscriminator) -> Ordering {
-    fn tag(value: ConditionDiscriminator) -> u8 {
+    fn tag(value: &ConditionDiscriminator) -> u8 {
         match value {
             ConditionDiscriminator::Subject(_) => 0,
             ConditionDiscriminator::SubjectAndKind(_, _) => 1,
@@ -753,10 +814,11 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
             ConditionDiscriminator::Arity(_, _, _) => 4,
             ConditionDiscriminator::Empty => 5,
             ConditionDiscriminator::Internal(_, _) => 6,
+            ConditionDiscriminator::Cycle(_) => 7,
         }
     }
-    tag(left)
-        .cmp(&tag(right))
+    tag(&left)
+        .cmp(&tag(&right))
         .then_with(|| match (left, right) {
             (ConditionDiscriminator::Subject(left), ConditionDiscriminator::Subject(right)) => {
                 left.cmp_canonical(&right)
@@ -792,6 +854,9 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
             ) => left_code
                 .cmp(&right_code)
                 .then_with(|| left_subject.cmp_canonical(&right_subject)),
+            (ConditionDiscriminator::Cycle(left), ConditionDiscriminator::Cycle(right)) => {
+                left.cmp(&right)
+            }
             _ => Ordering::Equal,
         })
 }
@@ -1051,5 +1116,49 @@ mod tests {
             DiagnosticCode::InternalDiagnosticEvidenceConflict
         );
         assert_eq!(Report::new(Some(7), set).artifact(), None);
+    }
+
+    #[test]
+    fn cycle_detection_is_idempotent_and_conflicting_witnesses_are_defects() {
+        let first = ReactionMemberRef {
+            subject: SubjectRef::Node(NodeKey::from_u128(1)),
+            role: ReactionRole::NodeOperation,
+        };
+        let second = ReactionMemberRef {
+            subject: SubjectRef::Node(NodeKey::from_u128(2)),
+            role: ReactionRole::NodeOperation,
+        };
+        let forward = CurrentReactionCycleStep {
+            source: first,
+            dependency: SubjectRef::Connection(ConnectionKey::from_u128(1)),
+            target: second,
+        };
+        let backward = CurrentReactionCycleStep {
+            source: second,
+            dependency: SubjectRef::Connection(ConnectionKey::from_u128(2)),
+            target: first,
+        };
+        let make = |members, witness| {
+            Diagnostic::new(Problem::new(
+                SubjectRef::Network(NetworkKey::from_u128(9)),
+                Vec::new(),
+                ProblemEvidence::<()>::current_reaction_cycle(members, witness),
+            ))
+            .unwrap_or_else(|_| unreachable!("cycle validation is reportable"))
+        };
+        let mut set = DiagnosticSet::new();
+        set.insert(make(vec![first, second], vec![forward, backward]));
+        set.insert(make(vec![second, first], vec![forward, backward]));
+
+        assert_eq!(set.len(), 1);
+        assert!(set.internal_defects().is_empty());
+
+        set.insert(make(vec![first, second], vec![backward, forward]));
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.internal_defects().len(), 1);
+        assert_eq!(
+            set.internal_defects()[0].code(),
+            DiagnosticCode::InternalDiagnosticEvidenceConflict
+        );
     }
 }
