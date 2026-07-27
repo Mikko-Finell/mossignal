@@ -1,0 +1,140 @@
+schema_version: "0.1"
+id: mossignal.runtime.level_input_snapshot
+title: Complete level input snapshot
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: c28b14a69e283562508b956b66b34f54f8543e6e
+  working_tree: clean
+
+summary: >-
+  A level InputSnapshot is an owned opaque artifact built against one exact
+  compiled network and input schema. It retains their separate stable
+  identities and records the complete authoritative level valuation for that
+  schema without positional rebinding or implicit default levels.
+
+scope:
+  includes:
+    - owned level-only InputSnapshot and its construction boundary
+    - network and input-schema identity binding
+    - complete authoritative external level valuation
+    - invalid-observation and incomplete-snapshot rejection
+  excludes:
+    - pulse observations and pulse-count semantics
+    - InputDelta and retained ready-machine values
+    - machine lifecycle, transaction application, and evaluation
+    - binding projection and caller-object-model interpretation
+    - persistence artifact encoding and decoding
+
+known_uncovered:
+  - Prepared-patch target snapshots, whose target-topology binding is owned by reconfiguration work.
+
+aliases:
+  - InputSnapshot<D>
+  - InputSnapshotBuilder<D>
+  - complete external level valuation
+
+requirements:
+  - id: compiled-builder-origin
+    kind: public_surface
+    statement: >-
+      CompiledNetwork exposes an input-snapshot builder for its own exact
+      compiled topology, so construction obtains the network and input-schema
+      identity context from that topology rather than from caller-supplied
+      surrogate tokens.
+    sources: [concrete-compiled]
+
+  - id: owned-opaque-network-bound-artifact
+    kind: public_surface
+    statement: >-
+      InputSnapshot is an owned opaque artifact, and its builder produces an
+      artifact that does not borrow the compiled network or another topology
+      provider.
+    sources: [concrete-artifact-boundary, api-snapshot]
+
+  - id: exact-identity-binding
+    kind: compatibility
+    statement: >-
+      A snapshot is bound separately to the exact NetworkKey,
+      NetworkFingerprint, and InputSchemaFingerprint of its compiled-network
+      schema context; observations are stable typed endpoint observations and
+      must not be rebound by collection position. Prepared-patch target
+      snapshots additionally require their applicable target-topology context.
+    sources: [schema-binding]
+
+  - id: complete-authoritative-level-valuation
+    kind: semantic
+    statement: >-
+      A valid level snapshot contains exactly one LogicLevel value for every
+      required external level input in its bound schema. It establishes an
+      authoritative external valuation, and omission must not be inferred as
+      Low.
+    sources: [api-snapshot, concrete-snapshot, snapshot-artifact]
+
+  - id: rejects-invalid-observations
+    kind: prohibition
+    statement: >-
+      Construction rejects observations for endpoints outside the bound schema
+      and repeated observations for one endpoint, distinguishing equivalent
+      duplicates from incompatible conflicts where the supplied values permit
+      that distinction.
+    sources: [api-snapshot, concrete-snapshot, input-diagnostic-codes]
+
+  - id: finish-rejects-incomplete-snapshot
+    kind: verification
+    statement: >-
+      Completing construction rejects a snapshot missing any required external
+      level value; a successful snapshot is therefore complete before later
+      lifecycle execution consumes it.
+    sources: [api-snapshot, concrete-snapshot, snapshot-artifact, input-diagnostic-codes]
+
+implementation_freedom:
+  - The public builder entry point, private storage, error-type shape, and read-only inspection surface are unconstrained when the artifact remains owned, opaque, exact-identity-bound, complete, and deterministic by stable endpoint identity.
+  - For the restricted level-only slice, use the simplest deterministic stable-keyed representation; record and test the concrete ordering choice without treating it as a permanent public iteration promise.
+
+open_questions: []
+
+sources:
+  api-snapshot:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part VI — Inputs and outputs
+      - 28. `InputSnapshot`
+    reviewed_hash: sha256:47f9c6700f6a9c3163970645dafb11470000a0e32491201f3d84405ff50f78b9
+  concrete-artifact-boundary:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part XIV — Input schemas and values
+      - 53. Network-bound input artifacts
+    reviewed_hash: sha256:3e0b2ebd65b590938d3852ffd9a95ae6560c34b72751bc0a1fbe5d1122b05e2b
+  concrete-compiled:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part X — Validation and compilation artifacts
+      - 44. `CompiledNetwork<D>`
+    reviewed_hash: sha256:06a6ae375426437ece5aafd386ca65e6c76c51591acc95d2f8a2d1ee56bca60f
+  concrete-snapshot:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part XIV — Input schemas and values
+      - 54. `InputSnapshot<D>`
+    reviewed_hash: sha256:f3042cea78cad6e87bcc602374e512a460ae2740e416dcb9d29507f70abb77ba
+  schema-binding:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 75. Input schema binding
+    reviewed_hash: sha256:eb95f049f168441a248456ba4f8e24135c9ce7e046f7e102af14b5732e6dd987
+  snapshot-artifact:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 76. Input snapshot artifact
+    reviewed_hash: sha256:402a2543ef3de66df6f468967c8d9905037e4a2807a502891ac074eb42ecb4a6
+  input-diagnostic-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part V — Exhaustive initial catalogue
+      - 30. Input construction and projection
+    reviewed_hash: sha256:3953dbde0d5f72123a26a59dc49c35ff13fe36622490c09d31e57557be10452c
