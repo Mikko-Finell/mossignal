@@ -56,9 +56,9 @@ recommendations:
 implementation_freedom:
   - <Unconstrained implementation choice>
 
-# Only unresolved observable behavior or required public capability inside
-# scope.includes. Do not put adjacent future work, known missing coverage, or
-# private representation choices here. Empty is the normal reviewed state.
+# Only genuine blockers inside scope.includes: conflicting requirements,
+# missing fundamental semantics, or an already-frozen compatibility promise
+# that prevents a safe local choice. Empty is the normal reviewed state.
 open_questions: []
 
 # Define each source once and cite aliases above.

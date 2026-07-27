@@ -1,6 +1,6 @@
 ---
 name: contract-task-prep
-description: Prepare a roadmap feature or implementation task by reusing applicable reviewed specification contracts, researching only changed or uncovered authoritative specification facets, creating or updating compact draft contract records, and deriving or refining the bounded implementation bead. Also use when implementation discovers reusable specification-backed knowledge or a material planning gap. Do not implement code or independently approve resulting contracts.
+description: Prepare a roadmap feature or implementation task by reusing applicable reviewed specification contracts, researching only changed or uncovered authoritative specification facets, creating or updating compact draft contract records, and deriving or refining a bounded implementation-ready bead. Keep ordinary underspecified choices moving as deterministic implementation freedom. Also use when implementation discovers reusable specification-backed knowledge or a material planning gap. Do not implement code or independently approve resulting contracts.
 ---
 
 # Contract task preparation
@@ -67,8 +67,13 @@ Do not create an implementation patch.
 - Attach exact document-and-heading-path source references.
 - Mark every changed contract `draft`.
 - Record the source baseline and any relevant dirty specification paths.
-- Preserve unresolved observable behavior inside represented scope in
-  `open_questions`; do not invent a resolution.
+- Preserve a represented issue in `open_questions` only when it is a genuine
+  blocker: conflicting requirements, missing fundamental semantics, or an
+  already-frozen compatibility promise.
+- Treat several reasonable specification-conforming designs as implementation
+  freedom. Prefer the simplest deterministic option, require it to be tested and
+  recorded during implementation, and do not demand a specification amendment
+  before work begins.
 - Use `known_uncovered` for specific adjacent or future facets the contract does
   not represent. It is compatible with later promotion and is not a blocker
   unless the current bead depends on it.
@@ -81,12 +86,14 @@ Do not create an implementation patch.
 - Reference every governing contract by ID and path.
 - Include only task-relevant requirements, exclusions, freedoms, and verification expectations.
 - Keep reusable product truth in contracts and task-specific sequencing or file scope in the bead.
-- Leave the bead unready only when unresolved observable behavior inside its
-  required represented scope blocks implementation after current planning review
-  cannot resolve it and the blocker burden below is satisfied. A small local
-  policy gap that the planning authority can decide now must be surfaced as a
-  planning decision, not converted automatically into a roadmap dependency or
-  deferred bead.
+- Leave the bead unready only when its required scope contains conflicting
+  requirements, lacks fundamental semantics needed for correct behavior, or is
+  constrained by an already-frozen compatibility promise that prevents a safe
+  local choice, and the blocker burden below is satisfied.
+- When several reasonable implementations satisfy the specifications, keep the
+  bead ready. Record the choice as implementation freedom and direct the
+  implementer to select the simplest deterministic option, test it, and record
+  the concrete decision.
 - Stop after the contracts and bead are internally consistent.
 
 ### 4. Prove blockers rather than infer them
@@ -96,19 +103,23 @@ Before calling a matter blocking, identify:
 ```text
 represented contract requirement
 current bead obligation
-materially different observable outcomes
-authoritative specification ambiguity
-why implementation freedom cannot resolve it
+blocking category: conflicting requirements, missing fundamental semantics,
+or an already-frozen compatibility promise
+the concrete conflict, missing semantic rule, or frozen promise
+why the simplest deterministic conforming choice cannot safely resolve it
 ```
 
 If any item is missing, classify the matter as `known_uncovered`, implementation
 freedom, adjacent future work, an optional improvement, or outside the current
 slice. Do not withhold bead readiness.
 
-When a claimed gap is a bounded current-task policy choice, present the precise
-alternatives and their observable effects for planning review. Once that review
-chooses a rule, amend the authoritative specification before deriving the
-contract and bead; do not originate the rule solely in a contract record.
+When a claimed gap is an ordinary bounded choice among conforming designs, do
+not turn it into product policy during task preparation. Keep it out of
+source-grounded contract requirements, describe the relevant freedom in the
+bead, and let implementation choose, test, and record the simplest deterministic
+option. Review the concrete result first. Amend authoritative specifications and
+contracts afterward only when the accepted choice is important enough to become
+a permanent product, API, or compatibility promise.
 
 ## Guardrails
 
@@ -122,6 +133,10 @@ contract and bead; do not originate the rule solely in a contract record.
 - Do not promote a changed contract to `reviewed`.
 - Do not reopen an unchanged reviewed contract without a concrete trigger.
 - Do not make the bead an independent source of product truth.
+- Do not defer a bead merely because the specifications permit several
+  reasonable implementations.
+- Do not require a specification amendment before exercising ordinary
+  implementation freedom.
 - Do not implement code.
 
 ## Completion check
@@ -133,6 +148,8 @@ Before stopping, verify:
 - every changed contract identifies its exact source baseline;
 - task-scoped research mapped each applicable discovered requirement;
 - implementation freedom and open questions are not conflated;
+- ordinary choices name a deterministic implementation-and-test path rather
+  than a planning dependency;
 - `known_uncovered` does not block facets the bead does not require;
 - every claimed blocker satisfies the complete blocker burden;
 - no task-specific detail polluted the reusable contract;

@@ -71,17 +71,29 @@ Use:
 - `requirements` for mandatory semantics, exact public responsibilities, prohibitions, and required cross-system effects;
 - `recommendations` for normative `SHOULD`/`SHOULD NOT` guidance;
 - `implementation_freedom` for a small number of freedoms worth making explicit;
-- `open_questions` only for unresolved observable product behavior or required
-  capabilities inside `scope.includes`.
+- `open_questions` only for a represented issue that genuinely blocks correct
+  implementation because requirements conflict, fundamental semantics are
+  missing, or an already-frozen compatibility promise prevents a safe choice.
 
-A missing constructor name, accessor, private field, derive, module path, storage type, or convenience is not an open question unless the specifications require a stable observable commitment.
+A missing constructor name, accessor, private field, derive, module path,
+storage type, or convenience is not an open question. It becomes blocking only
+when an already-frozen compatibility promise requires a choice that cannot be
+safely made locally.
+
+Several reasonable specification-conforming implementations are not an open
+question. Preserve the freedom, let implementation choose the simplest
+deterministic option, and record and test that choice. Do not add the choice to a
+source-grounded contract or require a specification amendment before
+implementation. If concrete review later determines that the choice must become
+a permanent product, API, or compatibility promise, amend the authoritative
+specification first and then update the contract through independent review.
 
 ## Good enough
 
 A draft is ready for independent promotion when its represented boundary is
-clear, each stated rule is supported, applicable rules are coherent, no
-unresolved observable behavior remains inside the boundary, and implementation
-freedom is preserved. It need not exhaust the eventual subject, cite every
+clear, each stated rule is supported, applicable rules are coherent, no genuine
+blocker remains inside the boundary, and implementation freedom is preserved.
+It need not exhaust the eventual subject, cite every
 possibly relevant paragraph, define future variants, or choose private helper
 design. Further optional polish is not a reason to keep it draft.
 
@@ -116,8 +128,8 @@ Use `scope.includes` and `scope.excludes` only when they clarify the subject bou
 Roadmaps and beads define task scope, not reusable product truth.
 
 * Keep task sequencing, implementation staging, file scope, and bead-specific questions out of contracts.
-* Treat a question as a contract open question only when the authoritative
-  specifications genuinely leave represented product behavior unresolved.
+* Treat a question as a contract open question only when it meets the genuine
+  blocker policy. Ordinary underspecification remains implementation freedom.
 * When roadmap wording conflicts with the specifications, record the mismatch in the handoff and refine the bead. Treat the roadmap as a temporary bootstrapping artifact and do not edit it based on contracts being authored in the same run.
 
 ## Compactness

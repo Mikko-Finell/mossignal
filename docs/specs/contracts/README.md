@@ -40,15 +40,23 @@ Task preparation must research a requested feature beyond these boundaries when 
 
 A reviewed contract may contain `known_uncovered`. Adjacent, future, and
 out-of-scope behavior does not prevent promotion and does not block a bead that
-does not depend on it. `open_questions` is reserved for unresolved observable
-behavior or required public capability inside `scope.includes`.
+does not depend on it. `open_questions` is reserved for genuine blockers inside
+`scope.includes`: conflicting requirements, missing fundamental semantics, or
+an already-frozen compatibility promise that prevents a safe local choice.
+
+When the specifications permit several reasonable implementations, preserve
+that freedom. The implementation chooses the simplest deterministic option,
+tests it, and records the decision. A specification amendment is not a
+prerequisite. After concrete review, update the specifications and contracts
+only when the accepted choice should become a permanent product, API, or
+compatibility promise.
 
 ## Good-enough review
 
 A draft is ready for promotion when its represented boundary is clear, every
 stated rule is supported at the cited evidence baseline, applicable rules are
-internally coherent, no unresolved observable behavior remains inside that
-boundary, and unspecified implementation choices remain free.
+internally coherent, no genuine blocker remains inside that boundary, and
+unspecified implementation choices remain free.
 
 Promotion does not require exhaustive subject coverage, ideal decomposition,
 every useful example or citation, future variants and contexts, private helper
@@ -108,7 +116,7 @@ Do not create one record per task, rule, method, heading, or test.
 - Cite repository-relative document paths and exact heading paths.
 - Keep task-specific scope in the bead.
 - Keep representation and conveniences open unless the specifications constrain them.
-- Use `open_questions` only for unresolved observable behavior or required public capability.
+- Use `open_questions` only for genuine blockers under the repository decision policy.
 - Delete unused optional sections from the template.
 - Prefer compact records; inspect records over roughly 200 lines for duplication or poor boundaries.
 
@@ -136,10 +144,11 @@ researches only changed, uncovered, and task-specific facets, creates or extends
 draft records for reusable discoveries, and derives the implementation bead.
 Independent review promotes sound drafts and reviews the bounded bead.
 
-Early implementation may expose additional reusable specification-backed facts.
-The implementer may preserve those facts in new or changed draft contracts when
-the specifications and approved bead already determine the behavior. Such drafts
-do not authorize new product policy or scope expansion and must be independently
-reviewed before final implementation acceptance. Later tasks then reuse the
-larger reviewed contract set instead of repeating the same specification
-research.
+Early implementation may expose additional reusable specification-backed facts
+or settle ordinary choices left open by the specifications. Preserve supported
+facts in new or changed draft contracts. Record ordinary choices in the
+implementation, tests, or bead close-out; they become contract material only
+after an authoritative specification later makes them permanent. Draft contract
+changes do not authorize scope expansion and must be independently reviewed
+before final implementation acceptance. Later tasks then reuse the larger
+reviewed contract set instead of repeating the same specification research.

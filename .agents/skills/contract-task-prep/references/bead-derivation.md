@@ -53,7 +53,7 @@ Derive the bead from the contracts and include only what the implementation task
 - allowed implementation freedom where it prevents invention;
 - expected change surface;
 - required verification;
-- blocking open questions;
+- genuine blocking questions;
 - readiness state.
 
 Use contract rule IDs when they improve traceability. Do not copy the entire contract into the bead.
@@ -62,13 +62,21 @@ Use contract rule IDs when they improve traceability. Do not copy the entire con
 
 - Every normative bead claim must be supported by a referenced contract.
 - The bead may narrow task scope but must not weaken the underlying contract.
-- The bead may choose among documented implementation freedoms but must not convert the choice into reusable product truth.
+- The bead may choose among documented implementation freedoms but must not
+  convert the choice into reusable product truth. When several reasonable
+  implementations conform, direct implementation to choose the simplest
+  deterministic option, test it, and record the concrete decision.
 - Task-specific file paths, sequencing, and staging belong only in the bead.
 - If a contract is partial, rely only on its represented facets.
 - Treat unchanged reviewed facets as settled; do not independently re-audit
   their source support while deriving the bead.
-- Leave the bead unready only when an open question inside a required represented
-  facet changes observable behavior and satisfies the blocker burden below.
+- Leave the bead unready only for conflicting requirements, missing fundamental
+  semantics required for correct behavior, or an already-frozen compatibility
+  promise that prevents a safe local choice, and only when the blocker burden
+  below is satisfied.
+- Do not require specification amendments before ordinary implementation
+  choices. Review the concrete result first; update specifications afterward
+  only if the accepted choice should become a permanent promise.
 
 ## Blocker burden
 
@@ -77,23 +85,27 @@ A blocking question must identify:
 ```text
 represented contract requirement
 current bead obligation
-materially different observable outcomes
-authoritative specification ambiguity
-why implementation freedom cannot resolve it
+blocking category: conflicting requirements, missing fundamental semantics,
+or an already-frozen compatibility promise
+the concrete conflict, missing semantic rule, or frozen promise
+why the simplest deterministic conforming choice cannot safely resolve it
 ```
 
 If any item is absent, classify the matter as `known_uncovered`, implementation
 freedom, adjacent future work, optional improvement, or outside the bead and keep
-the bounded task moving.
+the bounded task moving. Multiple reasonable observable outcomes are not by
+themselves blocking.
 
 ## Implementation-discovered knowledge
 
 Early foundational implementation may discover reusable specification-backed
-facts not yet represented. The implementer may preserve them in new or changed
-draft contracts and continue when the authoritative specifications and approved
-bead already determine behavior. Those drafts do not authorize scope expansion
-or new product policy and require independent review before final implementation
-acceptance. A material change to the bead returns to planning review.
+facts or settle ordinary open implementation choices. The implementer may
+preserve specification-backed facts in new or changed draft contracts. Record
+ordinary choices in the implementation, tests, or bead close-out instead; they
+do not become contract rules unless an authoritative specification is later
+amended. Draft contract changes require independent review before final
+implementation acceptance. A material change to the bead returns to planning
+review.
 
 ## Handoff
 

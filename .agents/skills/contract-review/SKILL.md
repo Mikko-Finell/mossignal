@@ -37,9 +37,11 @@ For each contract:
 6. Edit immediately: remove unsupported claims, narrow overstatements, restore qualifications, add clearly omitted requirements, correct sources, and preserve unspecified implementation freedom.
 7. Remove task sequencing, implementation staging, file scope, and bead-specific questions from contracts.
 8. Rename, merge, split, or delete contracts when their reusable subject boundaries are wrong.
-9. Retain `open_questions` only for unresolved observable product behavior or
-   required public capability inside `scope.includes`. Move specific adjacent or
-   future unrepresented facets to `known_uncovered`.
+9. Retain `open_questions` only for genuine blockers inside `scope.includes`:
+   conflicting requirements, missing fundamental semantics, or an
+   already-frozen compatibility promise that prevents a safe local choice. Move
+   specific adjacent or future unrepresented facets to `known_uncovered` and
+   preserve ordinary design choices as implementation freedom.
 10. For each verification rule, confirm that it states a distinct verification obligation rather than restating product semantics, and that each cited source contributes authority appropriate to its role.
 
 Do not promote a contract until the individual and cross-contract passes are
@@ -60,14 +62,13 @@ Do not broaden this into a catalogue-wide audit or a formal completeness proof o
 
 Promote a contract when its represented boundary is clear, each stated rule is
 supported at the reviewed evidence baseline, applicable represented rules are
-coherent, no unresolved observable behavior remains inside that boundary, and
-implementation freedom is preserved.
+coherent, no genuine blocker remains inside that boundary, and implementation
+freedom is preserved.
 
 A contract may be promoted with `known_uncovered` facets. Do not withhold
 promotion merely because adjacent, future, or out-of-scope behavior remains
 unspecified. Withhold promotion only when a represented requirement is
-unsupported or unresolved observable behavior remains inside the contract's
-stated scope.
+unsupported or a genuine blocker remains inside the contract's stated scope.
 
 Promotion does not require exhaustive subject coverage, ideal decomposition,
 every useful example or citation, future variants or contexts, private helper
@@ -84,8 +85,8 @@ For each promoted contract:
 * run `uv run --locked python scripts/contracts.py status <contract>` and require every cited source to report `unchanged`.
 
 Leave a contract as `draft` only for an unsupported represented requirement or
-unresolved observable behavior inside its stated represented scope. A reviewed
-hash records independently checked evidence; it is not a completeness claim.
+a genuine blocker inside its stated represented scope. A reviewed hash records
+independently checked evidence; it is not a completeness claim.
 
 Reopen a reviewed contract only for a changed cited source, a facet required by
 the current task but outside represented scope, a concrete contradiction with
@@ -117,14 +118,22 @@ Before leaving a bead or contract blocked, identify:
 ```text
 represented contract requirement
 current bead obligation
-materially different observable outcomes
-authoritative specification ambiguity
-why implementation freedom cannot resolve it
+blocking category: conflicting requirements, missing fundamental semantics,
+or an already-frozen compatibility promise
+the concrete conflict, missing semantic rule, or frozen promise
+why the simplest deterministic conforming choice cannot safely resolve it
 ```
 
 If any item is missing, classify the matter as `known_uncovered`, implementation
 freedom, adjacent future work, optional improvement, or outside the current slice
 and do not withhold promotion or readiness.
+
+When several reasonable implementations satisfy the specifications, preserve
+the freedom and keep the bead ready. Do not require a pre-implementation
+specification amendment. Require implementation to choose the simplest
+deterministic option, test it, and record the decision; consider a later
+specification amendment only after reviewing the concrete result and deciding
+that it should become a permanent promise.
 
 When the existing task cannot be made coherent without changing its fundamental
 scope or decomposition and the blocker burden is satisfied, leave it unready and
@@ -134,12 +143,10 @@ report the exact replanning need.
 
 Be skeptical without being hostile. Do not presume correctness, but do not search for hypothetical defects without a concrete semantic reason. Apply clear corrections instead of returning a findings-only report.
 
-Escalate only when:
-
-* the choice affects observable product behavior or a required public capability;
-* the authoritative specifications do not determine it;
-* multiple materially different answers remain compatible with them; and
-* choosing among them would introduce new normative policy.
+Escalate only for conflicting requirements, missing fundamental semantics needed
+for correct behavior, or an already-frozen compatibility promise that prevents
+a safe local choice. Multiple materially different but conforming answers are
+implementation freedom, not a reason to escalate.
 
 A difficult implementation choice, an imprecise task artifact, or uncertainty created by a bad draft is not by itself a product question.
 
@@ -149,7 +156,10 @@ material bead correction first. The implementer may have recorded
 specification-backed reusable facts, but may not independently approve them or
 use them to expand product policy.
 
-Never use a contract to prove itself, infer product truth from a bead, invent design policy, strengthen recommendations into requirements, weaken mandatory requirements, or approve an unresolved assumption.
+Never use a contract to prove itself, infer product truth from a bead, convert
+an ordinary implementation choice into permanent product policy, strengthen
+recommendations into requirements, weaken mandatory requirements, or approve a
+genuine blocker as though it were resolved.
 
 Do not read, cite, edit, or discuss broader planning documents.
 

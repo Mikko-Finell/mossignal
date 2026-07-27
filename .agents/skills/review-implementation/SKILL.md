@@ -38,6 +38,13 @@ repository regression-test-first rule: add or adjust the focused test, observe
 the relevant failure, then correct the implementation. Make the smallest
 coherent correction and continue reviewing the corrected result.
 
+When the specifications permit several reasonable implementations, accept or
+correct toward the simplest deterministic option, ensure it is tested, and
+record the concrete decision. Do not require a specification amendment before
+acceptance. Recommend or make a later specification update only when review of
+the concrete result shows that the choice must become a permanent product, API,
+or compatibility promise.
+
 Do not return a findings-only report, ask the implementer to fix ordinary
 defects, create follow-up beads for obligations already in scope, or treat
 optional improvements as acceptance failures.
@@ -49,10 +56,11 @@ signal that corrections are underway or because its first implementation
 attempt was imperfect. Do not rewrite its description merely to match incidental
 implementation details.
 
-If acceptance genuinely requires a material scope change, unresolved observable
-product policy, new external authority, or modification of unrelated work, stop
-and report the exact blocker. Leave bead-state changes to renewed planning or
-explicit user direction; do not independently reopen it.
+If acceptance genuinely requires a material scope change, modification of
+unrelated work, or resolution of conflicting requirements, missing fundamental
+semantics, or an already-frozen compatibility promise, stop and report the exact
+blocker. Leave bead-state changes to renewed planning or explicit user
+direction; do not independently reopen it.
 
 ## Handle contracts discovered during implementation
 

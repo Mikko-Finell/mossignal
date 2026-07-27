@@ -17,8 +17,21 @@ rg 'NetworkBuilder<D>|topology patch' docs/specs/
 
 Then read the cited section in the authoritative spec file.
 
-Do not invent architecture or semantics when the documents are missing,
-contradictory, or genuinely undecided. Surface the exact design blocker.
+Specifications constrain implementations; they do not need to choose every
+implementation detail. When they permit several reasonable implementations,
+choose the simplest deterministic option, implement it, test it, and record the
+decision in the implementation or bead close-out. Do not defer the bead or
+require a specification amendment first.
+
+After the concrete result has been reviewed, amend the specifications only when
+the decision is important enough to become a permanent product, API, or
+compatibility promise. Until then, the implementation and its tests record the
+choice without turning it into reusable product truth.
+
+Block only when applicable requirements conflict, fundamental semantics needed
+to produce correct behavior are missing, or an already-frozen compatibility
+promise prevents a safe local choice. Mere observable differences between
+otherwise conforming implementations are not a blocker.
 
 The bead and commit rules in this file govern ordinary product work.
 `docs/testing_and_verification_policy.md` governs verification depth.
@@ -49,8 +62,10 @@ not globally complete. Reuse represented rules backed by unchanged cited sources
 without re-auditing their source support, completeness, or editorial quality.
 Reopen a reviewed contract only when a cited source changed, the current task
 needs an unrepresented facet, a concrete source contradiction is found, a
-represented rule permits materially different observable outcomes for the
-current bead, or applicable contracts concretely contradict each other.
+represented rule conflicts with the current bead's required semantics or an
+already-frozen compatibility promise, or applicable contracts concretely
+contradict each other. Multiple conforming implementations are not a reopening
+trigger.
 
 `known_uncovered` records specific adjacent or future coverage and is compatible
 with `reviewed`. It does not block work unless the current bead actually depends
@@ -58,26 +73,36 @@ on that facet. Missing private representation details, optional refinements, and
 theoretical broader coverage are not blockers.
 
 Early foundational implementation is expected to uncover reusable
-specification-backed knowledge. An implementer may create or extend draft
-contracts to preserve it and may continue when the specifications and approved
-bead already determine the behavior. The implementer must not promote its own
-draft, invent product policy, or materially expand the bead without renewed
-planning review. All implementation-discovered contract changes require
-independent review before final implementation acceptance.
+specification-backed knowledge and reasonable choices left open by the
+specifications. An implementer may create or extend draft contracts to preserve
+specification-backed facts and may continue when the bead remains bounded. For
+an open implementation choice, choose the simplest deterministic option,
+implement it, test it, and record it without first changing a specification or
+contract. The implementer must not promote its own draft or materially expand
+the bead without renewed planning review. All implementation-discovered
+contract changes require independent review before final implementation
+acceptance.
+
+Implementation does not by itself turn an open choice into permanent product
+policy. After review of the concrete result, update the authoritative
+specifications and applicable contracts only if the choice should constrain
+future implementations or compatibility.
 
 A claimed design blocker must identify all of:
 
 ```text
 represented contract requirement
 current bead obligation
-materially different observable outcomes
-authoritative specification ambiguity
-why implementation freedom cannot resolve it
+blocking category: conflicting requirements, missing fundamental semantics,
+or an already-frozen compatibility promise
+the concrete conflict, missing semantic rule, or frozen promise
+why the simplest deterministic conforming choice cannot safely resolve it
 ```
 
 If any item is missing, classify the matter as `known_uncovered`, implementation
 freedom, adjacent future work, an optional improvement, or irrelevant to the
-current slice, and continue.
+current slice, and continue. Several reasonable observable outcomes alone are
+implementation freedom, not a design blocker.
 
 ## Repository model
 
@@ -109,10 +134,10 @@ state merely to record that review work is underway, and do not create a new
 bead for corrections already required by the reviewed bead.
 
 Return findings without correction only when the user explicitly requests a
-read-only review or when correction requires a material scope change, unresolved
-observable product policy, new external authority, or changes to unrelated
-work. In the latter case, report the exact blocker and leave bead-state decisions
-to renewed planning or explicit user direction; do not independently reopen the
+read-only review or when correction requires a material scope change, changes
+to unrelated work, or a genuine blocker under the repository decision policy.
+In the latter case, report the exact blocker and leave bead-state decisions to
+renewed planning or explicit user direction; do not independently reopen the
 bead.
 
 Use the `review-implementation` skill for the acceptance procedure. Reviewers
