@@ -16,3 +16,4 @@ workspace = true
 [dependencies]
 # Add core dependencies here as the design settles
 serde = { version = "1.0.228", features = ["derive"] }
+blake3 = "1.8.3"

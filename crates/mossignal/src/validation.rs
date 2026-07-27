@@ -7,6 +7,7 @@ use crate::diagnostics::{
     CurrentReactionCycleStep, Diagnostic, DiagnosticSet, DuplicateClaim, DuplicateNodeKind,
     FixedArityRole, Problem, ProblemEvidence, ReactionMemberRef, ReactionRole, Report, SubjectRef,
 };
+use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId, fingerprints};
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, AnySignalSourceKey,
     ConnectionKey, NodeKey, SignalSourceKey,
@@ -74,6 +75,34 @@ pub(crate) struct ReactionDependencyGraph {
 pub struct ValidatedNetwork<D> {
     definition: UncheckedNetwork<D>,
     topological_order: Vec<ReactionVertex>,
+    fingerprint: NetworkFingerprint,
+    input_schema_fingerprint: InputSchemaFingerprint,
+}
+
+impl<D> ValidatedNetwork<D> {
+    /// Returns the stable identity of the validated authored network.
+    #[must_use]
+    pub const fn network_key(&self) -> crate::key::NetworkKey {
+        self.definition.key()
+    }
+
+    /// Returns the caller-owned logical tick identity bound before validation.
+    #[must_use]
+    pub const fn time_domain_id(&self) -> TimeDomainId {
+        self.definition.time_domain_id()
+    }
+
+    /// Returns the immutable semantic fingerprint computed by successful validation.
+    #[must_use]
+    pub const fn fingerprint(&self) -> NetworkFingerprint {
+        self.fingerprint
+    }
+
+    /// Returns the immutable complete external input-schema fingerprint.
+    #[must_use]
+    pub const fn input_schema_fingerprint(&self) -> InputSchemaFingerprint {
+        self.input_schema_fingerprint
+    }
 }
 
 impl ReactionDependencyGraph {
@@ -401,11 +430,17 @@ impl<D> UncheckedNetwork<D> {
         if !cyclic_components.is_empty() {
             return Report::new(None, diagnostics);
         }
+        if !is_restricted_level_network(&self) {
+            return Report::new(None, diagnostics);
+        }
         let order = graph.topological_order();
+        let (fingerprint, input_schema_fingerprint) = fingerprints(&self);
         Report::new(
             Some(ValidatedNetwork {
                 definition: self,
                 topological_order: order,
+                fingerprint,
+                input_schema_fingerprint,
             }),
             diagnostics,
         )
@@ -776,6 +811,30 @@ fn is_target(endpoint: ConnectionEndpoint) -> bool {
     matches!(endpoint, ConnectionEndpoint::NodeInput(_))
 }
 
+fn is_restricted_level_network<D>(network: &UncheckedNetwork<D>) -> bool {
+    network.nodes().iter().all(|node| {
+        node.ports()
+            .inputs()
+            .iter()
+            .all(|port| port.kind() == SignalKind::Level)
+            && node
+                .ports()
+                .outputs()
+                .iter()
+                .all(|port| port.kind() == SignalKind::Level)
+    }) && network
+        .external_inputs()
+        .iter()
+        .all(|input| input.key().kind() == SignalKind::Level)
+        && network.external_outputs().iter().all(|output| {
+            output.key().kind() == SignalKind::Level && output.source().kind() == SignalKind::Level
+        })
+        && network.connections().iter().all(|connection| {
+            connection.from().kind() == SignalKind::Level
+                && connection.to().kind() == SignalKind::Level
+        })
+}
+
 fn reaction_source(endpoint: ConnectionEndpoint) -> Option<ReactionVertex> {
     match endpoint {
         ConnectionEndpoint::ExternalInput(key) => Some(ReactionVertex::ExternalInput(key)),
@@ -857,6 +916,7 @@ mod tests {
         let not_output = OutPortKey::<Level>::from_u128(3);
         let network = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             vec![
                 NodeDef::new(
@@ -932,6 +992,7 @@ mod tests {
         let external_output = ExternalOutputKey::<Level>::from_u128(4);
         let network = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             vec![NodeDef::new(
                 NodeKey::from_u128(10),
@@ -1020,6 +1081,7 @@ mod tests {
 
         let first = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             vec![constant.clone(), inverter.clone()],
             vec![],
@@ -1028,6 +1090,7 @@ mod tests {
         );
         let second = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             vec![inverter, constant],
             vec![],
@@ -1056,6 +1119,7 @@ mod tests {
         let output = OutPortKey::<Level>::from_u128(3);
         let network = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             vec![
                 NodeDef::new(
@@ -1095,6 +1159,7 @@ mod tests {
         let input = InPortKey::<Level>::from_u128(2);
         let network = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             vec![
                 NodeDef::new(
@@ -1170,6 +1235,7 @@ mod tests {
         );
         let network = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             vec![node.clone(), node, target_node],
             vec![],
@@ -1234,6 +1300,7 @@ mod tests {
         );
         let forward = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             nodes.clone(),
             vec![],
@@ -1242,6 +1309,7 @@ mod tests {
         );
         let reverse = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             nodes,
             vec![],
@@ -1258,6 +1326,7 @@ mod tests {
     fn reports_missing_endpoints_even_when_connection_direction_is_invalid() {
         let network = UncheckedNetwork::<()>::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             vec![],
             vec![],
@@ -1303,6 +1372,7 @@ mod tests {
         ];
         let dag = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             nodes.clone(),
             vec![],
@@ -1318,6 +1388,7 @@ mod tests {
 
         let cyclic = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             nodes,
             vec![],
@@ -1368,6 +1439,7 @@ mod tests {
         let b_output = OutPortKey::<Level>::from_u128(4);
         let network = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             vec![
                 NodeDef::new(
@@ -1596,6 +1668,7 @@ mod tests {
         let network = |nodes, connections| {
             UncheckedNetwork::new(
                 NetworkKey::from_u128(1),
+                crate::identity::TimeDomainId::from_u128(1),
                 DiagnosticMeta::default(),
                 nodes,
                 vec![],
@@ -1669,6 +1742,7 @@ mod tests {
         let key = NodeKey::from_u128(1);
         let network = UncheckedNetwork::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             vec![
                 NodeDef::new(

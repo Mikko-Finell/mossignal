@@ -3,6 +3,7 @@
 //! This module deliberately represents structure only. It does not validate,
 //! compile, or execute a network.
 
+use crate::identity::TimeDomainId;
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, AnySignalSourceKey,
     ConnectionKey, ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey, OutPortKey,
@@ -18,6 +19,7 @@ use core::marker::PhantomData;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UncheckedNetwork<D> {
     key: NetworkKey,
+    time_domain_id: TimeDomainId,
     meta: DiagnosticMeta,
     nodes: Vec<NodeDef<D>>,
     external_inputs: Vec<ExternalInputDef>,
@@ -30,6 +32,7 @@ impl<D> UncheckedNetwork<D> {
     #[must_use]
     pub fn new(
         key: NetworkKey,
+        time_domain_id: TimeDomainId,
         meta: DiagnosticMeta,
         nodes: Vec<NodeDef<D>>,
         external_inputs: Vec<ExternalInputDef>,
@@ -40,6 +43,7 @@ impl<D> UncheckedNetwork<D> {
         // Claim vectors must remain lossless so duplicate and malformed input reaches validation.
         Self {
             key,
+            time_domain_id,
             meta,
             nodes,
             external_inputs,
@@ -52,6 +56,12 @@ impl<D> UncheckedNetwork<D> {
     #[must_use]
     pub const fn key(&self) -> NetworkKey {
         self.key
+    }
+
+    /// Returns the caller-supplied identity of this network's logical tick.
+    #[must_use]
+    pub const fn time_domain_id(&self) -> TimeDomainId {
+        self.time_domain_id
     }
 
     /// Returns presentation metadata attached to this network.
@@ -476,6 +486,7 @@ mod tests {
         let not_output = OutPortKey::<Level>::from_u128(12);
         let network = UncheckedNetwork::<()>::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             meta("network"),
             vec![
                 NodeDef::new(
@@ -578,6 +589,7 @@ mod tests {
         let duplicate = ExternalInputKey::<Level>::from_u128(7);
         let network = UncheckedNetwork::<()>::new(
             NetworkKey::from_u128(1),
+            crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
             vec![],
             vec![
