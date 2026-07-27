@@ -82,8 +82,11 @@ Do not create an implementation patch.
 - Include only task-relevant requirements, exclusions, freedoms, and verification expectations.
 - Keep reusable product truth in contracts and task-specific sequencing or file scope in the bead.
 - Leave the bead unready only when unresolved observable behavior inside its
-  required represented scope blocks implementation and the blocker burden below
-  is satisfied.
+  required represented scope blocks implementation after current planning review
+  cannot resolve it and the blocker burden below is satisfied. A small local
+  policy gap that the planning authority can decide now must be surfaced as a
+  planning decision, not converted automatically into a roadmap dependency or
+  deferred bead.
 - Stop after the contracts and bead are internally consistent.
 
 ### 4. Prove blockers rather than infer them
@@ -101,6 +104,11 @@ why implementation freedom cannot resolve it
 If any item is missing, classify the matter as `known_uncovered`, implementation
 freedom, adjacent future work, an optional improvement, or outside the current
 slice. Do not withhold bead readiness.
+
+When a claimed gap is a bounded current-task policy choice, present the precise
+alternatives and their observable effects for planning review. Once that review
+chooses a rule, amend the authoritative specification before deriving the
+contract and bead; do not originate the rule solely in a contract record.
 
 ## Guardrails
 
