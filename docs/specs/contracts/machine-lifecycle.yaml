@@ -1,0 +1,195 @@
+schema_version: "0.1"
+id: mossignal.runtime.machine_lifecycle
+title: Machine lifecycle and semantic state ownership
+kind: lifecycle
+status: reviewed
+
+source_baseline:
+  commit: 87fe4c6f752aac6f34bd89d88c9395013a728aec
+  working_tree: dirty
+
+summary: >-
+  Machine is one mutable semantic execution instance over an immutable compiled
+  topology. It begins without fabricated runtime values in
+  AwaitingInitialization and moves to Ready only through a successful
+  initialization transaction.
+
+scope:
+  includes:
+    - machine creation from an immutable compiled topology
+    - independent mutable semantic-state ownership
+    - AwaitingInitialization and Ready lifecycle states
+    - lifecycle, time, revision, topology, and policy inspection
+  excludes:
+    - transaction construction, execution, staging, and result publication
+    - ready-machine scheduling and current-runtime inspection projections
+    - persistence snapshots, restoration, replay, and forecasts
+    - topology replacement and state migration
+    - runtime policy construction, identity semantics, and machine association
+
+known_uncovered:
+  - Complete stateful, temporal, pending-event, provenance, diagnostic-episode, and digest storage required as those subsystems are implemented.
+
+aliases:
+  - Machine<D>
+  - MachineStatus<D>
+  - AwaitingInitialization
+  - Ready
+
+requirements:
+  - id: explicit-runtime-lifecycle
+    kind: public_surface
+    statement: >-
+      CompiledNetwork creates a Machine that retains the immutable compiled
+      topology and its semantic fingerprint, and the canonical Machine uses
+      runtime lifecycle state rather than a typestate parameter.
+    sources: [api-machine, concrete-compiled, concrete-machine, concrete-status]
+
+  - id: independent-machine-state
+    kind: lifecycle
+    statement: >-
+      Each spawned Machine owns an independent mutable semantic store. Several
+      machines may share one immutable CompiledNetwork, but mutation of one
+      machine must not alter another machine or corrupt compiled topology.
+    sources: [runtime-running-machine, runtime-program-store]
+
+  - id: awaiting-initialization-state
+    kind: lifecycle
+    statement: >-
+      The canonical runtime lifecycle uses non-exhaustive MachineStatus with
+      AwaitingInitialization and Ready { now: Time<D> }. A newly spawned machine
+      is AwaitingInitialization, retains the declared initial node and temporal
+      state applicable to its topology, and has no current logical time. It
+      transitions to Ready only through a successful initialization transaction.
+    sources: [runtime-lifecycle-states, api-lifecycle, api-machine, concrete-machine, concrete-status]
+
+  - id: no-fabricated-uninitialized-values
+    kind: prohibition
+    statement: >-
+      An AwaitingInitialization machine has no current logical time,
+      authoritative external level valuation, settled current signal valuation,
+      external output baseline, pending schedule, or current runtime
+      explanation or runtime diagnostic episodes. It must neither infer Low nor
+      introduce a third LogicLevel to represent those absent runtime facts.
+    sources: [runtime-lifecycle-states, api-lifecycle, api-machine]
+
+  - id: machine-local-revision-and-identity
+    kind: semantic
+    statement: >-
+      NetworkRevision identifies the topology installed in one machine. A
+      state-only transaction, including initialization without a topology patch,
+      does not change it; only a committed topology patch advances it. The
+      machine retains the compiled network fingerprint and exact runtime-policy
+      identity as distinct inspectable values.
+    sources: [api-revision, concrete-status]
+
+  - id: basic-lifecycle-inspection
+    kind: public_surface
+    statement: >-
+      Machine exposes its lifecycle status, whether initialization has occurred,
+      optional current time, machine-local revision, immutable compiled
+      topology, and topology fingerprint without exposing private runtime
+      storage.
+    sources: [concrete-status]
+
+  - id: mutable-ownership-boundary
+    kind: prohibition
+    statement: >-
+      Semantic mutation belongs behind exclusive mutable Machine access. The
+      public machine boundary must not expose compiled mutable internals; machine
+      mutation must remain unable to corrupt compiled topology invariants.
+    sources: [runtime-program-store, concrete-machine, concrete-mutation]
+
+  - id: lifecycle-verification
+    kind: verification
+    statement: >-
+      Tests must cover both lifecycle states and establish that an uninitialized
+      machine is not treated as a ready machine holding implicit Low values.
+    sources: [testing-lifecycle]
+
+  - id: ownership-verification
+    kind: verification
+    statement: >-
+      Verification must demonstrate that machines spawned from one compiled
+      topology cannot share mutable semantic state accidentally and that machine
+      mutation cannot corrupt the immutable compiled program.
+    sources: [testing-obligations, runtime-program-store]
+
+recommendations:
+  - id: deliberate-machine-cloning
+    statement: >-
+      Machine should not implement Clone as an ordinary convenience unless its
+      cost and semantic meaning are explicit. Private cloning for forecast or
+      reference execution may remain an implementation detail, and any public
+      independent duplication should use a deliberate operation such as fork.
+    sources: [concrete-cloning]
+
+implementation_freedom:
+  - Private state layout, shared-topology handle representation, accessor implementation, and lifecycle-state storage are unconstrained when ownership and observable lifecycle semantics remain exact.
+  - The initial numeric NetworkRevision value is not specified; choose the simplest deterministic value, test it, and record the concrete choice without treating it as a permanent compatibility promise.
+  - Unsupported semantic-state families need no placeholder storage before their owning subsystems exist.
+
+open_questions: []
+
+sources:
+  testing-obligations:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - "`mossignal` Testing and Verification Policy"
+      - 2. Normative language
+    reviewed_hash: sha256:1820c13f14639598bc29c4c8d1e779d1a3c4c74bbadd90acd72eca60c3853c01
+  runtime-running-machine:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 3. Lifecycle, 3.4 Running machine]
+    reviewed_hash: sha256:026d8de4426296b0778810a22154dd5b135ca85a9bbdd83ac435bda0da668936
+  runtime-program-store:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 4. Immutable program and mutable store]
+    reviewed_hash: sha256:ae09c0b0bc07e2e33eb2edf0534f2190855cb203eecf8006466704ea1610f2c0
+  runtime-lifecycle-states:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part II — Initialization, 6. Machine lifecycle states]
+    reviewed_hash: sha256:811d943451735f07ae65455bf2fb4e0ba143031d6fabc99bb187b9832561a0fd
+  api-machine:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 15. `Machine<D>`]
+    reviewed_hash: sha256:b2b9b53e507c925bf597ff720d73b3523b09c46d1be3fe935a2fbbabdc0c44ae
+  api-lifecycle:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 10. Lifecycle]
+    reviewed_hash: sha256:871bd06010d5d2d3c90d4011795dd2e6aeb9266c3a897fb3e3a519e664adec03
+  api-revision:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 19. Revision, fingerprint, digests, and runtime policy
+      - 19.1 Topology revision
+    reviewed_hash: sha256:f5bc9a25453285db32ad2fadf01c9cc3176d5399f3cbb347ea6641de69c90bd3
+  concrete-compiled:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part X — Validation and compilation artifacts, 44. `CompiledNetwork<D>`]
+    reviewed_hash: sha256:06a6ae375426437ece5aafd386ca65e6c76c51591acc95d2f8a2d1ee56bca60f
+  concrete-machine:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIII — Machine lifecycle and access, 49. `Machine<D>`]
+    reviewed_hash: sha256:1fb2a2dca0beaff45c7a7350ae15a6a7e70d3ca79670d15c3d57750a6d6f57a3
+  concrete-status:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIII — Machine lifecycle and access, 50. Machine status]
+    reviewed_hash: sha256:1858e94e5b0903838f91813ddb733c2e85ac03f1d769c6ee238bc5b30d94bb16
+  concrete-cloning:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part XXVII — Ownership, cloning, and thread boundaries
+      - 98. Expensive semantic clones
+    reviewed_hash: sha256:d2a7c6917ff5b057ccbf6e499e5807fa9278428fb4703aaf5d741b335995eaed
+  concrete-mutation:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part XXVII — Ownership, cloning, and thread boundaries
+      - 99. Mutation and concurrency
+    reviewed_hash: sha256:afe34f86cf59a2c5d1caf6ac015e1ac87fab047cceb6c64dce3a0faa530f732d
+  testing-lifecycle:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VI — Initialization verification, 23. Lifecycle coverage]
+    reviewed_hash: sha256:9868a6b5542f3beb82a608c4dce58e6e9e8180b60e00ce1477374c0a07e9e61c
