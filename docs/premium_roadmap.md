@@ -666,6 +666,32 @@ Such work may be broad in line count because it should no longer invent:
 * transaction integration;
 * basic conformance-test structure.
 
+Completion of this expansion must add a permanent composed-circuit equivalence
+suite built only through the public authoring and runtime APIs. The suite must
+construct representative circuits through materially different topologies and
+exhaustively compare them over their complete finite input domains.
+
+It must distinguish:
+
+* insertion-order variants of the same stable-keyed topology, which must retain
+  identical fingerprints and behavior;
+* structurally different but logically equivalent networks, which may have
+  different fingerprints but must produce identical settled outputs and
+  observable runtime behavior.
+
+At minimum, the suite must cover:
+
+* half adders;
+* full adders implemented with canonical primitives, conventional gate
+  compositions, and NAND-only composition through `Not(All(...))`;
+* a four-bit ripple-carry adder exhaustively checked across both carry-in values
+  and every operand pair.
+
+The comparisons must cover initialization results, later level transactions,
+observable output events, and final settled outputs. The equivalence machinery
+must be retained as a reusable standard test harness for later combinational and
+trace-equivalence suites.
+
 ---
 
 ## 24. Pulse foundation
