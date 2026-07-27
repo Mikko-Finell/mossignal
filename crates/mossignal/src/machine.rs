@@ -167,6 +167,7 @@ mod tests {
     use crate::key::{NetworkKey, NodeKey, OutPortKey};
     use crate::metadata::DiagnosticMeta;
     use crate::signal::{Level, LogicLevel};
+    use std::collections::BTreeMap;
 
     #[derive(PartialEq)]
     struct Ticks;
@@ -239,11 +240,13 @@ mod tests {
         let compiled = compiled();
         let mut first = compiled.spawn(policy([1, 2, 3, 4, 5]));
         let second = compiled.spawn(policy([1, 2, 3, 4, 5]));
+        let expected_evaluation = compiled.evaluate_full(&BTreeMap::new());
 
         assert!(!core::ptr::eq(&first.store, &second.store));
         first.store.status = MachineStatus::Ready {
             now: Time::from_ticks(17),
         };
+        first.store.revision = NetworkRevision(7);
 
         assert_eq!(
             first.status(),
@@ -252,8 +255,23 @@ mod tests {
             }
         );
         assert_eq!(first.now(), Some(Time::from_ticks(17)));
+        assert_eq!(first.revision(), NetworkRevision(7));
         assert_eq!(second.status(), MachineStatus::AwaitingInitialization);
         assert_eq!(second.now(), None);
+        assert_eq!(second.revision(), NetworkRevision::INITIAL);
+        assert_eq!(
+            first.compiled().network_key(),
+            second.compiled().network_key()
+        );
         assert_eq!(first.fingerprint(), second.fingerprint());
+        assert_eq!(first.runtime_policy_id(), second.runtime_policy_id());
+        assert_eq!(
+            first.compiled().evaluate_full(&BTreeMap::new()),
+            expected_evaluation
+        );
+        assert_eq!(
+            second.compiled().evaluate_full(&BTreeMap::new()),
+            expected_evaluation
+        );
     }
 }
