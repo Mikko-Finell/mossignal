@@ -1,0 +1,203 @@
+schema_version: "0.1"
+id: mossignal.identity.network_fingerprint
+title: Network semantic fingerprint
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 22c66d24e9fd2123f418a605b0eb324223351ef2
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    - docs/testing_and_verification_policy.md
+
+summary: >-
+  NetworkFingerprint is the opaque, domain-separated 256-bit identity of a
+  canonical semantic network projection, stable across construction order and
+  private compiled representation while changing with semantic topology,
+  parameters, versions, or time domain.
+
+scope:
+  includes:
+    - NetworkFingerprint value and digest construction
+    - canonical semantic projection for stable network structure
+    - inclusion and exclusion rules for network identity
+    - deterministic identity verification
+  excludes:
+    - complete definition-artifact encoding and integrity digests
+    - module fingerprints beyond their future contribution to network identity
+    - execution, observable-state, snapshot, policy, and patch digests
+
+aliases:
+  - NetworkFingerprint
+  - semantic topology identity
+  - compiled fingerprint
+
+requirements:
+  - id: distinct-opaque-value
+    kind: public_surface
+    statement: >-
+      NetworkFingerprint is a public opaque fixed 32-byte identity type distinct
+      and non-interchangeable from revisions, other fingerprints, and state or
+      artifact digests; ordinary API use must not expose the selected digest
+      algorithm as part of its semantic type.
+    sources: [fixed-fingerprints, concrete-fingerprint]
+
+  - id: digest-construction
+    kind: semantic
+    statement: >-
+      DigestSuiteVersion 1 computes NetworkFingerprint as unkeyed BLAKE3 with a
+      256-bit output over the canonical record containing domain label
+      mossignal/network_fingerprint/v1, domain version 1, and the version-1
+      canonical semantic payload. CoreSemanticsVersion and
+      BuiltInNodeSemanticsVersion are initially 1;
+      TopologyPatchSemanticsVersion does not participate in the restricted
+      projection.
+    sources: [digest-suite, domain-separation, digest-version-inputs, restricted-projection]
+
+  - id: canonical-restricted-projection
+    kind: semantic
+    statement: >-
+      The restricted version-1 payload uses the exact network, node, port,
+      connection, external-input, external-output, source, target, signal-kind,
+      direction, semantic-role, node-kind, and logic-level record and variant
+      schemas fixed by the persistence specification. Collections use the
+      specified stable semantic order and never Rust layout, discriminants, or
+      debug text.
+    sources: [restricted-projection, canonical-ordering, canonical-enums]
+
+  - id: validated-network-owner
+    kind: lifecycle
+    statement: >-
+      Successful validation computes NetworkFingerprint and makes
+      ValidatedNetwork its first public owner. Compilation accepts no identity
+      context and later carries the identical fingerprint into CompiledNetwork.
+    sources: [api-validated, concrete-validated]
+
+  - id: representation-exclusions
+    kind: prohibition
+    statement: >-
+      NetworkFingerprint excludes topology revision, dense indices, derived
+      reaction-operation allocation, construction and insertion order, hash
+      iteration, memory layout, compiled caches, and all presentation-only
+      diagnostic metadata including names, descriptions, paths, origins, tags,
+      and extensions.
+    sources: [network-projection, restricted-projection, api-fingerprint, runtime-fingerprint, api-metadata]
+
+  - id: deterministic-semantic-identity
+    kind: semantic
+    statement: >-
+      Semantically equivalent stable-keyed definitions produce equal network
+      fingerprints regardless of construction order, while changes to an
+      included structural key, kind, typed role, connection, endpoint source,
+      semantic parameter, applicable semantics version, or TimeDomainId change
+      the canonical digest input.
+    sources: [network-projection, restricted-projection, runtime-fingerprint, deterministic-compilation]
+
+  - id: golden-vector-verification
+    kind: verification
+    statement: >-
+      Representative NetworkFingerprint values require versioned golden vectors;
+      tests also establish insertion-order invariance, metadata exclusion, and
+      sensitivity to every included restricted semantic category.
+    sources: [canonical-vectors, digest-scope-verification, deterministic-compilation]
+
+recommendations:
+  - id: value-capabilities
+    statement: >-
+      NetworkFingerprint should provide Clone, Copy, Eq, Hash, Ord, Debug, and
+      Display with a stable hexadecimal representation.
+    sources: [concrete-fingerprint]
+
+implementation_freedom:
+  - The private semantic-projection types, encoder decomposition, caching, and module placement are unconstrained when canonical bytes and the public opaque value agree exactly.
+  - A narrow canonical-value encoder may serve the two fingerprint projections without implementing artifact envelopes, prefixes, decoding, or other persistence formats.
+
+open_questions: []
+
+sources:
+  fixed-fingerprints:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 40. Fixed digests and fingerprints]
+    reviewed_hash: sha256:d6664f3186f8f4e1965879bc8eed5b5963d6c638519cc204b15580c6266c3ba6
+  digest-suite:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 51. Initial digest suite]
+    reviewed_hash: sha256:1469a69036c9809310b8bd1db66a86095160b2bf0b5b6e2b1bc532c04839e477
+  domain-separation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 52. Domain separation]
+    reviewed_hash: sha256:493e3715f1e5f7b4d7b29e0722a638caf6ec000d698320f6c8db93d9cd3a578d
+  digest-version-inputs:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 53. Digest version inputs]
+    reviewed_hash: sha256:39b98aacf5b1e57ba016ed8f9efaac0ce98fdad35878cef7f8d4d7733b017c39
+  network-projection:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part VI — Digest and fingerprint suite
+      - 54. Network and input-schema fingerprints
+      - 54.1 Network fingerprint
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  restricted-projection:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part VI — Digest and fingerprint suite
+      - 54. Network and input-schema fingerprints
+      - 54.2 Restricted network-fingerprint projection version 1
+    reviewed_hash: sha256:bd4a066ab2af0cab281541738d378fee5ab4a820c47a31f33752d65f565e2e77
+  canonical-ordering:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]
+    reviewed_hash: sha256:5f6570e0c89a0135fe906534620d35ac9d378d28b9866a9e287cd2eeb96fdea1
+  canonical-enums:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 41. Diagnostic codes and enum names]
+    reviewed_hash: sha256:70030c7af0f5bee56294e7389672d05ab0b8be39f8cf8316f585868e39765709
+  api-fingerprint:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 19. Revision, fingerprint, digests, and runtime policy
+      - 19.2 Network fingerprint
+    reviewed_hash: sha256:cd66beda04632e5936af447825a20e58cbe84a72313c38ef193b53d838c2eb5c
+  runtime-fingerprint:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 23. Semantic fingerprint]
+    reviewed_hash: sha256:93810388dc436f32e1d3395798095baa37c59213f8becc008194c7e1a0df5985
+  concrete-fingerprint:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part X — Validation and compilation artifacts, 45. Revision and fingerprints]
+    reviewed_hash: sha256:fd391aa0e34c98a7d34b45710151f0884bd7cce47a8e8682b526f1c6c8f8b13a
+  api-validated:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:90b918d33b7875dbeef5beba178c107ea0757d28d380fda411097dc2656bd9e5
+  concrete-validated:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part X — Validation and compilation artifacts, 43. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:416a8f32e53dbb0625bba2525dc42e38a2d98ffaaf3595caf76ea9ce0c2769f0
+  api-metadata:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 18. Diagnostic metadata
+    reviewed_hash: sha256:4e6ea6476f679fbc84a41b53a9f8107f63879ce17e32f024bf0a715716c13a69
+  deterministic-compilation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:99ab9c49b94049116514b2b2c03ee5c5fdc9fc028172cef5e86fb15964ee5737
+  digest-scope-verification:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 89. Digest-scope verification
+    reviewed_hash: sha256:21a439831900326e7a8e96230588e78be44bc5b9ca104fd229e0db7db4bb1485
+  canonical-vectors:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 90. Canonical encoding vectors
+    reviewed_hash: sha256:0facb5756d00d5b3d163a453cec7d1ea7d6b11d0d8a5c332eebd93e0388cbaab

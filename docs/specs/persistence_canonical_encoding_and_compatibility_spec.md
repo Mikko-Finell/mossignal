@@ -224,6 +224,17 @@ A `TimeDomainId`:
 
 The initial canonical representation is exactly 16 bytes in unsigned big-endian order.
 
+The caller binds one `TimeDomainId` to an authored network before validation.
+That identity is owned by `UncheckedNetwork<D>` and is carried unchanged through
+`ValidatedNetwork<D>` and `CompiledNetwork<D>`. Validation and compilation do
+not accept a later time-domain context and do not introduce another public
+lifecycle stage. A validated network therefore has one complete intrinsic
+semantic identity, and exposing either of its fingerprints requires no
+additional caller context.
+
+Rebuilding otherwise equal authored structure for a different `TimeDomainId`
+is an explicit reconstruction and produces a different `NetworkFingerprint`.
+
 ## 11. Persistence context
 
 Encoding and decoding `D`-parameterized artifacts requires an explicit context broadly equivalent to:
@@ -236,6 +247,10 @@ pub struct PersistenceContext<D> {
 ```
 
 The context associates the process-local marker `D` with one persistent `TimeDomainId`.
+It verifies persisted or in-memory network identity; it is not the late source
+from which an already validated network obtains semantic identity. When a
+network participates in persistence, `PersistenceContext<D>::time_domain` must
+equal the network's already-bound `TimeDomainId`.
 
 The canonical API must not require `D` to implement a persistence trait.
 
@@ -297,6 +312,22 @@ Numeric ordering alone has no compatibility meaning.
 Compatibility is defined by an explicit support table maintained by each library release.
 
 The implementation must not assume that version `n + 1` is readable or semantically compatible merely because it is numerically adjacent to `n`.
+
+The initial machine-readable versions used by the restricted semantic identity
+foundation are:
+
+```text
+DigestSuiteVersion                    1
+NetworkFingerprint domain version     1
+InputSchemaFingerprint domain version 1
+CoreSemanticsVersion                  1
+BuiltInNodeSemanticsVersion           1
+```
+
+The restricted network-fingerprint projection does not include
+`TopologyPatchSemanticsVersion`. Topology-patch identity is not applicable to
+that projection. A later change to either canonical fingerprint projection must
+advance its domain version rather than silently changing version-1 bytes.
 
 ## 16. Version responsibilities
 
@@ -892,6 +923,7 @@ The initial labels are:
 mossignal/artifact_integrity/v1
 mossignal/module_fingerprint/v1
 mossignal/network_fingerprint/v1
+mossignal/input_schema_fingerprint/v1
 mossignal/runtime_policy_id/v1
 mossignal/execution_state_digest/v1
 mossignal/observable_state_digest/v1
@@ -912,7 +944,9 @@ A schema-only representation change need not change a semantic digest if the sem
 
 A change to canonical semantic projection requires a new domain version or digest suite version.
 
-## 54. Network fingerprint
+## 54. Network and input-schema fingerprints
+
+### 54.1 Network fingerprint
 
 `NetworkFingerprint` is computed from a canonical semantic projection containing:
 
@@ -946,6 +980,172 @@ compiled caches
 ```
 
 Semantically equivalent stable-keyed definitions must produce the same fingerprint.
+
+### 54.2 Restricted network-fingerprint projection version 1
+
+For the restricted `Constant`/`Not` foundation, the exact canonical payload is
+the following record:
+
+```text
+network_fingerprint_payload_v1 = record {
+    built_in_node_semantics_version,
+    connections,
+    core_semantics_version,
+    external_inputs,
+    external_outputs,
+    network_key,
+    nodes,
+    ports,
+    time_domain_id,
+}
+```
+
+Record fields use the canonical field ordering from Part IV. The scalar fields
+have these exact representations:
+
+```text
+built_in_node_semantics_version = unsigned integer 1
+core_semantics_version          = unsigned integer 1
+network_key                     = 16-byte stable key
+time_domain_id                  = 16-byte TimeDomainId
+```
+
+The restricted records and closed variants are:
+
+```text
+node = record {
+    key,
+    kind,
+}
+
+kind = ["constant", record {
+            value,
+        }]
+     | ["not", null]
+
+value = ["low", null]
+      | ["high", null]
+
+port = record {
+    direction,
+    key,
+    owner,
+    semantic_role,
+    signal_kind,
+}
+
+direction     = ["input", null] | ["output", null]
+semantic_role = ["input", null] | ["output", null]
+signal_kind   = ["level", null]
+
+connection = record {
+    key,
+    source,
+    target,
+}
+
+source = ["external_input", record {
+              key,
+              signal_kind,
+          }]
+       | ["out_port", record {
+              key,
+              signal_kind,
+          }]
+
+target = ["in_port", record {
+              key,
+              signal_kind,
+          }]
+
+external_input = record {
+    key,
+    signal_kind,
+}
+
+external_output = record {
+    key,
+    signal_kind,
+    source,
+}
+```
+
+Every `key` and `owner` field is the applicable 16-byte stable structural key.
+Node collections are ordered by `NodeKey`; connection collections by
+`ConnectionKey`; external inputs and outputs by signal-kind canonical tag then
+stable key bytes. The heterogeneous port collection is ordered by signal-kind
+canonical tag, direction tag with `input` before `output`, then stable key
+bytes. Version 1 has only the `level` signal-kind tag.
+
+The digest input is exactly:
+
+```text
+record {
+    domain:  "mossignal/network_fingerprint/v1",
+    payload: network_fingerprint_payload_v1,
+    version: 1,
+}
+```
+
+encoded by the canonical CBOR profile and hashed with unkeyed BLAKE3-256. The
+standalone artifact prefix and artifact envelope are not part of this digest
+input.
+
+In addition to the general exclusions in §54.1, version 1 excludes selected
+topological order, SCC data, cycle witnesses, derived reaction-operation
+identity, and `TopologyPatchSemanticsVersion`. Validation-derived private data
+must not affect these bytes.
+
+### 54.3 Input schema fingerprint
+
+`InputSchemaFingerprint` is a separate 32-byte content identity for the complete
+typed external-input schema. Network-bound input artifacts carry network
+identity and input-schema identity separately, so two networks with identical
+external-input schemas may have the same `InputSchemaFingerprint` without
+making their input artifacts interchangeable.
+
+The exact restricted version-1 payload is:
+
+```text
+input_schema_fingerprint_payload_v1 = record {
+    inputs,
+}
+
+input = record {
+    establishment,
+    key,
+    signal_kind,
+}
+
+establishment = ["required", null]
+signal_kind   = ["level", null]
+```
+
+`required` means an authoritative level must be supplied when no prior
+authoritative valuation exists, including a complete initialization snapshot.
+It does not require a later `InputDelta` to repeat an already authoritative
+value.
+
+Input entries are ordered by signal-kind canonical tag and then external-input
+stable key bytes. The digest input is exactly:
+
+```text
+record {
+    domain:  "mossignal/input_schema_fingerprint/v1",
+    payload: input_schema_fingerprint_payload_v1,
+    version: 1,
+}
+```
+
+encoded by the canonical CBOR profile and hashed with unkeyed BLAKE3-256. No
+second projection-version field appears inside the payload.
+
+The input-schema fingerprint excludes `NetworkKey`, `NetworkFingerprint`,
+`TimeDomainId`, topology revision, nodes, connections, external outputs,
+diagnostic metadata, presentation extensions, and authored display order.
+Adding, removing, retyping, or changing the establishment requirement of an
+external input changes the canonical payload. Other topology changes leave this
+fingerprint unchanged when the complete external-input schema remains equal.
 
 ## 55. Module fingerprint
 
@@ -2828,7 +3028,11 @@ The built-in node specification remains authoritative for node state and pending
 
 The processor architecture remains authoritative for runtime invariants and atomic publication.
 
-The concrete Rust API surface remains authoritative for ordinary in-memory ownership and entry points, except where this specification introduces persistence-only records such as `TimeDomainId`, `PersistenceContext<D>`, and decoded `TransactionRecord<D>` materialization.
+The concrete Rust API surface remains authoritative for ordinary in-memory
+ownership and entry points. This specification defines the durable
+representation of the cross-cutting `TimeDomainId` and introduces
+persistence-only records such as `PersistenceContext<D>` and decoded
+`TransactionRecord<D>` materialization.
 
 The topology-patch specification remains authoritative for normalized operations and migration outcomes.
 

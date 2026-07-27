@@ -1,0 +1,121 @@
+schema_version: "0.1"
+id: mossignal.identity.time_domain
+title: Stable time-domain identity
+kind: concept
+status: reviewed
+
+source_baseline:
+  commit: 22c66d24e9fd2123f418a605b0eb324223351ef2
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+
+summary: >-
+  TimeDomainId is the caller-owned, process-independent identity of the meaning
+  of one logical tick and contributes to every D-dependent persistent semantic
+  identity without imposing persistence traits on the Rust marker D.
+
+scope:
+  includes:
+    - TimeDomainId value identity and canonical representation
+    - authored, validated, and compiled network ownership of time-domain identity
+    - association of a Rust time-domain marker with persistent identity
+    - time-domain contribution to network identity
+  excludes:
+    - complete persistence contexts, artifact decoding, and compatibility failures
+    - logical time and span arithmetic
+
+aliases:
+  - TimeDomainId
+  - persistent time-domain identity
+
+requirements:
+  - id: caller-owned-stable-identity
+    kind: semantic
+    statement: >-
+      TimeDomainId is an opaque caller-supplied 128-bit value that identifies
+      the intended interpretation of one logical tick, remains stable wherever
+      artifacts must remain compatible, and requires neither a global registry
+      nor a singleton allocator.
+    sources: [persistent-time-domain]
+
+  - id: canonical-value
+    kind: persistence
+    statement: >-
+      The canonical TimeDomainId representation is exactly 16 bytes in unsigned
+      big-endian order.
+    sources: [persistent-time-domain]
+
+  - id: process-independent
+    kind: prohibition
+    statement: >-
+      Persistent time-domain identity must not be derived from Rust type names,
+      crate paths, compiler versions, TypeId, diagnostic labels, or metadata.
+    sources: [persistent-time-domain, time-domain-compatibility]
+
+  - id: marker-association
+    kind: lifecycle
+    statement: >-
+      A caller binds one TimeDomainId to NetworkBuilder<D> or
+      UncheckedNetwork<D> before validation. The same value remains intrinsic to
+      ValidatedNetwork<D> and CompiledNetwork<D>; validation and compilation
+      accept no late time-domain context and introduce no additional public
+      identity-binding stage. The API must not require D to implement a
+      persistence trait.
+    sources: [persistent-time-domain, api-lifecycle, concrete-authored-identity]
+
+  - id: persistence-verifies
+    kind: persistence
+    statement: >-
+      PersistenceContext<D> verifies that its TimeDomainId equals the identity
+      already bound to the network; it does not supply semantic identity to an
+      already validated network.
+    sources: [persistence-context]
+
+  - id: fingerprint-contribution
+    kind: semantic
+    statement: >-
+      TimeDomainId contributes to NetworkFingerprint and every other
+      D-dependent canonical semantic identity so numerically identical networks
+      in different caller-defined tick domains remain distinct.
+    sources: [time-domain-contribution, network-fingerprint]
+
+implementation_freedom:
+  - Private storage and NetworkBuilder or UncheckedNetwork constructor spelling are unconstrained once the identity is caller-supplied before validation and retained unchanged.
+
+open_questions: []
+
+sources:
+  persistent-time-domain:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part II — Persistent time-domain identity, 10. `TimeDomainId`]
+    reviewed_hash: sha256:4a58195c45dc85c516b900b07c3b57b13afc128e7849ef5b8b96c2507d2487d6
+  persistence-context:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part II — Persistent time-domain identity, 11. Persistence context]
+    reviewed_hash: sha256:514daf62d0d627e2ae8bc428f6140681fc3c2d38e3b275f991d5e7d975e83220
+  time-domain-compatibility:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part II — Persistent time-domain identity, 12. Time-domain compatibility]
+    reviewed_hash: sha256:5b261f163ee9a59e2ee4dfb856dcf3f574b2ee68e370ffa512c99027dafca9c0
+  time-domain-contribution:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part II — Persistent time-domain identity, 13. Time-domain contribution to identity]
+    reviewed_hash: sha256:0819432d8165f8d97f066f6c94c6db256f5cd3cc55eadad64272a62c93537a59
+  network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part VI — Digest and fingerprint suite
+      - 54. Network and input-schema fingerprints
+      - 54.1 Network fingerprint
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  api-lifecycle:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 10. Lifecycle]
+    reviewed_hash: sha256:871bd06010d5d2d3c90d4011795dd2e6aeb9266c3a897fb3e3a519e664adec03
+  concrete-authored-identity:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 22. `NetworkBuilder<D>`]
+    reviewed_hash: sha256:2ec40564b2ad418160efe3725bfed2e729b543bd65146eec38a8ba6ad463d6da

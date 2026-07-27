@@ -528,6 +528,35 @@ Semantically equivalent stable-keyed definitions constructed in different insert
 
 Dense-index assignment may differ only where the public semantics permit it. Any representation-dependent difference must not affect machine behavior, persistence, diagnostics, or digests.
 
+### 21.1 Restricted semantic fingerprint verification
+
+The opening `Constant`/`Not` semantic identity implementation must verify:
+
+1. equal stable semantic networks built with different node, port, connection,
+   and external-endpoint insertion orders produce identical canonical projection
+   bytes and `NetworkFingerprint`;
+2. metadata-only differences produce identical network and input-schema
+   fingerprints;
+3. changing only `TimeDomainId` changes `NetworkFingerprint`;
+4. changing only `NetworkKey` changes `NetworkFingerprint`;
+5. changing a `Constant` value changes `NetworkFingerprint`;
+6. changing connection incidence changes `NetworkFingerprint`;
+7. changing selected topological order, reaction-operation allocation, dense
+   layout, caches, or other private representation does not change either
+   fingerprint;
+8. topology changes that preserve the complete external-input schema preserve
+   `InputSchemaFingerprint`;
+9. adding or removing an external input changes `InputSchemaFingerprint`; a
+   future supported projection with multiple signal-kind or establishment
+   variants must likewise verify sensitivity to those fields;
+10. network and input-schema domain labels produce different digests for equal
+    canonical payload bytes; and
+11. hand-reviewed golden canonical bytes and BLAKE3-256 results cover an empty
+    or minimal network and a nontrivial `Constant`/`Not` network.
+
+Validation tests must also establish that a blocking-invalid unchecked network
+cannot expose a validated `NetworkFingerprint` or `InputSchemaFingerprint`.
+
 ## 22. Compiled invariant checks
 
 Debug and test builds must be able to verify:
@@ -1481,6 +1510,12 @@ Once canonical encoding is specified, the project must retain golden vectors for
 - runtime-policy identifiers.
 
 Golden vectors must be versioned deliberately. A change requires either proof of semantic equivalence under a new encoding version or an explicit compatibility break.
+
+The initial fingerprint corpus must retain the complete canonical digest-input
+bytes as well as the expected 32-byte result. It includes version-1 vectors for
+both `mossignal/network_fingerprint/v1` and
+`mossignal/input_schema_fingerprint/v1`, with at least the restricted minimal
+and nontrivial cases required by §21.1.
 
 ---
 

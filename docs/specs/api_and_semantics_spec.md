@@ -335,6 +335,12 @@ pub struct CompiledNetwork<D> { /* immutable executable definition */ }
 pub struct Machine<D> { /* mutable running instance */ }
 ```
 
+One caller-supplied `TimeDomainId` is part of authored network identity before
+validation. `UncheckedNetwork<D>` and `NetworkBuilder<D>` own that identity and
+carry it unchanged through `ValidatedNetwork<D>` and `CompiledNetwork<D>`.
+Validation and compilation neither accept a late time-domain context nor add a
+separate public identity-binding lifecycle stage.
+
 A compiled network may spawn any number of independent machines.
 
 A newly spawned machine is explicitly `AwaitingInitialization`. It has declared node initial state and a compiled topology, but it has no authoritative external level valuation, current logical time, settled signal valuation, output baseline, pending schedule, active runtime explanation, or runtime diagnostic episodes.
@@ -344,6 +350,12 @@ The first successful transaction initializes the machine and moves it to `Ready`
 ## 11. `NetworkBuilder<D>`
 
 `NetworkBuilder<D>` is the strongly typed Rust authoring API.
+
+A builder MUST begin with, or be explicitly bound to, one caller-supplied
+`TimeDomainId` before it can produce an unchecked or validated network. Exact
+constructor spelling is ordinary API design freedom. The identity MUST NOT be
+derived from `D`, `TypeId`, a Rust type name, a crate path, or diagnostic
+metadata.
 
 It creates builder-only typed signal handles:
 
@@ -356,7 +368,8 @@ A `Signal<S>` is not a persistent structural key and MUST NOT appear in snapshot
 Illustrative API:
 
 ```rust
-let mut net = NetworkBuilder::<Ticks>::new();
+let time_domain_id: TimeDomainId = caller_supplied_time_domain_id;
+let mut net = NetworkBuilder::<Ticks>::new(time_domain_id);
 
 let (a_key, a) = net.level_input("a");
 let (b_key, b) = net.level_input("b");
@@ -384,7 +397,10 @@ Remaining dynamic invariants still receive structured validation.
 
 `UncheckedNetwork<D>` is the canonical representation for runtime-authored or deserialized definitions.
 
-It contains stable keys, node definitions, typed ports, connections, external endpoints, modules, parameters, hierarchy, and diagnostic metadata.
+It contains one caller-supplied `TimeDomainId`, stable keys, node definitions,
+typed ports, connections, external endpoints, modules, parameters, hierarchy,
+and diagnostic metadata. Reconstructing the same authored structure with a
+different `TimeDomainId` creates a different semantic network identity.
 
 It may be malformed and MUST NOT compile or instantiate directly.
 
@@ -397,6 +413,10 @@ Malformed definitions MUST produce structured diagnostics rather than panics.
 ## 13. `ValidatedNetwork<D>`
 
 `ValidatedNetwork<D>` satisfies all pre-execution structural and semantic requirements.
+
+It owns the same `NetworkKey` and `TimeDomainId` as the authored network and
+exposes its computed `NetworkFingerprint` and `InputSchemaFingerprint`.
+Computing or exposing those identities requires no additional caller context.
 
 Only a validated network may compile:
 
@@ -416,6 +436,8 @@ It MUST:
 - retain hierarchy and diagnostic metadata;
 - expose graph queries;
 - expose a network fingerprint;
+- retain the validated network's `TimeDomainId`, `NetworkFingerprint`, and
+  `InputSchemaFingerprint` unchanged;
 - support multiple independent machines;
 - contain no mutable runtime state.
 
@@ -542,6 +564,7 @@ These concepts are distinct:
 ```rust
 pub struct NetworkRevision(/* machine-local topology revision */);
 pub struct NetworkFingerprint(/* semantic topology identity */);
+pub struct InputSchemaFingerprint(/* external input schema identity */);
 
 pub struct ExecutionStateDigest(/* future-determining state */);
 pub struct ObservableStateDigest(/* complete current observable state */);
@@ -565,6 +588,18 @@ before_revision == after_revision
 A fingerprint MUST reflect structural keys, node kinds, typed ports, connections, semantic parameters, state-relevant module structure, and signal-semantics version.
 
 It MUST exclude dense runtime indices, construction order, memory layout, and presentation-only metadata.
+
+For the opening restricted model, `ValidatedNetwork<D>` is the first owner of
+the computed network fingerprint. Compilation carries that value unchanged
+rather than recomputing it from dense representation. The exact version-1
+canonical projection and digest construction are defined by the persistence
+specification even when complete artifact persistence is not implemented.
+
+`InputSchemaFingerprint` is a distinct content identity for the canonical typed
+external-input schema. It excludes network identity and unrelated topology
+because network-bound input artifacts carry network and schema identity
+separately. Adding, removing, retyping, or changing a semantic establishment
+requirement changes it; unrelated topology changes do not.
 
 ### 19.3 Digest scopes
 
@@ -1742,7 +1777,8 @@ A kind unable to satisfy these requirements MUST NOT enter the core.
 ```rust
 struct Ticks;
 
-let mut net = NetworkBuilder::<Ticks>::new();
+let time_domain_id: TimeDomainId = caller_supplied_time_domain_id;
+let mut net = NetworkBuilder::<Ticks>::new(time_domain_id);
 
 let (set_key, set) = net.pulse_input("set");
 let (reset_key, reset) = net.pulse_input("reset");

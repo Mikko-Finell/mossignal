@@ -1,0 +1,154 @@
+schema_version: "0.1"
+id: mossignal.identity.input_schema_fingerprint
+title: Input schema fingerprint
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 22c66d24e9fd2123f418a605b0eb324223351ef2
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    - docs/testing_and_verification_policy.md
+
+summary: >-
+  InputSchemaFingerprint is the opaque deterministic identity of the complete
+  externally supplied input schema, kept distinct from network identity so
+  snapshots, deltas, and patch-target inputs can bind observations to stable
+  typed endpoints rather than collection positions.
+
+scope:
+  includes:
+    - InputSchemaFingerprint value identity
+    - canonical external-input schema projection
+    - metadata and display-order exclusions
+    - relationship to future network-bound input artifacts
+  excludes:
+    - InputSnapshot and InputDelta contents or builder behavior
+    - topology revision semantics and patch preparation
+    - persistence artifact envelopes and decoding
+
+aliases:
+  - InputSchemaFingerprint
+  - input schema identity
+  - target input schema
+
+requirements:
+  - id: distinct-opaque-identity
+    kind: public_surface
+    statement: >-
+      InputSchemaFingerprint is a public opaque deterministic fingerprint kept
+      distinct and non-interchangeable from NetworkFingerprint and structural
+      keys; as an initial fingerprint its canonical representation is exactly
+      32 bytes.
+    sources: [nonstructural-identities, fixed-fingerprints]
+
+  - id: canonical-schema-projection
+    kind: semantic
+    statement: >-
+      The restricted version-1 payload is the exact canonical inputs record
+      defined by the persistence specification. Each entry contains its stable
+      external-input key, level signal kind, and required establishment variant,
+      ordered by signal-kind tag then stable key bytes. Required applies when no
+      prior authoritative value exists and does not require later deltas to
+      repeat retained values.
+    sources: [input-schema-projection]
+
+  - id: digest-construction
+    kind: semantic
+    statement: >-
+      DigestSuiteVersion 1 computes InputSchemaFingerprint as unkeyed BLAKE3
+      with a 256-bit output over the canonical wrapper with domain label
+      mossignal/input_schema_fingerprint/v1, version 1, and the exact restricted
+      payload. No duplicate projection-version field appears inside the payload.
+    sources: [digest-suite, domain-separation, input-schema-projection]
+
+  - id: metadata-exclusion
+    kind: prohibition
+    statement: >-
+      InputSchemaFingerprint excludes DiagnosticMeta, names, descriptions,
+      paths, origins, tags, presentation extensions, and display or authored
+      collection order.
+    sources: [nonstructural-identities, input-schema-projection, api-metadata]
+
+  - id: deterministic-schema-identity
+    kind: semantic
+    statement: >-
+      Equal complete typed external-input schemas produce equal fingerprints
+      regardless of authored insertion order; changing an external-input stable
+      key, signal kind, establishment requirement, other included semantic field,
+      or schema-projection version changes the canonical digest input.
+    sources: [nonstructural-identities, input-schema-projection, deterministic-compilation]
+
+  - id: validated-network-owner
+    kind: lifecycle
+    statement: >-
+      Successful validation computes InputSchemaFingerprint and exposes it on
+      ValidatedNetwork; later compilation carries the same value unchanged into
+      CompiledNetwork without accepting another identity context.
+    sources: [api-validated, concrete-validated]
+
+  - id: future-input-binding
+    kind: lifecycle
+    statement: >-
+      Future InputSnapshot, InputDelta, and target-bound patch inputs carry the
+      input schema fingerprint alongside network identity so stale or foreign
+      endpoint observations can be rejected without positional rebinding.
+    sources: [input-schema-binding]
+
+implementation_freedom:
+  - Private schema-projection and sorting representations are unconstrained when the canonical complete set and fingerprint bytes remain deterministic.
+  - A narrow canonical-value encoder may be shared with NetworkFingerprint without implementing complete persistence artifacts.
+
+open_questions: []
+
+sources:
+  nonstructural-identities:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part V — Stable identity, 19. Subject references, 19.2 Non-structural diagnostic subject identities]
+    reviewed_hash: sha256:a7a95096b19f82e8ad43ee54fd36d0179151fd03e604b6ef3f44127a7ec957b7
+  fixed-fingerprints:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 40. Fixed digests and fingerprints]
+    reviewed_hash: sha256:d6664f3186f8f4e1965879bc8eed5b5963d6c638519cc204b15580c6266c3ba6
+  digest-suite:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 51. Initial digest suite]
+    reviewed_hash: sha256:1469a69036c9809310b8bd1db66a86095160b2bf0b5b6e2b1bc532c04839e477
+  domain-separation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 52. Domain separation]
+    reviewed_hash: sha256:493e3715f1e5f7b4d7b29e0722a638caf6ec000d698320f6c8db93d9cd3a578d
+  input-schema-projection:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part VI — Digest and fingerprint suite
+      - 54. Network and input-schema fingerprints
+      - 54.3 Input schema fingerprint
+    reviewed_hash: sha256:d64e93e16a849cce1b1af9a4edd1fdbd09734e570b61845c9a87096d3ebaf69a
+  input-schema-binding:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 75. Input schema binding
+    reviewed_hash: sha256:eb95f049f168441a248456ba4f8e24135c9ce7e046f7e102af14b5732e6dd987
+  api-metadata:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 18. Diagnostic metadata
+    reviewed_hash: sha256:4e6ea6476f679fbc84a41b53a9f8107f63879ce17e32f024bf0a715716c13a69
+  deterministic-compilation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:99ab9c49b94049116514b2b2c03ee5c5fdc9fc028172cef5e86fb15964ee5737
+  api-validated:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:90b918d33b7875dbeef5beba178c107ea0757d28d380fda411097dc2656bd9e5
+  concrete-validated:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part X — Validation and compilation artifacts, 43. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:416a8f32e53dbb0625bba2525dc42e38a2d98ffaaf3595caf76ea9ce0c2769f0

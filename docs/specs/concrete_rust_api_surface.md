@@ -757,6 +757,10 @@ These identities are not authored structural keys, are not allocated by `KeyAllo
 
 - `RegionId` is derived from the canonical ordered membership of one weak component. It is never caller allocated, and identifies a region only together with the network fingerprint and topology revision. Merge or split operations create new region identities. It makes no assumption that the component contains a node.
 - `InputSchemaFingerprint` is defined over the canonical sorted target input schema, including typed external-input stable keys, signal kinds, level-establishment requirements where applicable, other semantically relevant input-schema fields, and the schema projection version. It explicitly excludes `DiagnosticMeta`, names, descriptions, paths, origins, tags, and display order. It remains distinct from `NetworkFingerprint`.
+- `TimeDomainId` is cross-cutting semantic network identity rather than a
+  persistence-only attachment. It is caller-supplied before validation, remains
+  unchanged through authored, validated, and compiled representations, and is
+  only verified by a later `PersistenceContext<D>`.
 - `InspectionQueryDigest` represents a deterministic cryptographic digest of the query description itself.
 - `PersistedArtifactRef` identifies one canonical persisted artifact envelope by its artifact kind and verified content digest.
 - `CauseDigest` is the domain-separated canonical provenance-record digest defined by the persistence specification. Do not expose private provenance arena identity as a diagnostic subject.
@@ -885,20 +889,17 @@ pub struct NetworkBuilder<D> { /* opaque */ }
 A builder owns:
 
 - one network identity;
+- one caller-supplied `TimeDomainId`;
 - a caller-local stable-key allocator;
 - authored nodes, ports, endpoints, modules, and connections;
 - builder-scoped signal handles;
 - authoring diagnostics.
 
-Constructors:
-
-```rust
-impl<D> NetworkBuilder<D> {
-    pub fn new() -> Self;
-    pub fn with_network_key(key: NetworkKey) -> Self;
-    pub fn network_key(&self) -> NetworkKey;
-}
-```
+Construction must bind a caller-supplied `TimeDomainId` and may also accept an
+explicit `NetworkKey`. Exact constructor spelling and argument grouping are
+ordinary API design freedom. The builder exposes its `network_key()` and
+`time_domain_id()` and cannot finish or lower into an unchecked definition
+without the identity already bound.
 
 `NetworkBuilder<D>` MUST NOT borrow external storage.
 
@@ -1929,6 +1930,11 @@ A builder MUST NOT be reusable after completion.
 pub struct UncheckedNetwork<D> { /* owned dynamic definition */ }
 ```
 
+Every unchecked network owns one caller-supplied `TimeDomainId` in addition to
+its `NetworkKey` and authored structure. Construction must accept that identity,
+and `time_domain_id()` returns it. The identity is never inferred from `D` or
+supplied later to validation.
+
 It is the canonical public form for:
 
 - deserialized network definitions;
@@ -2032,6 +2038,8 @@ impl<D> UncheckedNetwork<D> {
     pub fn validate_ref(&self) -> Report<ValidatedNetwork<D>, D>;
 }
 ```
+
+Neither validation form accepts a time-domain or persistence context.
 
 The consuming form SHOULD be preferred when the caller no longer needs the unchecked definition.
 
@@ -2218,6 +2226,9 @@ It SHOULD expose structural read-only access:
 ```rust
 impl<D> ValidatedNetwork<D> {
     pub fn network_key(&self) -> NetworkKey;
+    pub fn time_domain_id(&self) -> TimeDomainId;
+    pub fn fingerprint(&self) -> NetworkFingerprint;
+    pub fn input_schema_fingerprint(&self) -> InputSchemaFingerprint;
     pub fn graph(&self) -> DefinitionGraphView<'_, D>;
     pub fn into_unchecked(self) -> UncheckedNetwork<D>;
     pub fn compile(self) -> Report<CompiledNetwork<D>, D>;
@@ -2226,6 +2237,10 @@ impl<D> ValidatedNetwork<D> {
 ```
 
 The consuming compile form SHOULD be preferred when practical.
+
+The two fingerprints are computed only after successful validation and belong
+intrinsically to the validated network. Compilation accepts no identity context
+and carries the same values unchanged.
 
 ## 44. `CompiledNetwork<D>`
 
@@ -2242,7 +2257,9 @@ Required accessors include:
 ```rust
 impl<D> CompiledNetwork<D> {
     pub fn network_key(&self) -> NetworkKey;
+    pub fn time_domain_id(&self) -> TimeDomainId;
     pub fn fingerprint(&self) -> NetworkFingerprint;
+    pub fn input_schema_fingerprint(&self) -> InputSchemaFingerprint;
     pub fn graph(&self) -> GraphView<'_, D>;
 
     pub fn spawn(&self, policy: RuntimePolicy) -> Machine<D>;
@@ -4088,7 +4105,8 @@ use mossignal::prelude::*;
 #[derive(Debug, Clone, Copy)]
 struct Ticks;
 
-let mut net = NetworkBuilder::<Ticks>::new();
+let time_domain_id: TimeDomainId = caller_supplied_time_domain_id;
+let mut net = NetworkBuilder::<Ticks>::new(time_domain_id);
 
 let (set_key, set) = net.pulse_input("set");
 let (reset_key, reset) = net.pulse_input("reset");
