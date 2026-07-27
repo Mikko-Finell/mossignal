@@ -754,13 +754,6 @@ mod tests {
     fn full_evaluator_propagates_external_facts_through_not_and_output() {
         let compiled = compile_network(external_not_network());
         let input = ExternalInputKey::<Level>::from_u128(1);
-        let mut facts = BTreeMap::new();
-        facts.insert(input, LogicLevel::High);
-
-        let evaluation = compiled
-            .evaluate_full(&facts)
-            .unwrap_or_else(|| panic!("complete external facts must evaluate"));
-
         let input_operation =
             operation_index(&compiled, ReactionVertex::ExternalInput(input.into()));
         let not_operation = operation_index(
@@ -771,9 +764,20 @@ mod tests {
             &compiled,
             ReactionVertex::ExternalOutput(ExternalOutputKey::<Level>::from_u128(4).into()),
         );
-        assert_eq!(evaluation.values[input_operation.0], LogicLevel::High);
-        assert_eq!(evaluation.values[not_operation.0], LogicLevel::Low);
-        assert_eq!(evaluation.values[output_operation.0], LogicLevel::Low);
+        for (provided, expected) in [
+            (LogicLevel::Low, LogicLevel::High),
+            (LogicLevel::High, LogicLevel::Low),
+        ] {
+            let mut facts = BTreeMap::new();
+            facts.insert(input, provided);
+            let evaluation = compiled
+                .evaluate_full(&facts)
+                .unwrap_or_else(|| panic!("complete external facts must evaluate"));
+
+            assert_eq!(evaluation.values[input_operation.0], provided);
+            assert_eq!(evaluation.values[not_operation.0], expected);
+            assert_eq!(evaluation.values[output_operation.0], expected);
+        }
     }
 
     #[test]
