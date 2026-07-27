@@ -3,6 +3,7 @@
 #![allow(dead_code)] // Consumed by the following private validation phase.
 
 use crate::authored::{ConnectionEndpoint, NodeKind, UncheckedNetwork};
+use crate::compile::CompiledNetwork;
 use crate::diagnostics::{
     CurrentReactionCycleStep, Diagnostic, DiagnosticSet, DuplicateClaim, DuplicateNodeKind,
     FixedArityRole, Problem, ProblemEvidence, ReactionMemberRef, ReactionRole, Report, SubjectRef,
@@ -102,6 +103,33 @@ impl<D> ValidatedNetwork<D> {
     #[must_use]
     pub const fn input_schema_fingerprint(&self) -> InputSchemaFingerprint {
         self.input_schema_fingerprint
+    }
+
+    /// Compiles this validated definition into immutable execution topology.
+    #[must_use]
+    pub fn compile(self) -> Report<CompiledNetwork<D>, D> {
+        CompiledNetwork::from_validated(&self)
+    }
+
+    /// Compiles a shared validated definition without consuming it.
+    #[must_use]
+    pub fn compile_ref(&self) -> Report<CompiledNetwork<D>, D> {
+        CompiledNetwork::from_validated(self)
+    }
+
+    pub(crate) const fn definition(&self) -> &UncheckedNetwork<D> {
+        &self.definition
+    }
+
+    pub(crate) fn topological_order(&self) -> &[ReactionVertex] {
+        &self.topological_order
+    }
+
+    pub(crate) fn reaction_dependencies(&self) -> ReactionDependencyGraph {
+        StructuralCandidate {
+            network: &self.definition,
+        }
+        .reaction_dependencies()
     }
 }
 
