@@ -1,0 +1,197 @@
+schema_version: "0.1"
+id: mossignal.compile.compiled_network
+title: Immutable compiled network topology
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: aeacb5342e27a13f3c534d66b114ae1f096298f8
+  working_tree: clean
+
+summary: >-
+  CompiledNetwork<D> is the immutable executable topology derived only from a
+  successfully validated network. It retains stable semantic identity while
+  resolving the restricted Constant/Not model into private dense descriptors,
+  dependency adjacency, and deterministic evaluation metadata without owning
+  mutable machine state.
+
+scope:
+  includes:
+    - compilation from a validated restricted network into immutable topology
+    - stable-key-to-dense resolution and category-safe dense index identities
+    - immutable restricted node, port, endpoint, reaction-adjacency, and topological metadata
+    - static compiled invariant checking and deterministic compilation verification
+    - retention of validated identity and diagnostic metadata through compilation
+  excludes:
+    - authored structural validation and reaction-cycle analysis
+    - evaluator execution, machine state, lifecycle, and runtime policy
+    - resolved public handles and revision-based freshness checks
+    - stateful, temporal, region, graph-query, module, and persistence layouts
+    - incremental compilation and compact-layout optimization
+
+known_uncovered:
+  - Compiled layouts and invariants for stateful, temporal, module, variadic, and pulse node families
+  - Public graph-query views, resolved handles, and revision-bound compiled inspection plans
+
+aliases:
+  - CompiledNetwork<D>
+  - compiled topology
+  - immutable executable program
+
+requirements:
+  - id: validated-only-compilation
+    kind: lifecycle
+    statement: >-
+      Compilation transforms only a ValidatedNetwork into a CompiledNetwork;
+      it must not admit unchecked or blocking-invalid definitions. The public
+      validated artifact provides consuming and borrowing compile forms that
+      report the compiled artifact through the common Report boundary.
+    sources: [runtime-lifecycle, concrete-validated, api-validated]
+
+  - id: immutable-topology-boundary
+    kind: lifecycle
+    statement: >-
+      CompiledNetwork is an immutable executable specification with no mutable
+      machine state, is shareable by independent machines, and retains the
+      authored stable identities, hierarchy, and diagnostic metadata required
+      by later inspection and diagnostics.
+    sources: [runtime-compiled-topology, runtime-program-store, api-compiled]
+
+  - id: validated-identity-retention
+    kind: semantic
+    statement: >-
+      Compilation carries the validated network's NetworkKey, TimeDomainId,
+      NetworkFingerprint, and InputSchemaFingerprint unchanged; it accepts no
+      late identity context, and private dense layout or compilation metadata
+      must not determine those identities.
+    sources: [concrete-validated, api-compiled, runtime-fingerprint]
+
+  - id: distinct-revision-local-dense-indices
+    kind: semantic
+    statement: >-
+      Compilation establishes stable-key-to-dense-index resolution for direct
+      execution access. Dense indices are opaque, category-distinct identities
+      with meaning only in their owning compiled revision; raw integer
+      interchange between node, port, state, event, and provenance categories
+      is forbidden.
+    sources: [runtime-dense-indices]
+
+  - id: restricted-immutable-descriptors
+    kind: semantic
+    statement: >-
+      For the restricted Constant/Not model, the compiled topology retains
+      immutable node and typed-port descriptors, complete external endpoint
+      tables, reaction dependency adjacency, and the deterministic topological
+      order selected during successful validation. The internal representation
+      must preserve stable-key lookup without ambiguity.
+    sources: [runtime-compiled-topology, runtime-program-store, runtime-compilation, runtime-topological]
+
+  - id: compiled-reaction-correspondence
+    kind: semantic
+    statement: >-
+      Compiled reaction-operation descriptors and adjacency must represent the
+      accepted derived current-reaction dependency relation for the restricted
+      network; private evaluator fusion may not change that relation.
+    sources: [runtime-reaction-graph]
+
+  - id: compiled-static-invariants
+    kind: verification
+    statement: >-
+      Debug and test builds must be able to check that dense references are in
+      bounds, descriptors and ports agree with validated kinds, compiled
+      incidence preserves driver rules, every reaction dependency is forward in
+      topological order, stable-key lookup is unambiguous, and endpoint tables
+      are complete and type-correct. Ordinary evaluation may rely on those
+      compiled invariants without revalidating them.
+    sources: [runtime-invariants, verification-invariants, catalogue-invariants]
+
+  - id: deterministic-compilation
+    kind: verification
+    statement: >-
+      Semantically equivalent stable-keyed definitions built in different
+      insertion orders must yield equivalent externally observable compiled
+      metadata and reaction relation. Representation-dependent dense layout is
+      permitted only where it cannot affect machine behavior, persistence,
+      diagnostics, or semantic digests.
+    sources: [verification-determinism, runtime-fingerprint]
+
+  - id: opaque-dense-private-surface
+    kind: public_surface
+    statement: >-
+      CompiledNetwork may be cheaply cloned through hidden immutable sharing,
+      but its public API must not expose internal dense indices, adjacency
+      storage, arenas, or worklists.
+    sources: [concrete-compiled]
+
+implementation_freedom:
+  - Exact dense-index widths, private descriptor and lookup-table shapes, adjacency storage, and immutable sharing mechanism are unconstrained.
+  - The first restricted compilation may favor a straightforward deterministic layout over compactness; it need not introduce incremental compilation, state layouts, temporal descriptors, regions, graph-query indices, or public resolved handles.
+  - The implementation may retain or rebuild the validated authored definition internally when it preserves the compiled boundary and stated invariants.
+
+open_questions: []
+
+sources:
+  runtime-lifecycle:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 3. Lifecycle, 3.2 Validated definitions]
+    reviewed_hash: sha256:bce0327b9e96a9bedb087bd44732edea91a77a9153e182800d37315172497da1
+  runtime-compiled-topology:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 3. Lifecycle, 3.3 Compiled topology]
+    reviewed_hash: sha256:890ccd0d0811de6986c71bbde3ffbf4c27db19e3510396682370f8683aa39dc2
+  runtime-program-store:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 4. Immutable program and mutable store]
+    reviewed_hash: sha256:ae09c0b0bc07e2e33eb2edf0534f2190855cb203eecf8006466704ea1610f2c0
+  runtime-dense-indices:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 5. Stable keys and dense indices]
+    reviewed_hash: sha256:0f33e38d1614c05f37932049a428191738c25ffcda50efb4a409c358ee544e2e
+  runtime-topological:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 19. Topological order]
+    reviewed_hash: sha256:a51275d9f1d0c4bc4b54d361d1d38747a87c052e71f5432a19603906f95391ea
+  runtime-reaction-graph:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 15. Reaction dependency graph]
+    reviewed_hash: sha256:bb051caaa0cd3627f58f17edca8b2e09df6b72c3b042238f523b0dfb40dcda9a
+  runtime-compilation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 21. Compilation responsibilities]
+    reviewed_hash: sha256:f086a8575e9ed012b3a9aca9d4b8b193a323040e8b58b341c77d9de835db2237
+  runtime-invariants:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 22. Compiled invariants]
+    reviewed_hash: sha256:746554b068081f15488f90197bf4c03ad4b384836a2fca010cd0c90eb81e56fe
+  runtime-fingerprint:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 23. Semantic fingerprint]
+    reviewed_hash: sha256:93810388dc436f32e1d3395798095baa37c59213f8becc008194c7e1a0df5985
+  api-validated:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:90b918d33b7875dbeef5beba178c107ea0757d28d380fda411097dc2656bd9e5
+  api-compiled:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 14. `CompiledNetwork<D>`]
+    reviewed_hash: sha256:7b054448afb88f96043a2fadc937abd85b026fd22907de1a4c0adac206fb1018
+  concrete-validated:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part X — Validation and compilation artifacts, 43. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:416a8f32e53dbb0625bba2525dc42e38a2d98ffaaf3595caf76ea9ce0c2769f0
+  concrete-compiled:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part X — Validation and compilation artifacts, 44. `CompiledNetwork<D>`]
+    reviewed_hash: sha256:06a6ae375426437ece5aafd386ca65e6c76c51591acc95d2f8a2d1ee56bca60f
+  verification-determinism:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:99ab9c49b94049116514b2b2c03ee5c5fdc9fc028172cef5e86fb15964ee5737
+  verification-invariants:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 22. Compiled invariant checks]
+    reviewed_hash: sha256:fedc95f0d3a73bc9b03a25d35b5f35dc7695ff8d9b42e95c24ea5161c69d485d
+  catalogue-invariants:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 43. Internal defects — static compiled invariants]
+    reviewed_hash: sha256:2be4731587266e697516d81983e973508675d1e62d893590ec5e7627df86cb48

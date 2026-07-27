@@ -5,7 +5,7 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: 9818f93def8d77f0f4ee94a37a114ef36ac8c8dc
+  commit: aeacb5342e27a13f3c534d66b114ae1f096298f8
   working_tree: clean
 
 summary: >-
@@ -126,4 +126,4 @@ sources:
   verification-compilation:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
-    reviewed_hash: sha256:39c22bc378b50b6476f5e860d5dde98e73473b7279804bdcc78adbffc59e0aaa
+    reviewed_hash: sha256:99ab9c49b94049116514b2b2c03ee5c5fdc9fc028172cef5e86fb15964ee5737
