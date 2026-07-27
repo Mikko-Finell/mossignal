@@ -1,0 +1,234 @@
+schema_version: "0.1"
+id: mossignal.runtime.policy
+title: Immutable runtime policy and identity
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 97cf5b2ad9561b13e4c0133d7026dc63c1914c81
+  working_tree: dirty
+
+summary: >-
+  RuntimePolicy is the explicit immutable set of validated limits that may
+  change execution success or failure. RuntimePolicyId is its distinct,
+  deterministic canonical identity for machine association and exact replay.
+
+scope:
+  includes:
+    - RuntimePolicy construction, validation, immutability, and inspection
+    - semantically relevant named execution limits
+    - RuntimePolicyId value and canonical digest construction
+    - budget-failure and verification obligations
+  excludes:
+    - performance-only tuning that cannot affect semantic outcomes
+    - persistence artifact encoding, decoding, and restoration
+    - machine lifecycle and transaction implementation
+    - subsystem-specific accounting mechanisms and private counters
+
+aliases:
+  - RuntimePolicy
+  - RuntimePolicyBuilder
+  - RuntimePolicyId
+  - execution budgets
+
+requirements:
+  - id: explicit-immutable-validated-policy
+    kind: public_surface
+    statement: >-
+      RuntimePolicy is an explicit validated immutable value. Construction uses
+      RuntimePolicyBuilder and returns Result<RuntimePolicy, PolicyFailure>;
+      there must be no invisible process-global runtime policy.
+    sources: [api-policy, concrete-policy, runtime-policy]
+
+  - id: initial-semantic-limits
+    kind: public_surface
+    statement: >-
+      The initial public policy fields are maximum internal reactions, maximum
+      evaluated operations, maximum pending events, maximum events created per
+      transaction, and maximum required provenance growth, each supplied as a
+      u64 limit. Performance-only tuning is excluded from semantic policy.
+    sources: [concrete-policy, runtime-policy]
+
+  - id: complete-builder-validation
+    kind: semantic
+    statement: >-
+      The plain builder must require every semantically relevant limit present
+      in its supported policy schema and reject completion when one is absent.
+      Any supplied value outside its declared domain must likewise be rejected;
+      named policy constructors may provide explicit bundles only when the
+      resulting exact policy and identifier remain inspectable.
+    sources: [concrete-policy, policy-codes]
+
+  - id: policy-failure-model
+    kind: public_surface
+    statement: >-
+      PolicyFailure maps missing limits one-to-one to
+      runtime.policy_missing_limit and invalid values one-to-one to
+      runtime.policy_invalid_limit. Both are Error/CallerInput failures with
+      ParameterEvidence identifying the policy subject, parameter key, expected
+      domain, and encountered value.
+    sources: [failure-enums, policy-codes, policy-failure-mapping, parameter-evidence]
+
+  - id: distinct-opaque-identity
+    kind: public_surface
+    statement: >-
+      RuntimePolicyId is a public opaque fixed 32-byte identity distinct and
+      non-interchangeable from revisions, fingerprints, and other digests, while
+      keeping the selected digest algorithm out of ordinary semantic use.
+    sources: [concrete-identities, fixed-digests]
+
+  - id: canonical-policy-identity
+    kind: semantic
+    statement: >-
+      DigestSuiteVersion 1 computes RuntimePolicyId with unkeyed BLAKE3-256 over
+      a canonical record containing domain label mossignal/runtime_policy_id/v1,
+      domain version 1, and the canonical policy payload. The payload contains
+      every policy field capable of changing operation success or failure as a
+      named limit independent of builder or insertion order, and excludes
+      performance-only tuning.
+    sources: [digest-suite, domain-separation, digest-versions, policy-identifier]
+
+  - id: explicit-machine-association
+    kind: lifecycle
+    statement: >-
+      Machine creation requires an explicit validated RuntimePolicy, and the
+      associated RuntimePolicyId remains observable; exact operational replay
+      requires the same identifier in addition to compatible semantic versions,
+      initial state, topology, and transaction sequence.
+    sources: [api-policy, api-machine, concrete-compiled, runtime-policy-identity]
+
+  - id: atomic-budget-failure
+    kind: semantic
+    statement: >-
+      Exceeding a semantic budget rejects the complete outer transaction,
+      preserves the published machine, identifies the exceeded named budget,
+      reports its configured limit and consumed amount where practical, and
+      must not skip required work or publish partial settlement.
+    sources: [api-policy, runtime-budget-failure]
+
+  - id: policy-identity-verification
+    kind: verification
+    statement: >-
+      Tests must establish equal identifiers for equal semantic policies,
+      construction-order independence, identity sensitivity to each semantic
+      limit, exclusion of performance-only tuning, and a deliberately versioned
+      representative golden RuntimePolicyId vector.
+    sources: [policy-identity-tests, canonical-vectors]
+
+  - id: implemented-budget-boundaries
+    kind: verification
+    statement: >-
+      Every budget when its accounting is implemented must be tested one below,
+      exactly at, and one above its configured limit where representable; budget
+      failure must preserve atomicity and agree between direct and reference
+      execution paths.
+    sources: [budget-boundaries, budget-atomicity]
+
+recommendations:
+  - id: identity-value-capabilities
+    statement: >-
+      RuntimePolicyId should provide Clone, Copy, Eq, Hash, Ord, and Debug;
+      Display should use a stable hexadecimal representation.
+    sources: [concrete-identities]
+
+implementation_freedom:
+  - Private policy and builder storage, setter consumption style, digest caching, helper names, and module placement are unconstrained.
+  - The specifications do not declare narrower numeric domains for the initial u64 limits; implementation may choose the simplest deterministic validation rule, test and record it, and must not present that local choice as a stabilized compatibility promise.
+  - RuntimePolicyId's canonical payload record shape and named-field spelling are not fixed beyond canonical named limits and order independence; the initial implementation may choose the simplest deterministic version-1 projection, retain a golden vector, and record the choice for concrete review.
+
+open_questions: []
+
+sources:
+  api-policy:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 19. Revision, fingerprint, digests, and runtime policy
+      - 19.4 Runtime policy
+    reviewed_hash: sha256:f96ee53258acadc3a49b9b8cca7ffd18c66b573302712473614b7c91f3aa468a
+  api-machine:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 27. Canonical machine API]
+    reviewed_hash: sha256:bc59f7d2115ba4bfce0da8f2c721b4b0b3d82398723c47e477411ac8fc7e2a9e
+  concrete-compiled:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part X — Validation and compilation artifacts, 44. `CompiledNetwork<D>`]
+    reviewed_hash: sha256:06a6ae375426437ece5aafd386ca65e6c76c51591acc95d2f8a2d1ee56bca60f
+  concrete-identities:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part X — Validation and compilation artifacts, 45. Revision and fingerprints]
+    reviewed_hash: sha256:fd391aa0e34c98a7d34b45710151f0884bd7cce47a8e8682b526f1c6c8f8b13a
+  concrete-policy:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XII — Runtime policy, 48. `RuntimePolicy`]
+    reviewed_hash: sha256:4602815f113190d459cc9dce4fb0a120306de9173e6e99c3e53c5352ec993d00
+  runtime-policy:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XIV — Runtime policy and replay, 89. Runtime policy]
+    reviewed_hash: sha256:8f8c51a64e8b106269bde9516f9b69ae73f33813854efb7ad6a8664a872eed21
+  runtime-policy-identity:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XIV — Runtime policy and replay, 90. Runtime policy identity]
+    reviewed_hash: sha256:a27ded70120020eed412ca040ff1384eae93429fbf3f06cb4c13875b9adef899
+  runtime-budget-failure:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XIV — Runtime policy and replay, 91. Budget failure]
+    reviewed_hash: sha256:2ca78ad09dfa909af6d1ad6e2685bbeea97ea77dc45df56832e4f27c3be4d879
+  fixed-digests:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 40. Fixed digests and fingerprints]
+    reviewed_hash: sha256:d6664f3186f8f4e1965879bc8eed5b5963d6c638519cc204b15580c6266c3ba6
+  digest-suite:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 51. Initial digest suite]
+    reviewed_hash: sha256:1469a69036c9809310b8bd1db66a86095160b2bf0b5b6e2b1bc532c04839e477
+  domain-separation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 52. Domain separation]
+    reviewed_hash: sha256:493e3715f1e5f7b4d7b29e0722a638caf6ec000d698320f6c8db93d9cd3a578d
+  digest-versions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 53. Digest version inputs]
+    reviewed_hash: sha256:39b98aacf5b1e57ba016ed8f9efaac0ce98fdad35878cef7f8d4d7733b017c39
+  policy-identifier:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 56. Runtime policy identifier]
+    reviewed_hash: sha256:c413c5d872ce67f7c0e22f45e71eab4364b868a8cde038f010f8da015db57f53
+  parameter-evidence:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 14. Evidence families, 14.8 `ParameterEvidence`]
+    reviewed_hash: sha256:df6a524e27d99b29eeda0683bcbfb51355260b200b6360fe06aeeffff16731f8
+  failure-enums:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part III — Reports, failures, ordering, and identity
+      - 17. Failure enums
+    reviewed_hash: sha256:a7f71424e2de5c35738eb397f0df0254ad70da4ff121feeeeb968c59df3340e2
+  policy-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part V — Exhaustive initial catalogue
+      - 29. Runtime values, time, policy, and semantic rejection
+    reviewed_hash: sha256:c9f66339774d5f873cdf36804834c8e71d0ea3025aef36badde12a1ca570e825
+  policy-failure-mapping:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VI — Rust API integration, 46. Required mapping by API family, 46.2 Runtime policy and values]
+    reviewed_hash: sha256:e8b6a98e2a714ef07289e06770039b92221c5a97afd04a9d3102955d37c63f83
+  canonical-vectors:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 90. Canonical encoding vectors
+    reviewed_hash: sha256:0facb5756d00d5b3d163a453cec7d1ea7d6b11d0d8a5c332eebd93e0388cbaab
+  policy-identity-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XVI — Runtime-policy and budget verification, 91. Policy identity]
+    reviewed_hash: sha256:283164d85af5b6e569fcf559741970c4e05983eed684d4f84927301d4e2277d8
+  budget-boundaries:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XVI — Runtime-policy and budget verification, 92. Budget boundaries]
+    reviewed_hash: sha256:cff7fe7bd3bcc9e478cfdf31ec758817d34bf117517d9eb4250402db640d6789
+  budget-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XVI — Runtime-policy and budget verification, 93. Budget failure atomicity]
+    reviewed_hash: sha256:07821de58ac184a3c2946b5c0868c3324f2282ad61f15ed5fc12f581663239bc
