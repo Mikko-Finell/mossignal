@@ -5,7 +5,7 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: 320318e8cda31aed65d2ce1bbd3e7d8f927111d5
+  commit: a5f37cbe26f80383bd11c3cd24c4e8db1c588f1f
   working_tree: clean
 
 summary: >-
@@ -138,11 +138,11 @@ sources:
   api-unchecked-network:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part II — Canonical object model, 12. `UncheckedNetwork<D>`]
-    reviewed_hash: sha256:77c62e3bd2aaa3fc36dba2670335e29fe6ad9999ba5dd32a9d785180e828a45b
+    reviewed_hash: sha256:fadbf4674dc9de062d6854ab5b249605bb4a968cb3189cd139570bf10a1713e2
   api-lifecycle:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part II — Canonical object model, 10. Lifecycle]
-    reviewed_hash: sha256:9fa79523eaa89adb07ecf350c93955cdea6fc67c2248fe048f7fac979c871f7c
+    reviewed_hash: sha256:871bd06010d5d2d3c90d4011795dd2e6aeb9266c3a897fb3e3a519e664adec03
   api-diagnostic-metadata:
     document: docs/specs/api_and_semantics_spec.md
     heading_path:
@@ -152,7 +152,7 @@ sources:
   concrete-unchecked-network:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VIII — Dynamic network definitions, 36. `UncheckedNetwork<D>`]
-    reviewed_hash: sha256:a358396830c4392be381644d06334a5b62e285d58471562d62b4273841492071
+    reviewed_hash: sha256:7bd63c38221568281e716ccedea22640ac3dcd9ff29b5a4204a028c7aaa69939
   concrete-dynamic-ports:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VIII — Dynamic network definitions, 38. Dynamic ports and connections]
@@ -160,7 +160,7 @@ sources:
   concrete-validation:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VIII — Dynamic network definitions, 39. Validation]
-    reviewed_hash: sha256:4b3d66c17374bf711e897f416349df466f4a3c4f27967cbd0e0f0f0257e6476a
+    reviewed_hash: sha256:defeae4e4b77794bde543e03aae26e5a2bdeca83d8173e3302f3d354ab8fdb6c
   runtime-structural-graph:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part III — Graph model and causality, 13. Structural graph]
@@ -176,4 +176,4 @@ sources:
   catalogue-validation:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions]
-    reviewed_hash: sha256:54ed4c0802ae57302b12430869388ea3458ed3685823e34b95d2f35348bc7313
+    reviewed_hash: sha256:6c2eeae3d44af53103f991f364f2d321a9fe195f03b8924e8f902fb5e3dfef40

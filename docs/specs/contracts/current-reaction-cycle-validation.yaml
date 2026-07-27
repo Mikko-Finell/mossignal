@@ -5,11 +5,8 @@ kind: lifecycle
 status: reviewed
 
 source_baseline:
-  commit: b55e50e90948cdf4c922cd86e94a13f630debca1
-  working_tree: dirty
-  modified_spec_paths:
-    - docs/specs/exhaustive_diagnostic_code_catalogue.md
-    - docs/testing_and_verification_policy.md
+  commit: a5f37cbe26f80383bd11c3cd24c4e8db1c588f1f
+  working_tree: clean
 
 summary: >-
   Current-reaction cycle validation analyzes the derived reaction dependency
@@ -115,7 +112,7 @@ sources:
   api-validated-network:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]
-    reviewed_hash: sha256:d090849e1775829dc46e65e7009fd35260069c424ea5dddf8aba7afc4b43b8bd
+    reviewed_hash: sha256:90b918d33b7875dbeef5beba178c107ea0757d28d380fda411097dc2656bd9e5
   api-validation-coverage:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VIII — Diagnostics, 46. Required validation coverage]
@@ -139,4 +136,4 @@ sources:
   verification-determinism:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
-    reviewed_hash: sha256:39c22bc378b50b6476f5e860d5dde98e73473b7279804bdcc78adbffc59e0aaa
+    reviewed_hash: sha256:99ab9c49b94049116514b2b2c03ee5c5fdc9fc028172cef5e86fb15964ee5737
