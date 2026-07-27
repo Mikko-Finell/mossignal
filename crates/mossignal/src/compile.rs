@@ -371,12 +371,30 @@ impl<D> CompiledInner<D> {
         {
             return Err("compiled connection lookup is ambiguous");
         }
+        if self
+            .predecessors
+            .iter()
+            .chain(&self.successors)
+            .any(|adjacency| adjacency.windows(2).any(|pair| pair[0] >= pair[1]))
+        {
+            return Err("compiled reaction adjacency order is invalid");
+        }
         for (index, successors) in self.successors.iter().enumerate() {
             for successor in successors {
                 if successor.0 >= self.operations.len() || index >= successor.0 {
                     return Err("compiled reaction dependency is not forward");
                 }
                 if !self.predecessors[successor.0].contains(&OperationIndex(index)) {
+                    return Err("compiled reaction adjacency is inconsistent");
+                }
+            }
+        }
+        for (index, predecessors) in self.predecessors.iter().enumerate() {
+            for predecessor in predecessors {
+                if predecessor.0 >= self.operations.len()
+                    || predecessor.0 >= index
+                    || !self.successors[predecessor.0].contains(&OperationIndex(index))
+                {
                     return Err("compiled reaction adjacency is inconsistent");
                 }
             }
@@ -641,9 +659,46 @@ mod tests {
                 .reaction_dependencies(),
         );
         inner.successors[1].push(OperationIndex(0));
+        inner.successors[1].sort();
         assert_eq!(
             inner.check_invariants(),
             Err("compiled reaction dependency is not forward")
+        );
+    }
+
+    #[test]
+    fn compiled_invariant_checker_detects_seeded_predecessor_asymmetry() {
+        let validated = network(false)
+            .validate()
+            .require_artifact()
+            .unwrap_or_else(|_| panic!("fixture must validate"));
+        let graph = validated.reaction_dependencies();
+        let mut inner = CompiledInner::build(&validated, &graph);
+        inner.predecessors[0].push(OperationIndex(1));
+        assert_eq!(
+            inner.check_invariants(),
+            Err("compiled reaction adjacency is inconsistent")
+        );
+    }
+
+    #[test]
+    fn compiled_invariant_checker_detects_seeded_duplicate_adjacency() {
+        let validated = network(false)
+            .validate()
+            .require_artifact()
+            .unwrap_or_else(|_| panic!("fixture must validate"));
+        let graph = validated.reaction_dependencies();
+        let mut inner = CompiledInner::build(&validated, &graph);
+        let (index, target) = inner
+            .successors
+            .iter()
+            .enumerate()
+            .find_map(|(index, successors)| successors.first().map(|target| (index, *target)))
+            .unwrap_or_else(|| panic!("fixture must contain a dependency"));
+        inner.successors[index].push(target);
+        assert_eq!(
+            inner.check_invariants(),
+            Err("compiled reaction adjacency order is invalid")
         );
     }
 
