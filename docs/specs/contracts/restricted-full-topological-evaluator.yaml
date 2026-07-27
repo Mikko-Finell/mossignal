@@ -1,0 +1,134 @@
+schema_version: "0.1"
+id: mossignal.runtime.restricted_full_topological_evaluator
+title: Restricted full topological evaluator
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 117efa6c4be1867df974f36174032a025a47e14f
+  working_tree: dirty
+
+summary: >-
+  The restricted full topological evaluator is the clear reference execution
+  path for an immutable compiled Constant/Not network. For one supplied set of
+  external level facts, it settles every compiled reaction operation exactly
+  once in deterministic topological order.
+
+scope:
+  includes:
+    - one-reaction full evaluation of the restricted compiled Constant/Not topology
+    - external level facts, node-operation laws, node-output propagation, and external-output observation
+    - deterministic predecessor-respecting topological execution
+  excludes:
+    - Machine lifecycle, initialization, transactions, and atomic publication
+    - snapshots, input completeness validation, deltas, and runtime policy
+    - pulse values, stateful or temporal node behavior, events, diagnostics, and provenance
+    - incremental dirty evaluation and optimized worklists
+
+aliases:
+  - full reference evaluator
+  - full topological reaction evaluator
+  - Constant/Not evaluator
+
+requirements:
+  - id: compiled-immutable-input
+    kind: lifecycle
+    statement: >-
+      Evaluation operates over the immutable compiled topology and must not own
+      or mutate machine state. Its execution positions remain private to the
+      compiled revision rather than public identity.
+    sources: [compiled-topology, compiled-program]
+
+  - id: external-level-facts
+    kind: semantic
+    statement: >-
+      In the represented level-only boundary, external inputs are reaction root
+      facts supplied by the caller and external outputs observe their authored
+      internal source without transformation or consumption.
+    sources: [reaction-graph, external-boundaries]
+
+  - id: deterministic-complete-topological-settlement
+    kind: semantic
+    statement: >-
+      One full reference reaction processes every compiled reaction operation
+      exactly once in valid deterministic topological order. Each operation
+      runs only after all affected predecessors have reached their final
+      current-reaction values. The selected order is not semantic: every valid
+      topological order produces equivalent settled results.
+    sources: [full-evaluation, glitch-freedom, reference-evaluator, topological-order]
+
+  - id: constant-and-not-laws
+    kind: semantic
+    statement: >-
+      A Constant has no inputs and yields its configured LogicLevel. A Not has
+      one level input and yields its logical complement; level semantics use
+      LogicLevel rather than raw bool.
+    sources: [constant, not, logic-level]
+
+  - id: reference-path-verification
+    kind: verification
+    statement: >-
+      The project retains a simple full topological evaluator that performs no
+      dirty-closure pruning and serves as the correctness oracle for future
+      incremental reaction evaluation. It must be tested directly against node
+      laws and hand-authored multi-node examples, including the exactly-once
+      predecessor-settlement property.
+    sources: [reference-evaluator, reaction-verification]
+
+implementation_freedom:
+  - The evaluator and result type may remain crate-private or test-oriented; this slice creates no new general public runtime API.
+  - Input storage may use straightforward deterministic key or compiled-operation mappings; input-snapshot validation belongs to a later slice.
+  - Result storage may expose only terminal outputs or retain intermediate settled results for test inspection; the specifications do not require a particular result interface.
+  - The first implementation may favor auditable direct traversal and test-only intermediate result storage over allocation, caching, or incremental-work optimization.
+
+open_questions: []
+
+sources:
+  compiled-topology:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 3. Lifecycle, 3.3 Compiled topology]
+    reviewed_hash: sha256:890ccd0d0811de6986c71bbde3ffbf4c27db19e3510396682370f8683aa39dc2
+  compiled-program:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 4. Immutable program and mutable store]
+    reviewed_hash: sha256:ae09c0b0bc07e2e33eb2edf0534f2190855cb203eecf8006466704ea1610f2c0
+  reaction-graph:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 15. Reaction dependency graph]
+    reviewed_hash: sha256:bb051caaa0cd3627f58f17edca8b2e09df6b72c3b042238f523b0dfb40dcda9a
+  glitch-freedom:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 32. Glitch freedom]
+    reviewed_hash: sha256:5e497703203dd236303204e3d58726b76af3a0d88150bb265b01f0faeae5af8e
+  full-evaluation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 33. Full reference evaluation]
+    reviewed_hash: sha256:582cdbde0046465fa88793dfa2f0e58976170719a591231f70d2a38b77ebe621
+  topological-order:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 19. Topological order]
+    reviewed_hash: sha256:a51275d9f1d0c4bc4b54d361d1d38747a87c052e71f5432a19603906f95391ea
+  constant:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part II — Level combinational nodes, 22. `Constant`]
+    reviewed_hash: sha256:71558634f867196c1c9eb1dac880a43fc641d7a6818d0a63644bf1656eb669e8
+  not:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part II — Level combinational nodes, 23. `Not`]
+    reviewed_hash: sha256:d9ea4770602f088ed0474277f83d5a9d4a321132f106b6ccf557043cce085806
+  external-boundaries:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VII — Boundaries and utilities, 56. External inputs and outputs]
+    reviewed_hash: sha256:b282a1bb18f53ca05fb926b663570703f7d21c3ad4d5f4499dc8246b0cb31749
+  logic-level:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part III — Fundamental signal types, 11. Logic levels]
+    reviewed_hash: sha256:ebdf31227cb79e5e10e253fe21da2d44301f9a23c769ca995cb8f2a51dcd23ac
+  reference-evaluator:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part III — Reference implementations, 9. Required reference paths, 9.1 Full topological reaction evaluator]
+    reviewed_hash: sha256:214ce23971bbf6df16360be437492611a37306bb476a737705b5cb76b3c4a6f9
+  reaction-verification:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 29. Full reaction semantics]
+    reviewed_hash: sha256:09490fcbb877503a0aa2b2e00b65c7436ca4d072010eb25fbfbb44edb19f6401
