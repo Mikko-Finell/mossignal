@@ -1,0 +1,142 @@
+schema_version: "0.1"
+id: mossignal.graph.current_reaction_cycle_validation
+title: Current-reaction cycle validation
+kind: lifecycle
+status: reviewed
+
+source_baseline:
+  commit: b55e50e90948cdf4c922cd86e94a13f630debca1
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/exhaustive_diagnostic_code_catalogue.md
+    - docs/testing_and_verification_policy.md
+
+summary: >-
+  Current-reaction cycle validation analyzes the derived reaction dependency
+  graph for cyclic SCCs, rejects cyclic definitions with structured evidence,
+  and selects deterministic topological metadata only for the acyclic
+  restricted graph.
+
+scope:
+  includes:
+    - SCC-based detection of directed current-reaction cycles and self-loops
+    - rejection of a cyclic restricted graph before it becomes a ValidatedNetwork
+    - cycle witness evidence tied to stable reaction and authored subjects
+    - deterministic topological ordering for the acyclic restricted graph
+  excludes:
+    - derivation of reaction dependencies and node signatures
+    - dense compilation layout, evaluator descriptors, and runtime execution
+    - stateful, temporal, module, variadic, and hierarchy-specific cycle paths
+    - region discovery and graph-query indexing
+
+known_uncovered:
+  - Cycle analysis for reaction facts outside the restricted Constant/Not model
+
+aliases:
+  - reaction-cycle validation
+  - SCC validation
+  - current-reaction acyclicity
+
+requirements:
+  - id: complete-cycle-criterion
+    kind: semantic
+    statement: >-
+      Current-reaction dependencies must be acyclic. SCC decomposition is a
+      complete cycle criterion: a component is cyclic when it has more than one
+      vertex or consists of one vertex with a self-loop; Tarjan, Kosaraju, or
+      another established SCC algorithm may be used.
+    sources: [api-causality, runtime-scc]
+
+  - id: reject-before-validation-artifact
+    kind: lifecycle
+    statement: >-
+      A current-reaction cycle is invalid, must prevent successful validation
+      and compilation, and must not be resolved through fixed-point iteration,
+      repeated same-time microsteps, or evaluator traversal order. A
+      ValidatedNetwork is constructible only after all static structural and
+      semantic requirements, including current-reaction causality, hold.
+    sources: [api-causality, runtime-validated, api-validated-network]
+
+  - id: cycle-diagnostic-content
+    kind: system_effect
+    statement: >-
+      A cyclic SCC emits exactly one blocking CallerInput Report condition
+      validation.current_reaction_cycle. Its primary subject is the network and
+      its discriminator is the canonical ordered set of stable reaction-member
+      references, each derived from authored stable identity plus semantic
+      reaction role. One canonical ordered witness is evidence rather than
+      identity; duplicate detection merges idempotently according to the
+      code-specific exact-agreement and set-union law.
+    sources: [catalogue-validation, catalogue-cycle-evidence, catalogue-cycle-laws, api-validation-coverage]
+
+  - id: deterministic-topological-metadata
+    kind: semantic
+    statement: >-
+      An acyclic reaction graph admits a topological ordering. The selected
+      linear extension should be deterministic, using stable structural ordering
+      to break ties where appropriate; the selected order is not semantic, and
+      every valid order must produce equivalent settled semantic results.
+    sources: [runtime-topological]
+
+  - id: cycle-validation-verification
+    kind: verification
+    statement: >-
+      Verification must reject every true reaction cycle, detect self-loops,
+      establish exactly one diagnostic per cyclic SCC, establish that SCC
+      diagnostics contain a valid witness, and verify complete diagnostic and
+      witness invariance under graph construction and traversal permutations.
+      For bounded generated graphs, cycle detection should be cross-checked
+      against an independent reachability-based oracle.
+    sources: [verification-cycles, verification-determinism]
+
+implementation_freedom:
+  - The SCC algorithm, private adjacency representation, witness-search strategy, and topological-sort algorithm are unconstrained.
+  - The restricted implementation may retain deterministic topological metadata privately or within the opaque validated artifact.
+
+open_questions: []
+
+sources:
+  api-causality:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 8. Current-reaction causality and cycles]
+    reviewed_hash: sha256:2e50e375a8b29141d0adc2a9515570c1109c82a274fbcd7d38efefd9094f6b8c
+  runtime-scc:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 18. Strongly connected components]
+    reviewed_hash: sha256:edb80493062c23c47d61b549832c3cb7dd099dc39efed60d145076727bdbde22
+  runtime-topological:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 19. Topological order]
+    reviewed_hash: sha256:a51275d9f1d0c4bc4b54d361d1d38747a87c052e71f5432a19603906f95391ea
+  runtime-validated:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 3. Lifecycle, 3.2 Validated definitions]
+    reviewed_hash: sha256:bce0327b9e96a9bedb087bd44732edea91a77a9153e182800d37315172497da1
+  api-validated-network:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:d090849e1775829dc46e65e7009fd35260069c424ea5dddf8aba7afc4b43b8bd
+  api-validation-coverage:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 46. Required validation coverage]
+    reviewed_hash: sha256:4b67b4241f37763437a7523a4c99a3c729c9b9c4d72a2824b73e4b88b67cfc38
+  catalogue-validation:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions]
+    reviewed_hash: sha256:6c2eeae3d44af53103f991f364f2d321a9fe195f03b8924e8f902fb5e3dfef40
+  catalogue-cycle-evidence:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 14. Evidence families, 14.12 `CurrentReactionCycleEvidence`]
+    reviewed_hash: sha256:b49f8c9cbe348d19a3fbd36d7fcddd52efea7afb9a6645faf8874681962b2fa9
+  catalogue-cycle-laws:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions, 26.2 Current-reaction cycle condition law]
+    reviewed_hash: sha256:49a834b0fad19c7474aa9d8e6445dd8ae02cec0710840721f8e96c2517222600
+  verification-cycles:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 20. Reaction-cycle verification]
+    reviewed_hash: sha256:7ed65b9139b73dc81b0d4125ade9829700a70bd0577e383e0797f2e02f451d6e
+  verification-determinism:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:39c22bc378b50b6476f5e860d5dde98e73473b7279804bdcc78adbffc59e0aaa

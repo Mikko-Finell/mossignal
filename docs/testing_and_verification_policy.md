@@ -505,7 +505,12 @@ Tests must verify:
 - a whole temporal node is not incorrectly treated as a universal barrier;
 - due-event dependencies and current-input dependencies match the node specification;
 - self-loops are detected;
+- exactly one diagnostic is emitted for each cyclic SCC;
 - SCC diagnostics identify a valid cycle witness.
+
+Complete cycle-diagnostic identity and its canonical witness must be invariant
+under definition insertion order, adjacency order, hash iteration, and SCC
+traversal order.
 
 For bounded generated graphs, cycle detection SHOULD be cross-checked against an independent reachability-based oracle.
 

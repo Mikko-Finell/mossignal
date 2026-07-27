@@ -1220,6 +1220,45 @@ undefined.
 This subsection does not define condition discriminators or merge laws for the
 remaining catalogue entries and does not claim catalogue completeness.
 
+### 26.2 Current-reaction cycle condition law
+
+`validation.current_reaction_cycle` emits exactly one Report finding for each
+cyclic strongly connected component (SCC) of the current-reaction dependency
+graph. A cyclic SCC has more than one reaction vertex, or has one reaction
+vertex with a self-loop. Separate cyclic SCCs are separate conditions even when
+they occur in one network; multiple elementary cycles within one SCC do not
+produce additional conditions.
+
+The primary subject is `SubjectRef::Network` for the network whose
+current-reaction graph contains the SCC. The condition discriminator is the
+canonical ordered set of the SCC's stable reaction-member references. A stable
+reaction-member reference combines the relevant authored stable structural
+identity with its semantic reaction role. It MUST NOT use private vertex IDs,
+dense indices, allocation order, hash iteration, SCC traversal order, or a
+selected witness. Distinct reaction roles associated with one authored subject
+remain distinct members.
+
+Evidence contains that complete canonical member set and one canonical ordered
+cycle witness. Every witness step contains its source reaction fact, structural
+dependency contribution and semantic role, and target reaction fact. It also
+contains any apparent state or temporal boundaries that do not break the
+dependency. All references use stable structural identity rather than private
+graph storage identity.
+
+For a singleton cyclic SCC, the canonical witness is the least self-loop
+dependency step. For a multi-member cyclic SCC, it begins with the least
+non-self dependency step in the SCC and appends the shortest path from that
+step's target back to its source. Equal-length paths are ordered by canonical
+dependency-step order: source stable reaction-member reference, dependency
+structural reference and semantic role, then target stable reaction-member
+reference. The witness is evidence, not condition identity.
+
+Repeated detection of one condition merges idempotently. SCC-member evidence
+must agree with the discriminator; canonical witness and scalar evidence must
+agree exactly; and set-like related-subject and nonbreaking-boundary evidence
+merges by canonical set union. Contradictory exact-agreement evidence, including
+a differing canonical witness, produces `internal.diagnostic_evidence_conflict`.
+
 ## 27. Validation — non-blocking conditions
 
 | Code | Severity | Responsibility | Delivery | Evidence | Meaning |
