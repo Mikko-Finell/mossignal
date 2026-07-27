@@ -3,10 +3,14 @@
 use crate::authored::{ConnectionEndpoint, NodeKind, UncheckedNetwork};
 use crate::diagnostics::{DiagnosticSet, Report};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
+#[cfg(test)]
+use crate::key::ExternalInputKey;
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, ConnectionKey,
     NetworkKey, NodeKey,
 };
+#[cfg(test)]
+use crate::signal::Level;
 use crate::signal::{LogicLevel, SignalKind};
 use crate::validation::{ReactionDependencyGraph, ReactionVertex, ValidatedNetwork};
 use std::collections::BTreeMap;
@@ -110,6 +114,17 @@ enum OperationDescriptor {
     ExternalOutput(ExternalOutputIndex),
 }
 
+/// Complete outcomes of one restricted full reference evaluation.
+///
+/// This remains crate-private because the public input-snapshot and runtime
+/// result boundaries are intentionally deferred.
+#[derive(Debug, PartialEq, Eq)]
+#[cfg(test)]
+pub(crate) struct FullEvaluation {
+    values: Vec<LogicLevel>,
+    execution_counts: Vec<usize>,
+}
+
 impl<D> CompiledNetwork<D> {
     pub(crate) fn from_validated(validated: &ValidatedNetwork<D>) -> Report<Self, D> {
         let graph = validated.reaction_dependencies();
@@ -150,9 +165,87 @@ impl<D> CompiledNetwork<D> {
     pub fn input_schema_fingerprint(&self) -> InputSchemaFingerprint {
         self.inner.input_schema_fingerprint
     }
+
+    #[cfg(test)]
+    pub(crate) fn evaluate_full(
+        &self,
+        external_inputs: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    ) -> Option<FullEvaluation> {
+        self.inner.evaluate_full(external_inputs)
+    }
 }
 
 impl<D> CompiledInner<D> {
+    #[cfg(test)]
+    fn evaluate_full(
+        &self,
+        external_inputs: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    ) -> Option<FullEvaluation> {
+        let mut values = vec![None; self.operations.len()];
+        let mut execution_counts = vec![0; self.operations.len()];
+
+        for (index, operation) in self.operations.iter().enumerate() {
+            if self.predecessors[index]
+                .iter()
+                .any(|predecessor| values[predecessor.0].is_none())
+            {
+                return None;
+            }
+
+            execution_counts[index] += 1;
+            let value = match operation {
+                OperationDescriptor::ExternalInput(input) => {
+                    let key = match self.external_inputs.get(input.0)?.key {
+                        AnyExternalInputKey::Level(key) => key,
+                        AnyExternalInputKey::Pulse(_) => return None,
+                    };
+                    external_inputs.get(&key).copied()?
+                }
+                OperationDescriptor::Node(node) => match self.nodes.get(node.0)? {
+                    NodeDescriptor {
+                        kind: CompiledNodeKind::Constant(value),
+                        ..
+                    } => *value,
+                    NodeDescriptor {
+                        kind: CompiledNodeKind::Not,
+                        inputs,
+                        ..
+                    } => self
+                        .input_value(inputs.first().copied()?, &values)?
+                        .invert(),
+                },
+                OperationDescriptor::NodeOutput(port) => {
+                    let predecessor = self.predecessors[index].first()?;
+                    let port = self.ports.get(port.0)?;
+                    if port.direction != PortDirection::Output {
+                        return None;
+                    }
+                    values[predecessor.0]?
+                }
+                OperationDescriptor::ExternalOutput(output) => {
+                    let source = self.external_outputs.get(output.0)?.source;
+                    values[source.0]?
+                }
+            };
+            values[index] = Some(value);
+        }
+
+        Some(FullEvaluation {
+            values: values.into_iter().collect::<Option<Vec<_>>>()?,
+            execution_counts,
+        })
+    }
+
+    #[cfg(test)]
+    fn input_value(&self, port: PortIndex, values: &[Option<LogicLevel>]) -> Option<LogicLevel> {
+        let source = self
+            .connections
+            .iter()
+            .find(|connection| connection.target == port)?
+            .source;
+        values.get(source.0).copied().flatten()
+    }
+
     fn build(validated: &ValidatedNetwork<D>, graph: &ReactionDependencyGraph) -> Self {
         let definition = clone_definition(validated.definition());
         let mut nodes = Vec::new();
@@ -519,6 +612,77 @@ mod tests {
     };
     use crate::metadata::DiagnosticMeta;
     use crate::signal::Level;
+    use std::collections::BTreeMap;
+
+    fn constant_network(value: LogicLevel) -> UncheckedNetwork<()> {
+        let output = OutPortKey::<Level>::from_u128(1);
+        let external_output = ExternalOutputKey::<Level>::from_u128(2);
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(3),
+            TimeDomainId::from_u128(4),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(5),
+                NodeKind::constant(value),
+                NodePorts::new(Vec::new(), vec![output.into()]),
+                DiagnosticMeta::default(),
+            )],
+            Vec::new(),
+            vec![ExternalOutputDef::new(
+                external_output.into(),
+                SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            Vec::new(),
+        )
+    }
+
+    fn external_not_network() -> UncheckedNetwork<()> {
+        let input = ExternalInputKey::<Level>::from_u128(1);
+        let not_input = InPortKey::<Level>::from_u128(2);
+        let not_output = OutPortKey::<Level>::from_u128(3);
+        let output = ExternalOutputKey::<Level>::from_u128(4);
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(5),
+            TimeDomainId::from_u128(6),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(7),
+                NodeKind::not(),
+                NodePorts::new(vec![not_input.into()], vec![not_output.into()]),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                input.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                output.into(),
+                SignalSourceKey::NodeOutput(not_output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(8),
+                input.into(),
+                not_input.into(),
+                DiagnosticMeta::default(),
+            )],
+        )
+    }
+
+    fn compile_network(network: UncheckedNetwork<()>) -> CompiledNetwork<()> {
+        network
+            .validate()
+            .require_artifact()
+            .unwrap_or_else(|_| panic!("fixture must validate"))
+            .compile()
+            .require_artifact()
+            .unwrap_or_else(|_| panic!("fixture must compile"))
+    }
+
+    fn operation_index(compiled: &CompiledNetwork<()>, vertex: ReactionVertex) -> OperationIndex {
+        compiled.inner.operation_lookup[&vertex]
+    }
 
     fn network(reverse_claim_order: bool) -> UncheckedNetwork<()> {
         let input = ExternalInputKey::<Level>::from_u128(1);
@@ -568,13 +732,87 @@ mod tests {
     }
 
     fn compiled(reverse_claim_order: bool) -> CompiledNetwork<()> {
-        network(reverse_claim_order)
-            .validate()
-            .require_artifact()
-            .unwrap_or_else(|_| panic!("fixture must validate"))
-            .compile()
-            .require_artifact()
-            .unwrap_or_else(|_| panic!("fixture must compile"))
+        compile_network(network(reverse_claim_order))
+    }
+
+    #[test]
+    fn full_evaluator_applies_constant_laws() {
+        for value in [LogicLevel::Low, LogicLevel::High] {
+            let compiled = compile_network(constant_network(value));
+            let evaluation = compiled
+                .evaluate_full(&BTreeMap::new())
+                .unwrap_or_else(|| panic!("constant topology must evaluate"));
+            let operation = operation_index(
+                &compiled,
+                ReactionVertex::NodeOperation(NodeKey::from_u128(5)),
+            );
+            assert_eq!(evaluation.values[operation.0], value);
+        }
+    }
+
+    #[test]
+    fn full_evaluator_propagates_external_facts_through_not_and_output() {
+        let compiled = compile_network(external_not_network());
+        let input = ExternalInputKey::<Level>::from_u128(1);
+        let mut facts = BTreeMap::new();
+        facts.insert(input, LogicLevel::High);
+
+        let evaluation = compiled
+            .evaluate_full(&facts)
+            .unwrap_or_else(|| panic!("complete external facts must evaluate"));
+
+        let input_operation =
+            operation_index(&compiled, ReactionVertex::ExternalInput(input.into()));
+        let not_operation = operation_index(
+            &compiled,
+            ReactionVertex::NodeOperation(NodeKey::from_u128(7)),
+        );
+        let output_operation = operation_index(
+            &compiled,
+            ReactionVertex::ExternalOutput(ExternalOutputKey::<Level>::from_u128(4).into()),
+        );
+        assert_eq!(evaluation.values[input_operation.0], LogicLevel::High);
+        assert_eq!(evaluation.values[not_operation.0], LogicLevel::Low);
+        assert_eq!(evaluation.values[output_operation.0], LogicLevel::Low);
+    }
+
+    #[test]
+    fn full_evaluator_settles_a_multi_node_chain_once_after_predecessors() {
+        let compiled = compiled(false);
+        let mut facts = BTreeMap::new();
+        facts.insert(ExternalInputKey::<Level>::from_u128(1), LogicLevel::Low);
+        let evaluation = compiled
+            .evaluate_full(&facts)
+            .unwrap_or_else(|| panic!("complete external facts must evaluate"));
+
+        let constant = operation_index(
+            &compiled,
+            ReactionVertex::NodeOperation(NodeKey::from_u128(10)),
+        );
+        let inverter = operation_index(
+            &compiled,
+            ReactionVertex::NodeOperation(NodeKey::from_u128(20)),
+        );
+        let observed = operation_index(
+            &compiled,
+            ReactionVertex::ExternalOutput(ExternalOutputKey::<Level>::from_u128(5).into()),
+        );
+        assert_eq!(evaluation.values[constant.0], LogicLevel::High);
+        assert_eq!(evaluation.values[inverter.0], LogicLevel::Low);
+        assert_eq!(evaluation.values[observed.0], LogicLevel::Low);
+        assert!(evaluation.execution_counts.iter().all(|count| *count == 1));
+        for (index, predecessors) in compiled.inner.predecessors.iter().enumerate() {
+            for predecessor in predecessors {
+                assert!(predecessor.0 < index);
+                assert_eq!(evaluation.execution_counts[predecessor.0], 1);
+            }
+        }
+    }
+
+    #[test]
+    fn full_evaluator_does_not_invent_missing_external_facts() {
+        let compiled = compile_network(external_not_network());
+        assert_eq!(compiled.evaluate_full(&BTreeMap::new()), None);
     }
 
     #[test]
