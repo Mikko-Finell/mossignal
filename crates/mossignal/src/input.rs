@@ -1,0 +1,305 @@
+//! Complete external level-input artifacts.
+
+use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
+use crate::key::{ExternalInputKey, NetworkKey};
+use crate::signal::{Level, LogicLevel};
+use core::fmt;
+use core::marker::PhantomData;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// An owned complete valuation of one compiled network's external level inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputSnapshot<D> {
+    network_key: NetworkKey,
+    network_fingerprint: NetworkFingerprint,
+    input_schema_fingerprint: InputSchemaFingerprint,
+    pub(crate) levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    domain: PhantomData<fn() -> D>,
+}
+
+impl<D> InputSnapshot<D> {
+    /// Returns the stable network identity for which this snapshot was built.
+    #[must_use]
+    pub const fn network_key(&self) -> NetworkKey {
+        self.network_key
+    }
+
+    /// Returns the exact compiled-network identity for which this snapshot was built.
+    #[must_use]
+    pub const fn network_fingerprint(&self) -> NetworkFingerprint {
+        self.network_fingerprint
+    }
+
+    /// Returns the exact external-input schema identity for which this snapshot was built.
+    #[must_use]
+    pub const fn input_schema_fingerprint(&self) -> InputSchemaFingerprint {
+        self.input_schema_fingerprint
+    }
+}
+
+/// An owned builder for a complete external level-input snapshot.
+#[derive(Debug)]
+pub struct InputSnapshotBuilder<D> {
+    network_key: NetworkKey,
+    network_fingerprint: NetworkFingerprint,
+    input_schema_fingerprint: InputSchemaFingerprint,
+    required_inputs: BTreeSet<ExternalInputKey<Level>>,
+    levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    domain: PhantomData<fn() -> D>,
+}
+
+impl<D> InputSnapshotBuilder<D> {
+    pub(crate) fn new(
+        network_key: NetworkKey,
+        network_fingerprint: NetworkFingerprint,
+        input_schema_fingerprint: InputSchemaFingerprint,
+        required_inputs: impl IntoIterator<Item = ExternalInputKey<Level>>,
+    ) -> Self {
+        Self {
+            network_key,
+            network_fingerprint,
+            input_schema_fingerprint,
+            required_inputs: required_inputs.into_iter().collect(),
+            levels: BTreeMap::new(),
+            domain: PhantomData,
+        }
+    }
+
+    /// Adds one authoritative external level observation.
+    pub fn set(
+        mut self,
+        input: ExternalInputKey<Level>,
+        value: LogicLevel,
+    ) -> Result<Self, InputBuildFailure> {
+        if !self.required_inputs.contains(&input) {
+            return Err(InputBuildFailure::UnknownInput { input });
+        }
+
+        if let Some(previous) = self.levels.insert(input, value) {
+            let failure = if previous == value {
+                InputBuildFailure::DuplicateObservation { input, value }
+            } else {
+                InputBuildFailure::ConflictingObservation {
+                    input,
+                    first: previous,
+                    second: value,
+                }
+            };
+            return Err(failure);
+        }
+
+        Ok(self)
+    }
+
+    /// Completes a snapshot only when every required level has one value.
+    pub fn finish(self) -> Result<InputSnapshot<D>, InputBuildFailure> {
+        let missing = self
+            .required_inputs
+            .iter()
+            .filter(|input| !self.levels.contains_key(input))
+            .copied()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(InputBuildFailure::MissingRequiredLevels { missing });
+        }
+
+        Ok(InputSnapshot {
+            network_key: self.network_key,
+            network_fingerprint: self.network_fingerprint,
+            input_schema_fingerprint: self.input_schema_fingerprint,
+            levels: self.levels,
+            domain: PhantomData,
+        })
+    }
+}
+
+/// A failure while constructing a complete level input snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputBuildFailure {
+    /// An observation named an external level input outside the bound schema.
+    UnknownInput { input: ExternalInputKey<Level> },
+    /// An equivalent observation was supplied more than once.
+    DuplicateObservation {
+        input: ExternalInputKey<Level>,
+        value: LogicLevel,
+    },
+    /// Two observations for one input supplied different values.
+    ConflictingObservation {
+        input: ExternalInputKey<Level>,
+        first: LogicLevel,
+        second: LogicLevel,
+    },
+    /// Completion omitted one or more required external level inputs.
+    MissingRequiredLevels {
+        missing: Vec<ExternalInputKey<Level>>,
+    },
+}
+
+impl fmt::Display for InputBuildFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownInput { .. } => formatter.write_str("input is outside the bound schema"),
+            Self::DuplicateObservation { .. } => {
+                formatter.write_str("input was observed more than once with the same value")
+            }
+            Self::ConflictingObservation { .. } => {
+                formatter.write_str("input was observed more than once with conflicting values")
+            }
+            Self::MissingRequiredLevels { .. } => {
+                formatter.write_str("snapshot omits one or more required level inputs")
+            }
+        }
+    }
+}
+
+impl std::error::Error for InputBuildFailure {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TimeDomainId;
+    use crate::authored::{ExternalInputDef, UncheckedNetwork};
+    use crate::key::{ExternalInputKey, NetworkKey};
+    use crate::metadata::DiagnosticMeta;
+
+    fn compiled_with_inputs(keys: &[u128]) -> crate::CompiledNetwork<()> {
+        let external_inputs = keys
+            .iter()
+            .copied()
+            .map(|key| {
+                ExternalInputDef::new(
+                    ExternalInputKey::<Level>::from_u128(key).into(),
+                    DiagnosticMeta::default(),
+                )
+            })
+            .collect();
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            Vec::new(),
+            external_inputs,
+            Vec::new(),
+            Vec::new(),
+        )
+        .validate()
+        .require_artifact()
+        .unwrap_or_else(|_| panic!("fixture must validate"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|_| panic!("fixture must compile"))
+    }
+
+    #[test]
+    fn complete_snapshot_retains_compiled_identities_and_key_order() {
+        let compiled = compiled_with_inputs(&[9, 3]);
+        let snapshot = compiled
+            .input_snapshot()
+            .set(ExternalInputKey::from_u128(9), LogicLevel::High)
+            .and_then(|builder| builder.set(ExternalInputKey::from_u128(3), LogicLevel::Low))
+            .and_then(InputSnapshotBuilder::finish)
+            .unwrap_or_else(|_| panic!("complete snapshot must build"));
+        let reordered = compiled
+            .input_snapshot()
+            .set(ExternalInputKey::from_u128(3), LogicLevel::Low)
+            .and_then(|builder| builder.set(ExternalInputKey::from_u128(9), LogicLevel::High))
+            .and_then(InputSnapshotBuilder::finish)
+            .unwrap_or_else(|_| panic!("complete snapshot must build"));
+
+        assert_eq!(snapshot.network_fingerprint(), compiled.fingerprint());
+        assert_eq!(snapshot.network_key(), compiled.network_key());
+        assert_eq!(
+            snapshot.input_schema_fingerprint(),
+            compiled.input_schema_fingerprint()
+        );
+        assert_eq!(snapshot, reordered);
+        assert_eq!(
+            snapshot
+                .levels
+                .iter()
+                .map(|(&key, &value)| (key, value))
+                .collect::<Vec<_>>(),
+            vec![
+                (ExternalInputKey::from_u128(3), LogicLevel::Low),
+                (ExternalInputKey::from_u128(9), LogicLevel::High),
+            ]
+        );
+    }
+
+    #[test]
+    fn builder_rejects_unknown_duplicate_and_conflicting_observations() {
+        let compiled = compiled_with_inputs(&[3]);
+        let input = ExternalInputKey::from_u128(3);
+
+        assert_eq!(
+            compiled
+                .input_snapshot()
+                .set(ExternalInputKey::from_u128(4), LogicLevel::High)
+                .unwrap_err(),
+            InputBuildFailure::UnknownInput {
+                input: ExternalInputKey::from_u128(4),
+            }
+        );
+        assert_eq!(
+            compiled
+                .input_snapshot()
+                .set(input, LogicLevel::Low)
+                .and_then(|builder| builder.set(input, LogicLevel::Low))
+                .unwrap_err(),
+            InputBuildFailure::DuplicateObservation {
+                input,
+                value: LogicLevel::Low,
+            }
+        );
+        assert_eq!(
+            compiled
+                .input_snapshot()
+                .set(input, LogicLevel::Low)
+                .and_then(|builder| builder.set(input, LogicLevel::High))
+                .unwrap_err(),
+            InputBuildFailure::ConflictingObservation {
+                input,
+                first: LogicLevel::Low,
+                second: LogicLevel::High,
+            }
+        );
+    }
+
+    #[test]
+    fn finish_rejects_missing_levels_and_accepts_an_empty_schema() {
+        let compiled = compiled_with_inputs(&[9, 3]);
+        assert_eq!(
+            compiled.input_snapshot().finish(),
+            Err(InputBuildFailure::MissingRequiredLevels {
+                missing: vec![
+                    ExternalInputKey::from_u128(3),
+                    ExternalInputKey::from_u128(9),
+                ],
+            })
+        );
+        assert_eq!(
+            compiled
+                .input_snapshot()
+                .set(ExternalInputKey::from_u128(3), LogicLevel::High)
+                .and_then(InputSnapshotBuilder::finish),
+            Err(InputBuildFailure::MissingRequiredLevels {
+                missing: vec![ExternalInputKey::from_u128(9)],
+            })
+        );
+        assert_eq!(
+            compiled
+                .input_snapshot()
+                .set(ExternalInputKey::from_u128(9), LogicLevel::Low)
+                .and_then(InputSnapshotBuilder::finish),
+            Err(InputBuildFailure::MissingRequiredLevels {
+                missing: vec![ExternalInputKey::from_u128(3)],
+            })
+        );
+
+        let empty = compiled_with_inputs(&[])
+            .input_snapshot()
+            .finish()
+            .unwrap_or_else(|_| panic!("an empty schema has a complete empty snapshot"));
+        assert!(empty.levels.is_empty());
+    }
+}

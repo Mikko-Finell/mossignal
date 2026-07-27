@@ -3,6 +3,7 @@
 use crate::authored::{ConnectionEndpoint, NodeKind, UncheckedNetwork};
 use crate::diagnostics::{DiagnosticSet, Report};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
+use crate::input::InputSnapshotBuilder;
 #[cfg(test)]
 use crate::key::ExternalInputKey;
 use crate::key::{
@@ -164,6 +165,23 @@ impl<D> CompiledNetwork<D> {
     #[must_use]
     pub fn input_schema_fingerprint(&self) -> InputSchemaFingerprint {
         self.inner.input_schema_fingerprint
+    }
+
+    /// Starts a complete level-input snapshot bound to this exact topology.
+    #[must_use]
+    pub fn input_snapshot(&self) -> InputSnapshotBuilder<D> {
+        InputSnapshotBuilder::new(
+            self.network_key(),
+            self.fingerprint(),
+            self.input_schema_fingerprint(),
+            self.inner
+                .external_inputs
+                .iter()
+                .filter_map(|input| match input.key {
+                    AnyExternalInputKey::Level(key) => Some(key),
+                    AnyExternalInputKey::Pulse(_) => None,
+                }),
+        )
     }
 
     #[cfg(test)]
