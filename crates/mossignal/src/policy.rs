@@ -6,6 +6,7 @@ use core::fmt;
 const RUNTIME_POLICY_DOMAIN: &str = "mossignal/runtime_policy_id/v1";
 
 /// One named limit in the initial runtime-policy schema.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RuntimePolicyLimit {
     MaxInternalReactions,
@@ -16,9 +17,7 @@ pub enum RuntimePolicyLimit {
 }
 
 impl RuntimePolicyLimit {
-    /// Returns the stable public parameter key for this limit.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    const fn parameter_key(self) -> &'static str {
         match self {
             Self::MaxInternalReactions => "max_internal_reactions",
             Self::MaxEvaluatedOperations => "max_evaluated_operations",
@@ -31,7 +30,7 @@ impl RuntimePolicyLimit {
 
 impl fmt::Display for RuntimePolicyLimit {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
+        formatter.write_str(self.parameter_key())
     }
 }
 
@@ -44,8 +43,10 @@ impl fmt::Display for RuntimePolicyLimit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyFailure {
     /// A required semantic limit was not supplied.
+    #[non_exhaustive]
     MissingLimit { limit: RuntimePolicyLimit },
     /// A supplied limit violated its declared numeric domain.
+    #[non_exhaustive]
     InvalidLimit {
         limit: RuntimePolicyLimit,
         value: u64,
@@ -153,6 +154,21 @@ struct PolicyValues {
 }
 
 /// An immutable validated set of limits that may affect execution success.
+///
+/// Every initial limit must be supplied explicitly:
+///
+/// ```
+/// use mossignal::RuntimePolicy;
+///
+/// let policy = RuntimePolicy::builder()
+///     .max_internal_reactions(10_000)
+///     .max_evaluated_operations(100_000)
+///     .max_pending_events(1_000)
+///     .max_events_created_per_transaction(1_000)
+///     .max_required_provenance_growth(10_000)
+///     .build()?;
+/// # Ok::<(), mossignal::PolicyFailure>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimePolicy {
     values: PolicyValues,
@@ -172,26 +188,31 @@ impl RuntimePolicy {
         self.id
     }
 
+    /// Returns the maximum number of internal reactions.
     #[must_use]
     pub const fn max_internal_reactions(&self) -> u64 {
         self.values.max_internal_reactions
     }
 
+    /// Returns the maximum number of evaluated operations.
     #[must_use]
     pub const fn max_evaluated_operations(&self) -> u64 {
         self.values.max_evaluated_operations
     }
 
+    /// Returns the maximum number of pending events.
     #[must_use]
     pub const fn max_pending_events(&self) -> u64 {
         self.values.max_pending_events
     }
 
+    /// Returns the maximum number of events created by one transaction.
     #[must_use]
     pub const fn max_events_created_per_transaction(&self) -> u64 {
         self.values.max_events_created_per_transaction
     }
 
+    /// Returns the maximum required provenance growth.
     #[must_use]
     pub const fn max_required_provenance_growth(&self) -> u64 {
         self.values.max_required_provenance_growth
@@ -219,30 +240,35 @@ impl RuntimePolicyBuilder {
         }
     }
 
+    /// Sets the maximum number of internal reactions.
     #[must_use]
     pub const fn max_internal_reactions(mut self, value: u64) -> Self {
         self.max_internal_reactions = Some(value);
         self
     }
 
+    /// Sets the maximum number of evaluated operations.
     #[must_use]
     pub const fn max_evaluated_operations(mut self, value: u64) -> Self {
         self.max_evaluated_operations = Some(value);
         self
     }
 
+    /// Sets the maximum number of pending events.
     #[must_use]
     pub const fn max_pending_events(mut self, value: u64) -> Self {
         self.max_pending_events = Some(value);
         self
     }
 
+    /// Sets the maximum number of events created by one transaction.
     #[must_use]
     pub const fn max_events_created_per_transaction(mut self, value: u64) -> Self {
         self.max_events_created_per_transaction = Some(value);
         self
     }
 
+    /// Sets the maximum required provenance growth.
     #[must_use]
     pub const fn max_required_provenance_growth(mut self, value: u64) -> Self {
         self.max_required_provenance_growth = Some(value);
