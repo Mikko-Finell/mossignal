@@ -1,4 +1,4 @@
-//! Complete external level-input artifacts.
+//! Complete and incremental external level-input artifacts.
 
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
 use crate::key::{ExternalInputKey, NetworkKey};
@@ -117,7 +117,107 @@ impl<D> InputSnapshotBuilder<D> {
     }
 }
 
-/// A failure while constructing a complete level input snapshot.
+/// An owned set of explicit level observations for a ready machine.
+///
+/// Omitted inputs have no replacement value in this artifact. A later
+/// compatible ready-machine transaction retains their prior authoritative
+/// values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDelta<D> {
+    network_key: NetworkKey,
+    network_fingerprint: NetworkFingerprint,
+    input_schema_fingerprint: InputSchemaFingerprint,
+    pub(crate) levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    domain: PhantomData<fn() -> D>,
+}
+
+impl<D> InputDelta<D> {
+    /// Returns the stable network identity for which this delta was built.
+    #[must_use]
+    pub const fn network_key(&self) -> NetworkKey {
+        self.network_key
+    }
+
+    /// Returns the exact compiled-network identity for which this delta was built.
+    #[must_use]
+    pub const fn network_fingerprint(&self) -> NetworkFingerprint {
+        self.network_fingerprint
+    }
+
+    /// Returns the exact external-input schema identity for which this delta was built.
+    #[must_use]
+    pub const fn input_schema_fingerprint(&self) -> InputSchemaFingerprint {
+        self.input_schema_fingerprint
+    }
+}
+
+/// An owned builder for explicit observations against one current topology.
+#[derive(Debug)]
+pub struct InputDeltaBuilder<D> {
+    network_key: NetworkKey,
+    network_fingerprint: NetworkFingerprint,
+    input_schema_fingerprint: InputSchemaFingerprint,
+    existing_inputs: BTreeSet<ExternalInputKey<Level>>,
+    levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    domain: PhantomData<fn() -> D>,
+}
+
+impl<D> InputDeltaBuilder<D> {
+    pub(crate) fn new(
+        network_key: NetworkKey,
+        network_fingerprint: NetworkFingerprint,
+        input_schema_fingerprint: InputSchemaFingerprint,
+        existing_inputs: impl IntoIterator<Item = ExternalInputKey<Level>>,
+    ) -> Self {
+        Self {
+            network_key,
+            network_fingerprint,
+            input_schema_fingerprint,
+            existing_inputs: existing_inputs.into_iter().collect(),
+            levels: BTreeMap::new(),
+            domain: PhantomData,
+        }
+    }
+
+    /// Explicitly changes or reasserts one existing external level input.
+    pub fn set(
+        mut self,
+        input: ExternalInputKey<Level>,
+        value: LogicLevel,
+    ) -> Result<Self, InputBuildFailure> {
+        if !self.existing_inputs.contains(&input) {
+            return Err(InputBuildFailure::UnknownInput { input });
+        }
+
+        if let Some(previous) = self.levels.insert(input, value) {
+            let failure = if previous == value {
+                InputBuildFailure::DuplicateObservation { input, value }
+            } else {
+                InputBuildFailure::ConflictingObservation {
+                    input,
+                    first: previous,
+                    second: value,
+                }
+            };
+            return Err(failure);
+        }
+
+        Ok(self)
+    }
+
+    /// Completes this delta without requiring omitted existing level inputs.
+    pub fn finish(self) -> Result<InputDelta<D>, InputBuildFailure> {
+        Ok(InputDelta {
+            network_key: self.network_key,
+            network_fingerprint: self.network_fingerprint,
+            input_schema_fingerprint: self.input_schema_fingerprint,
+            levels: self.levels,
+            domain: PhantomData,
+        })
+    }
+}
+
+/// A failure while constructing a level input artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputBuildFailure {
     /// An observation named an external level input outside the bound schema.
@@ -167,6 +267,13 @@ mod tests {
     use crate::metadata::DiagnosticMeta;
 
     fn compiled_with_inputs(keys: &[u128]) -> crate::CompiledNetwork<()> {
+        compiled_with_identity_and_inputs(1, keys)
+    }
+
+    fn compiled_with_identity_and_inputs(
+        network_key: u128,
+        keys: &[u128],
+    ) -> crate::CompiledNetwork<()> {
         let external_inputs = keys
             .iter()
             .copied()
@@ -178,7 +285,7 @@ mod tests {
             })
             .collect();
         UncheckedNetwork::new(
-            NetworkKey::from_u128(1),
+            NetworkKey::from_u128(network_key),
             TimeDomainId::from_u128(2),
             DiagnosticMeta::default(),
             Vec::new(),
@@ -305,5 +412,127 @@ mod tests {
             .finish()
             .unwrap_or_else(|_| panic!("an empty schema has a complete empty snapshot"));
         assert!(empty.levels.is_empty());
+    }
+
+    #[test]
+    fn delta_accepts_empty_partial_complete_and_reasserted_levels() {
+        let compiled = compiled_with_inputs(&[9, 3]);
+        let empty = compiled
+            .input_delta()
+            .finish()
+            .unwrap_or_else(|_| panic!("empty delta must build"));
+        let partial = compiled
+            .input_delta()
+            .set(ExternalInputKey::from_u128(3), LogicLevel::High)
+            .and_then(InputDeltaBuilder::finish)
+            .unwrap_or_else(|_| panic!("partial delta must build"));
+        let complete = compiled
+            .input_delta()
+            .set(ExternalInputKey::from_u128(3), LogicLevel::Low)
+            .and_then(|builder| builder.set(ExternalInputKey::from_u128(9), LogicLevel::High))
+            .and_then(InputDeltaBuilder::finish)
+            .unwrap_or_else(|_| panic!("complete delta must build"));
+
+        for delta in [&empty, &partial, &complete] {
+            assert_eq!(delta.network_key(), compiled.network_key());
+            assert_eq!(delta.network_fingerprint(), compiled.fingerprint());
+            assert_eq!(
+                delta.input_schema_fingerprint(),
+                compiled.input_schema_fingerprint()
+            );
+        }
+        assert!(empty.levels.is_empty());
+        assert_eq!(
+            partial.levels.get(&ExternalInputKey::from_u128(3)),
+            Some(&LogicLevel::High)
+        );
+        assert!(!partial.levels.contains_key(&ExternalInputKey::from_u128(9)));
+        assert_eq!(complete.levels.len(), 2);
+    }
+
+    #[test]
+    fn delta_rejects_unknown_duplicate_and_conflicting_observations() {
+        let compiled = compiled_with_inputs(&[3]);
+        let input = ExternalInputKey::from_u128(3);
+
+        assert_eq!(
+            compiled
+                .input_delta()
+                .set(ExternalInputKey::from_u128(4), LogicLevel::High)
+                .unwrap_err(),
+            InputBuildFailure::UnknownInput {
+                input: ExternalInputKey::from_u128(4),
+            }
+        );
+        assert_eq!(
+            compiled
+                .input_delta()
+                .set(input, LogicLevel::Low)
+                .and_then(|builder| builder.set(input, LogicLevel::Low))
+                .unwrap_err(),
+            InputBuildFailure::DuplicateObservation {
+                input,
+                value: LogicLevel::Low,
+            }
+        );
+        assert_eq!(
+            compiled
+                .input_delta()
+                .set(input, LogicLevel::Low)
+                .and_then(|builder| builder.set(input, LogicLevel::High))
+                .unwrap_err(),
+            InputBuildFailure::ConflictingObservation {
+                input,
+                first: LogicLevel::Low,
+                second: LogicLevel::High,
+            }
+        );
+    }
+
+    #[test]
+    fn delta_semantics_are_order_independent_and_exactly_bound() {
+        let compiled = compiled_with_inputs(&[9, 3]);
+        let first = compiled
+            .input_delta()
+            .set(ExternalInputKey::from_u128(9), LogicLevel::High)
+            .and_then(|builder| builder.set(ExternalInputKey::from_u128(3), LogicLevel::Low))
+            .and_then(InputDeltaBuilder::finish)
+            .unwrap_or_else(|_| panic!("delta must build"));
+        let reordered = compiled
+            .input_delta()
+            .set(ExternalInputKey::from_u128(3), LogicLevel::Low)
+            .and_then(|builder| builder.set(ExternalInputKey::from_u128(9), LogicLevel::High))
+            .and_then(InputDeltaBuilder::finish)
+            .unwrap_or_else(|_| panic!("reordered delta must build"));
+        assert_eq!(first, reordered);
+
+        let foreign_network = compiled_with_identity_and_inputs(2, &[9, 3])
+            .input_delta()
+            .set(ExternalInputKey::from_u128(3), LogicLevel::Low)
+            .and_then(|builder| builder.set(ExternalInputKey::from_u128(9), LogicLevel::High))
+            .and_then(InputDeltaBuilder::finish)
+            .unwrap_or_else(|_| panic!("foreign-network delta must build"));
+        assert_eq!(
+            first.input_schema_fingerprint(),
+            foreign_network.input_schema_fingerprint()
+        );
+        assert_ne!(first.network_key(), foreign_network.network_key());
+        assert_ne!(
+            first.network_fingerprint(),
+            foreign_network.network_fingerprint()
+        );
+        assert_ne!(first, foreign_network);
+
+        let foreign_schema = compiled_with_inputs(&[9, 3, 4])
+            .input_delta()
+            .set(ExternalInputKey::from_u128(3), LogicLevel::Low)
+            .and_then(|builder| builder.set(ExternalInputKey::from_u128(9), LogicLevel::High))
+            .and_then(InputDeltaBuilder::finish)
+            .unwrap_or_else(|_| panic!("foreign-schema delta must build"));
+        assert_ne!(
+            first.input_schema_fingerprint(),
+            foreign_schema.input_schema_fingerprint()
+        );
+        assert_ne!(first, foreign_schema);
     }
 }

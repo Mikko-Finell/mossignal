@@ -3,7 +3,7 @@
 use crate::authored::{ConnectionEndpoint, NodeKind, UncheckedNetwork};
 use crate::diagnostics::{DiagnosticSet, Report};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
-use crate::input::InputSnapshotBuilder;
+use crate::input::{InputDeltaBuilder, InputSnapshotBuilder};
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, ConnectionKey,
     ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey,
@@ -199,6 +199,23 @@ impl<D> CompiledNetwork<D> {
     #[must_use]
     pub fn input_snapshot(&self) -> InputSnapshotBuilder<D> {
         InputSnapshotBuilder::new(
+            self.network_key(),
+            self.fingerprint(),
+            self.input_schema_fingerprint(),
+            self.inner
+                .external_inputs
+                .iter()
+                .filter_map(|input| match input.key {
+                    AnyExternalInputKey::Level(key) => Some(key),
+                    AnyExternalInputKey::Pulse(_) => None,
+                }),
+        )
+    }
+
+    /// Starts a level-input delta bound to this exact current topology.
+    #[must_use]
+    pub fn input_delta(&self) -> InputDeltaBuilder<D> {
+        InputDeltaBuilder::new(
             self.network_key(),
             self.fingerprint(),
             self.input_schema_fingerprint(),

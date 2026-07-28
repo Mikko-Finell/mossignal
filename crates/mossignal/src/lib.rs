@@ -17,7 +17,9 @@ mod validation;
 
 pub use compile::CompiledNetwork;
 pub use identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
-pub use input::{InputBuildFailure, InputSnapshot, InputSnapshotBuilder};
+pub use input::{
+    InputBuildFailure, InputDelta, InputDeltaBuilder, InputSnapshot, InputSnapshotBuilder,
+};
 pub use machine::{Machine, MachineStatus, NetworkRevision};
 pub use policy::{
     PolicyFailure, RuntimePolicy, RuntimePolicyBuilder, RuntimePolicyId, RuntimePolicyLimit,
