@@ -80,6 +80,7 @@ struct NodeDescriptor {
 enum CompiledNodeKind {
     Constant(LogicLevel),
     Not,
+    All,
 }
 
 #[derive(Debug)]
@@ -301,6 +302,32 @@ impl<D> CompiledInner<D> {
                                 .collect(),
                         },
                     ),
+                    NodeDescriptor {
+                        key,
+                        kind: CompiledNodeKind::All,
+                        inputs,
+                        ..
+                    } => {
+                        // SPEC: docs/specs/built_in_node_semantics.md §24 "All"
+                        // High is the conjunction identity, including for zero inputs.
+                        let mut value = LogicLevel::High;
+                        for input in inputs {
+                            if self.input_value(*input, &values)?.is_low() {
+                                value = LogicLevel::Low;
+                                break;
+                            }
+                        }
+                        (
+                            value,
+                            EvaluationCause::Node {
+                                node: *key,
+                                predecessors: self.predecessors[index]
+                                    .iter()
+                                    .map(|predecessor| predecessor.0)
+                                    .collect(),
+                            },
+                        )
+                    }
                 },
                 OperationDescriptor::NodeOutput(port) => {
                     let predecessor = self.predecessors[index].first()?;
@@ -390,6 +417,7 @@ impl<D> CompiledInner<D> {
             let kind = match node.kind() {
                 NodeKind::Constant(config) => CompiledNodeKind::Constant(config.value()),
                 NodeKind::Not => CompiledNodeKind::Not,
+                NodeKind::All => CompiledNodeKind::All,
             };
             nodes.push(NodeDescriptor {
                 key: node.key(),
@@ -516,11 +544,12 @@ impl<D> CompiledInner<D> {
             }
         }
         for node in &self.nodes {
-            let expected = match node.kind {
-                CompiledNodeKind::Constant(_) => (0, 1),
-                CompiledNodeKind::Not => (1, 1),
+            let shape_valid = match node.kind {
+                CompiledNodeKind::Constant(_) => node.inputs.is_empty() && node.outputs.len() == 1,
+                CompiledNodeKind::Not => node.inputs.len() == 1 && node.outputs.len() == 1,
+                CompiledNodeKind::All => node.outputs.len() == 1,
             };
-            if (node.inputs.len(), node.outputs.len()) != expected {
+            if !shape_valid {
                 return Err("compiled descriptor disagrees with node kind");
             }
             for index in node.inputs.iter().chain(node.outputs.iter()) {
@@ -658,6 +687,7 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
             let kind = match node.kind() {
                 NodeKind::Constant(config) => NodeKind::constant(config.value()),
                 NodeKind::Not => NodeKind::not(),
+                NodeKind::All => NodeKind::all(),
             };
             crate::authored::NodeDef::new(
                 node.key(),
@@ -776,6 +806,66 @@ mod tests {
         )
     }
 
+    fn all_network(
+        arity: usize,
+        duplicate_source: bool,
+        reverse_port_order: bool,
+    ) -> UncheckedNetwork<()> {
+        let inputs = (0..arity)
+            .map(|index| ExternalInputKey::<Level>::from_u128(100 + index as u128))
+            .collect::<Vec<_>>();
+        let ports = (0..arity)
+            .map(|index| InPortKey::<Level>::from_u128(200 + index as u128))
+            .collect::<Vec<_>>();
+        let mut authored_ports = ports.clone();
+        if reverse_port_order {
+            authored_ports.reverse();
+        }
+        let all_output = OutPortKey::<Level>::from_u128(300);
+        let external_output = ExternalOutputKey::<Level>::from_u128(400);
+        let connections = ports
+            .iter()
+            .enumerate()
+            .map(|(index, port)| {
+                let source = if duplicate_source && index > 0 {
+                    inputs[0]
+                } else {
+                    inputs[index]
+                };
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(500 + index as u128),
+                    source.into(),
+                    (*port).into(),
+                    DiagnosticMeta::default(),
+                )
+            })
+            .collect();
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(3),
+                NodeKind::all(),
+                NodePorts::new(
+                    authored_ports.into_iter().map(Into::into).collect(),
+                    vec![all_output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            inputs
+                .into_iter()
+                .map(|key| ExternalInputDef::new(key.into(), DiagnosticMeta::default()))
+                .collect(),
+            vec![ExternalOutputDef::new(
+                external_output.into(),
+                SignalSourceKey::NodeOutput(all_output).into(),
+                DiagnosticMeta::default(),
+            )],
+            connections,
+        )
+    }
+
     fn compile_network(network: UncheckedNetwork<()>) -> CompiledNetwork<()> {
         network
             .validate()
@@ -853,6 +943,89 @@ mod tests {
                 ReactionVertex::NodeOperation(NodeKey::from_u128(5)),
             );
             assert_eq!(evaluation.values[operation.0], value);
+        }
+    }
+
+    #[test]
+    fn full_evaluator_applies_all_total_law_for_small_arities() {
+        for arity in 0..=3 {
+            let compiled = compile_network(all_network(arity, false, false));
+            for valuation in 0..(1_u8 << arity) {
+                let facts = (0..arity)
+                    .map(|index| {
+                        (
+                            ExternalInputKey::from_u128(100 + index as u128),
+                            if valuation & (1 << index) == 0 {
+                                LogicLevel::Low
+                            } else {
+                                LogicLevel::High
+                            },
+                        )
+                    })
+                    .collect();
+                let evaluated = compiled
+                    .evaluate_full(&facts)
+                    .unwrap_or_else(|| panic!("complete All valuation must evaluate"));
+                let expected = if valuation == (1_u8 << arity) - 1 {
+                    LogicLevel::High
+                } else {
+                    LogicLevel::Low
+                };
+                assert_eq!(
+                    evaluated.external_outputs[&ExternalOutputKey::from_u128(400)],
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compilation_retains_duplicate_source_port_multiplicity_for_all() {
+        let compiled = compile_network(all_network(2, true, false));
+        assert_eq!(compiled.inner.connections.len(), 2);
+        let low = BTreeMap::from([
+            (ExternalInputKey::from_u128(100), LogicLevel::Low),
+            (ExternalInputKey::from_u128(101), LogicLevel::High),
+        ]);
+        let high = BTreeMap::from([
+            (ExternalInputKey::from_u128(100), LogicLevel::High),
+            (ExternalInputKey::from_u128(101), LogicLevel::Low),
+        ]);
+        assert_eq!(
+            compiled.evaluate_full(&low).unwrap().external_outputs
+                [&ExternalOutputKey::from_u128(400)],
+            LogicLevel::Low
+        );
+        assert_eq!(
+            compiled.evaluate_full(&high).unwrap().external_outputs
+                [&ExternalOutputKey::from_u128(400)],
+            LogicLevel::High
+        );
+    }
+
+    #[test]
+    fn all_execution_is_invariant_under_authored_port_order_permutation() {
+        let forward = compile_network(all_network(3, false, false));
+        let reversed = compile_network(all_network(3, false, true));
+        assert_eq!(forward.fingerprint(), reversed.fingerprint());
+
+        for valuation in 0..8_u8 {
+            let facts = (0..3)
+                .map(|index| {
+                    (
+                        ExternalInputKey::from_u128(100 + index as u128),
+                        if valuation & (1 << index) == 0 {
+                            LogicLevel::Low
+                        } else {
+                            LogicLevel::High
+                        },
+                    )
+                })
+                .collect();
+            assert_eq!(
+                forward.evaluate_full(&facts).unwrap().external_outputs,
+                reversed.evaluate_full(&facts).unwrap().external_outputs
+            );
         }
     }
 

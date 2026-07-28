@@ -137,6 +137,9 @@ pub enum DiagnosticCode {
     ValidationUnsupportedMultipleDrivers,
     ValidationMissingRequiredInput,
     ValidationInvalidFixedArity,
+    ValidationDuplicateSource,
+    ValidationEmptyVariadicNode,
+    ValidationUnaryDegenerateNode,
     ValidationCurrentReactionCycle,
     InternalDiagnosticEvidenceConflict,
 }
@@ -234,6 +237,7 @@ pub enum DuplicateClaim {
 pub enum DuplicateNodeKind {
     Constant(LogicLevel),
     Not,
+    All,
 }
 
 /// A safe, machine-readable correction.  The opening validation catalogue has
@@ -291,6 +295,19 @@ pub enum ProblemEvidence<D> {
         ports: Vec<SubjectRef>,
         expected: usize,
         encountered: usize,
+        marker: PhantomData<fn() -> D>,
+    },
+    ValidationDuplicateSource {
+        source: SubjectRef,
+        ports: Vec<SubjectRef>,
+        marker: PhantomData<fn() -> D>,
+    },
+    ValidationEmptyVariadicNode {
+        ports: Vec<SubjectRef>,
+        marker: PhantomData<fn() -> D>,
+    },
+    ValidationUnaryDegenerateNode {
+        ports: Vec<SubjectRef>,
         marker: PhantomData<fn() -> D>,
     },
     ValidationCurrentReactionCycle {
@@ -408,6 +425,34 @@ impl<D> ProblemEvidence<D> {
         }
     }
 
+    /// Evidence that one source feeds several stable ports of a variadic node.
+    #[must_use]
+    pub fn duplicate_source(source: SubjectRef, ports: Vec<SubjectRef>) -> Self {
+        Self::ValidationDuplicateSource {
+            source,
+            ports,
+            marker: PhantomData,
+        }
+    }
+
+    /// Evidence that a total variadic node is using its empty law.
+    #[must_use]
+    pub fn empty_variadic_node(ports: Vec<SubjectRef>) -> Self {
+        Self::ValidationEmptyVariadicNode {
+            ports,
+            marker: PhantomData,
+        }
+    }
+
+    /// Evidence that a variadic node reduces to its unary law.
+    #[must_use]
+    pub fn unary_degenerate_node(ports: Vec<SubjectRef>) -> Self {
+        Self::ValidationUnaryDegenerateNode {
+            ports,
+            marker: PhantomData,
+        }
+    }
+
     /// Evidence for one cyclic current-reaction SCC.
     #[must_use]
     pub fn current_reaction_cycle(
@@ -432,6 +477,9 @@ impl<D> ProblemEvidence<D> {
             Self::ValidationDuplicateKey { claims, .. } => claims.sort(),
             Self::ValidationUnsupportedMultipleDrivers { drivers, .. } => canonicalize(drivers),
             Self::ValidationInvalidFixedArity { ports, .. } => canonicalize(ports),
+            Self::ValidationDuplicateSource { ports, .. }
+            | Self::ValidationEmptyVariadicNode { ports, .. }
+            | Self::ValidationUnaryDegenerateNode { ports, .. } => canonicalize(ports),
             Self::ValidationCurrentReactionCycle { members, .. } => {
                 members.sort();
                 members.dedup();
@@ -485,6 +533,9 @@ opening_diagnostic_registry! {
     ValidationUnsupportedMultipleDrivers, Self::ValidationUnsupportedMultipleDrivers { .. }, "validation.unsupported_multiple_drivers", Error, CallerInput, true;
     ValidationMissingRequiredInput, Self::ValidationMissingRequiredInput { .. }, "validation.missing_required_input", Error, CallerInput, true;
     ValidationInvalidFixedArity, Self::ValidationInvalidFixedArity { .. }, "validation.invalid_fixed_arity", Error, CallerInput, true;
+    ValidationDuplicateSource, Self::ValidationDuplicateSource { .. }, "validation.duplicate_source", Warning, CallerInput, true;
+    ValidationEmptyVariadicNode, Self::ValidationEmptyVariadicNode { .. }, "validation.empty_variadic_node", Warning, Advisory, true;
+    ValidationUnaryDegenerateNode, Self::ValidationUnaryDegenerateNode { .. }, "validation.unary_degenerate_node", Warning, Advisory, true;
     ValidationCurrentReactionCycle, Self::ValidationCurrentReactionCycle { .. }, "validation.current_reaction_cycle", Error, CallerInput, true;
     InternalDiagnosticEvidenceConflict, Self::InternalDiagnosticEvidenceConflict { .. }, "internal.diagnostic_evidence_conflict", Error, LibraryDefect, false;
 }
@@ -697,6 +748,8 @@ enum ConditionDiscriminator {
     Subjects(SubjectRef, SubjectRef),
     Required(SubjectRef, SignalKind),
     Arity(FixedArityRole, usize, usize),
+    DuplicateSource(SubjectRef),
+    VariadicArity(usize),
     Empty,
     Internal(DiagnosticCode, SubjectRef),
     Cycle(Vec<ReactionMemberRef>),
@@ -738,6 +791,15 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
             encountered,
             ..
         } => ConditionDiscriminator::Arity(*role, *expected, *encountered),
+        ProblemEvidence::ValidationDuplicateSource { source, .. } => {
+            ConditionDiscriminator::DuplicateSource(*source)
+        }
+        ProblemEvidence::ValidationEmptyVariadicNode { ports, .. } => {
+            ConditionDiscriminator::VariadicArity(ports.len())
+        }
+        ProblemEvidence::ValidationUnaryDegenerateNode { ports, .. } => {
+            ConditionDiscriminator::VariadicArity(ports.len())
+        }
         ProblemEvidence::ValidationCurrentReactionCycle { members, .. } => {
             ConditionDiscriminator::Cycle(members.clone())
         }
@@ -812,9 +874,11 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
             ConditionDiscriminator::Subjects(_, _) => 2,
             ConditionDiscriminator::Required(_, _) => 3,
             ConditionDiscriminator::Arity(_, _, _) => 4,
-            ConditionDiscriminator::Empty => 5,
-            ConditionDiscriminator::Internal(_, _) => 6,
-            ConditionDiscriminator::Cycle(_) => 7,
+            ConditionDiscriminator::DuplicateSource(_) => 5,
+            ConditionDiscriminator::VariadicArity(_) => 6,
+            ConditionDiscriminator::Empty => 7,
+            ConditionDiscriminator::Internal(_, _) => 8,
+            ConditionDiscriminator::Cycle(_) => 9,
         }
     }
     tag(&left)
@@ -848,6 +912,14 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
                 .cmp(&right_role)
                 .then_with(|| left_expected.cmp(&right_expected))
                 .then_with(|| left_encountered.cmp(&right_encountered)),
+            (
+                ConditionDiscriminator::DuplicateSource(left),
+                ConditionDiscriminator::DuplicateSource(right),
+            ) => left.cmp_canonical(&right),
+            (
+                ConditionDiscriminator::VariadicArity(left),
+                ConditionDiscriminator::VariadicArity(right),
+            ) => left.cmp(&right),
             (
                 ConditionDiscriminator::Internal(left_code, left_subject),
                 ConditionDiscriminator::Internal(right_code, right_subject),

@@ -155,6 +155,8 @@ pub enum NodeKind<D> {
     Constant(ConstantConfig<D>),
     /// A level inverter with one level input and one level output after validation.
     Not,
+    /// A total variadic level conjunction with one level output after validation.
+    All,
 }
 
 impl<D> NodeKind<D> {
@@ -168,6 +170,12 @@ impl<D> NodeKind<D> {
     #[must_use]
     pub const fn not() -> Self {
         Self::Not
+    }
+
+    /// Creates the total variadic level-conjunction node kind.
+    #[must_use]
+    pub const fn all() -> Self {
+        Self::All
     }
 }
 

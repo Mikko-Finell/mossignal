@@ -1165,6 +1165,57 @@ mod tests {
         .unwrap_or_else(|_| panic!("fixture must compile"))
     }
 
+    fn compiled_all() -> crate::CompiledNetwork<()> {
+        let first = ExternalInputKey::<Level>::from_u128(1);
+        let second = ExternalInputKey::<Level>::from_u128(2);
+        let first_port = InPortKey::<Level>::from_u128(11);
+        let second_port = InPortKey::<Level>::from_u128(12);
+        let node_output = OutPortKey::<Level>::from_u128(13);
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(20),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(10),
+                NodeKind::all(),
+                NodePorts::new(
+                    vec![first_port.into(), second_port.into()],
+                    vec![node_output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![
+                ExternalInputDef::new(first.into(), DiagnosticMeta::default()),
+                ExternalInputDef::new(second.into(), DiagnosticMeta::default()),
+            ],
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(30).into(),
+                SignalSourceKey::NodeOutput(node_output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(40),
+                    first.into(),
+                    first_port.into(),
+                    DiagnosticMeta::default(),
+                ),
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(41),
+                    second.into(),
+                    second_port.into(),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+        )
+        .validate()
+        .require_artifact()
+        .unwrap_or_else(|_| panic!("All fixture must validate"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|_| panic!("All fixture must compile"))
+    }
+
     fn policy() -> RuntimePolicy {
         policy_with([1, 2, 0, 1, 3])
     }
@@ -1418,6 +1469,73 @@ mod tests {
         assert_eq!(result.requested_time(), crate::time::Time::from_ticks(37));
         assert_eq!(result.before_revision(), revision);
         assert_eq!(result.after_revision(), revision);
+    }
+
+    #[test]
+    fn all_publishes_only_settled_observable_levels() {
+        let compiled = compiled_all();
+        let first = ExternalInputKey::<Level>::from_u128(1);
+        let second = ExternalInputKey::<Level>::from_u128(2);
+        let output = ExternalOutputKey::<Level>::from_u128(30);
+        let snapshot = compiled
+            .input_snapshot()
+            .set(first, LogicLevel::Low)
+            .and_then(|builder| builder.set(second, LogicLevel::High))
+            .and_then(crate::InputSnapshotBuilder::finish)
+            .unwrap_or_else(|_| panic!("All snapshot must build"));
+        let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        let initialized = machine
+            .apply(Transaction::initialize(
+                crate::time::Time::from_ticks(10),
+                machine.revision(),
+                snapshot,
+            ))
+            .unwrap_or_else(|failure| panic!("All initialization must succeed: {failure}"));
+        assert!(matches!(
+            initialized.output_events(),
+            [OutputEvent::LevelEstablished {
+                output: actual,
+                value: LogicLevel::Low,
+                ..
+            }] if *actual == output
+        ));
+
+        let changed = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(20),
+                machine.revision(),
+                compiled
+                    .input_delta()
+                    .set(first, LogicLevel::High)
+                    .and_then(|builder| builder.set(second, LogicLevel::Low))
+                    .and_then(crate::InputDeltaBuilder::finish)
+                    .unwrap_or_else(|_| panic!("All delta must build")),
+            ))
+            .unwrap_or_else(|failure| panic!("All advance must succeed: {failure}"));
+        assert!(changed.output_events().is_empty());
+        assert_eq!(machine.output_level(output), Some(LogicLevel::Low));
+
+        let changed = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(30),
+                machine.revision(),
+                compiled
+                    .input_delta()
+                    .set(second, LogicLevel::High)
+                    .and_then(crate::InputDeltaBuilder::finish)
+                    .unwrap_or_else(|_| panic!("All delta must build")),
+            ))
+            .unwrap_or_else(|failure| panic!("All advance must succeed: {failure}"));
+        assert!(matches!(
+            changed.output_events(),
+            [OutputEvent::LevelChanged {
+                output: actual,
+                from: LogicLevel::Low,
+                to: LogicLevel::High,
+                ..
+            }] if *actual == output
+        ));
+        assert_eq!(machine.output_level(output), Some(LogicLevel::High));
     }
 
     #[test]

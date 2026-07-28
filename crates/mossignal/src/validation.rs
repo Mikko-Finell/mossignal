@@ -281,14 +281,14 @@ impl ReactionDependencyGraph {
     fn topological_order(&self) -> Vec<ReactionVertex> {
         let mut indegree: BTreeMap<_, usize> =
             self.vertices.iter().copied().map(|v| (v, 0)).collect();
-        let mut outgoing: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        let mut outgoing: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
         for edge in &self.dependencies {
-            outgoing.entry(edge.from).or_default().push(edge.to);
-            *indegree.entry(edge.to).or_default() += 1;
-        }
-        for values in outgoing.values_mut() {
-            values.sort();
-            values.dedup();
+            // SPEC: docs/specs/built_in_node_semantics.md §16 "Duplicate sources"
+            // Stable incidences remain distinct, but topological indegree counts
+            // the dependency between a given pair of operations only once.
+            if outgoing.entry(edge.from).or_default().insert(edge.to) {
+                *indegree.entry(edge.to).or_default() += 1;
+            }
         }
         let mut ready: BTreeSet<_> = indegree
             .iter()
@@ -541,6 +541,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     kind: match node.kind() {
                         NodeKind::Constant(config) => DuplicateNodeKind::Constant(config.value()),
                         NodeKind::Not => DuplicateNodeKind::Not,
+                        NodeKind::All => DuplicateNodeKind::All,
                     },
                     inputs: node.ports().inputs().to_vec(),
                     outputs: node.ports().outputs().to_vec(),
@@ -632,13 +633,17 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
 
     fn validate_node_shapes(&mut self) {
         for node in self.network.nodes() {
-            let (expected_inputs, expected_outputs) = match node.kind() {
-                NodeKind::Constant(_) => (0, 1),
-                NodeKind::Not => (1, 1),
+            let expected_inputs = match node.kind() {
+                NodeKind::Constant(_) => Some(0),
+                NodeKind::Not => Some(1),
+                NodeKind::All => None,
             };
+            let expected_outputs = 1;
             let inputs = node.ports().inputs();
             let outputs = node.ports().outputs();
-            if inputs.len() != expected_inputs {
+            if let Some(expected_inputs) = expected_inputs
+                && inputs.len() != expected_inputs
+            {
                 self.add(
                     SubjectRef::Node(node.key()),
                     ProblemEvidence::invalid_fixed_arity(
@@ -675,7 +680,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ProblemEvidence::invalid_fixed_arity(
                         FixedArityRole::Input,
                         inputs.iter().copied().map(SubjectRef::InPort).collect(),
-                        expected_inputs,
+                        expected_inputs.unwrap_or(inputs.len()),
                         inputs.len(),
                     ),
                 );
@@ -691,11 +696,44 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ),
                 );
             }
+            if matches!(node.kind(), NodeKind::All)
+                && outputs.len() == 1
+                && outputs.iter().all(|key| key.kind() == SignalKind::Level)
+                && inputs.iter().all(|key| key.kind() == SignalKind::Level)
+            {
+                let ports = inputs.iter().copied().map(SubjectRef::InPort).collect();
+                if inputs.is_empty() {
+                    self.add(
+                        SubjectRef::Node(node.key()),
+                        ProblemEvidence::empty_variadic_node(ports),
+                    );
+                } else if inputs.len() == 1 {
+                    self.add(
+                        SubjectRef::Node(node.key()),
+                        ProblemEvidence::unary_degenerate_node(ports),
+                    );
+                }
+            }
         }
     }
 
     fn validate_connections(&mut self) {
         let mut drivers: BTreeMap<AnyInPortKey, Vec<SubjectRef>> = BTreeMap::new();
+        let mut all_inputs = BTreeMap::new();
+        for node in self
+            .network
+            .nodes()
+            .iter()
+            .filter(|node| matches!(node.kind(), NodeKind::All))
+        {
+            for input in node.ports().inputs() {
+                all_inputs.insert(*input, node.key());
+            }
+        }
+        let mut all_sources: BTreeMap<
+            crate::key::NodeKey,
+            BTreeMap<AnySignalSourceKey, BTreeSet<AnyInPortKey>>,
+        > = BTreeMap::new();
         for connection in self.network.connections() {
             let source = connection.from();
             let target = connection.to();
@@ -720,20 +758,61 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ),
                 );
             }
-            if source_valid && target_valid && source.kind() == target.kind() {
+            if source_valid
+                && target_valid
+                && is_source(source)
+                && is_target(target)
+                && source.kind() == target.kind()
+            {
                 if let ConnectionEndpoint::NodeInput(input) = target {
                     drivers
                         .entry(input)
                         .or_default()
                         .push(SubjectRef::Connection(connection.key()));
+                    if let Some(owner) = all_inputs.get(&input)
+                        && let Some(source) = endpoint_signal_source(source)
+                    {
+                        all_sources
+                            .entry(*owner)
+                            .or_default()
+                            .entry(source)
+                            .or_default()
+                            .insert(input);
+                    }
                 }
             }
         }
-        for (input, found) in drivers.into_iter().filter(|(_, found)| found.len() > 1) {
+        for (input, found) in drivers.iter().filter(|(_, found)| found.len() > 1) {
             self.add(
-                SubjectRef::InPort(input),
-                ProblemEvidence::unsupported_multiple_drivers(found),
+                SubjectRef::InPort(*input),
+                ProblemEvidence::unsupported_multiple_drivers(found.clone()),
             );
+        }
+        for node in self.network.nodes() {
+            for input in node.ports().inputs() {
+                if !drivers.contains_key(input) {
+                    self.add(
+                        SubjectRef::Node(node.key()),
+                        ProblemEvidence::missing_required_input(
+                            SubjectRef::InPort(*input),
+                            input.kind(),
+                        ),
+                    );
+                }
+            }
+        }
+        for (node, sources) in all_sources {
+            for (source, ports) in sources {
+                if ports.len() > 1 {
+                    self.add(
+                        SubjectRef::Node(node),
+                        ProblemEvidence::duplicate_source(
+                            signal_source_subject(source),
+                            ports.into_iter().map(SubjectRef::InPort).collect(),
+                        ),
+                    );
+                }
+            }
         }
     }
 
@@ -914,6 +993,24 @@ fn signal_source_subject(source: AnySignalSourceKey) -> SubjectRef {
     }
 }
 
+fn endpoint_signal_source(endpoint: ConnectionEndpoint) -> Option<AnySignalSourceKey> {
+    match endpoint {
+        ConnectionEndpoint::ExternalInput(AnyExternalInputKey::Level(key)) => {
+            Some(SignalSourceKey::ExternalInput(key).into())
+        }
+        ConnectionEndpoint::ExternalInput(AnyExternalInputKey::Pulse(key)) => {
+            Some(SignalSourceKey::ExternalInput(key).into())
+        }
+        ConnectionEndpoint::NodeOutput(AnyOutPortKey::Level(key)) => {
+            Some(SignalSourceKey::NodeOutput(key).into())
+        }
+        ConnectionEndpoint::NodeOutput(AnyOutPortKey::Pulse(key)) => {
+            Some(SignalSourceKey::NodeOutput(key).into())
+        }
+        ConnectionEndpoint::NodeInput(_) | ConnectionEndpoint::ExternalOutput(_) => None,
+    }
+}
+
 fn duplicate_claim_subject(claim: &DuplicateClaim) -> SubjectRef {
     match claim {
         DuplicateClaim::Node { key, .. } => SubjectRef::Node(*key),
@@ -936,6 +1033,178 @@ mod tests {
     };
     use crate::metadata::DiagnosticMeta;
     use crate::signal::{Level, LogicLevel};
+
+    fn all_definition(
+        inputs: Vec<InPortKey<Level>>,
+        connections: Vec<ConnectionDef>,
+    ) -> UncheckedNetwork<()> {
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(3),
+                NodeKind::all(),
+                NodePorts::new(
+                    inputs.into_iter().map(Into::into).collect(),
+                    vec![OutPortKey::<Level>::from_u128(4).into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                ExternalInputKey::<Level>::from_u128(5).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![],
+            connections,
+        )
+    }
+
+    #[test]
+    fn zero_and_unary_all_are_valid_with_canonical_warnings() {
+        let empty = all_definition(vec![], vec![]).validate();
+        assert!(empty.artifact().is_some());
+        assert_eq!(empty.diagnostics().len(), 1);
+        let empty_problem = empty.diagnostics().iter().next().unwrap().problem();
+        assert_eq!(
+            empty_problem.code(),
+            DiagnosticCode::ValidationEmptyVariadicNode
+        );
+        assert_eq!(
+            empty_problem.severity(),
+            crate::diagnostics::Severity::Warning
+        );
+        assert_eq!(
+            empty_problem.responsibility(),
+            crate::diagnostics::Responsibility::Advisory
+        );
+        assert_eq!(
+            empty_problem.primary(),
+            &SubjectRef::Node(NodeKey::from_u128(3))
+        );
+        assert!(matches!(
+            empty_problem.evidence(),
+            ProblemEvidence::ValidationEmptyVariadicNode { ports, .. } if ports.is_empty()
+        ));
+
+        let input = InPortKey::<Level>::from_u128(6);
+        let unary = all_definition(
+            vec![input],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(7),
+                ExternalInputKey::<Level>::from_u128(5).into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )],
+        )
+        .validate();
+        assert!(unary.artifact().is_some());
+        assert_eq!(unary.diagnostics().len(), 1);
+        let unary_problem = unary.diagnostics().iter().next().unwrap().problem();
+        assert_eq!(
+            unary_problem.code(),
+            DiagnosticCode::ValidationUnaryDegenerateNode
+        );
+        assert_eq!(
+            unary_problem.severity(),
+            crate::diagnostics::Severity::Warning
+        );
+        assert_eq!(
+            unary_problem.responsibility(),
+            crate::diagnostics::Responsibility::Advisory
+        );
+        assert_eq!(
+            unary_problem.primary(),
+            &SubjectRef::Node(NodeKey::from_u128(3))
+        );
+        assert!(matches!(
+            unary_problem.evidence(),
+            ProblemEvidence::ValidationUnaryDegenerateNode { ports, .. }
+                if ports == &vec![SubjectRef::InPort(input.into())]
+        ));
+    }
+
+    #[test]
+    fn all_reports_duplicate_sources_without_collapsing_ports() {
+        let first = InPortKey::<Level>::from_u128(6);
+        let second = InPortKey::<Level>::from_u128(7);
+        let source = ExternalInputKey::<Level>::from_u128(5);
+        let definition = all_definition(
+            vec![second, first],
+            vec![
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(9),
+                    source.into(),
+                    second.into(),
+                    DiagnosticMeta::default(),
+                ),
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(8),
+                    source.into(),
+                    first.into(),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+        );
+        let structural = definition.validate_structural();
+        let connection_dependencies = structural
+            .artifact()
+            .unwrap()
+            .reaction_dependencies()
+            .dependencies()
+            .filter(|dependency| {
+                matches!(dependency.subject, ReactionDependencySubject::Connection(_))
+            })
+            .count();
+        assert_eq!(connection_dependencies, 2);
+        let report = definition.validate();
+        assert!(report.artifact().is_some());
+        assert_eq!(report.diagnostics().len(), 1);
+        let problem = report.diagnostics().iter().next().unwrap().problem();
+        assert_eq!(problem.severity(), crate::diagnostics::Severity::Warning);
+        assert_eq!(
+            problem.responsibility(),
+            crate::diagnostics::Responsibility::CallerInput
+        );
+        assert_eq!(problem.primary(), &SubjectRef::Node(NodeKey::from_u128(3)));
+        match problem.evidence() {
+            ProblemEvidence::ValidationDuplicateSource {
+                source: actual,
+                ports,
+                ..
+            } => {
+                assert_eq!(*actual, SubjectRef::ExternalInput(source.into()));
+                assert_eq!(
+                    ports,
+                    &vec![
+                        SubjectRef::InPort(first.into()),
+                        SubjectRef::InPort(second.into())
+                    ]
+                );
+            }
+            _ => panic!("expected duplicate-source evidence"),
+        }
+    }
+
+    #[test]
+    fn all_current_reaction_signature_detects_a_self_cycle() {
+        let input = InPortKey::<Level>::from_u128(6);
+        let output = OutPortKey::<Level>::from_u128(4);
+        let report = all_definition(
+            vec![input],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(7),
+                output.into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )],
+        )
+        .validate();
+        assert!(report.artifact().is_none());
+        assert!(report.diagnostics().iter().any(|diagnostic| {
+            diagnostic.problem().code() == DiagnosticCode::ValidationCurrentReactionCycle
+        }));
+    }
 
     #[test]
     fn derives_current_reaction_dependencies_separately_from_authored_connections() {
@@ -1384,7 +1653,7 @@ mod tests {
         let a_output = OutPortKey::<Level>::from_u128(2);
         let b_input = InPortKey::<Level>::from_u128(3);
         let b_output = OutPortKey::<Level>::from_u128(4);
-        let nodes = vec![
+        let cyclic_nodes = vec![
             NodeDef::new(
                 NodeKey::from_u128(10),
                 NodeKind::<()>::not(),
@@ -1402,7 +1671,20 @@ mod tests {
             NetworkKey::from_u128(1),
             crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
-            nodes.clone(),
+            vec![
+                NodeDef::new(
+                    NodeKey::from_u128(10),
+                    NodeKind::<()>::constant(LogicLevel::High),
+                    NodePorts::new(vec![], vec![a_output.into()]),
+                    DiagnosticMeta::default(),
+                ),
+                NodeDef::new(
+                    NodeKey::from_u128(20),
+                    NodeKind::<()>::not(),
+                    NodePorts::new(vec![b_input.into()], vec![b_output.into()]),
+                    DiagnosticMeta::default(),
+                ),
+            ],
             vec![],
             vec![],
             vec![ConnectionDef::new(
@@ -1418,7 +1700,7 @@ mod tests {
             NetworkKey::from_u128(1),
             crate::identity::TimeDomainId::from_u128(1),
             DiagnosticMeta::default(),
-            nodes,
+            cyclic_nodes,
             vec![],
             vec![],
             vec![

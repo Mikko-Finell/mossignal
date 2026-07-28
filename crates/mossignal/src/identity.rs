@@ -186,6 +186,7 @@ fn nodes<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
                 writer.field("value", |writer| logic_level(writer, config.value()));
             }
             NodeKind::Not => writer.variant_null("not"),
+            NodeKind::All => writer.variant_null("all"),
         });
     }
 }
@@ -650,6 +651,55 @@ mod tests {
         )
     }
 
+    fn golden_all(
+        time_domain_id: TimeDomainId,
+        reverse_ports: bool,
+        second_port_key: u128,
+    ) -> UncheckedNetwork<()> {
+        let external = ExternalInputKey::<Level>::from_u128(10);
+        let first = InPortKey::<Level>::from_u128(20);
+        let second = InPortKey::<Level>::from_u128(second_port_key);
+        let output = OutPortKey::<Level>::from_u128(30);
+        let mut ports = vec![first.into(), second.into()];
+        if reverse_ports {
+            ports.reverse();
+        }
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            time_domain_id,
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(2),
+                NodeKind::all(),
+                NodePorts::new(ports, vec![output.into()]),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                external.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(40).into(),
+                SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(50),
+                    external.into(),
+                    first.into(),
+                    DiagnosticMeta::default(),
+                ),
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(51),
+                    external.into(),
+                    second.into(),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+        )
+    }
+
     fn validated_fingerprints(
         network: UncheckedNetwork<()>,
     ) -> (NetworkFingerprint, InputSchemaFingerprint) {
@@ -722,6 +772,28 @@ mod tests {
             artifact.input_schema_fingerprint().to_string(),
             "ceba01d43015569fca3e6da40896081f805654d75c08449dbdebc47b9528b797"
         );
+
+        let all = golden_all(TimeDomainId::from_u128(2), false, 21);
+        let (all_network, _) = canonical_inputs(&all);
+        assert_eq!(
+            hex(&all_network),
+            "838266646f6d61696e78206d6f737369676e616c2f6e6574776f726b5f66696e6765727072696e742f763182677061796c6f61648982781f6275696c745f696e5f6e6f64655f73656d616e746963735f76657273696f6e01826b636f6e6e656374696f6e73828382636b657950000000000000000000000000000000328266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e6482656c6576656cf682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000014826b7369676e616c5f6b696e6482656c6576656cf68382636b657950000000000000000000000000000000338266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e6482656c6576656cf682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000015826b7369676e616c5f6b696e6482656c6576656cf68276636f72655f73656d616e746963735f76657273696f6e01826f65787465726e616c5f696e70757473818282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e6482656c6576656cf6827065787465726e616c5f6f757470757473818382636b65795000000000000000000000000000000028826b7369676e616c5f6b696e6482656c6576656cf68266736f7572636582686f75745f706f72748282636b6579500000000000000000000000000000001e826b7369676e616c5f6b696e6482656c6576656cf6826b6e6574776f726b5f6b6579500000000000000000000000000000000182656e6f646573818282636b6579500000000000000000000000000000000282646b696e648263616c6cf68265706f72747383858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001482656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c658265696e707574f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001582656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c658265696e707574f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000001e82656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e6482656c6576656cf6826e74696d655f646f6d61696e5f69645000000000000000000000000000000002826776657273696f6e01"
+        );
+        let all_report = all.validate();
+        let all = all_report.artifact().unwrap();
+        assert_eq!(
+            all.fingerprint().to_string(),
+            "8a4232c70bbf50ed360918a58439598af54ca83e6d950d027ec4ee11643dc7b9"
+        );
+    }
+
+    #[test]
+    fn all_fingerprint_is_port_order_invariant_but_port_identity_sensitive() {
+        let forward = validated_fingerprints(golden_all(TimeDomainId::from_u128(2), false, 21));
+        let reverse = validated_fingerprints(golden_all(TimeDomainId::from_u128(2), true, 21));
+        let changed = validated_fingerprints(golden_all(TimeDomainId::from_u128(2), false, 22));
+        assert_eq!(forward, reverse);
+        assert_ne!(forward, changed);
     }
 
     #[test]
