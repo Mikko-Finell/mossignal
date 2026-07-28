@@ -157,6 +157,14 @@ pub enum NodeKind<D> {
     Not,
     /// A total variadic level conjunction with one level output after validation.
     All,
+    /// A total variadic level disjunction with one level output after validation.
+    Any,
+    /// A total variadic odd-parity operation with one level output after validation.
+    Parity,
+    /// A total variadic level threshold with one level output after validation.
+    AtLeast(AtLeastConfig),
+    /// A fixed level branch selector with one level output after validation.
+    Select,
 }
 
 impl<D> NodeKind<D> {
@@ -176,6 +184,30 @@ impl<D> NodeKind<D> {
     #[must_use]
     pub const fn all() -> Self {
         Self::All
+    }
+
+    /// Creates the total variadic level-disjunction node kind.
+    #[must_use]
+    pub const fn any() -> Self {
+        Self::Any
+    }
+
+    /// Creates the total variadic odd-parity node kind.
+    #[must_use]
+    pub const fn parity() -> Self {
+        Self::Parity
+    }
+
+    /// Creates the total variadic threshold node kind.
+    #[must_use]
+    pub const fn at_least(threshold: u64) -> Self {
+        Self::AtLeast(AtLeastConfig::new(threshold))
+    }
+
+    /// Creates the fixed level branch-selector node kind.
+    #[must_use]
+    pub const fn select() -> Self {
+        Self::Select
     }
 }
 
@@ -203,10 +235,40 @@ impl<D> ConstantConfig<D> {
     }
 }
 
+/// The semantic configuration of an authored [`NodeKind::AtLeast`] claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AtLeastConfig {
+    /// The number of High input ports required for a High result.
+    pub threshold: u64,
+}
+
+impl AtLeastConfig {
+    /// Creates a threshold configuration.
+    #[must_use]
+    pub const fn new(threshold: u64) -> Self {
+        Self { threshold }
+    }
+}
+
+/// The semantic role of one level input port.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum InputPortRole {
+    /// An ordinary fixed or variadic level input.
+    Input,
+    /// The selector input of [`NodeKind::Select`].
+    Selector,
+    /// The branch selected when the selector is Low.
+    WhenLow,
+    /// The branch selected when the selector is High.
+    WhenHigh,
+}
+
 /// The claimed typed port identities of one node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodePorts {
     inputs: Vec<AnyInPortKey>,
+    input_roles: Vec<InputPortRole>,
     outputs: Vec<AnyOutPortKey>,
 }
 
@@ -214,13 +276,41 @@ impl NodePorts {
     /// Creates a port claim without enforcing any node-kind shape.
     #[must_use]
     pub fn new(inputs: Vec<AnyInPortKey>, outputs: Vec<AnyOutPortKey>) -> Self {
-        Self { inputs, outputs }
+        let input_roles = vec![InputPortRole::Input; inputs.len()];
+        Self {
+            inputs,
+            input_roles,
+            outputs,
+        }
+    }
+
+    /// Creates a port claim with explicit per-input semantic roles.
+    ///
+    /// Role and input sequences are retained losslessly even when their lengths
+    /// or contents are invalid for the claimed node kind.
+    #[must_use]
+    pub fn with_input_roles(
+        inputs: Vec<AnyInPortKey>,
+        input_roles: Vec<InputPortRole>,
+        outputs: Vec<AnyOutPortKey>,
+    ) -> Self {
+        Self {
+            inputs,
+            input_roles,
+            outputs,
+        }
     }
 
     /// Returns every claimed input port in supplied order.
     #[must_use]
     pub fn inputs(&self) -> &[AnyInPortKey] {
         &self.inputs
+    }
+
+    /// Returns the semantic-role claims corresponding to the input sequence.
+    #[must_use]
+    pub fn input_roles(&self) -> &[InputPortRole] {
+        &self.input_roles
     }
 
     /// Returns every claimed output port in supplied order.
@@ -231,8 +321,8 @@ impl NodePorts {
 
     /// Consumes the port claim into its input and output sequences.
     #[must_use]
-    pub fn into_parts(self) -> (Vec<AnyInPortKey>, Vec<AnyOutPortKey>) {
-        (self.inputs, self.outputs)
+    pub fn into_parts(self) -> (Vec<AnyInPortKey>, Vec<InputPortRole>, Vec<AnyOutPortKey>) {
+        (self.inputs, self.input_roles, self.outputs)
     }
 }
 

@@ -3,6 +3,7 @@
 //! The opening catalogue is intentionally small.  Its types are the common
 //! representation used by later graph construction and validation modules.
 
+use crate::authored::InputPortRole;
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, ConnectionKey,
     NetworkKey, NodeKey,
@@ -140,6 +141,7 @@ pub enum DiagnosticCode {
     ValidationDuplicateSource,
     ValidationEmptyVariadicNode,
     ValidationUnaryDegenerateNode,
+    ValidationConstantResultNode,
     ValidationCurrentReactionCycle,
     InternalDiagnosticEvidenceConflict,
 }
@@ -201,6 +203,7 @@ pub enum DuplicateClaim {
         key: NodeKey,
         kind: DuplicateNodeKind,
         inputs: Vec<AnyInPortKey>,
+        input_roles: Vec<InputPortRole>,
         outputs: Vec<AnyOutPortKey>,
         origin: Option<OriginRef>,
     },
@@ -238,6 +241,10 @@ pub enum DuplicateNodeKind {
     Constant(LogicLevel),
     Not,
     All,
+    Any,
+    Parity,
+    AtLeast(u64),
+    Select,
 }
 
 /// A safe, machine-readable correction.  The opening validation catalogue has
@@ -308,6 +315,11 @@ pub enum ProblemEvidence<D> {
     },
     ValidationUnaryDegenerateNode {
         ports: Vec<SubjectRef>,
+        marker: PhantomData<fn() -> D>,
+    },
+    ValidationConstantResultNode {
+        inputs: Vec<SubjectRef>,
+        result: LogicLevel,
         marker: PhantomData<fn() -> D>,
     },
     ValidationCurrentReactionCycle {
@@ -453,6 +465,16 @@ impl<D> ProblemEvidence<D> {
         }
     }
 
+    /// Evidence that node parameters and arity make its result constant.
+    #[must_use]
+    pub fn constant_result_node(inputs: Vec<SubjectRef>, result: LogicLevel) -> Self {
+        Self::ValidationConstantResultNode {
+            inputs,
+            result,
+            marker: PhantomData,
+        }
+    }
+
     /// Evidence for one cyclic current-reaction SCC.
     #[must_use]
     pub fn current_reaction_cycle(
@@ -479,7 +501,8 @@ impl<D> ProblemEvidence<D> {
             Self::ValidationInvalidFixedArity { ports, .. } => canonicalize(ports),
             Self::ValidationDuplicateSource { ports, .. }
             | Self::ValidationEmptyVariadicNode { ports, .. }
-            | Self::ValidationUnaryDegenerateNode { ports, .. } => canonicalize(ports),
+            | Self::ValidationUnaryDegenerateNode { ports, .. }
+            | Self::ValidationConstantResultNode { inputs: ports, .. } => canonicalize(ports),
             Self::ValidationCurrentReactionCycle { members, .. } => {
                 members.sort();
                 members.dedup();
@@ -536,6 +559,7 @@ opening_diagnostic_registry! {
     ValidationDuplicateSource, Self::ValidationDuplicateSource { .. }, "validation.duplicate_source", Warning, CallerInput, true;
     ValidationEmptyVariadicNode, Self::ValidationEmptyVariadicNode { .. }, "validation.empty_variadic_node", Warning, Advisory, true;
     ValidationUnaryDegenerateNode, Self::ValidationUnaryDegenerateNode { .. }, "validation.unary_degenerate_node", Warning, Advisory, true;
+    ValidationConstantResultNode, Self::ValidationConstantResultNode { .. }, "validation.constant_result_node", Warning, Advisory, true;
     ValidationCurrentReactionCycle, Self::ValidationCurrentReactionCycle { .. }, "validation.current_reaction_cycle", Error, CallerInput, true;
     InternalDiagnosticEvidenceConflict, Self::InternalDiagnosticEvidenceConflict { .. }, "internal.diagnostic_evidence_conflict", Error, LibraryDefect, false;
 }
@@ -750,6 +774,7 @@ enum ConditionDiscriminator {
     Arity(FixedArityRole, usize, usize),
     DuplicateSource(SubjectRef),
     VariadicArity(usize),
+    ConstantResult(LogicLevel),
     Empty,
     Internal(DiagnosticCode, SubjectRef),
     Cycle(Vec<ReactionMemberRef>),
@@ -799,6 +824,9 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         }
         ProblemEvidence::ValidationUnaryDegenerateNode { ports, .. } => {
             ConditionDiscriminator::VariadicArity(ports.len())
+        }
+        ProblemEvidence::ValidationConstantResultNode { result, .. } => {
+            ConditionDiscriminator::ConstantResult(*result)
         }
         ProblemEvidence::ValidationCurrentReactionCycle { members, .. } => {
             ConditionDiscriminator::Cycle(members.clone())
@@ -876,9 +904,10 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
             ConditionDiscriminator::Arity(_, _, _) => 4,
             ConditionDiscriminator::DuplicateSource(_) => 5,
             ConditionDiscriminator::VariadicArity(_) => 6,
-            ConditionDiscriminator::Empty => 7,
-            ConditionDiscriminator::Internal(_, _) => 8,
-            ConditionDiscriminator::Cycle(_) => 9,
+            ConditionDiscriminator::ConstantResult(_) => 7,
+            ConditionDiscriminator::Empty => 8,
+            ConditionDiscriminator::Internal(_, _) => 9,
+            ConditionDiscriminator::Cycle(_) => 10,
         }
     }
     tag(&left)
@@ -919,6 +948,10 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
             (
                 ConditionDiscriminator::VariadicArity(left),
                 ConditionDiscriminator::VariadicArity(right),
+            ) => left.cmp(&right),
+            (
+                ConditionDiscriminator::ConstantResult(left),
+                ConditionDiscriminator::ConstantResult(right),
             ) => left.cmp(&right),
             (
                 ConditionDiscriminator::Internal(left_code, left_subject),
@@ -1070,6 +1103,7 @@ mod tests {
                     key: NodeKey::from_u128(3),
                     kind: DuplicateNodeKind::Not,
                     inputs: Vec::new(),
+                    input_roles: Vec::new(),
                     outputs: Vec::new(),
                     origin: None,
                 },
@@ -1077,6 +1111,7 @@ mod tests {
                     key: NodeKey::from_u128(3),
                     kind: DuplicateNodeKind::Not,
                     inputs: Vec::new(),
+                    input_roles: Vec::new(),
                     outputs: Vec::new(),
                     origin: None,
                 },
@@ -1084,6 +1119,7 @@ mod tests {
                     key: NodeKey::from_u128(2),
                     kind: DuplicateNodeKind::Not,
                     inputs: Vec::new(),
+                    input_roles: Vec::new(),
                     outputs: Vec::new(),
                     origin: None,
                 },
@@ -1102,6 +1138,7 @@ mod tests {
                         key: NodeKey::from_u128(2),
                         kind: DuplicateNodeKind::Not,
                         inputs: Vec::new(),
+                        input_roles: Vec::new(),
                         outputs: Vec::new(),
                         origin: None,
                     },
@@ -1109,6 +1146,7 @@ mod tests {
                         key: NodeKey::from_u128(3),
                         kind: DuplicateNodeKind::Not,
                         inputs: Vec::new(),
+                        input_roles: Vec::new(),
                         outputs: Vec::new(),
                         origin: None,
                     },
@@ -1116,6 +1154,7 @@ mod tests {
                         key: NodeKey::from_u128(3),
                         kind: DuplicateNodeKind::Not,
                         inputs: Vec::new(),
+                        input_roles: Vec::new(),
                         outputs: Vec::new(),
                         origin: None,
                     },

@@ -1,6 +1,6 @@
 //! Stable time-domain and semantic fingerprint identities.
 
-use crate::authored::{ConnectionEndpoint, NodeKind, UncheckedNetwork};
+use crate::authored::{ConnectionEndpoint, InputPortRole, NodeKind, UncheckedNetwork};
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, AnySignalSourceKey,
     SignalSourceKey,
@@ -187,6 +187,14 @@ fn nodes<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
             }
             NodeKind::Not => writer.variant_null("not"),
             NodeKind::All => writer.variant_null("all"),
+            NodeKind::Any => writer.variant_null("any"),
+            NodeKind::Parity => writer.variant_null("parity"),
+            NodeKind::AtLeast(config) => {
+                writer.variant_start("at_least");
+                writer.record_start(1);
+                writer.field("threshold", |writer| writer.uint(config.threshold));
+            }
+            NodeKind::Select => writer.variant_null("select"),
         });
     }
 }
@@ -198,7 +206,16 @@ fn ports<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
             node.ports()
                 .inputs()
                 .iter()
-                .map(|key| (true, key.kind(), level_in_port(*key), node.key().as_u128())),
+                .zip(node.ports().input_roles())
+                .map(|(key, role)| {
+                    (
+                        true,
+                        key.kind(),
+                        level_in_port(*key),
+                        node.key().as_u128(),
+                        *role,
+                    )
+                }),
         );
         ports.extend(node.ports().outputs().iter().map(|key| {
             (
@@ -206,12 +223,13 @@ fn ports<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
                 key.kind(),
                 level_out_port(*key),
                 node.key().as_u128(),
+                InputPortRole::Input,
             )
         }));
     }
-    ports.sort_by_key(|(input, kind, key, _)| (signal_kind_tag(*kind), u8::from(!*input), *key));
+    ports.sort_by_key(|(input, kind, key, _, _)| (signal_kind_tag(*kind), u8::from(!*input), *key));
     writer.array_start(ports.len());
-    for (input, kind, key, owner) in ports {
+    for (input, kind, key, owner, role) in ports {
         writer.record_start(5);
         writer.field("direction", |writer| {
             writer.variant_null(if input { "input" } else { "output" });
@@ -219,7 +237,16 @@ fn ports<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
         writer.field("key", |writer| writer.key(key));
         writer.field("owner", |writer| writer.key(owner));
         writer.field("semantic_role", |writer| {
-            writer.variant_null(if input { "input" } else { "output" });
+            writer.variant_null(if input {
+                match role {
+                    InputPortRole::Input => "input",
+                    InputPortRole::Selector => "selector",
+                    InputPortRole::WhenLow => "when_low",
+                    InputPortRole::WhenHigh => "when_high",
+                }
+            } else {
+                "output"
+            });
         });
         writer.field("signal_kind", |writer| signal_kind(writer, kind));
     }
@@ -443,7 +470,9 @@ impl Cbor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authored::{ConnectionDef, ExternalInputDef, ExternalOutputDef, NodeDef, NodePorts};
+    use crate::authored::{
+        ConnectionDef, ExternalInputDef, ExternalOutputDef, InputPortRole, NodeDef, NodePorts,
+    };
     use crate::key::{
         ConnectionKey, ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey,
         OutPortKey,
@@ -700,6 +729,83 @@ mod tests {
         )
     }
 
+    fn golden_remaining(
+        threshold: u64,
+        select_roles: [InputPortRole; 3],
+        reverse_claims: bool,
+    ) -> UncheckedNetwork<()> {
+        let any_output = OutPortKey::<Level>::from_u128(10);
+        let parity_output = OutPortKey::<Level>::from_u128(20);
+        let threshold_output = OutPortKey::<Level>::from_u128(30);
+        let select_inputs = [
+            InPortKey::<Level>::from_u128(41),
+            InPortKey::<Level>::from_u128(42),
+            InPortKey::<Level>::from_u128(43),
+        ];
+        let select_output = OutPortKey::<Level>::from_u128(44);
+        let mut nodes = vec![
+            NodeDef::new(
+                NodeKey::from_u128(1),
+                NodeKind::any(),
+                NodePorts::new(Vec::new(), vec![any_output.into()]),
+                DiagnosticMeta::default(),
+            ),
+            NodeDef::new(
+                NodeKey::from_u128(2),
+                NodeKind::parity(),
+                NodePorts::new(Vec::new(), vec![parity_output.into()]),
+                DiagnosticMeta::default(),
+            ),
+            NodeDef::new(
+                NodeKey::from_u128(3),
+                NodeKind::at_least(threshold),
+                NodePorts::new(Vec::new(), vec![threshold_output.into()]),
+                DiagnosticMeta::default(),
+            ),
+            NodeDef::new(
+                NodeKey::from_u128(4),
+                NodeKind::select(),
+                NodePorts::with_input_roles(
+                    select_inputs.into_iter().map(Into::into).collect(),
+                    select_roles.to_vec(),
+                    vec![select_output.into()],
+                ),
+                DiagnosticMeta::default(),
+            ),
+        ];
+        let sources = [any_output, parity_output, threshold_output];
+        let mut connections = select_inputs
+            .into_iter()
+            .zip(sources)
+            .enumerate()
+            .map(|(index, (input, source))| {
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(51 + index as u128),
+                    source.into(),
+                    input.into(),
+                    DiagnosticMeta::default(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if reverse_claims {
+            nodes.reverse();
+            connections.reverse();
+        }
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(100),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            nodes,
+            Vec::new(),
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(60).into(),
+                SignalSourceKey::NodeOutput(select_output).into(),
+                DiagnosticMeta::default(),
+            )],
+            connections,
+        )
+    }
+
     fn validated_fingerprints(
         network: UncheckedNetwork<()>,
     ) -> (NetworkFingerprint, InputSchemaFingerprint) {
@@ -785,6 +891,27 @@ mod tests {
             all.fingerprint().to_string(),
             "8a4232c70bbf50ed360918a58439598af54ca83e6d950d027ec4ee11643dc7b9"
         );
+
+        let remaining = golden_remaining(
+            2,
+            [
+                InputPortRole::Selector,
+                InputPortRole::WhenLow,
+                InputPortRole::WhenHigh,
+            ],
+            false,
+        );
+        let (remaining_network, _) = canonical_inputs(&remaining);
+        assert_eq!(
+            hex(&remaining_network),
+            "838266646f6d61696e78206d6f737369676e616c2f6e6574776f726b5f66696e6765727072696e742f763182677061796c6f61648982781f6275696c745f696e5f6e6f64655f73656d616e746963735f76657273696f6e01826b636f6e6e656374696f6e73838382636b657950000000000000000000000000000000338266736f7572636582686f75745f706f72748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e6482656c6576656cf682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000029826b7369676e616c5f6b696e6482656c6576656cf68382636b657950000000000000000000000000000000348266736f7572636582686f75745f706f72748282636b65795000000000000000000000000000000014826b7369676e616c5f6b696e6482656c6576656cf682667461726765748267696e5f706f72748282636b6579500000000000000000000000000000002a826b7369676e616c5f6b696e6482656c6576656cf68382636b657950000000000000000000000000000000358266736f7572636582686f75745f706f72748282636b6579500000000000000000000000000000001e826b7369676e616c5f6b696e6482656c6576656cf682667461726765748267696e5f706f72748282636b6579500000000000000000000000000000002b826b7369676e616c5f6b696e6482656c6576656cf68276636f72655f73656d616e746963735f76657273696f6e01826f65787465726e616c5f696e7075747380827065787465726e616c5f6f757470757473818382636b6579500000000000000000000000000000003c826b7369676e616c5f6b696e6482656c6576656cf68266736f7572636582686f75745f706f72748282636b6579500000000000000000000000000000002c826b7369676e616c5f6b696e6482656c6576656cf6826b6e6574776f726b5f6b6579500000000000000000000000000000006482656e6f646573848282636b6579500000000000000000000000000000000182646b696e648263616e79f68282636b6579500000000000000000000000000000000282646b696e648266706172697479f68282636b6579500000000000000000000000000000000382646b696e64826861745f6c656173748182697468726573686f6c64028282636b6579500000000000000000000000000000000482646b696e64826673656c656374f68265706f72747387858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000002982656f776e65725000000000000000000000000000000004826d73656d616e7469635f726f6c65826873656c6563746f72f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000002a82656f776e65725000000000000000000000000000000004826d73656d616e7469635f726f6c6582687768656e5f6c6f77f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000002b82656f776e65725000000000000000000000000000000004826d73656d616e7469635f726f6c6582697768656e5f68696768f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000000a82656f776e65725000000000000000000000000000000001826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000001482656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000001e82656f776e65725000000000000000000000000000000003826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000002c82656f776e65725000000000000000000000000000000004826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e6482656c6576656cf6826e74696d655f646f6d61696e5f69645000000000000000000000000000000002826776657273696f6e01"
+        );
+        let remaining = remaining.validate();
+        let remaining = remaining.artifact().unwrap();
+        assert_eq!(
+            remaining.fingerprint().to_string(),
+            "c604acebf0e5dceb67ee6e0d27136ded014e10240c5f4ed491cfb785ef8ce22a"
+        );
     }
 
     #[test]
@@ -794,6 +921,32 @@ mod tests {
         let changed = validated_fingerprints(golden_all(TimeDomainId::from_u128(2), false, 22));
         assert_eq!(forward, reverse);
         assert_ne!(forward, changed);
+    }
+
+    #[test]
+    fn remaining_projection_is_insertion_invariant_and_parameter_role_sensitive() {
+        let roles = [
+            InputPortRole::Selector,
+            InputPortRole::WhenLow,
+            InputPortRole::WhenHigh,
+        ];
+        let forward = validated_fingerprints(golden_remaining(2, roles, false));
+        let reverse = validated_fingerprints(golden_remaining(2, roles, true));
+        let threshold = validated_fingerprints(golden_remaining(3, roles, false));
+        let roles_changed = validated_fingerprints(golden_remaining(
+            2,
+            [
+                InputPortRole::WhenLow,
+                InputPortRole::Selector,
+                InputPortRole::WhenHigh,
+            ],
+            false,
+        ));
+        assert_eq!(forward, reverse);
+        assert_ne!(forward.0, threshold.0);
+        assert_ne!(forward.0, roles_changed.0);
+        assert_eq!(forward.1, threshold.1);
+        assert_eq!(forward.1, roles_changed.1);
     }
 
     #[test]

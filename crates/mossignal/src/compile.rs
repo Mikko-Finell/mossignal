@@ -1,6 +1,6 @@
 //! Immutable dense execution topology for validated restricted networks.
 
-use crate::authored::{ConnectionEndpoint, NodeKind, UncheckedNetwork};
+use crate::authored::{ConnectionEndpoint, InputPortRole, NodeKind, UncheckedNetwork};
 use crate::diagnostics::{DiagnosticSet, Report};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
 use crate::input::{InputDeltaBuilder, InputSnapshotBuilder};
@@ -81,6 +81,14 @@ enum CompiledNodeKind {
     Constant(LogicLevel),
     Not,
     All,
+    Any,
+    Parity,
+    AtLeast(u64),
+    Select {
+        selector: PortIndex,
+        when_low: PortIndex,
+        when_high: PortIndex,
+    },
 }
 
 #[derive(Debug)]
@@ -328,6 +336,111 @@ impl<D> CompiledInner<D> {
                             },
                         )
                     }
+                    NodeDescriptor {
+                        key,
+                        kind: CompiledNodeKind::Any,
+                        inputs,
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/level-combinational-expansion.yaml "any-total-law"
+                        // Low is the disjunction identity, including for zero inputs.
+                        let mut value = LogicLevel::Low;
+                        for input in inputs {
+                            if self.input_value(*input, &values)?.is_high() {
+                                value = LogicLevel::High;
+                                break;
+                            }
+                        }
+                        (
+                            value,
+                            EvaluationCause::Node {
+                                node: *key,
+                                predecessors: self.predecessors[index]
+                                    .iter()
+                                    .map(|predecessor| predecessor.0)
+                                    .collect(),
+                            },
+                        )
+                    }
+                    NodeDescriptor {
+                        key,
+                        kind: CompiledNodeKind::Parity,
+                        inputs,
+                        ..
+                    } => {
+                        let mut high = false;
+                        for input in inputs {
+                            high ^= self.input_value(*input, &values)?.is_high();
+                        }
+                        (
+                            if high {
+                                LogicLevel::High
+                            } else {
+                                LogicLevel::Low
+                            },
+                            EvaluationCause::Node {
+                                node: *key,
+                                predecessors: self.predecessors[index]
+                                    .iter()
+                                    .map(|predecessor| predecessor.0)
+                                    .collect(),
+                            },
+                        )
+                    }
+                    NodeDescriptor {
+                        key,
+                        kind: CompiledNodeKind::AtLeast(threshold),
+                        inputs,
+                        ..
+                    } => {
+                        let mut high_count = 0_u64;
+                        for input in inputs {
+                            if self.input_value(*input, &values)?.is_high() {
+                                high_count = high_count.saturating_add(1);
+                            }
+                        }
+                        (
+                            if high_count >= *threshold {
+                                LogicLevel::High
+                            } else {
+                                LogicLevel::Low
+                            },
+                            EvaluationCause::Node {
+                                node: *key,
+                                predecessors: self.predecessors[index]
+                                    .iter()
+                                    .map(|predecessor| predecessor.0)
+                                    .collect(),
+                            },
+                        )
+                    }
+                    NodeDescriptor {
+                        key,
+                        kind:
+                            CompiledNodeKind::Select {
+                                selector,
+                                when_low,
+                                when_high,
+                            },
+                        ..
+                    } => {
+                        let selector = self.input_value(*selector, &values)?;
+                        let branch = if selector.is_low() {
+                            *when_low
+                        } else {
+                            *when_high
+                        };
+                        (
+                            self.input_value(branch, &values)?,
+                            EvaluationCause::Node {
+                                node: *key,
+                                predecessors: self.predecessors[index]
+                                    .iter()
+                                    .map(|predecessor| predecessor.0)
+                                    .collect(),
+                            },
+                        )
+                    }
                 },
                 OperationDescriptor::NodeOutput(port) => {
                     let predecessor = self.predecessors[index].first()?;
@@ -418,6 +531,28 @@ impl<D> CompiledInner<D> {
                 NodeKind::Constant(config) => CompiledNodeKind::Constant(config.value()),
                 NodeKind::Not => CompiledNodeKind::Not,
                 NodeKind::All => CompiledNodeKind::All,
+                NodeKind::Any => CompiledNodeKind::Any,
+                NodeKind::Parity => CompiledNodeKind::Parity,
+                NodeKind::AtLeast(config) => CompiledNodeKind::AtLeast(config.threshold),
+                NodeKind::Select => {
+                    let role_port = |role| {
+                        node.ports()
+                            .input_roles()
+                            .iter()
+                            .zip(inputs.iter().copied())
+                            .find_map(|(candidate, port)| (*candidate == role).then_some(port))
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "validated Select descriptor must retain every fixed input role"
+                                )
+                            })
+                    };
+                    CompiledNodeKind::Select {
+                        selector: role_port(InputPortRole::Selector),
+                        when_low: role_port(InputPortRole::WhenLow),
+                        when_high: role_port(InputPortRole::WhenHigh),
+                    }
+                }
             };
             nodes.push(NodeDescriptor {
                 key: node.key(),
@@ -547,7 +682,24 @@ impl<D> CompiledInner<D> {
             let shape_valid = match node.kind {
                 CompiledNodeKind::Constant(_) => node.inputs.is_empty() && node.outputs.len() == 1,
                 CompiledNodeKind::Not => node.inputs.len() == 1 && node.outputs.len() == 1,
-                CompiledNodeKind::All => node.outputs.len() == 1,
+                CompiledNodeKind::All
+                | CompiledNodeKind::Any
+                | CompiledNodeKind::Parity
+                | CompiledNodeKind::AtLeast(_) => node.outputs.len() == 1,
+                CompiledNodeKind::Select {
+                    selector,
+                    when_low,
+                    when_high,
+                } => {
+                    node.inputs.len() == 3
+                        && node.outputs.len() == 1
+                        && selector != when_low
+                        && selector != when_high
+                        && when_low != when_high
+                        && node.inputs.contains(&selector)
+                        && node.inputs.contains(&when_low)
+                        && node.inputs.contains(&when_high)
+                }
             };
             if !shape_valid {
                 return Err("compiled descriptor disagrees with node kind");
@@ -688,12 +840,17 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
                 NodeKind::Constant(config) => NodeKind::constant(config.value()),
                 NodeKind::Not => NodeKind::not(),
                 NodeKind::All => NodeKind::all(),
+                NodeKind::Any => NodeKind::any(),
+                NodeKind::Parity => NodeKind::parity(),
+                NodeKind::AtLeast(config) => NodeKind::at_least(config.threshold),
+                NodeKind::Select => NodeKind::select(),
             };
             crate::authored::NodeDef::new(
                 node.key(),
                 kind,
-                crate::authored::NodePorts::new(
+                crate::authored::NodePorts::with_input_roles(
                     node.ports().inputs().to_vec(),
+                    node.ports().input_roles().to_vec(),
                     node.ports().outputs().to_vec(),
                 ),
                 node.meta().clone(),
@@ -866,6 +1023,116 @@ mod tests {
         )
     }
 
+    fn variadic_network(
+        kind: NodeKind<()>,
+        arity: usize,
+        duplicate_source: bool,
+        reverse_port_order: bool,
+    ) -> UncheckedNetwork<()> {
+        let inputs = (0..arity)
+            .map(|index| ExternalInputKey::<Level>::from_u128(100 + index as u128))
+            .collect::<Vec<_>>();
+        let ports = (0..arity)
+            .map(|index| InPortKey::<Level>::from_u128(200 + index as u128))
+            .collect::<Vec<_>>();
+        let mut authored_ports = ports.clone();
+        if reverse_port_order {
+            authored_ports.reverse();
+        }
+        let output = OutPortKey::<Level>::from_u128(300);
+        let connections = ports
+            .iter()
+            .enumerate()
+            .map(|(index, port)| {
+                ConnectionDef::new(
+                    crate::key::ConnectionKey::from_u128(500 + index as u128),
+                    if duplicate_source && index > 0 {
+                        inputs[0].into()
+                    } else {
+                        inputs[index].into()
+                    },
+                    (*port).into(),
+                    DiagnosticMeta::default(),
+                )
+            })
+            .collect();
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                crate::key::NodeKey::from_u128(3),
+                kind,
+                NodePorts::new(
+                    authored_ports.into_iter().map(Into::into).collect(),
+                    vec![output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            inputs
+                .into_iter()
+                .map(|key| ExternalInputDef::new(key.into(), DiagnosticMeta::default()))
+                .collect(),
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(400).into(),
+                crate::key::SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            connections,
+        )
+    }
+
+    fn select_network(role_order: [InputPortRole; 3]) -> UncheckedNetwork<()> {
+        let inputs = [
+            ExternalInputKey::<Level>::from_u128(100),
+            ExternalInputKey::<Level>::from_u128(101),
+            ExternalInputKey::<Level>::from_u128(102),
+        ];
+        let ports = [
+            InPortKey::<Level>::from_u128(200),
+            InPortKey::<Level>::from_u128(201),
+            InPortKey::<Level>::from_u128(202),
+        ];
+        let output = OutPortKey::<Level>::from_u128(300);
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                crate::key::NodeKey::from_u128(3),
+                NodeKind::select(),
+                NodePorts::with_input_roles(
+                    ports.into_iter().map(Into::into).collect(),
+                    role_order.to_vec(),
+                    vec![output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            inputs
+                .into_iter()
+                .map(|key| ExternalInputDef::new(key.into(), DiagnosticMeta::default()))
+                .collect(),
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(400).into(),
+                crate::key::SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            ports
+                .into_iter()
+                .zip(inputs)
+                .enumerate()
+                .map(|(index, (port, input))| {
+                    ConnectionDef::new(
+                        crate::key::ConnectionKey::from_u128(500 + index as u128),
+                        input.into(),
+                        port.into(),
+                        DiagnosticMeta::default(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     fn compile_network(network: UncheckedNetwork<()>) -> CompiledNetwork<()> {
         network
             .validate()
@@ -976,6 +1243,156 @@ mod tests {
                     expected
                 );
             }
+        }
+    }
+
+    #[test]
+    fn full_evaluator_exhausts_remaining_variadic_level_laws() {
+        for arity in 0..=4 {
+            let valuations = 1_u8 << arity;
+            for valuation in 0..valuations {
+                let facts = (0..arity)
+                    .map(|index| {
+                        (
+                            ExternalInputKey::from_u128(100 + index as u128),
+                            if valuation & (1 << index) == 0 {
+                                LogicLevel::Low
+                            } else {
+                                LogicLevel::High
+                            },
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                let high_count = valuation.count_ones() as u64;
+                for (kind, expected) in [
+                    (NodeKind::any(), high_count > 0),
+                    (NodeKind::parity(), high_count % 2 == 1),
+                ] {
+                    let evaluated = compile_network(variadic_network(kind, arity, false, false))
+                        .evaluate_full(&facts)
+                        .unwrap_or_else(|| panic!("complete variadic valuation must evaluate"));
+                    assert_eq!(
+                        evaluated.external_outputs[&ExternalOutputKey::from_u128(400)],
+                        if expected {
+                            LogicLevel::High
+                        } else {
+                            LogicLevel::Low
+                        }
+                    );
+                }
+                for threshold in 0..=(arity as u64 + 1) {
+                    let evaluated = compile_network(variadic_network(
+                        NodeKind::at_least(threshold),
+                        arity,
+                        false,
+                        false,
+                    ))
+                    .evaluate_full(&facts)
+                    .unwrap_or_else(|| panic!("complete threshold valuation must evaluate"));
+                    assert_eq!(
+                        evaluated.external_outputs[&ExternalOutputKey::from_u128(400)],
+                        if high_count >= threshold {
+                            LogicLevel::High
+                        } else {
+                            LogicLevel::Low
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn select_exhausts_all_values_and_uses_semantic_roles() {
+        for roles in [
+            [
+                InputPortRole::Selector,
+                InputPortRole::WhenLow,
+                InputPortRole::WhenHigh,
+            ],
+            [
+                InputPortRole::WhenHigh,
+                InputPortRole::Selector,
+                InputPortRole::WhenLow,
+            ],
+        ] {
+            let compiled = compile_network(select_network(roles));
+            for valuation in 0..8_u8 {
+                let facts = (0..3)
+                    .map(|index| {
+                        (
+                            ExternalInputKey::from_u128(100 + index as u128),
+                            if valuation & (1 << index) != 0 {
+                                LogicLevel::High
+                            } else {
+                                LogicLevel::Low
+                            },
+                        )
+                    })
+                    .collect();
+                let role_value = |role| {
+                    let index = roles
+                        .iter()
+                        .position(|candidate| *candidate == role)
+                        .unwrap_or_else(|| panic!("fixture contains every Select role"));
+                    valuation & (1 << index) != 0
+                };
+                let expected = if role_value(InputPortRole::Selector) {
+                    role_value(InputPortRole::WhenHigh)
+                } else {
+                    role_value(InputPortRole::WhenLow)
+                };
+                let evaluated = compiled
+                    .evaluate_full(&facts)
+                    .unwrap_or_else(|| panic!("complete Select valuation must evaluate"));
+                assert_eq!(
+                    evaluated.external_outputs[&ExternalOutputKey::from_u128(400)],
+                    if expected {
+                        LogicLevel::High
+                    } else {
+                        LogicLevel::Low
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn remaining_variadics_preserve_duplicate_port_multiplicity_and_permutation() {
+        let facts = BTreeMap::from([
+            (ExternalInputKey::from_u128(100), LogicLevel::High),
+            (ExternalInputKey::from_u128(101), LogicLevel::Low),
+        ]);
+        for (kind, expected) in [
+            (NodeKind::any(), LogicLevel::High),
+            (NodeKind::parity(), LogicLevel::Low),
+            (NodeKind::at_least(2), LogicLevel::High),
+        ] {
+            let forward = compile_network(variadic_network(kind, 2, true, false));
+            let kind = match &forward.inner.nodes[0].kind {
+                CompiledNodeKind::Any => NodeKind::any(),
+                CompiledNodeKind::Parity => NodeKind::parity(),
+                CompiledNodeKind::AtLeast(threshold) => NodeKind::at_least(*threshold),
+                _ => panic!("fixture must compile the requested variadic kind"),
+            };
+            let reverse = compile_network(variadic_network(kind, 2, true, true));
+            assert_eq!(
+                forward
+                    .evaluate_full(&facts)
+                    .unwrap_or_else(|| panic!("duplicate-source valuation must evaluate"))
+                    .external_outputs,
+                reverse
+                    .evaluate_full(&facts)
+                    .unwrap_or_else(|| panic!("permuted valuation must evaluate"))
+                    .external_outputs
+            );
+            assert_eq!(
+                forward
+                    .evaluate_full(&facts)
+                    .unwrap_or_else(|| panic!("duplicate-source valuation must evaluate"))
+                    .external_outputs[&ExternalOutputKey::from_u128(400)],
+                expected
+            );
         }
     }
 

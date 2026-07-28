@@ -1115,8 +1115,8 @@ fn changed_events<D>(
 #[cfg(test)]
 mod tests {
     use crate::authored::{
-        ConnectionDef, ExternalInputDef, ExternalOutputDef, NodeDef, NodeKind, NodePorts,
-        UncheckedNetwork,
+        ConnectionDef, ExternalInputDef, ExternalOutputDef, InputPortRole, NodeDef, NodeKind,
+        NodePorts, UncheckedNetwork,
     };
     use crate::diagnostics::{Responsibility, Severity};
     use crate::key::{
@@ -1166,6 +1166,10 @@ mod tests {
     }
 
     fn compiled_all() -> crate::CompiledNetwork<()> {
+        compiled_variadic(NodeKind::all())
+    }
+
+    fn compiled_variadic(kind: NodeKind<()>) -> crate::CompiledNetwork<()> {
         let first = ExternalInputKey::<Level>::from_u128(1);
         let second = ExternalInputKey::<Level>::from_u128(2);
         let first_port = InPortKey::<Level>::from_u128(11);
@@ -1177,7 +1181,7 @@ mod tests {
             DiagnosticMeta::default(),
             vec![NodeDef::new(
                 NodeKey::from_u128(10),
-                NodeKind::all(),
+                kind,
                 NodePorts::new(
                     vec![first_port.into(), second_port.into()],
                     vec![node_output.into()],
@@ -1210,10 +1214,71 @@ mod tests {
         )
         .validate()
         .require_artifact()
-        .unwrap_or_else(|_| panic!("All fixture must validate"))
+        .unwrap_or_else(|_| panic!("variadic fixture must validate"))
         .compile()
         .require_artifact()
-        .unwrap_or_else(|_| panic!("All fixture must compile"))
+        .unwrap_or_else(|_| panic!("variadic fixture must compile"))
+    }
+
+    fn compiled_select() -> crate::CompiledNetwork<()> {
+        let inputs = [
+            ExternalInputKey::<Level>::from_u128(1),
+            ExternalInputKey::<Level>::from_u128(2),
+            ExternalInputKey::<Level>::from_u128(3),
+        ];
+        let ports = [
+            InPortKey::<Level>::from_u128(11),
+            InPortKey::<Level>::from_u128(12),
+            InPortKey::<Level>::from_u128(13),
+        ];
+        let node_output = OutPortKey::<Level>::from_u128(14);
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(20),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(10),
+                NodeKind::select(),
+                NodePorts::with_input_roles(
+                    ports.into_iter().map(Into::into).collect(),
+                    vec![
+                        InputPortRole::Selector,
+                        InputPortRole::WhenLow,
+                        InputPortRole::WhenHigh,
+                    ],
+                    vec![node_output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            inputs
+                .into_iter()
+                .map(|key| ExternalInputDef::new(key.into(), DiagnosticMeta::default()))
+                .collect(),
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(30).into(),
+                SignalSourceKey::NodeOutput(node_output).into(),
+                DiagnosticMeta::default(),
+            )],
+            ports
+                .into_iter()
+                .zip(inputs)
+                .enumerate()
+                .map(|(index, (port, input))| {
+                    ConnectionDef::new(
+                        ConnectionKey::from_u128(40 + index as u128),
+                        input.into(),
+                        port.into(),
+                        DiagnosticMeta::default(),
+                    )
+                })
+                .collect(),
+        )
+        .validate()
+        .require_artifact()
+        .unwrap_or_else(|_| panic!("Select fixture must validate"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|_| panic!("Select fixture must compile"))
     }
 
     fn policy() -> RuntimePolicy {
@@ -1536,6 +1601,136 @@ mod tests {
             }] if *actual == output
         ));
         assert_eq!(machine.output_level(output), Some(LogicLevel::High));
+    }
+
+    #[test]
+    fn remaining_variadics_settle_simultaneous_changes_before_publishing() {
+        let first = ExternalInputKey::<Level>::from_u128(1);
+        let second = ExternalInputKey::<Level>::from_u128(2);
+        let output = ExternalOutputKey::<Level>::from_u128(30);
+
+        for kind in [
+            NodeKind::<()>::any(),
+            NodeKind::parity(),
+            NodeKind::at_least(1),
+        ] {
+            let compiled = compiled_variadic(kind);
+            let snapshot = compiled
+                .input_snapshot()
+                .set(first, LogicLevel::High)
+                .and_then(|builder| builder.set(second, LogicLevel::Low))
+                .and_then(crate::InputSnapshotBuilder::finish)
+                .unwrap_or_else(|_| panic!("variadic snapshot must build"));
+            let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+            machine
+                .apply(Transaction::initialize(
+                    crate::time::Time::from_ticks(10),
+                    machine.revision(),
+                    snapshot,
+                ))
+                .unwrap_or_else(|failure| {
+                    panic!("variadic initialization must succeed: {failure}")
+                });
+            assert_eq!(machine.output_level(output), Some(LogicLevel::High));
+
+            let unchanged = machine
+                .apply(Transaction::advance(
+                    crate::time::Time::from_ticks(20),
+                    machine.revision(),
+                    compiled
+                        .input_delta()
+                        .set(first, LogicLevel::Low)
+                        .and_then(|builder| builder.set(second, LogicLevel::High))
+                        .and_then(crate::InputDeltaBuilder::finish)
+                        .unwrap_or_else(|_| panic!("simultaneous variadic delta must build")),
+                ))
+                .unwrap_or_else(|failure| panic!("variadic advance must succeed: {failure}"));
+            assert!(unchanged.output_events().is_empty());
+            assert_eq!(machine.output_level(output), Some(LogicLevel::High));
+
+            let changed = machine
+                .apply(Transaction::advance(
+                    crate::time::Time::from_ticks(30),
+                    machine.revision(),
+                    compiled
+                        .input_delta()
+                        .set(second, LogicLevel::Low)
+                        .and_then(crate::InputDeltaBuilder::finish)
+                        .unwrap_or_else(|_| panic!("variadic delta must build")),
+                ))
+                .unwrap_or_else(|failure| panic!("variadic advance must succeed: {failure}"));
+            assert!(matches!(
+                changed.output_events(),
+                [OutputEvent::LevelChanged {
+                    output: actual,
+                    from: LogicLevel::High,
+                    to: LogicLevel::Low,
+                    ..
+                }] if *actual == output
+            ));
+        }
+    }
+
+    #[test]
+    fn select_publishes_only_the_settled_selected_branch() {
+        let compiled = compiled_select();
+        let selector = ExternalInputKey::<Level>::from_u128(1);
+        let when_low = ExternalInputKey::<Level>::from_u128(2);
+        let when_high = ExternalInputKey::<Level>::from_u128(3);
+        let output = ExternalOutputKey::<Level>::from_u128(30);
+        let snapshot = compiled
+            .input_snapshot()
+            .set(selector, LogicLevel::Low)
+            .and_then(|builder| builder.set(when_low, LogicLevel::Low))
+            .and_then(|builder| builder.set(when_high, LogicLevel::High))
+            .and_then(crate::InputSnapshotBuilder::finish)
+            .unwrap_or_else(|_| panic!("Select snapshot must build"));
+        let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        machine
+            .apply(Transaction::initialize(
+                crate::time::Time::from_ticks(10),
+                machine.revision(),
+                snapshot,
+            ))
+            .unwrap_or_else(|failure| panic!("Select initialization must succeed: {failure}"));
+        assert_eq!(machine.output_level(output), Some(LogicLevel::Low));
+
+        let unchanged = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(20),
+                machine.revision(),
+                compiled
+                    .input_delta()
+                    .set(selector, LogicLevel::High)
+                    .and_then(|builder| builder.set(when_low, LogicLevel::High))
+                    .and_then(|builder| builder.set(when_high, LogicLevel::Low))
+                    .and_then(crate::InputDeltaBuilder::finish)
+                    .unwrap_or_else(|_| panic!("simultaneous Select delta must build")),
+            ))
+            .unwrap_or_else(|failure| panic!("Select advance must succeed: {failure}"));
+        assert!(unchanged.output_events().is_empty());
+        assert_eq!(machine.output_level(output), Some(LogicLevel::Low));
+
+        let changed = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(30),
+                machine.revision(),
+                compiled
+                    .input_delta()
+                    .set(when_high, LogicLevel::High)
+                    .and_then(crate::InputDeltaBuilder::finish)
+                    .unwrap_or_else(|_| panic!("selected-branch delta must build")),
+            ))
+            .unwrap_or_else(|failure| panic!("Select branch advance must succeed: {failure}"));
+        assert!(matches!(
+            changed.output_events(),
+            [OutputEvent::LevelChanged {
+                output: actual,
+                from: LogicLevel::Low,
+                to: LogicLevel::High,
+                ..
+            }] if *actual == output
+        ));
     }
 
     #[test]

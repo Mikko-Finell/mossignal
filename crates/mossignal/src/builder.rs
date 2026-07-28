@@ -18,6 +18,25 @@ use std::collections::BTreeSet;
 
 static NEXT_BUILDER_ID: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Clone, Copy)]
+enum VariadicNodeKind {
+    All,
+    Any,
+    Parity,
+    AtLeast(u64),
+}
+
+impl VariadicNodeKind {
+    fn authored<D>(self) -> NodeKind<D> {
+        match self {
+            Self::All => NodeKind::all(),
+            Self::Any => NodeKind::any(),
+            Self::Parity => NodeKind::parity(),
+            Self::AtLeast(threshold) => NodeKind::at_least(threshold),
+        }
+    }
+}
+
 /// A structured failure detected while authoring through [`NetworkBuilder`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,18 +347,7 @@ impl<D> NetworkBuilder<D> {
     where
         I: IntoIterator<Item = Signal<Level>>,
     {
-        let inputs = inputs.into_iter().collect::<Vec<_>>();
-        self.require_all_local(&inputs)?;
-        let key = self.next_node_key();
-        let output = self.next_out_port_key();
-        let mut keyed_inputs = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            keyed_inputs.push((self.next_in_port_key(), input));
-        }
-        match self.add_all_with_ports(key, output, keyed_inputs, DiagnosticMeta::default()) {
-            Ok(added) => Ok(added.into_outputs()),
-            Err(_) => panic!("fresh allocator keys must not conflict with builder state"),
-        }
+        self.variadic(inputs, VariadicNodeKind::All)
     }
 
     /// Adds an explicitly keyed conjunction with locally allocated port identities.
@@ -352,14 +360,7 @@ impl<D> NetworkBuilder<D> {
     where
         I: IntoIterator<Item = Signal<Level>>,
     {
-        let inputs = inputs.into_iter().collect::<Vec<_>>();
-        self.require_all_local(&inputs)?;
-        let output = self.next_out_port_key();
-        let mut keyed_inputs = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            keyed_inputs.push((self.next_in_port_key(), input));
-        }
-        self.add_all_with_ports(key, output, keyed_inputs, meta)
+        self.add_variadic(key, inputs, meta, VariadicNodeKind::All)
     }
 
     /// Adds an explicitly keyed conjunction with exact stable port identities.
@@ -373,21 +374,224 @@ impl<D> NetworkBuilder<D> {
     where
         I: IntoIterator<Item = (InPortKey<Level>, Signal<Level>)>,
     {
-        let inputs = inputs.into_iter().collect::<Vec<_>>();
-        for (_, input) in &inputs {
-            self.require_local(*input)?;
-        }
-        self.insert_variadic_node_keys(key, inputs.iter().map(|(port, _)| *port), output)?;
+        self.add_variadic_with_ports(key, output, inputs, meta, VariadicNodeKind::All)
+    }
+
+    /// Adds a variadic level disjunction with locally allocated stable identities.
+    pub fn any<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        self.variadic(inputs, VariadicNodeKind::Any)
+    }
+
+    /// Adds an explicitly keyed disjunction with locally allocated port identities.
+    pub fn add_any<I>(
+        &mut self,
+        key: NodeKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        self.add_variadic(key, inputs, meta, VariadicNodeKind::Any)
+    }
+
+    /// Adds an explicitly keyed disjunction with exact stable port identities.
+    pub fn add_any_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Level>,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Level>, Signal<Level>)>,
+    {
+        self.add_variadic_with_ports(key, output, inputs, meta, VariadicNodeKind::Any)
+    }
+
+    /// Adds a variadic odd-parity node with locally allocated stable identities.
+    pub fn parity<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        self.variadic(inputs, VariadicNodeKind::Parity)
+    }
+
+    /// Adds an explicitly keyed parity node with locally allocated port identities.
+    pub fn add_parity<I>(
+        &mut self,
+        key: NodeKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        self.add_variadic(key, inputs, meta, VariadicNodeKind::Parity)
+    }
+
+    /// Adds an explicitly keyed parity node with exact stable port identities.
+    pub fn add_parity_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Level>,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Level>, Signal<Level>)>,
+    {
+        self.add_variadic_with_ports(key, output, inputs, meta, VariadicNodeKind::Parity)
+    }
+
+    /// Adds a variadic threshold node with locally allocated stable identities.
+    pub fn at_least<I>(
+        &mut self,
+        threshold: u64,
+        inputs: I,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        self.variadic(inputs, VariadicNodeKind::AtLeast(threshold))
+    }
+
+    /// Adds an explicitly keyed threshold node with locally allocated port identities.
+    pub fn add_at_least<I>(
+        &mut self,
+        key: NodeKey,
+        threshold: u64,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        self.add_variadic(key, inputs, meta, VariadicNodeKind::AtLeast(threshold))
+    }
+
+    /// Adds an explicitly keyed threshold node with exact stable port identities.
+    pub fn add_at_least_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Level>,
+        threshold: u64,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Level>, Signal<Level>)>,
+    {
+        self.add_variadic_with_ports(
+            key,
+            output,
+            inputs,
+            meta,
+            VariadicNodeKind::AtLeast(threshold),
+        )
+    }
+
+    /// Adds a fixed level branch selector with locally allocated identities.
+    pub fn select(
+        &mut self,
+        selector: Signal<Level>,
+        when_low: Signal<Level>,
+        when_high: Signal<Level>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        self.require_all_local(&[selector, when_low, when_high])?;
+        let key = self.next_node_key();
+        let selector_port = self.next_in_port_key();
+        let when_low_port = self.next_in_port_key();
+        let when_high_port = self.next_in_port_key();
+        let output = self.next_out_port_key();
+        Ok(self
+            .add_select_with_ports(
+                key,
+                selector_port,
+                when_low_port,
+                when_high_port,
+                output,
+                selector,
+                when_low,
+                when_high,
+                DiagnosticMeta::default(),
+            )?
+            .into_outputs())
+    }
+
+    /// Adds an explicitly keyed selector with locally allocated port identities.
+    pub fn add_select(
+        &mut self,
+        key: NodeKey,
+        selector: Signal<Level>,
+        when_low: Signal<Level>,
+        when_high: Signal<Level>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.require_all_local(&[selector, when_low, when_high])?;
+        let selector_port = self.next_in_port_key();
+        let when_low_port = self.next_in_port_key();
+        let when_high_port = self.next_in_port_key();
+        let output = self.next_out_port_key();
+        self.add_select_with_ports(
+            key,
+            selector_port,
+            when_low_port,
+            when_high_port,
+            output,
+            selector,
+            when_low,
+            when_high,
+            meta,
+        )
+    }
+
+    /// Adds an explicitly keyed selector with exact stable port identities.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_select_with_ports(
+        &mut self,
+        key: NodeKey,
+        selector_port: InPortKey<Level>,
+        when_low_port: InPortKey<Level>,
+        when_high_port: InPortKey<Level>,
+        output: OutPortKey<Level>,
+        selector: Signal<Level>,
+        when_low: Signal<Level>,
+        when_high: Signal<Level>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.require_all_local(&[selector, when_low, when_high])?;
+        self.insert_variadic_node_keys(
+            key,
+            [selector_port, when_low_port, when_high_port],
+            output,
+        )?;
         self.nodes.push(NodeDef::new(
             key,
-            NodeKind::all(),
-            NodePorts::new(
-                inputs.iter().map(|(port, _)| (*port).into()).collect(),
+            NodeKind::select(),
+            NodePorts::with_input_roles(
+                vec![
+                    selector_port.into(),
+                    when_low_port.into(),
+                    when_high_port.into(),
+                ],
+                vec![
+                    crate::authored::InputPortRole::Selector,
+                    crate::authored::InputPortRole::WhenLow,
+                    crate::authored::InputPortRole::WhenHigh,
+                ],
                 vec![output.into()],
             ),
             meta,
         ));
-        for (port, input) in inputs {
+        for (port, input) in [
+            (selector_port, selector),
+            (when_low_port, when_low),
+            (when_high_port, when_high),
+        ] {
             self.connections.push(ConnectionDef::new(
                 self.allocator.connection(),
                 source_endpoint(input.source),
@@ -447,6 +651,93 @@ impl<D> NetworkBuilder<D> {
             self.require_local(*signal)?;
         }
         Ok(())
+    }
+
+    fn variadic<I>(
+        &mut self,
+        inputs: I,
+        kind: VariadicNodeKind,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.require_all_local(&inputs)?;
+        let key = self.next_node_key();
+        let output = self.next_out_port_key();
+        let mut keyed_inputs = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            keyed_inputs.push((self.next_in_port_key(), input));
+        }
+        match self.add_variadic_with_ports(
+            key,
+            output,
+            keyed_inputs,
+            DiagnosticMeta::default(),
+            kind,
+        ) {
+            Ok(added) => Ok(added.into_outputs()),
+            Err(_) => panic!("fresh allocator keys must not conflict with builder state"),
+        }
+    }
+
+    fn add_variadic<I>(
+        &mut self,
+        key: NodeKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+        kind: VariadicNodeKind,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.require_all_local(&inputs)?;
+        let output = self.next_out_port_key();
+        let mut keyed_inputs = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            keyed_inputs.push((self.next_in_port_key(), input));
+        }
+        self.add_variadic_with_ports(key, output, keyed_inputs, meta, kind)
+    }
+
+    fn add_variadic_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Level>,
+        inputs: I,
+        meta: DiagnosticMeta,
+        kind: VariadicNodeKind,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Level>, Signal<Level>)>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        for (_, input) in &inputs {
+            self.require_local(*input)?;
+        }
+        self.insert_variadic_node_keys(key, inputs.iter().map(|(port, _)| *port), output)?;
+        self.nodes.push(NodeDef::new(
+            key,
+            kind.authored(),
+            NodePorts::new(
+                inputs.iter().map(|(port, _)| (*port).into()).collect(),
+                vec![output.into()],
+            ),
+            meta,
+        ));
+        for (port, input) in inputs {
+            self.connections.push(ConnectionDef::new(
+                self.allocator.connection(),
+                source_endpoint(input.source),
+                ConnectionEndpoint::node_input(port.into()),
+                DiagnosticMeta::default(),
+            ));
+        }
+        Ok(AddedNode {
+            key,
+            outputs: self.signal(SignalSourceKey::NodeOutput(output)),
+        })
     }
 
     fn insert_node_keys(
@@ -566,8 +857,8 @@ fn source_endpoint(source: SignalSourceKey<Level>) -> ConnectionEndpoint {
 mod tests {
     use super::*;
     use crate::authored::{
-        ConnectionDef, ExternalInputDef, ExternalOutputDef, NodeDef, NodeKind, NodePorts,
-        UncheckedNetwork,
+        ConnectionDef, ExternalInputDef, ExternalOutputDef, InputPortRole, NodeDef, NodeKind,
+        NodePorts, UncheckedNetwork,
     };
     use crate::key::AnySignalSourceKey;
     use std::collections::BTreeMap;
@@ -968,18 +1259,275 @@ mod tests {
     }
 
     #[test]
+    fn typed_and_dynamic_remaining_primitives_have_identical_identity_and_behavior() {
+        let domain = TimeDomainId::from_u128(10);
+        let network = NetworkKey::from_u128(1);
+        let first = ExternalInputKey::from_u128(2);
+        let second = ExternalInputKey::from_u128(3);
+        let node = NodeKey::from_u128(4);
+        let first_port = InPortKey::from_u128(5);
+        let second_port = InPortKey::from_u128(6);
+        let node_output = OutPortKey::from_u128(7);
+        let output = ExternalOutputKey::from_u128(8);
+
+        for dynamic_kind in [
+            NodeKind::<()>::any(),
+            NodeKind::parity(),
+            NodeKind::at_least(2),
+        ] {
+            let mut typed = NetworkBuilder::<()>::with_key(network, domain);
+            let first_signal = typed
+                .add_level_input(first, DiagnosticMeta::default())
+                .unwrap();
+            let second_signal = typed
+                .add_level_input(second, DiagnosticMeta::default())
+                .unwrap();
+            let added = match &dynamic_kind {
+                NodeKind::Any => typed.add_any_with_ports(
+                    node,
+                    node_output,
+                    [(first_port, first_signal), (second_port, second_signal)],
+                    DiagnosticMeta::default(),
+                ),
+                NodeKind::Parity => typed.add_parity_with_ports(
+                    node,
+                    node_output,
+                    [(first_port, first_signal), (second_port, second_signal)],
+                    DiagnosticMeta::default(),
+                ),
+                NodeKind::AtLeast(config) => typed.add_at_least_with_ports(
+                    node,
+                    node_output,
+                    config.threshold,
+                    [(first_port, first_signal), (second_port, second_signal)],
+                    DiagnosticMeta::default(),
+                ),
+                _ => panic!("fixture must contain a remaining variadic primitive"),
+            }
+            .unwrap()
+            .into_outputs();
+            typed
+                .add_level_output(output, added, DiagnosticMeta::default())
+                .unwrap();
+            let typed = typed.finish().require_artifact().unwrap();
+
+            let dynamic = UncheckedNetwork::new(
+                network,
+                domain,
+                DiagnosticMeta::default(),
+                vec![NodeDef::new(
+                    node,
+                    dynamic_kind,
+                    NodePorts::new(
+                        vec![first_port.into(), second_port.into()],
+                        vec![node_output.into()],
+                    ),
+                    DiagnosticMeta::default(),
+                )],
+                vec![
+                    ExternalInputDef::new(first.into(), DiagnosticMeta::default()),
+                    ExternalInputDef::new(second.into(), DiagnosticMeta::default()),
+                ],
+                vec![ExternalOutputDef::new(
+                    output.into(),
+                    SignalSourceKey::NodeOutput(node_output).into(),
+                    DiagnosticMeta::default(),
+                )],
+                vec![
+                    ConnectionDef::new(
+                        crate::key::ConnectionKey::from_u128(0),
+                        first.into(),
+                        first_port.into(),
+                        DiagnosticMeta::default(),
+                    ),
+                    ConnectionDef::new(
+                        crate::key::ConnectionKey::from_u128(1),
+                        second.into(),
+                        second_port.into(),
+                        DiagnosticMeta::default(),
+                    ),
+                ],
+            )
+            .validate()
+            .require_artifact()
+            .unwrap();
+            assert_eq!(typed.fingerprint(), dynamic.fingerprint());
+            assert_eq!(
+                typed.reaction_dependencies(),
+                dynamic.reaction_dependencies()
+            );
+            let typed = typed.compile().require_artifact().unwrap();
+            let dynamic = dynamic.compile().require_artifact().unwrap();
+            for valuation in 0..4 {
+                let inputs = BTreeMap::from([
+                    (
+                        first,
+                        if valuation & 1 == 0 {
+                            LogicLevel::Low
+                        } else {
+                            LogicLevel::High
+                        },
+                    ),
+                    (
+                        second,
+                        if valuation & 2 == 0 {
+                            LogicLevel::Low
+                        } else {
+                            LogicLevel::High
+                        },
+                    ),
+                ]);
+                assert_eq!(
+                    typed.evaluate_full(&inputs).unwrap().external_outputs,
+                    dynamic.evaluate_full(&inputs).unwrap().external_outputs
+                );
+            }
+        }
+
+        let mut typed = NetworkBuilder::<()>::with_key(network, domain);
+        let selector = typed
+            .add_level_input(first, DiagnosticMeta::default())
+            .unwrap();
+        let when_low = typed
+            .add_level_input(second, DiagnosticMeta::default())
+            .unwrap();
+        let third = ExternalInputKey::from_u128(10);
+        let when_high = typed
+            .add_level_input(third, DiagnosticMeta::default())
+            .unwrap();
+        let when_high_port = InPortKey::from_u128(9);
+        let select = typed
+            .add_select_with_ports(
+                node,
+                first_port,
+                second_port,
+                when_high_port,
+                node_output,
+                selector,
+                when_low,
+                when_high,
+                DiagnosticMeta::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            select.outputs().source_key(),
+            SignalSourceKey::NodeOutput(node_output)
+        );
+        typed
+            .add_level_output(output, select.into_outputs(), DiagnosticMeta::default())
+            .unwrap();
+        let typed = typed.finish().require_artifact().unwrap();
+
+        let roles = vec![
+            InputPortRole::Selector,
+            InputPortRole::WhenLow,
+            InputPortRole::WhenHigh,
+        ];
+        let dynamic = UncheckedNetwork::new(
+            network,
+            domain,
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                node,
+                NodeKind::<()>::select(),
+                NodePorts::with_input_roles(
+                    vec![first_port.into(), second_port.into(), when_high_port.into()],
+                    roles,
+                    vec![node_output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![
+                ExternalInputDef::new(first.into(), DiagnosticMeta::default()),
+                ExternalInputDef::new(second.into(), DiagnosticMeta::default()),
+                ExternalInputDef::new(third.into(), DiagnosticMeta::default()),
+            ],
+            vec![ExternalOutputDef::new(
+                output.into(),
+                SignalSourceKey::NodeOutput(node_output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![
+                ConnectionDef::new(
+                    crate::key::ConnectionKey::from_u128(0),
+                    first.into(),
+                    first_port.into(),
+                    DiagnosticMeta::default(),
+                ),
+                ConnectionDef::new(
+                    crate::key::ConnectionKey::from_u128(1),
+                    second.into(),
+                    second_port.into(),
+                    DiagnosticMeta::default(),
+                ),
+                ConnectionDef::new(
+                    crate::key::ConnectionKey::from_u128(2),
+                    third.into(),
+                    when_high_port.into(),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+        )
+        .validate()
+        .require_artifact()
+        .unwrap();
+        assert_eq!(typed.fingerprint(), dynamic.fingerprint());
+
+        let typed = typed.compile().require_artifact().unwrap();
+        let dynamic = dynamic.compile().require_artifact().unwrap();
+        for valuation in 0..8 {
+            let inputs = BTreeMap::from([
+                (
+                    first,
+                    if valuation & 1 == 0 {
+                        LogicLevel::Low
+                    } else {
+                        LogicLevel::High
+                    },
+                ),
+                (
+                    second,
+                    if valuation & 2 == 0 {
+                        LogicLevel::Low
+                    } else {
+                        LogicLevel::High
+                    },
+                ),
+                (
+                    third,
+                    if valuation & 4 == 0 {
+                        LogicLevel::Low
+                    } else {
+                        LogicLevel::High
+                    },
+                ),
+            ]);
+            assert_eq!(
+                typed.evaluate_full(&inputs).unwrap().external_outputs,
+                dynamic.evaluate_full(&inputs).unwrap().external_outputs
+            );
+        }
+    }
+
+    #[test]
     fn convenience_allocation_is_deterministic() {
         let build = || {
             let mut builder = NetworkBuilder::<()>::new(TimeDomainId::from_u128(1));
-            let input = builder.level_input("input");
-            let output = builder.not(input.1).unwrap();
+            let first = builder.level_input("first");
+            let second = builder.level_input("second");
+            let inverted = builder.not(first.1).unwrap();
+            let any = builder.any([inverted, second.1]).unwrap();
+            let parity = builder.parity([first.1, second.1]).unwrap();
+            let threshold = builder.at_least(2, [any, parity]).unwrap();
+            let output = builder.select(first.1, parity, threshold).unwrap();
             let endpoint = builder.level_output("output", output).unwrap();
-            (input.0, endpoint, builder.into_unchecked())
+            (first.0, second.0, endpoint, builder.into_unchecked())
         };
         let left = build();
         let right = build();
         assert_eq!(left.0, right.0);
         assert_eq!(left.1, right.1);
         assert_eq!(left.2, right.2);
+        assert_eq!(left.3, right.3);
     }
 }

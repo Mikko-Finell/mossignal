@@ -2,7 +2,7 @@
 
 #![allow(dead_code)] // Consumed by the following private validation phase.
 
-use crate::authored::{ConnectionEndpoint, NodeKind, UncheckedNetwork};
+use crate::authored::{ConnectionEndpoint, InputPortRole, NodeKind, UncheckedNetwork};
 use crate::compile::CompiledNetwork;
 use crate::diagnostics::{
     CurrentReactionCycleStep, Diagnostic, DiagnosticSet, DuplicateClaim, DuplicateNodeKind,
@@ -13,7 +13,7 @@ use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, AnySignalSourceKey,
     ConnectionKey, NodeKey, SignalSourceKey,
 };
-use crate::signal::SignalKind;
+use crate::signal::{LogicLevel, SignalKind};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Structurally usable input for the later dependency-validation phase.
@@ -542,8 +542,13 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         NodeKind::Constant(config) => DuplicateNodeKind::Constant(config.value()),
                         NodeKind::Not => DuplicateNodeKind::Not,
                         NodeKind::All => DuplicateNodeKind::All,
+                        NodeKind::Any => DuplicateNodeKind::Any,
+                        NodeKind::Parity => DuplicateNodeKind::Parity,
+                        NodeKind::AtLeast(config) => DuplicateNodeKind::AtLeast(config.threshold),
+                        NodeKind::Select => DuplicateNodeKind::Select,
                     },
                     inputs: node.ports().inputs().to_vec(),
+                    input_roles: node.ports().input_roles().to_vec(),
                     outputs: node.ports().outputs().to_vec(),
                     origin: node.meta().origin.clone(),
                 });
@@ -636,7 +641,8 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
             let expected_inputs = match node.kind() {
                 NodeKind::Constant(_) => Some(0),
                 NodeKind::Not => Some(1),
-                NodeKind::All => None,
+                NodeKind::All | NodeKind::Any | NodeKind::Parity | NodeKind::AtLeast(_) => None,
+                NodeKind::Select => Some(3),
             };
             let expected_outputs = 1;
             let inputs = node.ports().inputs();
@@ -665,7 +671,9 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ),
                 );
             }
-            if matches!(node.kind(), NodeKind::Not) && inputs.is_empty() {
+            if matches!(node.kind(), NodeKind::Not | NodeKind::Select)
+                && expected_inputs.is_some_and(|expected| inputs.len() < expected)
+            {
                 self.add(
                     SubjectRef::Node(node.key()),
                     ProblemEvidence::missing_required_input(
@@ -696,10 +704,53 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ),
                 );
             }
-            if matches!(node.kind(), NodeKind::All)
-                && outputs.len() == 1
+            let role_count = node.ports().input_roles().len();
+            let valid_role_count = match node.kind() {
+                NodeKind::Select => {
+                    let required = [
+                        InputPortRole::Selector,
+                        InputPortRole::WhenLow,
+                        InputPortRole::WhenHigh,
+                    ];
+                    required
+                        .iter()
+                        .filter(|role| {
+                            node.ports()
+                                .input_roles()
+                                .iter()
+                                .filter(|candidate| *candidate == *role)
+                                .count()
+                                == 1
+                        })
+                        .count()
+                }
+                _ => node
+                    .ports()
+                    .input_roles()
+                    .iter()
+                    .filter(|role| **role == InputPortRole::Input)
+                    .count(),
+            };
+            let expected_role_count = inputs.len();
+            if role_count != expected_role_count || valid_role_count != expected_role_count {
+                self.add(
+                    SubjectRef::Node(node.key()),
+                    ProblemEvidence::invalid_fixed_arity(
+                        FixedArityRole::Input,
+                        inputs.iter().copied().map(SubjectRef::InPort).collect(),
+                        expected_role_count,
+                        valid_role_count,
+                    ),
+                );
+            }
+            if matches!(
+                node.kind(),
+                NodeKind::All | NodeKind::Any | NodeKind::Parity | NodeKind::AtLeast(_)
+            ) && outputs.len() == 1
                 && outputs.iter().all(|key| key.kind() == SignalKind::Level)
                 && inputs.iter().all(|key| key.kind() == SignalKind::Level)
+                && role_count == inputs.len()
+                && valid_role_count == inputs.len()
             {
                 let ports = inputs.iter().copied().map(SubjectRef::InPort).collect();
                 if inputs.is_empty() {
@@ -713,24 +764,45 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         ProblemEvidence::unary_degenerate_node(ports),
                     );
                 }
+                // SPEC: docs/specs/contracts/level-combinational-expansion.yaml
+                // "nonblocking-quality-findings" — arity warnings suppress the
+                // generic constant-result warning for the same static cause.
+                if let NodeKind::AtLeast(config) = node.kind()
+                    && inputs.len() > 1
+                    && (config.threshold == 0
+                        || usize::try_from(config.threshold)
+                            .map_or(true, |threshold| threshold > inputs.len()))
+                {
+                    self.add(
+                        SubjectRef::Node(node.key()),
+                        ProblemEvidence::constant_result_node(
+                            inputs.iter().copied().map(SubjectRef::InPort).collect(),
+                            if config.threshold == 0 {
+                                LogicLevel::High
+                            } else {
+                                LogicLevel::Low
+                            },
+                        ),
+                    );
+                }
             }
         }
     }
 
     fn validate_connections(&mut self) {
         let mut drivers: BTreeMap<AnyInPortKey, Vec<SubjectRef>> = BTreeMap::new();
-        let mut all_inputs = BTreeMap::new();
-        for node in self
-            .network
-            .nodes()
-            .iter()
-            .filter(|node| matches!(node.kind(), NodeKind::All))
-        {
+        let mut variadic_inputs = BTreeMap::new();
+        for node in self.network.nodes().iter().filter(|node| {
+            matches!(
+                node.kind(),
+                NodeKind::All | NodeKind::Any | NodeKind::Parity | NodeKind::AtLeast(_)
+            )
+        }) {
             for input in node.ports().inputs() {
-                all_inputs.insert(*input, node.key());
+                variadic_inputs.insert(*input, node.key());
             }
         }
-        let mut all_sources: BTreeMap<
+        let mut variadic_sources: BTreeMap<
             crate::key::NodeKey,
             BTreeMap<AnySignalSourceKey, BTreeSet<AnyInPortKey>>,
         > = BTreeMap::new();
@@ -769,10 +841,10 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         .entry(input)
                         .or_default()
                         .push(SubjectRef::Connection(connection.key()));
-                    if let Some(owner) = all_inputs.get(&input)
+                    if let Some(owner) = variadic_inputs.get(&input)
                         && let Some(source) = endpoint_signal_source(source)
                     {
-                        all_sources
+                        variadic_sources
                             .entry(*owner)
                             .or_default()
                             .entry(source)
@@ -801,7 +873,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 }
             }
         }
-        for (node, sources) in all_sources {
+        for (node, sources) in variadic_sources {
             for (source, ports) in sources {
                 if ports.len() > 1 {
                     self.add(
@@ -1025,7 +1097,9 @@ fn duplicate_claim_subject(claim: &DuplicateClaim) -> SubjectRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authored::{ConnectionDef, ExternalInputDef, ExternalOutputDef, NodeDef, NodePorts};
+    use crate::authored::{
+        ConnectionDef, ExternalInputDef, ExternalOutputDef, InputPortRole, NodeDef, NodePorts,
+    };
     use crate::diagnostics::DiagnosticCode;
     use crate::key::{
         ConnectionKey, ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey,
@@ -1045,6 +1119,33 @@ mod tests {
             vec![NodeDef::new(
                 NodeKey::from_u128(3),
                 NodeKind::all(),
+                NodePorts::new(
+                    inputs.into_iter().map(Into::into).collect(),
+                    vec![OutPortKey::<Level>::from_u128(4).into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                ExternalInputKey::<Level>::from_u128(5).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![],
+            connections,
+        )
+    }
+
+    fn variadic_definition(
+        kind: NodeKind<()>,
+        inputs: Vec<InPortKey<Level>>,
+        connections: Vec<ConnectionDef>,
+    ) -> UncheckedNetwork<()> {
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(3),
+                kind,
                 NodePorts::new(
                     inputs.into_iter().map(Into::into).collect(),
                     vec![OutPortKey::<Level>::from_u128(4).into()],
@@ -1184,6 +1285,336 @@ mod tests {
             }
             _ => panic!("expected duplicate-source evidence"),
         }
+    }
+
+    #[test]
+    fn remaining_variadics_report_duplicate_sources_without_collapsing_ports() {
+        let first = InPortKey::<Level>::from_u128(6);
+        let second = InPortKey::<Level>::from_u128(7);
+        let source = ExternalInputKey::<Level>::from_u128(5);
+
+        for kind in [
+            NodeKind::<()>::any(),
+            NodeKind::parity(),
+            NodeKind::at_least(2),
+        ] {
+            let report = variadic_definition(
+                kind,
+                vec![second, first],
+                vec![
+                    ConnectionDef::new(
+                        ConnectionKey::from_u128(9),
+                        source.into(),
+                        second.into(),
+                        DiagnosticMeta::default(),
+                    ),
+                    ConnectionDef::new(
+                        ConnectionKey::from_u128(8),
+                        source.into(),
+                        first.into(),
+                        DiagnosticMeta::default(),
+                    ),
+                ],
+            )
+            .validate();
+            assert!(report.artifact().is_some());
+            let duplicate = report
+                .diagnostics()
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic.problem().code() == DiagnosticCode::ValidationDuplicateSource
+                })
+                .unwrap_or_else(|| panic!("repeated variadic source must be diagnosed"));
+            assert!(matches!(
+                duplicate.problem().evidence(),
+                ProblemEvidence::ValidationDuplicateSource {
+                    source: actual,
+                    ports,
+                    ..
+                } if *actual == SubjectRef::ExternalInput(source.into())
+                    && ports == &vec![
+                        SubjectRef::InPort(first.into()),
+                        SubjectRef::InPort(second.into()),
+                    ]
+            ));
+        }
+    }
+
+    #[test]
+    fn remaining_variadic_advisories_are_nonblocking_and_preserve_artifacts() {
+        for kind in [NodeKind::any(), NodeKind::parity(), NodeKind::at_least(1)] {
+            let report = variadic_definition(kind, Vec::new(), Vec::new()).validate();
+            assert!(report.artifact().is_some());
+            assert_eq!(report.diagnostics().len(), 1);
+            assert_eq!(
+                report.diagnostics().iter().next().unwrap().problem().code(),
+                DiagnosticCode::ValidationEmptyVariadicNode
+            );
+        }
+
+        let input = InPortKey::<Level>::from_u128(6);
+        let connection = || {
+            ConnectionDef::new(
+                ConnectionKey::from_u128(7),
+                ExternalInputKey::<Level>::from_u128(5).into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )
+        };
+        for kind in [NodeKind::any(), NodeKind::parity(), NodeKind::at_least(1)] {
+            let report = variadic_definition(kind, vec![input], vec![connection()]).validate();
+            assert!(report.artifact().is_some());
+            assert_eq!(
+                report.diagnostics().iter().next().unwrap().problem().code(),
+                DiagnosticCode::ValidationUnaryDegenerateNode
+            );
+        }
+    }
+
+    #[test]
+    fn at_least_reports_constant_results_without_rejecting_valid_structure() {
+        let first = InPortKey::<Level>::from_u128(6);
+        let second = InPortKey::<Level>::from_u128(7);
+        let connections = |source| {
+            vec![
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(8),
+                    source,
+                    first.into(),
+                    DiagnosticMeta::default(),
+                ),
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(9),
+                    source,
+                    second.into(),
+                    DiagnosticMeta::default(),
+                ),
+            ]
+        };
+        for (threshold, expected) in [(0, LogicLevel::High), (3, LogicLevel::Low)] {
+            let report = variadic_definition(
+                NodeKind::at_least(threshold),
+                vec![first, second],
+                connections(ExternalInputKey::<Level>::from_u128(5).into()),
+            )
+            .validate();
+            assert!(report.artifact().is_some());
+            let constant = report
+                .diagnostics()
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic.problem().code() == DiagnosticCode::ValidationConstantResultNode
+                })
+                .unwrap_or_else(|| panic!("constant threshold must report its static result"));
+            assert!(matches!(
+                constant.problem().evidence(),
+                ProblemEvidence::ValidationConstantResultNode { result, .. }
+                    if *result == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn unary_at_least_suppresses_the_less_specific_constant_result_warning() {
+        let input = InPortKey::<Level>::from_u128(6);
+        let connection = || {
+            ConnectionDef::new(
+                ConnectionKey::from_u128(7),
+                ExternalInputKey::<Level>::from_u128(5).into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )
+        };
+
+        for threshold in [0, 2] {
+            let report = variadic_definition(
+                NodeKind::at_least(threshold),
+                vec![input],
+                vec![connection()],
+            )
+            .validate();
+            assert!(report.artifact().is_some());
+            assert_eq!(report.diagnostics().len(), 1);
+            assert_eq!(
+                report
+                    .diagnostics()
+                    .iter()
+                    .next()
+                    .map(|diagnostic| diagnostic.problem().code()),
+                Some(DiagnosticCode::ValidationUnaryDegenerateNode)
+            );
+        }
+    }
+
+    #[test]
+    fn select_requires_distinct_fixed_roles_and_retains_all_static_dependencies() {
+        let ports = [
+            InPortKey::<Level>::from_u128(10),
+            InPortKey::<Level>::from_u128(11),
+            InPortKey::<Level>::from_u128(12),
+        ];
+        let inputs = [
+            ExternalInputKey::<Level>::from_u128(20),
+            ExternalInputKey::<Level>::from_u128(21),
+            ExternalInputKey::<Level>::from_u128(22),
+        ];
+        let output = OutPortKey::<Level>::from_u128(30);
+        let definition = |roles: Vec<InputPortRole>| {
+            UncheckedNetwork::new(
+                NetworkKey::from_u128(1),
+                TimeDomainId::from_u128(2),
+                DiagnosticMeta::default(),
+                vec![NodeDef::new(
+                    NodeKey::from_u128(3),
+                    NodeKind::<()>::select(),
+                    NodePorts::with_input_roles(
+                        ports.into_iter().map(Into::into).collect(),
+                        roles,
+                        vec![output.into()],
+                    ),
+                    DiagnosticMeta::default(),
+                )],
+                inputs
+                    .into_iter()
+                    .map(|key| ExternalInputDef::new(key.into(), DiagnosticMeta::default()))
+                    .collect(),
+                Vec::new(),
+                ports
+                    .into_iter()
+                    .zip(inputs)
+                    .enumerate()
+                    .map(|(index, (port, input))| {
+                        ConnectionDef::new(
+                            ConnectionKey::from_u128(40 + index as u128),
+                            input.into(),
+                            port.into(),
+                            DiagnosticMeta::default(),
+                        )
+                    })
+                    .collect(),
+            )
+        };
+
+        let valid = definition(vec![
+            InputPortRole::Selector,
+            InputPortRole::WhenLow,
+            InputPortRole::WhenHigh,
+        ])
+        .validate();
+        let artifact = valid
+            .artifact()
+            .unwrap_or_else(|| panic!("complete Select roles must validate"));
+        let dependencies = artifact.reaction_dependencies();
+        for input in inputs {
+            assert!(dependencies.dependencies().any(|edge| {
+                edge.from == ReactionVertex::ExternalInput(input.into())
+                    && edge.to == ReactionVertex::NodeOperation(NodeKey::from_u128(3))
+            }));
+        }
+
+        let invalid = definition(vec![
+            InputPortRole::Selector,
+            InputPortRole::WhenLow,
+            InputPortRole::WhenLow,
+        ])
+        .validate();
+        assert!(invalid.artifact().is_none());
+        assert!(invalid.diagnostics().iter().any(|diagnostic| {
+            diagnostic.problem().code() == DiagnosticCode::ValidationInvalidFixedArity
+        }));
+    }
+
+    #[test]
+    fn every_remaining_kind_participates_in_current_reaction_cycle_rejection() {
+        for kind in [
+            NodeKind::<()>::any(),
+            NodeKind::parity(),
+            NodeKind::at_least(1),
+        ] {
+            let input = InPortKey::<Level>::from_u128(10);
+            let output = OutPortKey::<Level>::from_u128(11);
+            let report = UncheckedNetwork::new(
+                NetworkKey::from_u128(1),
+                TimeDomainId::from_u128(2),
+                DiagnosticMeta::default(),
+                vec![NodeDef::new(
+                    NodeKey::from_u128(3),
+                    kind,
+                    NodePorts::new(vec![input.into()], vec![output.into()]),
+                    DiagnosticMeta::default(),
+                )],
+                Vec::new(),
+                Vec::new(),
+                vec![ConnectionDef::new(
+                    ConnectionKey::from_u128(4),
+                    output.into(),
+                    input.into(),
+                    DiagnosticMeta::default(),
+                )],
+            )
+            .validate();
+            assert!(report.artifact().is_none());
+            assert!(report.diagnostics().iter().any(|diagnostic| {
+                diagnostic.problem().code() == DiagnosticCode::ValidationCurrentReactionCycle
+            }));
+        }
+
+        let ports = [
+            InPortKey::<Level>::from_u128(10),
+            InPortKey::<Level>::from_u128(11),
+            InPortKey::<Level>::from_u128(12),
+        ];
+        let output = OutPortKey::<Level>::from_u128(13);
+        let external = ExternalInputKey::<Level>::from_u128(14);
+        let select = UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(3),
+                NodeKind::<()>::select(),
+                NodePorts::with_input_roles(
+                    ports.into_iter().map(Into::into).collect(),
+                    vec![
+                        InputPortRole::Selector,
+                        InputPortRole::WhenLow,
+                        InputPortRole::WhenHigh,
+                    ],
+                    vec![output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                external.into(),
+                DiagnosticMeta::default(),
+            )],
+            Vec::new(),
+            vec![
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(4),
+                    output.into(),
+                    ports[0].into(),
+                    DiagnosticMeta::default(),
+                ),
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(5),
+                    external.into(),
+                    ports[1].into(),
+                    DiagnosticMeta::default(),
+                ),
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(6),
+                    external.into(),
+                    ports[2].into(),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+        )
+        .validate();
+        assert!(select.artifact().is_none());
+        assert!(select.diagnostics().iter().any(|diagnostic| {
+            diagnostic.problem().code() == DiagnosticCode::ValidationCurrentReactionCycle
+        }));
     }
 
     #[test]
