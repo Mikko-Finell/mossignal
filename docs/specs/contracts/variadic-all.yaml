@@ -1,0 +1,193 @@
+schema_version: "0.1"
+id: mossignal.node.variadic_all
+title: Variadic level All primitive
+kind: node
+status: draft
+
+source_baseline:
+  commit: a791fe2cc1422d07f28c8c409b374b8efde5d46e
+  working_tree: clean
+
+summary: >-
+  All is a total commutative level-combinational primitive with zero or more
+  stable level input ports and one level output. It participates in typed and
+  dynamic authoring, structural validation, current-reaction causality,
+  compilation, and full settlement while preserving each variadic port's
+  identity and contribution multiplicity.
+
+scope:
+  includes:
+    - All's variadic level-port shape and total Boolean law
+    - typed and dynamic authoring of All with stable variadic ports
+    - All's structural-validation advisories, dependency signature, compilation, and evaluation
+    - All-specific built-in-node conformance obligations
+    - canonical-fingerprint compatibility boundary for adding All
+  excludes:
+    - Any, Parity, AtLeast, Select, pulse, stateful, temporal, and module primitives
+    - provenance and explanation rendering
+    - persistence artifact decoding and topology reconfiguration
+
+known_uncovered:
+  - Explicit durable reconstruction policy for individual variadic ports beyond the optional keyed builder form
+
+aliases:
+  - All
+  - variadic level conjunction
+  - commutative variadic primitive
+
+requirements:
+  - id: total-commutative-port-law
+    kind: semantic
+    statement: >-
+      All has zero or more level inputs and one level output, yielding High if
+      and only if every input is High. All([]) is High and All([x]) is x; zero
+      and unary arities are valid rather than blocking structural errors.
+    sources: [all-law, variadic-inputs, total-semantics]
+
+  - id: stable-port-multiplicity
+    kind: semantic
+    statement: >-
+      Every variadic input slot has an independent stable port identity even
+      though All is commutative. Reordering ports cannot change behavior, while
+      connecting one source to several ports remains valid and contributes once
+      per port.
+    sources: [variadic-inputs, duplicate-sources, level-algebra]
+
+  - id: typed-and-dynamic-authoring
+    kind: public_surface
+    statement: >-
+      Typed All authoring accepts an immediately consumed IntoIterator of
+      Signal<Level> and returns a structured authoring result; dynamic authored
+      definitions represent it as the closed NodeKind::All with stable typed
+      ports and ordinary connection records. Explicit keyed primitive authoring
+      exposes the node key and may accept caller-provided variadic input-port
+      keys.
+    sources: [builder-variadic, builder-keyed, dynamic-node-kind, dynamic-ports]
+
+  - id: causality-and-execution
+    kind: semantic
+    statement: >-
+      All's conservative current-reaction signature contains an influence from
+      every level input to its output. Successful validation and compilation
+      must therefore retain all variadic incidences in the acyclic dependency
+      relation and immutable executable topology, and full settlement must
+      evaluate the total law without exposing order-dependent intermediate
+      results.
+    sources: [dependency-signature, reaction-graph, compiled-invariants, glitch-freedom]
+
+  - id: nonblocking-variadic-quality-findings
+    kind: system_effect
+    statement: >-
+      A valid zero-input or unary All emits the applicable non-blocking
+      empty-variadic or unary-degenerate advisory. These diagnostics do not
+      suppress a valid artifact.
+    sources: [validation-advisories, diagnostic-reports]
+
+  - id: variadic-all-conformance
+    kind: verification
+    statement: >-
+      All requires reusable built-in-node conformance coverage. Its applicable
+      variadic arity, current-reaction dependency signature, and current output
+      law must be covered; bounded level-input valuations should be exhaustively
+      enumerated where feasible, including the specified empty law and port
+      permutation with distinct stable port identity.
+    sources: [level-algebra, node-conformance, exhaustive-primitive-testing]
+
+  - id: canonical-fingerprint-boundary
+    kind: compatibility
+    statement: >-
+      The authoritative version-1 network-fingerprint projection currently
+      defines a closed Constant/Not node-kind encoding only. A canonical
+      fingerprint projection change must advance its domain version, but no All
+      representation, new domain version, or compatibility support rule is yet
+      specified.
+    sources: [restricted-fingerprint, fingerprint-versions, compatibility-support]
+
+recommendations:
+  - id: duplicate-source-advisory
+    statement: >-
+      Repeated use of one source on several All input ports should produce the
+      non-blocking duplicate-source diagnostic while preserving port-based
+      multiplicity.
+    sources: [duplicate-sources, validation-advisories]
+
+implementation_freedom:
+  - The private variadic-port collection, deterministic allocation helper, descriptor layout, and evaluation reduction may be chosen freely when they preserve stable-port identity, multiplicity, and commutative behavior.
+  - The implementation must choose and test a deterministic ordering for locally allocated variadic ports, recording that choice at implementation close-out.
+
+open_questions:
+  - id: canonical-all-fingerprint
+    statement: >-
+      The next implementation bead requires successful validation and
+      compilation of All networks, but canonical network identity is already a
+      frozen version-1 compatibility promise whose closed node-kind encoding
+      permits only Constant and Not. The authoritative specifications provide
+      neither an All encoding within version 1 nor a declared semantics-version
+      transition; an implementation cannot safely choose one because it would
+      create unreviewed persistent fingerprint bytes. An authoritative
+      compatibility decision is required before the bead can become ready.
+
+sources:
+  all-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part II — Level combinational nodes, 24. `All`]
+  variadic-inputs:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 15. Variadic inputs]
+  total-semantics:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 17. Total semantics]
+  duplicate-sources:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 16. Duplicate sources]
+  level-algebra:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 35. Level algebra]
+  builder-variadic:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 27. Primitive construction style]
+  builder-keyed:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+  dynamic-node-kind:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+  dynamic-ports:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 38. Dynamic ports and connections]
+  dependency-signature:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+  reaction-graph:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 15. Reaction dependency graph]
+  compiled-invariants:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 22. Compiled invariants]
+  glitch-freedom:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 32. Glitch freedom]
+  validation-advisories:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 27. Validation — non-blocking conditions]
+  diagnostic-reports:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 45. Reports]
+  node-conformance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 37. Node conformance requirement]
+  exhaustive-primitive-testing:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 39. Exhaustive primitive testing]
+  restricted-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part VI — Digest and fingerprint suite
+      - 54. Network and input-schema fingerprints
+      - 54.2 Restricted network-fingerprint projection version 1
+  fingerprint-versions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 15. Version representation]
+  compatibility-support:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 27. Compatibility support table]
