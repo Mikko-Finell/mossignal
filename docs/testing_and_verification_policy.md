@@ -530,7 +530,7 @@ Dense-index assignment may differ only where the public semantics permit it. Any
 
 ### 21.1 Restricted semantic fingerprint verification
 
-The opening `Constant`/`Not` semantic identity implementation must verify:
+The opening `Constant`/`Not`/`All` semantic identity implementation must verify:
 
 1. equal stable semantic networks built with different node, port, connection,
    and external-endpoint insertion orders produce identical canonical projection
@@ -552,7 +552,8 @@ The opening `Constant`/`Not` semantic identity implementation must verify:
 10. network and input-schema domain labels produce different digests for equal
     canonical payload bytes; and
 11. hand-reviewed golden canonical bytes and BLAKE3-256 results cover an empty
-    or minimal network and a nontrivial `Constant`/`Not` network.
+    or minimal network, a nontrivial `Constant`/`Not` network, and a variadic
+    `All` network with distinct stable input ports.
 
 Validation tests must also establish that a blocking-invalid unchecked network
 cannot expose a validated `NetworkFingerprint` or `InputSchemaFingerprint`.

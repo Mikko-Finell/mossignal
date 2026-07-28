@@ -5,11 +5,9 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: 22c66d24e9fd2123f418a605b0eb324223351ef2
+  commit: 4ec13bc3b6202fb61817d01d8cbc58ec6201c8d9
   working_tree: dirty
   modified_spec_paths:
-    - docs/specs/api_and_semantics_spec.md
-    - docs/specs/concrete_rust_api_surface.md
     - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     - docs/testing_and_verification_policy.md
 
@@ -51,8 +49,8 @@ requirements:
       DigestSuiteVersion 1 computes NetworkFingerprint as unkeyed BLAKE3 with a
       256-bit output over the canonical record containing domain label
       mossignal/network_fingerprint/v1, domain version 1, and the version-1
-      canonical semantic payload. CoreSemanticsVersion and
-      BuiltInNodeSemanticsVersion are initially 1;
+      canonical semantic payload for Constant, Not, and All. CoreSemanticsVersion
+      and BuiltInNodeSemanticsVersion are initially 1;
       TopologyPatchSemanticsVersion does not participate in the restricted
       projection.
     sources: [digest-suite, domain-separation, digest-version-inputs, restricted-projection]
@@ -63,10 +61,23 @@ requirements:
       The restricted version-1 payload uses the exact network, node, port,
       connection, external-input, external-output, source, target, signal-kind,
       direction, semantic-role, node-kind, and logic-level record and variant
-      schemas fixed by the persistence specification. Collections use the
+      schemas fixed by the persistence specification, including nullary `not`
+      and `all` node-kind variants. Collections use the
       specified stable semantic order and never Rust layout, discriminants, or
       debug text.
     sources: [restricted-projection, canonical-ordering, canonical-enums]
+
+  - id: pre-stability-projection-policy
+    kind: compatibility
+    statement: >-
+      Before an explicit first stable fingerprint compatibility baseline,
+      domain version 1 is a development projection that may be intentionally
+      extended or corrected by one accepted change that synchronizes the
+      authoritative projection, this contract, and affected golden vectors.
+      Superseded pre-stability bytes require no historical reader, upgrader, or
+      migration path; after stabilization, projection changes require a new
+      domain version.
+    sources: [fingerprint-versions]
 
   - id: validated-network-owner
     kind: lifecycle
@@ -147,7 +158,7 @@ sources:
       - Part VI — Digest and fingerprint suite
       - 54. Network and input-schema fingerprints
       - 54.2 Restricted network-fingerprint projection version 1
-    reviewed_hash: sha256:bd4a066ab2af0cab281541738d378fee5ab4a820c47a31f33752d65f565e2e77
+    reviewed_hash: sha256:99055f4736e6ad265b903829a90f1c4c5f5ba963d09f2c024b81f613a4022356
   canonical-ordering:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]
@@ -188,7 +199,7 @@ sources:
   deterministic-compilation:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
-    reviewed_hash: sha256:99ab9c49b94049116514b2b2c03ee5c5fdc9fc028172cef5e86fb15964ee5737
+    reviewed_hash: sha256:7dc343e07b5615dcd1ead8a690d5fbd8de0c21d0fa442ad26edabf35f5b3f23f
   digest-scope-verification:
     document: docs/testing_and_verification_policy.md
     heading_path:
@@ -201,3 +212,7 @@ sources:
       - Part XV — Persistence, forecast, replay, and digest verification
       - 90. Canonical encoding vectors
     reviewed_hash: sha256:0facb5756d00d5b3d163a453cec7d1ea7d6b11d0d8a5c332eebd93e0388cbaab
+  fingerprint-versions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 15. Version representation]
+    reviewed_hash: sha256:a59d0cb9deab2c9b183e95c55b2e4df660b7927c8c6cc074defe68bee36c68b1

@@ -326,8 +326,20 @@ BuiltInNodeSemanticsVersion           1
 
 The restricted network-fingerprint projection does not include
 `TopologyPatchSemanticsVersion`. Topology-patch identity is not applicable to
-that projection. A later change to either canonical fingerprint projection must
-advance its domain version rather than silently changing version-1 bytes.
+that projection.
+
+Until the project explicitly records its first stable fingerprint compatibility
+baseline, fingerprint-domain version 1 is a development projection. An accepted
+semantic-foundation change may extend or correct that projection without adding
+a successor domain, historical reader, upgrader, or migration path. The same
+accepted change must update the exact projection specification, its contract,
+and every affected golden vector together; unreviewed or accidental byte drift
+remains prohibited.
+
+The stabilization decision must name the frozen projection and its supported
+artifact boundary explicitly. After that decision, any change to a frozen
+canonical fingerprint projection must advance its domain version rather than
+silently changing the frozen bytes.
 
 ## 16. Version responsibilities
 
@@ -983,8 +995,8 @@ Semantically equivalent stable-keyed definitions must produce the same fingerpri
 
 ### 54.2 Restricted network-fingerprint projection version 1
 
-For the restricted `Constant`/`Not` foundation, the exact canonical payload is
-the following record:
+For the restricted `Constant`/`Not`/`All` foundation, the exact canonical
+payload is the following record:
 
 ```text
 network_fingerprint_payload_v1 = record {
@@ -1022,6 +1034,7 @@ kind = ["constant", record {
             value,
         }]
      | ["not", null]
+     | ["all", null]
 
 value = ["low", null]
       | ["high", null]
