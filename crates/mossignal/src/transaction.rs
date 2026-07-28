@@ -1,9 +1,9 @@
-//! Restricted first-transaction execution and immutable initialization results.
+//! Restricted initialization and ready-machine level transactions.
 
 use crate::compile::{EvaluationCause, FullEvaluation};
 use crate::diagnostics::{Responsibility, Severity};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
-use crate::input::InputSnapshot;
+use crate::input::{InputDelta, InputSnapshot};
 use crate::key::{ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey};
 use crate::machine::{Machine, MachineStatus, NetworkRevision};
 use crate::policy::{RuntimePolicy, RuntimePolicyLimit};
@@ -14,13 +14,18 @@ use core::marker::PhantomData;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-const PROVENANCE_SCOPE_DOMAIN: &[u8] = b"mossignal/initialization_provenance_scope/v1";
+const PROVENANCE_SCOPE_DOMAIN: &[u8] = b"mossignal/transaction_provenance_scope/v1";
 
-/// An owned explicit first transaction.
+enum TransactionKind<D> {
+    Initialize(InputSnapshot<D>),
+    Advance(InputDelta<D>),
+}
+
+/// An owned explicit runtime transaction.
 pub struct Transaction<D> {
     at: Time<D>,
     expected_revision: NetworkRevision,
-    input: InputSnapshot<D>,
+    kind: TransactionKind<D>,
 }
 
 impl<D> Transaction<D> {
@@ -34,11 +39,25 @@ impl<D> Transaction<D> {
         Self {
             at,
             expected_revision,
-            input,
+            kind: TransactionKind::Initialize(input),
         }
     }
 
-    /// Returns the requested initial logical time.
+    /// Constructs a ready-machine advancement transaction.
+    #[must_use]
+    pub const fn advance(
+        at: Time<D>,
+        expected_revision: NetworkRevision,
+        input: InputDelta<D>,
+    ) -> Self {
+        Self {
+            at,
+            expected_revision,
+            kind: TransactionKind::Advance(input),
+        }
+    }
+
+    /// Returns the requested logical time.
     #[must_use]
     pub const fn requested_time(&self) -> Time<D> {
         self.at
@@ -50,10 +69,22 @@ impl<D> Transaction<D> {
         self.expected_revision
     }
 
-    /// Returns the complete exact-bound initialization input.
+    /// Returns the initialization input when this is an initialization transaction.
     #[must_use]
-    pub const fn input(&self) -> &InputSnapshot<D> {
-        &self.input
+    pub const fn initialization_input(&self) -> Option<&InputSnapshot<D>> {
+        match &self.kind {
+            TransactionKind::Initialize(input) => Some(input),
+            TransactionKind::Advance(_) => None,
+        }
+    }
+
+    /// Returns the level delta when this is a ready-machine transaction.
+    #[must_use]
+    pub const fn advance_input(&self) -> Option<&InputDelta<D>> {
+        match &self.kind {
+            TransactionKind::Initialize(_) => None,
+            TransactionKind::Advance(input) => Some(input),
+        }
     }
 }
 
@@ -62,6 +93,11 @@ impl<D> Transaction<D> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeFailureEvidence {
     AlreadyInitialized,
+    DeltaBeforeInitialization,
+    TimeNotStrictlyIncreasing {
+        current_ticks: u64,
+        requested_ticks: u64,
+    },
     StaleRevision {
         expected: NetworkRevision,
         actual: NetworkRevision,
@@ -73,6 +109,10 @@ pub enum RuntimeFailureEvidence {
         actual_fingerprint: NetworkFingerprint,
     },
     ForeignInputSchema {
+        expected: InputSchemaFingerprint,
+        actual: InputSchemaFingerprint,
+    },
+    StaleInputSchema {
         expected: InputSchemaFingerprint,
         actual: InputSchemaFingerprint,
     },
@@ -108,9 +148,16 @@ impl<D> RuntimeFailure<D> {
     pub const fn code(&self) -> &'static str {
         match self.evidence {
             RuntimeFailureEvidence::AlreadyInitialized => "lifecycle.already_initialized",
+            RuntimeFailureEvidence::DeltaBeforeInitialization => {
+                "lifecycle.delta_before_initialization"
+            }
+            RuntimeFailureEvidence::TimeNotStrictlyIncreasing { .. } => {
+                "runtime.time_not_strictly_increasing"
+            }
             RuntimeFailureEvidence::StaleRevision { .. } => "runtime.stale_revision",
             RuntimeFailureEvidence::WrongNetwork { .. } => "input.wrong_network",
             RuntimeFailureEvidence::ForeignInputSchema { .. } => "input.foreign_schema",
+            RuntimeFailureEvidence::StaleInputSchema { .. } => "input.stale_schema",
             RuntimeFailureEvidence::BudgetExceeded { .. } => "runtime.budget_exceeded",
         }
     }
@@ -125,10 +172,15 @@ impl<D> RuntimeFailure<D> {
     #[must_use]
     pub const fn responsibility(&self) -> Responsibility {
         match self.evidence {
-            RuntimeFailureEvidence::AlreadyInitialized => Responsibility::CallerInput,
+            RuntimeFailureEvidence::AlreadyInitialized
+            | RuntimeFailureEvidence::DeltaBeforeInitialization
+            | RuntimeFailureEvidence::TimeNotStrictlyIncreasing { .. } => {
+                Responsibility::CallerInput
+            }
             RuntimeFailureEvidence::StaleRevision { .. }
             | RuntimeFailureEvidence::WrongNetwork { .. }
-            | RuntimeFailureEvidence::ForeignInputSchema { .. } => Responsibility::Compatibility,
+            | RuntimeFailureEvidence::ForeignInputSchema { .. }
+            | RuntimeFailureEvidence::StaleInputSchema { .. } => Responsibility::Compatibility,
             RuntimeFailureEvidence::BudgetExceeded { .. } => Responsibility::ResourceLimit,
         }
     }
@@ -178,6 +230,10 @@ enum ProvenanceRecord<D> {
         at: Time<D>,
         revision: NetworkRevision,
     },
+    ReadyTransaction {
+        at: Time<D>,
+        revision: NetworkRevision,
+    },
     ExternalObservation {
         input: ExternalInputKey<Level>,
         value: LogicLevel,
@@ -192,6 +248,10 @@ enum ProvenanceRecord<D> {
 #[non_exhaustive]
 pub enum CauseInspection<'a, D> {
     InitializationTransaction {
+        at: Time<D>,
+        revision: NetworkRevision,
+    },
+    ReadyTransaction {
         at: Time<D>,
         revision: NetworkRevision,
     },
@@ -223,6 +283,12 @@ pub struct ProvenanceView<D> {
     records: Arc<Vec<ProvenanceRecord<D>>>,
 }
 
+struct ProvenanceBuild<D> {
+    provenance: ProvenanceView<D>,
+    input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
+    output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+}
+
 impl<D> Clone for ProvenanceView<D> {
     fn clone(&self) -> Self {
         Self {
@@ -244,6 +310,12 @@ impl<D> ProvenanceView<D> {
         Ok(match record {
             ProvenanceRecord::InitializationTransaction { at, revision } => {
                 CauseInspection::InitializationTransaction {
+                    at: *at,
+                    revision: *revision,
+                }
+            }
+            ProvenanceRecord::ReadyTransaction { at, revision } => {
+                CauseInspection::ReadyTransaction {
                     at: *at,
                     revision: *revision,
                 }
@@ -287,6 +359,14 @@ pub enum OutputEvent<D> {
         cause: CauseRef,
         revision: NetworkRevision,
     },
+    LevelChanged {
+        output: ExternalOutputKey<Level>,
+        from: LogicLevel,
+        to: LogicLevel,
+        at: Time<D>,
+        cause: CauseRef,
+        revision: NetworkRevision,
+    },
 }
 
 impl<D> fmt::Debug for OutputEvent<D> {
@@ -306,11 +386,27 @@ impl<D> fmt::Debug for OutputEvent<D> {
                 .field("cause", cause)
                 .field("revision", revision)
                 .finish(),
+            Self::LevelChanged {
+                output,
+                from,
+                to,
+                at,
+                cause,
+                revision,
+            } => formatter
+                .debug_struct("LevelChanged")
+                .field("output", output)
+                .field("from", from)
+                .field("to", to)
+                .field("at", at)
+                .field("cause", cause)
+                .field("revision", revision)
+                .finish(),
         }
     }
 }
 
-/// The owned immutable result of a successful initialization transaction.
+/// The owned immutable result of a successful transaction.
 pub struct TransactionResult<D> {
     requested_time: Time<D>,
     before_revision: NetworkRevision,
@@ -365,67 +461,60 @@ impl<D> fmt::Debug for TransactionResult<D> {
 }
 
 impl<D> Machine<D> {
-    /// Applies an owned initialization transaction atomically.
+    /// Applies an owned transaction atomically.
     pub fn apply(
         &mut self,
         transaction: Transaction<D>,
+    ) -> Result<TransactionResult<D>, RuntimeFailure<D>> {
+        let Transaction {
+            at,
+            expected_revision,
+            kind,
+        } = transaction;
+        match kind {
+            TransactionKind::Initialize(input) => {
+                self.apply_initialization(at, expected_revision, input)
+            }
+            TransactionKind::Advance(input) => self.apply_advance(at, expected_revision, input),
+        }
+    }
+
+    fn apply_initialization(
+        &mut self,
+        at: Time<D>,
+        expected_revision: NetworkRevision,
+        input: InputSnapshot<D>,
     ) -> Result<TransactionResult<D>, RuntimeFailure<D>> {
         if self.is_initialized() {
             return Err(RuntimeFailure::new(
                 RuntimeFailureEvidence::AlreadyInitialized,
             ));
         }
-        if transaction.expected_revision != self.store.revision {
+        if expected_revision != self.store.revision {
             return Err(RuntimeFailure::new(RuntimeFailureEvidence::StaleRevision {
-                expected: transaction.expected_revision,
+                expected: expected_revision,
                 actual: self.store.revision,
             }));
         }
-        if transaction.input.network_key() != self.compiled.network_key() {
-            return Err(RuntimeFailure::new(RuntimeFailureEvidence::WrongNetwork {
-                expected_key: self.compiled.network_key(),
-                actual_key: transaction.input.network_key(),
-                expected_fingerprint: self.compiled.fingerprint(),
-                actual_fingerprint: transaction.input.network_fingerprint(),
-            }));
-        }
-        if transaction.input.input_schema_fingerprint() != self.compiled.input_schema_fingerprint()
-        {
-            return Err(RuntimeFailure::new(
-                RuntimeFailureEvidence::ForeignInputSchema {
-                    expected: self.compiled.input_schema_fingerprint(),
-                    actual: transaction.input.input_schema_fingerprint(),
-                },
-            ));
-        }
-        if transaction.input.network_fingerprint() != self.compiled.fingerprint() {
-            return Err(RuntimeFailure::new(RuntimeFailureEvidence::WrongNetwork {
-                expected_key: self.compiled.network_key(),
-                actual_key: transaction.input.network_key(),
-                expected_fingerprint: self.compiled.fingerprint(),
-                actual_fingerprint: transaction.input.network_fingerprint(),
-            }));
-        }
+        validate_snapshot_binding::<D>(&self.compiled, &input)?;
 
-        enforce_budget::<D>(&self.policy, RuntimePolicyLimit::MaxInternalReactions, 1)?;
-        enforce_budget::<D>(
-            &self.policy,
-            RuntimePolicyLimit::MaxEvaluatedOperations,
-            count_as_u64(self.compiled.operation_count()),
-        )?;
+        enforce_reaction_budgets::<D>(&self.policy, &self.compiled)?;
         enforce_budget::<D>(
             &self.policy,
             RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
             count_as_u64(self.compiled.external_output_count()),
         )?;
 
-        let at = transaction.at;
         let revision = self.store.revision;
-        let levels = transaction.input.into_levels();
+        let levels = input.into_levels();
         let Some(evaluation) = self.compiled.evaluate_full(&levels) else {
             panic!("validated restricted topology and complete snapshot must evaluate fully");
         };
-        let (provenance, output_causes) = build_provenance(
+        let ProvenanceBuild {
+            provenance,
+            input_causes,
+            output_causes,
+        } = build_initialization_provenance(
             self.compiled.network_key(),
             self.compiled.fingerprint(),
             revision,
@@ -449,19 +538,219 @@ impl<D> Machine<D> {
             provenance: provenance.clone(),
         };
 
-        // SPEC: docs/specs/processor_and_runtime_architecture.md §50 "Reference execution strategy"
-        // Every fallible step precedes replacement of the complete private candidate.
-        let mut candidate = self.store.clone();
-        candidate.status = MachineStatus::Ready { now: at };
-        candidate.external_levels = levels;
-        candidate.settled_levels = evaluation.values;
-        candidate.output_baselines = evaluation.external_outputs;
-        candidate.output_causes = output_causes;
-        candidate.provenance = Some(provenance);
-        self.store = candidate;
-
+        publish_candidate(
+            self,
+            at,
+            levels,
+            evaluation,
+            input_causes,
+            output_causes,
+            provenance,
+        );
         Ok(result)
     }
+
+    fn apply_advance(
+        &mut self,
+        at: Time<D>,
+        expected_revision: NetworkRevision,
+        input: InputDelta<D>,
+    ) -> Result<TransactionResult<D>, RuntimeFailure<D>> {
+        let MachineStatus::Ready { now } = self.store.status else {
+            return Err(RuntimeFailure::new(
+                RuntimeFailureEvidence::DeltaBeforeInitialization,
+            ));
+        };
+        if expected_revision != self.store.revision {
+            return Err(RuntimeFailure::new(RuntimeFailureEvidence::StaleRevision {
+                expected: expected_revision,
+                actual: self.store.revision,
+            }));
+        }
+        validate_delta_binding::<D>(&self.compiled, &input)?;
+        if at <= now {
+            return Err(RuntimeFailure::new(
+                RuntimeFailureEvidence::TimeNotStrictlyIncreasing {
+                    current_ticks: now.ticks(),
+                    requested_ticks: at.ticks(),
+                },
+            ));
+        }
+
+        enforce_reaction_budgets::<D>(&self.policy, &self.compiled)?;
+
+        let revision = self.store.revision;
+        let explicit_levels = input.into_levels();
+        let mut levels = self.store.external_levels.clone();
+        levels.extend(explicit_levels.iter().map(|(key, value)| (*key, *value)));
+        let Some(evaluation) = self.compiled.evaluate_full(&levels) else {
+            panic!("ready machine and compatible delta must provide complete external facts");
+        };
+        let previous_provenance = match self.store.provenance.as_ref() {
+            Some(provenance) => provenance,
+            None => panic!("ready machine must retain committed provenance"),
+        };
+        let ProvenanceBuild {
+            provenance,
+            input_causes,
+            output_causes,
+        } = build_ready_provenance(
+            self.compiled.network_key(),
+            self.compiled.fingerprint(),
+            revision,
+            at,
+            &levels,
+            &explicit_levels,
+            &evaluation,
+            previous_provenance,
+            &self.store.input_causes,
+            &self.store.output_causes,
+            &self.store.output_baselines,
+        );
+        let provenance_growth = provenance.len().saturating_sub(previous_provenance.len());
+        enforce_budget::<D>(
+            &self.policy,
+            RuntimePolicyLimit::MaxRequiredProvenanceGrowth,
+            count_as_u64(provenance_growth),
+        )?;
+
+        let output_events = changed_events(
+            at,
+            revision,
+            &self.store.output_baselines,
+            &evaluation.external_outputs,
+            &output_causes,
+        );
+        enforce_budget::<D>(
+            &self.policy,
+            RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
+            count_as_u64(output_events.len()),
+        )?;
+        let result = TransactionResult {
+            requested_time: at,
+            before_revision: revision,
+            after_revision: revision,
+            output_events,
+            provenance: provenance.clone(),
+        };
+
+        publish_candidate(
+            self,
+            at,
+            levels,
+            evaluation,
+            input_causes,
+            output_causes,
+            provenance,
+        );
+        Ok(result)
+    }
+}
+
+fn validate_snapshot_binding<D>(
+    compiled: &crate::CompiledNetwork<D>,
+    input: &InputSnapshot<D>,
+) -> Result<(), RuntimeFailure<D>> {
+    if input.network_key() != compiled.network_key() {
+        return Err(RuntimeFailure::new(RuntimeFailureEvidence::WrongNetwork {
+            expected_key: compiled.network_key(),
+            actual_key: input.network_key(),
+            expected_fingerprint: compiled.fingerprint(),
+            actual_fingerprint: input.network_fingerprint(),
+        }));
+    }
+    if input.input_schema_fingerprint() != compiled.input_schema_fingerprint() {
+        return Err(RuntimeFailure::new(
+            RuntimeFailureEvidence::ForeignInputSchema {
+                expected: compiled.input_schema_fingerprint(),
+                actual: input.input_schema_fingerprint(),
+            },
+        ));
+    }
+    if input.network_fingerprint() != compiled.fingerprint() {
+        return Err(RuntimeFailure::new(RuntimeFailureEvidence::WrongNetwork {
+            expected_key: compiled.network_key(),
+            actual_key: input.network_key(),
+            expected_fingerprint: compiled.fingerprint(),
+            actual_fingerprint: input.network_fingerprint(),
+        }));
+    }
+    Ok(())
+}
+
+fn validate_delta_binding<D>(
+    compiled: &crate::CompiledNetwork<D>,
+    input: &InputDelta<D>,
+) -> Result<(), RuntimeFailure<D>> {
+    if input.network_key() != compiled.network_key() {
+        return Err(RuntimeFailure::new(RuntimeFailureEvidence::WrongNetwork {
+            expected_key: compiled.network_key(),
+            actual_key: input.network_key(),
+            expected_fingerprint: compiled.fingerprint(),
+            actual_fingerprint: input.network_fingerprint(),
+        }));
+    }
+    let fingerprint_matches = input.network_fingerprint() == compiled.fingerprint();
+    let schema_matches = input.input_schema_fingerprint() == compiled.input_schema_fingerprint();
+    if !fingerprint_matches && !schema_matches {
+        return Err(RuntimeFailure::new(
+            RuntimeFailureEvidence::StaleInputSchema {
+                expected: compiled.input_schema_fingerprint(),
+                actual: input.input_schema_fingerprint(),
+            },
+        ));
+    }
+    if !schema_matches {
+        return Err(RuntimeFailure::new(
+            RuntimeFailureEvidence::ForeignInputSchema {
+                expected: compiled.input_schema_fingerprint(),
+                actual: input.input_schema_fingerprint(),
+            },
+        ));
+    }
+    if !fingerprint_matches {
+        return Err(RuntimeFailure::new(RuntimeFailureEvidence::WrongNetwork {
+            expected_key: compiled.network_key(),
+            actual_key: input.network_key(),
+            expected_fingerprint: compiled.fingerprint(),
+            actual_fingerprint: input.network_fingerprint(),
+        }));
+    }
+    Ok(())
+}
+
+fn enforce_reaction_budgets<D>(
+    policy: &RuntimePolicy,
+    compiled: &crate::CompiledNetwork<D>,
+) -> Result<(), RuntimeFailure<D>> {
+    enforce_budget::<D>(policy, RuntimePolicyLimit::MaxInternalReactions, 1)?;
+    enforce_budget::<D>(
+        policy,
+        RuntimePolicyLimit::MaxEvaluatedOperations,
+        count_as_u64(compiled.operation_count()),
+    )
+}
+
+fn publish_candidate<D>(
+    machine: &mut Machine<D>,
+    at: Time<D>,
+    levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    evaluation: FullEvaluation,
+    input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
+    output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+    provenance: ProvenanceView<D>,
+) {
+    // SPEC: docs/specs/processor_and_runtime_architecture.md §50 "Reference execution strategy"
+    // Every fallible step precedes replacement of the complete private candidate.
+    let mut candidate = machine.store.clone();
+    candidate.status = MachineStatus::Ready { now: at };
+    candidate.external_levels = levels;
+    candidate.settled_levels = evaluation.values;
+    candidate.output_baselines = evaluation.external_outputs;
+    candidate.input_causes = input_causes;
+    candidate.output_causes = output_causes;
+    candidate.provenance = Some(provenance);
+    machine.store = candidate;
 }
 
 fn count_as_u64(count: usize) -> u64 {
@@ -517,17 +806,14 @@ fn provenance_scope<D>(
     scope
 }
 
-fn build_provenance<D>(
+fn build_initialization_provenance<D>(
     network_key: NetworkKey,
     fingerprint: NetworkFingerprint,
     revision: NetworkRevision,
     at: Time<D>,
     levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     evaluation: &FullEvaluation,
-) -> (
-    ProvenanceView<D>,
-    BTreeMap<ExternalOutputKey<Level>, CauseRef>,
-) {
+) -> ProvenanceBuild<D> {
     let scope = provenance_scope(network_key, fingerprint, revision, at, levels);
     let mut records = Vec::new();
     let transaction_cause = push_record(
@@ -535,27 +821,127 @@ fn build_provenance<D>(
         &mut records,
         ProvenanceRecord::InitializationTransaction { at, revision },
     );
+    let input_causes = levels
+        .iter()
+        .map(|(input, value)| {
+            let cause = push_record(
+                scope,
+                &mut records,
+                ProvenanceRecord::ExternalObservation {
+                    input: *input,
+                    value: *value,
+                },
+            );
+            (*input, cause)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let output_causes = append_evaluation_provenance(
+        scope,
+        &mut records,
+        transaction_cause,
+        evaluation,
+        &input_causes,
+        None,
+        None,
+    );
+
+    ProvenanceBuild {
+        provenance: ProvenanceView {
+            scope,
+            records: Arc::new(records),
+        },
+        input_causes,
+        output_causes,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_ready_provenance<D>(
+    network_key: NetworkKey,
+    fingerprint: NetworkFingerprint,
+    revision: NetworkRevision,
+    at: Time<D>,
+    levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    explicit_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    evaluation: &FullEvaluation,
+    previous: &ProvenanceView<D>,
+    previous_input_causes: &BTreeMap<ExternalInputKey<Level>, CauseRef>,
+    previous_output_causes: &BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+    previous_output_baselines: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+) -> ProvenanceBuild<D> {
+    let scope = provenance_scope(network_key, fingerprint, revision, at, levels);
+    let mut records = previous
+        .records
+        .iter()
+        .map(|record| remap_record(record, scope))
+        .collect::<Vec<_>>();
+    let transaction_cause = push_record(
+        scope,
+        &mut records,
+        ProvenanceRecord::ReadyTransaction { at, revision },
+    );
+    let mut input_causes = previous_input_causes
+        .iter()
+        .map(|(input, cause)| (*input, remap_cause(*cause, scope)))
+        .collect::<BTreeMap<_, _>>();
+    for (input, value) in explicit_levels {
+        let cause = push_record(
+            scope,
+            &mut records,
+            ProvenanceRecord::ExternalObservation {
+                input: *input,
+                value: *value,
+            },
+        );
+        input_causes.insert(*input, cause);
+    }
+    let remapped_output_causes = previous_output_causes
+        .iter()
+        .map(|(output, cause)| (*output, remap_cause(*cause, scope)))
+        .collect::<BTreeMap<_, _>>();
+    let output_causes = append_evaluation_provenance(
+        scope,
+        &mut records,
+        transaction_cause,
+        evaluation,
+        &input_causes,
+        Some(&remapped_output_causes),
+        Some(previous_output_baselines),
+    );
+
+    ProvenanceBuild {
+        provenance: ProvenanceView {
+            scope,
+            records: Arc::new(records),
+        },
+        input_causes,
+        output_causes,
+    }
+}
+
+fn append_evaluation_provenance<D>(
+    scope: [u8; 16],
+    records: &mut Vec<ProvenanceRecord<D>>,
+    transaction_cause: CauseRef,
+    evaluation: &FullEvaluation,
+    input_causes: &BTreeMap<ExternalInputKey<Level>, CauseRef>,
+    previous_output_causes: Option<&BTreeMap<ExternalOutputKey<Level>, CauseRef>>,
+    previous_output_baselines: Option<&BTreeMap<ExternalOutputKey<Level>, LogicLevel>>,
+) -> BTreeMap<ExternalOutputKey<Level>, CauseRef> {
     let mut operation_causes = Vec::with_capacity(evaluation.causes.len());
     let mut output_causes = BTreeMap::new();
 
     for cause in &evaluation.causes {
         let resolved = match cause {
             EvaluationCause::ExternalInput(input) => {
-                let Some(value) = levels.get(input).copied() else {
-                    panic!("evaluated external input must have one authoritative observation");
+                let Some(cause) = input_causes.get(input).copied() else {
+                    panic!("evaluated external input must retain one authoritative cause");
                 };
-                push_record(
-                    scope,
-                    &mut records,
-                    ProvenanceRecord::ExternalObservation {
-                        input: *input,
-                        value,
-                    },
-                )
+                cause
             }
             EvaluationCause::Constant(node) => push_record(
                 scope,
-                &mut records,
+                records,
                 ProvenanceRecord::Derived {
                     subject: ProvenanceSubject::Node(*node),
                     supporters: vec![transaction_cause],
@@ -570,7 +956,7 @@ fn build_provenance<D>(
                 supporters.dedup();
                 push_record(
                     scope,
-                    &mut records,
+                    records,
                     ProvenanceRecord::Derived {
                         subject: ProvenanceSubject::Node(*node),
                         supporters,
@@ -579,6 +965,18 @@ fn build_provenance<D>(
             }
             EvaluationCause::Alias(source) => operation_cause(&operation_causes, *source),
             EvaluationCause::ExternalOutput { output, source } => {
+                let unchanged_cause = previous_output_baselines
+                    .and_then(|baselines| baselines.get(output))
+                    .zip(evaluation.external_outputs.get(output))
+                    .filter(|(before, after)| before == after)
+                    .and(previous_output_causes)
+                    .and_then(|causes| causes.get(output))
+                    .copied();
+                if let Some(cause) = unchanged_cause {
+                    output_causes.insert(*output, cause);
+                    operation_causes.push(cause);
+                    continue;
+                }
                 let mut supporters = vec![
                     transaction_cause,
                     operation_cause(&operation_causes, *source),
@@ -587,7 +985,7 @@ fn build_provenance<D>(
                 supporters.dedup();
                 let reference = push_record(
                     scope,
-                    &mut records,
+                    records,
                     ProvenanceRecord::Derived {
                         subject: ProvenanceSubject::ExternalOutput(*output),
                         supporters,
@@ -599,14 +997,45 @@ fn build_provenance<D>(
         };
         operation_causes.push(resolved);
     }
+    output_causes
+}
 
-    (
-        ProvenanceView {
-            scope,
-            records: Arc::new(records),
+fn remap_cause(cause: CauseRef, scope: [u8; 16]) -> CauseRef {
+    CauseRef {
+        scope,
+        ordinal: cause.ordinal,
+    }
+}
+
+fn remap_record<D>(record: &ProvenanceRecord<D>, scope: [u8; 16]) -> ProvenanceRecord<D> {
+    match record {
+        ProvenanceRecord::InitializationTransaction { at, revision } => {
+            ProvenanceRecord::InitializationTransaction {
+                at: *at,
+                revision: *revision,
+            }
+        }
+        ProvenanceRecord::ReadyTransaction { at, revision } => ProvenanceRecord::ReadyTransaction {
+            at: *at,
+            revision: *revision,
         },
-        output_causes,
-    )
+        ProvenanceRecord::ExternalObservation { input, value } => {
+            ProvenanceRecord::ExternalObservation {
+                input: *input,
+                value: *value,
+            }
+        }
+        ProvenanceRecord::Derived {
+            subject,
+            supporters,
+        } => ProvenanceRecord::Derived {
+            subject: *subject,
+            supporters: supporters
+                .iter()
+                .map(|cause| remap_cause(*cause, scope))
+                .collect(),
+        },
+    }
 }
 
 fn push_record<D>(
@@ -616,7 +1045,7 @@ fn push_record<D>(
 ) -> CauseRef {
     let ordinal = match u32::try_from(records.len()) {
         Ok(value) => value,
-        Err(_) => panic!("initialization provenance exceeds the supported reference space"),
+        Err(_) => panic!("transaction provenance exceeds the supported reference space"),
     };
     records.push(record);
     CauseRef { scope, ordinal }
@@ -648,6 +1077,37 @@ fn initialization_events<D>(
                 cause,
                 revision,
             }
+        })
+        .collect()
+}
+
+fn changed_events<D>(
+    at: Time<D>,
+    revision: NetworkRevision,
+    previous: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+    settled: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+    causes: &BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+) -> Vec<OutputEvent<D>> {
+    settled
+        .iter()
+        .filter_map(|(output, to)| {
+            let Some(from) = previous.get(output).copied() else {
+                panic!("ready transaction must preserve every external output baseline");
+            };
+            if from == *to {
+                return None;
+            }
+            let Some(cause) = causes.get(output).copied() else {
+                panic!("every changed external output must retain one committed cause");
+            };
+            Some(OutputEvent::LevelChanged {
+                output: *output,
+                from,
+                to: *to,
+                at,
+                cause,
+                revision,
+            })
         })
         .collect()
 }
@@ -720,6 +1180,25 @@ mod tests {
             .unwrap_or_else(|failure| panic!("policy must build: {failure}"))
     }
 
+    fn initialized_machine(
+        compiled: &crate::CompiledNetwork<()>,
+        value: LogicLevel,
+    ) -> crate::Machine<()> {
+        let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        machine
+            .apply(Transaction::initialize(
+                crate::time::Time::from_ticks(10),
+                machine.revision(),
+                compiled
+                    .input_snapshot()
+                    .set(ExternalInputKey::from_u128(1), value)
+                    .and_then(crate::InputSnapshotBuilder::finish)
+                    .unwrap_or_else(|_| panic!("snapshot must build")),
+            ))
+            .unwrap_or_else(|failure| panic!("initialization must succeed: {failure}"));
+        machine
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct MachineObservation {
         network_key: NetworkKey,
@@ -731,6 +1210,7 @@ mod tests {
         external_levels: std::collections::BTreeMap<ExternalInputKey<Level>, LogicLevel>,
         settled_levels: Vec<LogicLevel>,
         output_baselines: std::collections::BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+        input_causes: std::collections::BTreeMap<ExternalInputKey<Level>, CauseRef>,
         output_causes: std::collections::BTreeMap<ExternalOutputKey<Level>, CauseRef>,
         provenance: Option<([u8; 16], usize, usize)>,
     }
@@ -746,6 +1226,7 @@ mod tests {
             external_levels: machine.store.external_levels.clone(),
             settled_levels: machine.store.settled_levels.clone(),
             output_baselines: machine.store.output_baselines.clone(),
+            input_causes: machine.store.input_causes.clone(),
             output_causes: machine.store.output_causes.clone(),
             provenance: machine.store.provenance.as_ref().map(|view| {
                 (
@@ -758,6 +1239,13 @@ mod tests {
     }
 
     fn complex_compiled(reverse_claims: bool) -> crate::CompiledNetwork<()> {
+        complex_compiled_with_name(reverse_claims, None)
+    }
+
+    fn complex_compiled_with_name(
+        reverse_claims: bool,
+        network_name: Option<&str>,
+    ) -> crate::CompiledNetwork<()> {
         let first_input = ExternalInputKey::<Level>::from_u128(1);
         let second_input = ExternalInputKey::<Level>::from_u128(2);
         let first_not_input = InPortKey::<Level>::from_u128(11);
@@ -825,7 +1313,10 @@ mod tests {
         UncheckedNetwork::new(
             NetworkKey::from_u128(500),
             TimeDomainId::from_u128(2),
-            DiagnosticMeta::default(),
+            DiagnosticMeta {
+                name: network_name.map(String::from),
+                ..DiagnosticMeta::default()
+            },
             nodes,
             inputs,
             outputs,
@@ -864,6 +1355,7 @@ mod tests {
                     }
                 }
                 CauseInspection::InitializationTransaction { .. }
+                | CauseInspection::ReadyTransaction { .. }
                 | CauseInspection::ExternalObservation { .. } => {}
             }
             assert!(visiting.remove(&cause));
@@ -989,6 +1481,9 @@ mod tests {
                         cause,
                         ..
                     } => (*output, *value, *cause),
+                    OutputEvent::LevelChanged { .. } => {
+                        panic!("initialization must not emit level changes")
+                    }
                 })
                 .collect::<Vec<_>>();
             assert_eq!(
@@ -1079,6 +1574,7 @@ mod tests {
                     assert_eq!(zero_value, later_value);
                     assert_eq!(zero_revision, later_revision);
                 }
+                _ => panic!("initialization comparison must contain establishments only"),
             }
         }
     }
@@ -1353,6 +1849,455 @@ mod tests {
                 ))
                 .unwrap_or_else(|failure| panic!("within-budget work must succeed: {failure}"));
             assert!(machine.is_initialized());
+        }
+    }
+
+    #[test]
+    fn transaction_inspection_is_lifecycle_aware_and_delta_requires_ready() {
+        let compiled = compiled(10, 30);
+        let input = ExternalInputKey::<Level>::from_u128(1);
+        let snapshot = compiled
+            .input_snapshot()
+            .set(input, LogicLevel::Low)
+            .and_then(crate::InputSnapshotBuilder::finish)
+            .unwrap_or_else(|_| panic!("snapshot must build"));
+        let initialize = Transaction::initialize(
+            crate::time::Time::from_ticks(10),
+            NetworkRevision::from_value(0),
+            snapshot,
+        );
+        assert!(initialize.initialization_input().is_some());
+        assert!(initialize.advance_input().is_none());
+
+        let delta = compiled
+            .input_delta()
+            .set(input, LogicLevel::High)
+            .and_then(crate::InputDeltaBuilder::finish)
+            .unwrap_or_else(|_| panic!("delta must build"));
+        let advance = Transaction::advance(
+            crate::time::Time::from_ticks(11),
+            NetworkRevision::from_value(0),
+            delta,
+        );
+        assert!(advance.initialization_input().is_none());
+        assert!(advance.advance_input().is_some());
+
+        let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        let before = observe(&machine);
+        let failure = machine.apply(advance).unwrap_err();
+        assert_eq!(failure.code(), "lifecycle.delta_before_initialization");
+        assert!(matches!(
+            failure.evidence(),
+            RuntimeFailureEvidence::DeltaBeforeInitialization
+        ));
+        assert_eq!(failure.responsibility(), Responsibility::CallerInput);
+        assert_eq!(observe(&machine), before);
+    }
+
+    #[test]
+    fn ready_advancement_overlays_delta_and_emits_only_genuine_changes() {
+        let compiled = compiled(10, 30);
+        let input = ExternalInputKey::<Level>::from_u128(1);
+        let output = ExternalOutputKey::<Level>::from_u128(30);
+        let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        let initialization = machine
+            .apply(Transaction::initialize(
+                crate::time::Time::from_ticks(10),
+                machine.revision(),
+                compiled
+                    .input_snapshot()
+                    .set(input, LogicLevel::Low)
+                    .and_then(crate::InputSnapshotBuilder::finish)
+                    .unwrap_or_else(|_| panic!("snapshot must build")),
+            ))
+            .unwrap_or_else(|failure| panic!("initialization must succeed: {failure}"));
+        let initialization_cause = match initialization.output_events() {
+            [OutputEvent::LevelEstablished { cause, .. }] => *cause,
+            _ => panic!("initialization must establish one output"),
+        };
+        let revision = machine.revision();
+        let policy_id = machine.runtime_policy_id();
+
+        let changed = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(20),
+                revision,
+                compiled
+                    .input_delta()
+                    .set(input, LogicLevel::High)
+                    .and_then(crate::InputDeltaBuilder::finish)
+                    .unwrap_or_else(|_| panic!("delta must build")),
+            ))
+            .unwrap_or_else(|failure| panic!("advance must succeed: {failure}"));
+        let changed_cause = match changed.output_events() {
+            [
+                OutputEvent::LevelChanged {
+                    output: actual_output,
+                    from,
+                    to,
+                    at,
+                    cause,
+                    revision: actual_revision,
+                },
+            ] => {
+                assert_eq!(*actual_output, output);
+                assert_eq!(*from, LogicLevel::Low);
+                assert_eq!(*to, LogicLevel::High);
+                assert_eq!(*at, crate::time::Time::from_ticks(20));
+                assert_eq!(*actual_revision, revision);
+                *cause
+            }
+            _ => panic!("one changed output must be published"),
+        };
+        recursively_assert_acyclic(changed.provenance(), changed_cause);
+        assert_eq!(machine.external_level(input), Some(LogicLevel::High));
+        assert_eq!(machine.output_level(output), Some(LogicLevel::High));
+        assert_eq!(machine.output_cause(output), Some(changed_cause));
+        assert_eq!(machine.now(), Some(crate::time::Time::from_ticks(20)));
+        assert_eq!(machine.revision(), revision);
+        assert_eq!(machine.runtime_policy_id(), policy_id);
+        assert_eq!(changed.before_revision(), changed.after_revision());
+
+        let reasserted = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(21),
+                revision,
+                compiled
+                    .input_delta()
+                    .set(input, LogicLevel::High)
+                    .and_then(crate::InputDeltaBuilder::finish)
+                    .unwrap_or_else(|_| panic!("delta must build")),
+            ))
+            .unwrap_or_else(|failure| panic!("reassertion must succeed: {failure}"));
+        assert!(reasserted.output_events().is_empty());
+        let reasserted_cause = machine
+            .output_cause(output)
+            .unwrap_or_else(|| panic!("unchanged output must retain a cause"));
+        assert!(reasserted.provenance().inspect(reasserted_cause).is_ok());
+
+        let empty = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(22),
+                revision,
+                compiled
+                    .input_delta()
+                    .finish()
+                    .unwrap_or_else(|_| panic!("empty delta must build")),
+            ))
+            .unwrap_or_else(|failure| panic!("empty advance must succeed: {failure}"));
+        assert!(empty.output_events().is_empty());
+        assert_eq!(machine.external_level(input), Some(LogicLevel::High));
+        let empty_cause = machine
+            .output_cause(output)
+            .unwrap_or_else(|| panic!("unchanged output must retain a cause"));
+        assert!(empty.provenance().inspect(empty_cause).is_ok());
+        assert!(
+            initialization
+                .provenance()
+                .inspect(initialization_cause)
+                .is_ok()
+        );
+        assert!(changed.provenance().inspect(changed_cause).is_ok());
+    }
+
+    #[test]
+    fn partial_and_complete_deltas_fully_resettle_reconvergent_graphs() {
+        let compiled = complex_compiled(false);
+        let first = ExternalInputKey::<Level>::from_u128(1);
+        let second = ExternalInputKey::<Level>::from_u128(2);
+        let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        machine
+            .apply(Transaction::initialize(
+                crate::time::Time::from_ticks(4),
+                machine.revision(),
+                compiled
+                    .input_snapshot()
+                    .set(first, LogicLevel::Low)
+                    .and_then(|builder| builder.set(second, LogicLevel::High))
+                    .and_then(crate::InputSnapshotBuilder::finish)
+                    .unwrap_or_else(|_| panic!("snapshot must build")),
+            ))
+            .unwrap_or_else(|failure| panic!("initialization must succeed: {failure}"));
+
+        let partial = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(9),
+                machine.revision(),
+                compiled
+                    .input_delta()
+                    .set(first, LogicLevel::High)
+                    .and_then(crate::InputDeltaBuilder::finish)
+                    .unwrap_or_else(|_| panic!("partial delta must build")),
+            ))
+            .unwrap_or_else(|failure| panic!("partial advance must succeed: {failure}"));
+        assert_eq!(machine.external_level(first), Some(LogicLevel::High));
+        assert_eq!(machine.external_level(second), Some(LogicLevel::High));
+        assert_eq!(machine.store.settled_levels.len(), 9);
+        assert_eq!(
+            partial
+                .output_events()
+                .iter()
+                .filter_map(|event| match event {
+                    OutputEvent::LevelChanged { output, .. } => Some(*output),
+                    OutputEvent::LevelEstablished { .. } => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ExternalOutputKey::from_u128(10),
+                ExternalOutputKey::from_u128(50),
+            ]
+        );
+
+        let complete = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(15),
+                machine.revision(),
+                compiled
+                    .input_delta()
+                    .set(second, LogicLevel::Low)
+                    .and_then(|builder| builder.set(first, LogicLevel::Low))
+                    .and_then(crate::InputDeltaBuilder::finish)
+                    .unwrap_or_else(|_| panic!("complete delta must build")),
+            ))
+            .unwrap_or_else(|failure| panic!("complete advance must succeed: {failure}"));
+        assert_eq!(machine.external_level(first), Some(LogicLevel::Low));
+        assert_eq!(machine.external_level(second), Some(LogicLevel::Low));
+        assert_eq!(machine.store.settled_levels.len(), 9);
+        for event in complete.output_events() {
+            if let OutputEvent::LevelChanged { cause, .. } = event {
+                recursively_assert_acyclic(complete.provenance(), *cause);
+            }
+        }
+    }
+
+    #[test]
+    fn ready_rejections_are_structured_and_preserve_complete_machine() {
+        let local = compiled(10, 30);
+        let foreign_network = compiled(11, 30);
+        let other_schema = compiled_with_input(10, 2, 30);
+        let input = ExternalInputKey::<Level>::from_u128(1);
+
+        for requested in [9, 10] {
+            let mut machine = initialized_machine(&local, LogicLevel::Low);
+            let before = observe(&machine);
+            let failure = machine
+                .apply(Transaction::advance(
+                    crate::time::Time::from_ticks(requested),
+                    machine.revision(),
+                    local
+                        .input_delta()
+                        .finish()
+                        .unwrap_or_else(|_| panic!("delta must build")),
+                ))
+                .unwrap_err();
+            assert_eq!(failure.code(), "runtime.time_not_strictly_increasing");
+            assert!(matches!(
+                failure.evidence(),
+                RuntimeFailureEvidence::TimeNotStrictlyIncreasing { .. }
+            ));
+            assert_eq!(observe(&machine), before);
+        }
+
+        let mut stale_revision = initialized_machine(&local, LogicLevel::Low);
+        let expected = stale_revision.revision();
+        stale_revision.store.revision = NetworkRevision::from_value(7);
+        let before = observe(&stale_revision);
+        let failure = stale_revision
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(11),
+                expected,
+                local
+                    .input_delta()
+                    .finish()
+                    .unwrap_or_else(|_| panic!("delta must build")),
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            failure.evidence(),
+            RuntimeFailureEvidence::StaleRevision { .. }
+        ));
+        assert_eq!(observe(&stale_revision), before);
+
+        let mut wrong_network = initialized_machine(&local, LogicLevel::Low);
+        let before = observe(&wrong_network);
+        let failure = wrong_network
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(11),
+                wrong_network.revision(),
+                foreign_network
+                    .input_delta()
+                    .set(input, LogicLevel::High)
+                    .and_then(crate::InputDeltaBuilder::finish)
+                    .unwrap_or_else(|_| panic!("delta must build")),
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            failure.evidence(),
+            RuntimeFailureEvidence::WrongNetwork { .. }
+        ));
+        assert_eq!(observe(&wrong_network), before);
+
+        let mut stale_schema = initialized_machine(&local, LogicLevel::Low);
+        let before = observe(&stale_schema);
+        let failure = stale_schema
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(11),
+                stale_schema.revision(),
+                other_schema
+                    .input_delta()
+                    .set(ExternalInputKey::from_u128(2), LogicLevel::High)
+                    .and_then(crate::InputDeltaBuilder::finish)
+                    .unwrap_or_else(|_| panic!("delta must build")),
+            ))
+            .unwrap_err();
+        assert_eq!(failure.code(), "input.stale_schema");
+        assert!(matches!(
+            failure.evidence(),
+            RuntimeFailureEvidence::StaleInputSchema { .. }
+        ));
+        assert_eq!(observe(&stale_schema), before);
+
+        let mixed = local
+            .input_delta()
+            .finish()
+            .unwrap_or_else(|_| panic!("delta must build"))
+            .with_test_bindings(local.fingerprint(), other_schema.input_schema_fingerprint());
+        let mut foreign_schema = initialized_machine(&local, LogicLevel::Low);
+        let before = observe(&foreign_schema);
+        let failure = foreign_schema
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(11),
+                foreign_schema.revision(),
+                mixed,
+            ))
+            .unwrap_err();
+        assert_eq!(failure.code(), "input.foreign_schema");
+        assert!(matches!(
+            failure.evidence(),
+            RuntimeFailureEvidence::ForeignInputSchema { .. }
+        ));
+        assert_eq!(observe(&foreign_schema), before);
+    }
+
+    #[test]
+    fn equivalent_ready_batches_ignore_insertion_authored_and_metadata_order() {
+        let mut outcomes = Vec::new();
+        for (reverse_claims, network_name, reverse_delta) in
+            [(false, None, false), (true, Some("renamed only"), true)]
+        {
+            let compiled = complex_compiled_with_name(reverse_claims, network_name);
+            let first = ExternalInputKey::<Level>::from_u128(1);
+            let second = ExternalInputKey::<Level>::from_u128(2);
+            let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+            machine
+                .apply(Transaction::initialize(
+                    crate::time::Time::from_ticks(3),
+                    machine.revision(),
+                    compiled
+                        .input_snapshot()
+                        .set(first, LogicLevel::Low)
+                        .and_then(|builder| builder.set(second, LogicLevel::High))
+                        .and_then(crate::InputSnapshotBuilder::finish)
+                        .unwrap_or_else(|_| panic!("snapshot must build")),
+                ))
+                .unwrap_or_else(|failure| panic!("initialization must succeed: {failure}"));
+            let delta = if reverse_delta {
+                compiled
+                    .input_delta()
+                    .set(second, LogicLevel::Low)
+                    .and_then(|builder| builder.set(first, LogicLevel::High))
+            } else {
+                compiled
+                    .input_delta()
+                    .set(first, LogicLevel::High)
+                    .and_then(|builder| builder.set(second, LogicLevel::Low))
+            }
+            .and_then(crate::InputDeltaBuilder::finish)
+            .unwrap_or_else(|_| panic!("delta must build"));
+            let result = machine
+                .apply(Transaction::advance(
+                    crate::time::Time::from_ticks(8),
+                    machine.revision(),
+                    delta,
+                ))
+                .unwrap_or_else(|failure| panic!("advance must succeed: {failure}"));
+            let events = result
+                .output_events()
+                .iter()
+                .filter_map(|event| match event {
+                    OutputEvent::LevelChanged {
+                        output,
+                        from,
+                        to,
+                        cause,
+                        ..
+                    } => Some((*output, *from, *to, *cause)),
+                    OutputEvent::LevelEstablished { .. } => None,
+                })
+                .collect::<Vec<_>>();
+            outcomes.push((
+                compiled.fingerprint(),
+                compiled.input_schema_fingerprint(),
+                machine.store.external_levels.clone(),
+                machine.store.settled_levels.clone(),
+                machine.store.output_baselines.clone(),
+                events,
+            ));
+        }
+        assert_eq!(outcomes[0], outcomes[1]);
+    }
+
+    #[test]
+    fn ready_budget_boundaries_cover_below_exact_and_above() {
+        let cases = [
+            (RuntimePolicyLimit::MaxInternalReactions, 1_u64),
+            (RuntimePolicyLimit::MaxEvaluatedOperations, 2_u64),
+            (RuntimePolicyLimit::MaxEventsCreatedPerTransaction, 1_u64),
+            (RuntimePolicyLimit::MaxRequiredProvenanceGrowth, 3_u64),
+        ];
+        for (budget, consumed) in cases {
+            for limit in [consumed - 1, consumed, consumed + 1] {
+                let compiled = compiled(10, 30);
+                let mut machine = initialized_machine(&compiled, LogicLevel::Low);
+                let mut limits = [10, 100, 0, 100, 1_000];
+                match budget {
+                    RuntimePolicyLimit::MaxInternalReactions => limits[0] = limit,
+                    RuntimePolicyLimit::MaxEvaluatedOperations => limits[1] = limit,
+                    RuntimePolicyLimit::MaxEventsCreatedPerTransaction => limits[3] = limit,
+                    RuntimePolicyLimit::MaxRequiredProvenanceGrowth => limits[4] = limit,
+                    RuntimePolicyLimit::MaxPendingEvents => {
+                        panic!("pending-event accounting is outside this slice")
+                    }
+                }
+                machine.policy = policy_with(limits);
+                let before = observe(&machine);
+                let result = machine.apply(Transaction::advance(
+                    crate::time::Time::from_ticks(11),
+                    machine.revision(),
+                    compiled
+                        .input_delta()
+                        .set(ExternalInputKey::from_u128(1), LogicLevel::High)
+                        .and_then(crate::InputDeltaBuilder::finish)
+                        .unwrap_or_else(|_| panic!("delta must build")),
+                ));
+                if limit < consumed {
+                    let failure = result.unwrap_err();
+                    assert_eq!(
+                        failure.evidence(),
+                        &RuntimeFailureEvidence::BudgetExceeded {
+                            budget,
+                            limit,
+                            consumed,
+                        }
+                    );
+                    assert_eq!(observe(&machine), before);
+                } else {
+                    result.unwrap_or_else(|failure| {
+                        panic!("within-boundary advance must succeed: {failure}")
+                    });
+                    assert_eq!(machine.now(), Some(crate::time::Time::from_ticks(11)));
+                }
+            }
         }
     }
 }

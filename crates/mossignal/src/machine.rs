@@ -86,6 +86,7 @@ pub(crate) struct MachineStore<D> {
     pub(crate) external_levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     pub(crate) settled_levels: Vec<LogicLevel>,
     pub(crate) output_baselines: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+    pub(crate) input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
     pub(crate) output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     pub(crate) provenance: Option<ProvenanceView<D>>,
 }
@@ -98,6 +99,7 @@ impl<D> Clone for MachineStore<D> {
             external_levels: self.external_levels.clone(),
             settled_levels: self.settled_levels.clone(),
             output_baselines: self.output_baselines.clone(),
+            input_causes: self.input_causes.clone(),
             output_causes: self.output_causes.clone(),
             provenance: self.provenance.clone(),
         }
@@ -138,6 +140,7 @@ impl<D> Machine<D> {
                 external_levels: BTreeMap::new(),
                 settled_levels: Vec::new(),
                 output_baselines: BTreeMap::new(),
+                input_causes: BTreeMap::new(),
                 output_causes: BTreeMap::new(),
                 provenance: None,
             },

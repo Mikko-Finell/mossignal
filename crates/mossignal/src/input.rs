@@ -183,6 +183,21 @@ impl<D> InputDelta<D> {
     pub const fn input_schema_fingerprint(&self) -> InputSchemaFingerprint {
         self.input_schema_fingerprint
     }
+
+    pub(crate) fn into_levels(self) -> BTreeMap<ExternalInputKey<Level>, LogicLevel> {
+        self.levels
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_bindings(
+        mut self,
+        network_fingerprint: NetworkFingerprint,
+        input_schema_fingerprint: InputSchemaFingerprint,
+    ) -> Self {
+        self.network_fingerprint = network_fingerprint;
+        self.input_schema_fingerprint = input_schema_fingerprint;
+        self
+    }
 }
 
 /// An owned builder for explicit observations against one current topology.
