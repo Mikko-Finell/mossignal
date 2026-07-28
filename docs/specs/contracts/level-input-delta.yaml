@@ -1,0 +1,169 @@
+schema_version: "0.1"
+id: mossignal.runtime.level_input_delta
+title: Ready-machine level input delta
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 25ac1aa6cb38b3578e4db55bcd99dbca65797589
+  working_tree: clean
+
+summary: >-
+  A level InputDelta is an owned opaque artifact built against one exact
+  compiled input schema. It records an unordered set of explicit external
+  level observations for later ready-machine advancement while omitted levels
+  retain their prior authoritative values.
+
+scope:
+  includes:
+    - owned level-only InputDelta and its ordinary current-topology builder
+    - network and input-schema identity binding
+    - explicit level observations, omission, and deterministic construction
+    - invalid-observation rejection during construction
+    - lifecycle relationship to a prior authoritative external valuation
+  excludes:
+    - pulse observations and pulse-count semantics
+    - ready-machine transaction execution and output events
+    - binding projection and caller-object-model interpretation
+    - persistence artifact encoding and decoding
+    - topology patches, target-schema establishment, and reconfiguration
+
+known_uncovered:
+  - Prepared-patch target deltas, including target revision binding, set-versus-establish validation, required establishment of new level inputs, and rejection of removed inputs.
+
+aliases:
+  - InputDelta<D>
+  - InputDeltaBuilder<D>
+  - ready-machine input delta
+
+requirements:
+  - id: compiled-builder-origin
+    kind: public_surface
+    statement: >-
+      CompiledNetwork exposes an input-delta builder for its own exact compiled
+      topology, so ordinary construction obtains network and input-schema
+      context from that topology rather than from caller-supplied surrogate
+      identity tokens.
+    sources: [concrete-compiled]
+
+  - id: owned-opaque-network-bound-artifact
+    kind: public_surface
+    statement: >-
+      InputDelta and its builder are distinct from InputSnapshot, and a
+      completed InputDelta is an owned opaque artifact that does not borrow the
+      compiled network or another topology provider.
+    sources: [api-delta, concrete-artifact-boundary]
+
+  - id: exact-current-schema-binding
+    kind: compatibility
+    statement: >-
+      An ordinary current-topology delta retains the compiled topology's exact
+      NetworkKey, NetworkFingerprint, and InputSchemaFingerprint separately,
+      and records observations by stable typed endpoint identity rather than
+      collection position. Exact machine revision expectation belongs to the
+      later transaction; target-bound patch deltas additionally require their
+      target-topology revision context.
+    sources: [schema-binding, concrete-compiled, concrete-delta]
+    basis: derived
+
+  - id: explicit-level-observations
+    kind: semantic
+    statement: >-
+      An ordinary level delta may explicitly set or reassert any existing
+      external level input in its bound schema. It need not repeat the complete
+      external valuation, and completing an empty or partial delta is valid.
+    sources: [api-delta, concrete-delta, schema-projection, delta-artifact]
+
+  - id: omission-means-retention
+    kind: semantic
+    statement: >-
+      When a compatible ready machine later applies the delta, every
+      unmentioned external level retains its prior authoritative value; omission
+      is not interpreted as Low and the delta artifact alone does not establish
+      lifecycle compatibility.
+    sources: [api-delta, schema-projection, delta-artifact]
+
+  - id: rejects-invalid-observations
+    kind: prohibition
+    statement: >-
+      Construction rejects observations for endpoints outside the bound schema
+      and repeated observations for one endpoint, distinguishing equivalent
+      duplicates from incompatible conflicts. The level-typed builder prevents
+      wrong-kind observations through its public input type.
+    sources: [input-diagnostic-codes, concrete-delta]
+
+  - id: deterministic-unordered-batch
+    kind: verification
+    statement: >-
+      The delta represents one unordered semantic batch. Verification must
+      establish that equivalent explicit level observations have equivalent
+      semantic behavior regardless of builder insertion order, collection
+      iteration order, or diagnostic metadata, without requiring a public
+      iteration-order guarantee.
+    sources: [api-atomic-input, delta-artifact]
+
+  - id: requires-prior-authoritative-valuation
+    kind: lifecycle
+    statement: >-
+      InputDelta expresses changes relative to the valuation held by a Ready
+      machine and is invalid before initialization, where no prior authoritative
+      external valuation exists. This lifecycle rejection is enforced when a
+      transaction is applied, not proven by artifact construction alone.
+    sources: [api-delta, runtime-first-transaction, lifecycle-diagnostic-codes]
+
+implementation_freedom:
+  - The private builder and artifact storage, read-only inspection surface, and reuse or extension of InputBuildFailure are unconstrained when identity binding and diagnostic distinctions remain exact.
+  - The restricted level-only artifact may use any deterministic stable-keyed representation; neither public iteration order nor a particular equality implementation is required.
+  - The ordinary compiled-topology builder need not expose establish or a caller-supplied revision parameter; those responsibilities arise with prepared-patch target deltas and later transaction construction respectively.
+
+open_questions: []
+
+sources:
+  api-delta:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VI — Inputs and outputs, 29. `InputDelta`]
+    reviewed_hash: sha256:958e08534ced9e8911a287b64d28b417d81d7db221bad002df633e6e198ae1d9
+  api-atomic-input:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 25. Atomic input semantics]
+    reviewed_hash: sha256:4018d4bb1c96c7961fd79c43975d7dc7c2caf9b6246e713fafe9d5c2fd31271e
+  concrete-compiled:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part X — Validation and compilation artifacts, 44. `CompiledNetwork<D>`]
+    reviewed_hash: sha256:06a6ae375426437ece5aafd386ca65e6c76c51591acc95d2f8a2d1ee56bca60f
+  concrete-artifact-boundary:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIV — Input schemas and values, 53. Network-bound input artifacts]
+    reviewed_hash: sha256:3e0b2ebd65b590938d3852ffd9a95ae6560c34b72751bc0a1fbe5d1122b05e2b
+  concrete-delta:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIV — Input schemas and values, 55. `InputDelta<D>`]
+    reviewed_hash: sha256:c2b2685fd582c0ac511cbb502c6de622135bb6d08e823ab487d0855b28439fd4
+  schema-projection:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.3 Input schema fingerprint]
+    reviewed_hash: sha256:d64e93e16a849cce1b1af9a4edd1fdbd09734e570b61845c9a87096d3ebaf69a
+  schema-binding:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 75. Input schema binding
+    reviewed_hash: sha256:eb95f049f168441a248456ba4f8e24135c9ce7e046f7e102af14b5732e6dd987
+  delta-artifact:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 77. Input delta artifact
+    reviewed_hash: sha256:63cb0ae183923c0ae125bdcfb8b3c185354873becff18d269288c743fbfedd3f
+  input-diagnostic-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 30. Input construction and projection]
+    reviewed_hash: sha256:3953dbde0d5f72123a26a59dc49c35ff13fe36622490c09d31e57557be10452c
+  lifecycle-diagnostic-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 28. Lifecycle]
+    reviewed_hash: sha256:e26c76bc0b2d925d95f497c33d4e0f78989ac6987bedf97250df10dd92c6be3d
+  runtime-first-transaction:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part II — Initialization, 7. First transaction]
+    reviewed_hash: sha256:9d9e2caba99ca7055f8a3ffa08f461a80f2036755a21127c31cffed6a36185d4
