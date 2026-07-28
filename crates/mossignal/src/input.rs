@@ -122,7 +122,6 @@ impl<D> InputSnapshotBuilder<D> {
 /// Omitted inputs have no replacement value in this artifact. A later
 /// compatible ready-machine transaction retains their prior authoritative
 /// values.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputDelta<D> {
     network_key: NetworkKey,
     network_fingerprint: NetworkFingerprint,
@@ -130,6 +129,41 @@ pub struct InputDelta<D> {
     pub(crate) levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     domain: PhantomData<fn() -> D>,
 }
+
+impl<D> Clone for InputDelta<D> {
+    fn clone(&self) -> Self {
+        Self {
+            network_key: self.network_key,
+            network_fingerprint: self.network_fingerprint,
+            input_schema_fingerprint: self.input_schema_fingerprint,
+            levels: self.levels.clone(),
+            domain: PhantomData,
+        }
+    }
+}
+
+impl<D> fmt::Debug for InputDelta<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("InputDelta")
+            .field("network_key", &self.network_key)
+            .field("network_fingerprint", &self.network_fingerprint)
+            .field("input_schema_fingerprint", &self.input_schema_fingerprint)
+            .field("levels", &self.levels)
+            .finish()
+    }
+}
+
+impl<D> PartialEq for InputDelta<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.network_key == other.network_key
+            && self.network_fingerprint == other.network_fingerprint
+            && self.input_schema_fingerprint == other.input_schema_fingerprint
+            && self.levels == other.levels
+    }
+}
+
+impl<D> Eq for InputDelta<D> {}
 
 impl<D> InputDelta<D> {
     /// Returns the stable network identity for which this delta was built.
@@ -152,7 +186,6 @@ impl<D> InputDelta<D> {
 }
 
 /// An owned builder for explicit observations against one current topology.
-#[derive(Debug)]
 pub struct InputDeltaBuilder<D> {
     network_key: NetworkKey,
     network_fingerprint: NetworkFingerprint,
@@ -160,6 +193,19 @@ pub struct InputDeltaBuilder<D> {
     existing_inputs: BTreeSet<ExternalInputKey<Level>>,
     levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     domain: PhantomData<fn() -> D>,
+}
+
+impl<D> fmt::Debug for InputDeltaBuilder<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("InputDeltaBuilder")
+            .field("network_key", &self.network_key)
+            .field("network_fingerprint", &self.network_fingerprint)
+            .field("input_schema_fingerprint", &self.input_schema_fingerprint)
+            .field("existing_inputs", &self.existing_inputs)
+            .field("levels", &self.levels)
+            .finish()
+    }
 }
 
 impl<D> InputDeltaBuilder<D> {
@@ -266,12 +312,26 @@ mod tests {
     use crate::key::{ExternalInputKey, NetworkKey};
     use crate::metadata::DiagnosticMeta;
 
+    struct UncooperativeDomain;
+
+    fn assert_debug<T: fmt::Debug>() {}
+
+    fn assert_delta_value_traits<T: Clone + fmt::Debug + Eq>() {}
+
     fn compiled_with_inputs(keys: &[u128]) -> crate::CompiledNetwork<()> {
         compiled_with_identity_and_inputs(1, keys)
     }
 
     fn compiled_with_identity_and_inputs(
         network_key: u128,
+        keys: &[u128],
+    ) -> crate::CompiledNetwork<()> {
+        compiled_with_meta_and_inputs(network_key, DiagnosticMeta::default(), keys)
+    }
+
+    fn compiled_with_meta_and_inputs(
+        network_key: u128,
+        meta: DiagnosticMeta,
         keys: &[u128],
     ) -> crate::CompiledNetwork<()> {
         let external_inputs = keys
@@ -287,7 +347,7 @@ mod tests {
         UncheckedNetwork::new(
             NetworkKey::from_u128(network_key),
             TimeDomainId::from_u128(2),
-            DiagnosticMeta::default(),
+            meta,
             Vec::new(),
             external_inputs,
             Vec::new(),
@@ -451,6 +511,12 @@ mod tests {
     }
 
     #[test]
+    fn delta_traits_do_not_require_domain_traits() {
+        assert_delta_value_traits::<InputDelta<UncooperativeDomain>>();
+        assert_debug::<InputDeltaBuilder<UncooperativeDomain>>();
+    }
+
+    #[test]
     fn delta_rejects_unknown_duplicate_and_conflicting_observations() {
         let compiled = compiled_with_inputs(&[3]);
         let input = ExternalInputKey::from_u128(3);
@@ -534,5 +600,32 @@ mod tests {
             foreign_schema.input_schema_fingerprint()
         );
         assert_ne!(first, foreign_schema);
+    }
+
+    #[test]
+    fn delta_semantics_ignore_diagnostic_metadata() {
+        let default = compiled_with_meta_and_inputs(1, DiagnosticMeta::default(), &[3]);
+        let annotated = compiled_with_meta_and_inputs(
+            1,
+            DiagnosticMeta {
+                name: Some(String::from("annotated network")),
+                tags: vec![String::from("presentation only")],
+                ..DiagnosticMeta::default()
+            },
+            &[3],
+        );
+        let input = ExternalInputKey::from_u128(3);
+        let default_delta = default
+            .input_delta()
+            .set(input, LogicLevel::High)
+            .and_then(InputDeltaBuilder::finish)
+            .unwrap_or_else(|_| panic!("delta must build"));
+        let annotated_delta = annotated
+            .input_delta()
+            .set(input, LogicLevel::High)
+            .and_then(InputDeltaBuilder::finish)
+            .unwrap_or_else(|_| panic!("delta must build"));
+
+        assert_eq!(default_delta, annotated_delta);
     }
 }
