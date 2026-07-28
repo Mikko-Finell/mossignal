@@ -1,0 +1,311 @@
+schema_version: "0.1"
+id: mossignal.runtime.initialization_transaction
+title: Restricted level initialization transaction
+kind: lifecycle
+status: reviewed
+
+source_baseline:
+  commit: d2ca287958d9a33c4eb687dae5d589be99c9611d
+  working_tree: dirty
+
+summary: >-
+  The first successful transaction initializes an AwaitingInitialization
+  machine at an arbitrary logical time from one complete exact-bound level
+  InputSnapshot, settles the ordinary restricted reaction graph, and publishes
+  the complete Ready state and level-output establishment events atomically.
+
+scope:
+  includes:
+    - owned explicit initialization transaction and exact revision expectation
+    - restricted level-only initialization of Constant and Not networks
+    - complete snapshot validation and ordinary full evaluation
+    - correctness-oriented atomic staging, commitment, and rejection
+    - authoritative external levels, settled values, and LevelEstablished events
+    - minimal resolvable causal provenance for initialization output events
+  excludes:
+    - InputDelta and every transaction applied to an already Ready machine
+    - topology patches and reconfiguration during initialization
+    - pulse, stateful, temporal, pending-event, and diagnostic-episode semantics
+    - persistence, replay, forecasting, observer delivery, and optimized staging
+
+known_uncovered:
+  - Complete explanation-oriented provenance beyond the initialization roots and result-owned view needed to resolve this slice's output events.
+  - Execution and observable state digests in the eventual full TransactionResult surface.
+  - Pulse batches, successor state, temporal obligations, schedules, runtime occurrences, and persistent diagnostic episodes during initialization.
+
+aliases:
+  - Transaction<D>::initialize
+  - Machine<D>::apply
+  - first transaction
+  - initialization transaction
+  - LevelEstablished
+
+requirements:
+  - id: owned-explicit-initialization-value
+    kind: public_surface
+    statement: >-
+      Initialization is represented by an owned explicit Transaction<D> value,
+      not primarily by a closure. Transaction::initialize takes the requested
+      Time<D>, exact expected NetworkRevision, and one InputSnapshot<D>, keeps
+      the lifecycle distinction visible, and is consumed by Machine::apply.
+    sources: [api-transactions, concrete-transaction-values, concrete-transaction-constructors, concrete-apply]
+
+  - id: exact-initialization-preconditions
+    kind: semantic
+    statement: >-
+      Applying an initialization transaction requires an
+      AwaitingInitialization machine, an expected revision equal to the
+      machine's current revision, and a complete snapshot bound to the machine's
+      exact NetworkKey, NetworkFingerprint, and InputSchemaFingerprint. A
+      lifecycle, revision, network, or schema mismatch is a structured runtime
+      rejection.
+    sources: [api-first-transaction, api-snapshot, schema-binding, lifecycle-codes, runtime-codes, input-codes]
+
+  - id: arbitrary-initial-time
+    kind: semantic
+    statement: >-
+      The successful first transaction establishes its requested Time<D> as the
+      machine's initial logical time. Time need not begin at zero, and this
+      initialization slice has no prior due events or earlier machine time to
+      advance through.
+    sources: [runtime-first-transaction, runtime-time, api-first-transaction]
+
+  - id: ordinary-restricted-evaluation
+    kind: semantic
+    statement: >-
+      Initialization supplies the snapshot's complete authoritative external
+      levels as reaction root facts and invokes the ordinary full topological
+      evaluator for the restricted Constant/Not topology. It must not use a
+      reduced, special, partially propagating, or initialization-only evaluator.
+    sources: [runtime-first-transaction, api-first-transaction, api-settlement]
+
+  - id: complete-ready-state-on-success
+    kind: lifecycle
+    statement: >-
+      On success, one commit changes the lifecycle to Ready at the requested
+      time while retaining the unchanged topology revision and policy identity,
+      installs the snapshot as the authoritative external level valuation, and
+      stores the complete settled level results and external output baselines.
+    sources: [runtime-first-transaction, runtime-output-establishment, api-first-transaction, api-revision]
+
+  - id: established-output-events
+    kind: system_effect
+    statement: >-
+      Every external level output's first committed settled value is published
+      as LevelEstablished at the initialization time and current revision. It
+      must not be fabricated as LevelChanged from Low or from an unknown third
+      value. The flat event collection is deterministic, including for events
+      sharing the initialization time.
+    sources: [runtime-output-establishment, api-output-events, concrete-output-events]
+
+  - id: applicable-runtime-policy-budgets
+    kind: semantic
+    statement: >-
+      Initialization validates the machine's associated runtime policy and
+      enforces every semantic budget with an implemented accounting boundary.
+      Exceeding an applicable budget rejects the complete transaction without
+      skipping required work or publishing partial settlement.
+    sources: [api-first-transaction, api-runtime-policy, runtime-budget-failure]
+
+  - id: resolvable-initialization-causes
+    kind: system_effect
+    statement: >-
+      Every externally observable initialization establishment carries an
+      opaque CauseRef. The successful owned result retains an immutable
+      ProvenanceView sufficient to resolve each returned reference to a
+      structured acyclic derivation terminating in authoritative initialization
+      roots such as the committed transaction and external observations; a
+      private arena position must not become durable external identity.
+    sources: [runtime-provenance-records, runtime-causal-provenance, api-causal-provenance, concrete-result, concrete-cause-references]
+
+  - id: single-atomic-publication
+    kind: semantic
+    statement: >-
+      All validation, evaluation, state staging, event construction, applicable
+      runtime-budget checks, and result construction complete before one
+      non-fallible publication point. Public state exposes either the complete
+      old AwaitingInitialization machine or the complete new Ready machine and
+      never a partial candidate.
+    sources: [runtime-transition-model, runtime-commit-point, runtime-preparation, api-settlement, concrete-apply]
+
+  - id: correctness-oriented-staging
+    kind: verification
+    statement: >-
+      Clone-and-swap is the reference initialization strategy: execute against
+      a complete private candidate and replace the published machine only on
+      success. Any later optimized strategy must remain equivalent to this
+      reference path.
+    sources: [runtime-reference-strategy, testing-reference-transaction]
+
+  - id: failure-preserves-complete-machine
+    kind: semantic
+    statement: >-
+      Every structured rejection leaves the complete published machine
+      semantically unchanged, including lifecycle, topology and revision,
+      logical time absence, external levels, settled values, output baselines,
+      policy association, and every other represented semantic field.
+    sources: [runtime-transition-model, concrete-apply, testing-initialization-rejection, testing-failure-atomicity]
+
+  - id: restricted-initialization-verification
+    kind: verification
+    statement: >-
+      Tests cover an arbitrary nonzero initial time, complete authoritative
+      snapshots, ordinary full evaluation, Ready transition, authoritative and
+      settled storage, deterministic LevelEstablished events, exact revision
+      retention, applicable budget boundaries, and complete unchanged-state
+      comparison after each supported structured rejection.
+    sources: [testing-first-transaction, testing-initialization-rejection, testing-failure-atomicity, testing-budget-boundaries]
+
+implementation_freedom:
+  - Transaction and result private storage, module placement, candidate cloning details, and stable-key event sorting mechanism are unconstrained; choose the simplest deterministic auditable forms and test them.
+  - Private failure representation is unconstrained when reachable rejection
+    categories preserve their catalogue distinctions and structured evidence.
+  - Budgets without an implemented accounting boundary require no invented
+    counter; once an accounting boundary exists, the policy and verification
+    obligations apply.
+
+open_questions: []
+
+sources:
+  runtime-first-transaction:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part II — Initialization, 7. First transaction]
+    reviewed_hash: sha256:9d9e2caba99ca7055f8a3ffa08f461a80f2036755a21127c31cffed6a36185d4
+  runtime-output-establishment:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part II — Initialization, 10. Output establishment]
+    reviewed_hash: sha256:643e108c8719c5eed84a7504879d03f47bb9dd9e3bc9f228414467a2d5532f7d
+  runtime-time:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 37. Discrete exact time]
+    reviewed_hash: sha256:245329e6fb67456a70f094e56cebbf87d506257d000dcfaef92d663b6bb577e8
+  runtime-transition-model:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 47. State-transition model]
+    reviewed_hash: sha256:fcccb31e85f023ec9af8b0fcf6033427bb165f9b34130192dd7d1b00f281abd0
+  runtime-commit-point:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 48. Single commit point]
+    reviewed_hash: sha256:2f52d5b43dc3cb41ef234b07953c0648120301b22c62d91af1bc0aaef6f7d184
+  runtime-preparation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 49. Preparation and commitment]
+    reviewed_hash: sha256:163dacd480758eeb4ec962bdc4c0b78f09dee01337e4bbf9868efea30c3687df
+  runtime-reference-strategy:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 50. Reference execution strategy]
+    reviewed_hash: sha256:14a09030d1616cd4e3ed02260d2876305580d2ba1f81e54a1e080349e2edffc2
+  api-transactions:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 23. Explicit transaction values]
+    reviewed_hash: sha256:0c99fb78a8bf6a0e4c253c47536e4b4a108c1b4da1b36dbf7dfdf6e6ecdc48ca
+  api-first-transaction:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 24. Transaction ordering, 24.1 First transaction]
+    reviewed_hash: sha256:58ff436c7845528a88fada70a559c8f56ecf881f8b4b98007b086f463540f001
+  api-settlement:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 26. Settlement]
+    reviewed_hash: sha256:875bead35fccd63f762bf9fc87fbe484c579f99908d5e175bc8b135351296e23
+  api-revision:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 19. Revision, fingerprint, digests, and runtime policy
+      - 19.1 Topology revision
+    reviewed_hash: sha256:f5bc9a25453285db32ad2fadf01c9cc3176d5399f3cbb347ea6641de69c90bd3
+  api-snapshot:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VI — Inputs and outputs, 28. `InputSnapshot`]
+    reviewed_hash: sha256:47f9c6700f6a9c3163970645dafb11470000a0e32491201f3d84405ff50f78b9
+  schema-binding:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 75. Input schema binding
+    reviewed_hash: sha256:eb95f049f168441a248456ba4f8e24135c9ce7e046f7e102af14b5732e6dd987
+  api-output-events:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VI — Inputs and outputs, 32. `OutputEvent<D>`]
+    reviewed_hash: sha256:007184f2cb51c1ebbc203631028d62385aad769a6846027c9cb606f432afb364
+  concrete-transaction-values:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XV — Transactions, 57. Owned explicit transaction values]
+    reviewed_hash: sha256:033d15615380a747bc0ee2a8b7cdd0bf81aa2e77094281080873b18fa6edc674
+  concrete-transaction-constructors:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XV — Transactions, 58. Distinct constructors]
+    reviewed_hash: sha256:99c4783a9c2d269f0a3782d11385267bed3f73a44eabfda228e8375d41e65d57
+  concrete-apply:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVI — Apply and forecast, 61. Applying transactions]
+    reviewed_hash: sha256:b374b5157312dc9d464980f48fed78fa084f78559542509570b30b1d82dc3ce6
+  concrete-output-events:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, 66. Output events]
+    reviewed_hash: sha256:2fa14b1c92982a2f8bdba90ca3ebed0cb078987d88be60027c14a094813f6fa7
+  concrete-result:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, 64. `TransactionResult<D>`]
+    reviewed_hash: sha256:20fb868dbf44f94e61a1e06e7f9f5ac08b5b7dbd7db5584777630bae19f6f295
+  concrete-cause-references:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XX — Explanation and provenance, 76. Cause references]
+    reviewed_hash: sha256:812a33c6984f4f42065c3e2d8272bc5f6721ec60e4d5cb8748e65f11223e5742
+  runtime-provenance-records:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part V — Runtime storage, 30. Provenance records]
+    reviewed_hash: sha256:ece55fde4f056390ef43c3a64c7a2a7bea4bf3e94870f43c51e6778905e97e56
+  runtime-causal-provenance:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 63. Derivation structure]
+    reviewed_hash: sha256:bb1973d9aea76fb8f7e039c7f9713ad91418c3f68c0968605819de55ca0a2c37
+  api-causal-provenance:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 53. Causal provenance]
+    reviewed_hash: sha256:9a55ead387cffd6833521d6efa179e653027358990c73721faf8e258eb064574
+  api-runtime-policy:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 19. Revision, fingerprint, digests, and runtime policy
+      - 19.4 Runtime policy
+    reviewed_hash: sha256:f96ee53258acadc3a49b9b8cca7ffd18c66b573302712473614b7c91f3aa468a
+  runtime-budget-failure:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XIV — Runtime policy and replay, 91. Budget failure]
+    reviewed_hash: sha256:2ca78ad09dfa909af6d1ad6e2685bbeea97ea77dc45df56832e4f27c3be4d879
+  lifecycle-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 28. Lifecycle]
+    reviewed_hash: sha256:e26c76bc0b2d925d95f497c33d4e0f78989ac6987bedf97250df10dd92c6be3d
+  runtime-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part V — Exhaustive initial catalogue
+      - 29. Runtime values, time, policy, and semantic rejection
+    reviewed_hash: sha256:c9f66339774d5f873cdf36804834c8e71d0ea3025aef36badde12a1ca570e825
+  input-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 30. Input construction and projection]
+    reviewed_hash: sha256:3953dbde0d5f72123a26a59dc49c35ff13fe36622490c09d31e57557be10452c
+  testing-reference-transaction:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part III — Reference implementations, 9. Required reference paths, 9.2 Clone-and-swap transaction executor]
+    reviewed_hash: sha256:72818525b1160179b437b1003f4132287738e5c8ebe731c1baa147e527038f35
+  testing-first-transaction:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VI — Initialization verification, 24. First-transaction obligations]
+    reviewed_hash: sha256:6473e120417525b0974d49b6a773cfcec8f711ebfd12c38ae53c9da5c83e4683
+  testing-initialization-rejection:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VI — Initialization verification, 25. Initialization rejection]
+    reviewed_hash: sha256:d6449d1b5e68c48aa92e12968f4cb50659dedc512ac8ffa2f3db60385fe7d828
+  testing-failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
+  testing-budget-boundaries:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XVI — Runtime-policy and budget verification, 92. Budget boundaries]
+    reviewed_hash: sha256:cff7fe7bd3bcc9e478cfdf31ec758817d34bf117517d9eb4250402db640d6789
