@@ -996,8 +996,8 @@ Semantically equivalent stable-keyed definitions must produce the same fingerpri
 ### 54.2 Restricted network-fingerprint projection version 1
 
 For the restricted foundation containing `Constant`, `Not`, `All`, `Any`,
-`Parity`, `AtLeast`, `Select`, pulse `Merge`, and stateful `Toggle`, the exact
-canonical payload is the following record:
+`Parity`, `AtLeast`, `Select`, pulse `Merge`, stateful `Toggle`, and temporal
+`PulseDelay`, the exact canonical payload is the following record:
 
 ```text
 network_fingerprint_payload_v1 = record {
@@ -1047,6 +1047,10 @@ kind = ["constant", record {
             initial,
             state_schema,
         }]
+     | ["pulse_delay", record {
+            delay_ticks,
+            temporal_schema,
+        }]
 
 value = ["low", null]
       | ["high", null]
@@ -1054,6 +1058,10 @@ value = ["low", null]
 threshold = unsigned integer
 
 state_schema = ["stored_level", null]
+
+delay_ticks = unsigned integer
+
+temporal_schema = ["pending_pulse_group", null]
 
 port = record {
     direction,
@@ -1069,6 +1077,7 @@ semantic_role = ["input", null]
               | ["when_low", null]
               | ["when_high", null]
               | ["toggle", null]
+              | ["pulse_delay", null]
               | ["output", null]
 signal_kind   = ["level", null]
               | ["pulse", null]
@@ -1112,7 +1121,9 @@ fixed input ports of `Select`; ordinary fixed and variadic level inputs use the
 output. Its kind record includes the declared initial level and closed one-cell
 `stored_level` state schema. The role is part of canonical semantic identity
 independently of the stable port key. `AtLeast` encodes its `u64` threshold as
-the canonical unsigned integer above.
+the canonical unsigned integer above. `PulseDelay` uses the `pulse_delay` role
+for its Pulse input and `output` for its Pulse output. Its kind record includes
+the positive delay in ticks and the closed `pending_pulse_group` temporal schema.
 
 Every `key` and `owner` field is the applicable 16-byte stable structural key.
 Node collections are ordered by `NodeKey`; connection collections by

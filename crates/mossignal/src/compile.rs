@@ -11,6 +11,7 @@ use crate::key::{
 use crate::machine::Machine;
 use crate::policy::RuntimePolicy;
 use crate::signal::{Level, LogicLevel, Pulse, PulseCount, SignalKind};
+use crate::time::NonZeroSpan;
 use crate::validation::{ReactionDependencyGraph, ReactionVertex, ValidatedNetwork};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -104,6 +105,10 @@ enum CompiledNodeKind {
         input: PortIndex,
         state: ToggleStateIndex,
     },
+    PulseDelay {
+        input: PortIndex,
+        delay_ticks: u64,
+    },
 }
 
 #[derive(Debug)]
@@ -156,8 +161,17 @@ pub(crate) struct FullEvaluation {
     pub(crate) pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
     pub(crate) proposed_toggle_states: Vec<LogicLevel>,
     pub(crate) toggle_inversions: BTreeMap<NodeKey, usize>,
+    pub(crate) pulse_delay_proposals: Vec<PulseDelayProposal>,
     #[cfg(test)]
     execution_counts: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PulseDelayProposal {
+    pub(crate) node: NodeKey,
+    pub(crate) delay_ticks: u64,
+    pub(crate) count: PulseCount,
+    pub(crate) input_source: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +195,9 @@ pub(crate) enum EvaluationCause {
         previous: LogicLevel,
         result: LogicLevel,
         inverted: bool,
+    },
+    PulseDelay {
+        node: NodeKey,
     },
     Alias(usize),
     ExternalOutput {
@@ -344,6 +361,21 @@ impl<D> CompiledNetwork<D> {
             .evaluate_reaction(external_levels, external_pulses, previous_toggle_states)
     }
 
+    pub(crate) fn evaluate_temporal_reaction(
+        &self,
+        external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+        external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+        previous_toggle_states: &[LogicLevel],
+        due_pulses: &BTreeMap<NodeKey, PulseCount>,
+    ) -> Result<FullEvaluation, EvaluationFailure> {
+        self.inner.evaluate_reaction_with_due(
+            external_levels,
+            external_pulses,
+            previous_toggle_states,
+            due_pulses,
+        )
+    }
+
     pub(crate) fn operation_count(&self) -> usize {
         self.inner.operations.len()
     }
@@ -365,6 +397,14 @@ impl<D> CompiledNetwork<D> {
         }
     }
 
+    pub(crate) fn pulse_delay(&self, node: NodeKey) -> Option<NonZeroSpan<D>> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        let CompiledNodeKind::PulseDelay { delay_ticks, .. } = descriptor.kind else {
+            return None;
+        };
+        NonZeroSpan::from_ticks(delay_ticks).ok()
+    }
+
     pub(crate) fn contains_node(&self, node: NodeKey) -> bool {
         self.inner.node_lookup.contains_key(&node)
     }
@@ -377,6 +417,21 @@ impl<D> CompiledInner<D> {
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
         previous_toggle_states: &[LogicLevel],
     ) -> Result<FullEvaluation, EvaluationFailure> {
+        self.evaluate_reaction_with_due(
+            external_levels,
+            external_pulses,
+            previous_toggle_states,
+            &BTreeMap::new(),
+        )
+    }
+
+    fn evaluate_reaction_with_due(
+        &self,
+        external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+        external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+        previous_toggle_states: &[LogicLevel],
+        due_pulses: &BTreeMap<NodeKey, PulseCount>,
+    ) -> Result<FullEvaluation, EvaluationFailure> {
         if previous_toggle_states.len() != self.toggle_initial_states.len() {
             return Err(EvaluationFailure::Incomplete);
         }
@@ -386,6 +441,7 @@ impl<D> CompiledInner<D> {
         let mut pulse_outputs = BTreeMap::new();
         let mut proposed_toggle_states = previous_toggle_states.to_vec();
         let mut toggle_inversions = BTreeMap::new();
+        let mut pulse_delay_proposals = Vec::new();
         #[cfg(test)]
         let mut execution_counts = vec![0; self.operations.len()];
 
@@ -661,6 +717,21 @@ impl<D> CompiledInner<D> {
                             },
                         )
                     }
+                    NodeDescriptor {
+                        key,
+                        kind: CompiledNodeKind::PulseDelay { .. },
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/pulse-delay.yaml "temporal-causality-barrier"
+                        // Current output depends only on due work. Current input is read after
+                        // complete settlement to create a strictly-future terminal proposal.
+                        (
+                            EvaluationValue::Pulse(
+                                due_pulses.get(key).copied().unwrap_or(PulseCount::ZERO),
+                            ),
+                            EvaluationCause::PulseDelay { node: *key },
+                        )
+                    }
                 },
                 OperationDescriptor::NodeOutput(port) => {
                     let predecessor = self.predecessors[index]
@@ -713,6 +784,24 @@ impl<D> CompiledInner<D> {
             causes.push(cause);
         }
 
+        // PulseDelay's scheduling path is terminal for this reaction. Reading it
+        // after all current values settle preserves upstream causality without
+        // adding an input-to-current-output edge or a same-time microstep.
+        for node in &self.nodes {
+            let CompiledNodeKind::PulseDelay { input, delay_ticks } = node.kind else {
+                continue;
+            };
+            let count = self.pulse_input_value(input, &values)?;
+            if count.is_positive() {
+                pulse_delay_proposals.push(PulseDelayProposal {
+                    node: node.key,
+                    delay_ticks,
+                    count,
+                    input_source: self.input_source(input)?.0,
+                });
+            }
+        }
+
         let complete_values = values
             .into_iter()
             .collect::<Option<Vec<_>>>()
@@ -730,6 +819,7 @@ impl<D> CompiledInner<D> {
             pulse_outputs,
             proposed_toggle_states,
             toggle_inversions,
+            pulse_delay_proposals,
             #[cfg(test)]
             execution_counts,
         })
@@ -846,6 +936,15 @@ impl<D> CompiledInner<D> {
                     let state = ToggleStateIndex(toggle_initial_states.len());
                     toggle_initial_states.push(config.initial);
                     CompiledNodeKind::Toggle { input, state }
+                }
+                NodeKind::PulseDelay(config) => {
+                    let input = inputs.first().copied().unwrap_or_else(|| {
+                        panic!("validated PulseDelay descriptor must retain its pulse input")
+                    });
+                    CompiledNodeKind::PulseDelay {
+                        input,
+                        delay_ticks: config.delay.ticks(),
+                    }
                 }
             };
             nodes.push(NodeDescriptor {
@@ -988,6 +1087,12 @@ impl<D> CompiledInner<D> {
                         && node.inputs[0] == input
                         && state.0 < self.toggle_initial_states.len()
                 }
+                CompiledNodeKind::PulseDelay { input, delay_ticks } => {
+                    node.inputs.len() == 1
+                        && node.outputs.len() == 1
+                        && node.inputs[0] == input
+                        && delay_ticks > 0
+                }
                 CompiledNodeKind::Select {
                     selector,
                     when_low,
@@ -1009,6 +1114,7 @@ impl<D> CompiledInner<D> {
             let (input_kind, output_kind) = match node.kind {
                 CompiledNodeKind::Merge => (SignalKind::Pulse, SignalKind::Pulse),
                 CompiledNodeKind::Toggle { .. } => (SignalKind::Pulse, SignalKind::Level),
+                CompiledNodeKind::PulseDelay { .. } => (SignalKind::Pulse, SignalKind::Pulse),
                 _ => (SignalKind::Level, SignalKind::Level),
             };
             for index in &node.inputs {
@@ -1162,6 +1268,7 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
                 NodeKind::Select => NodeKind::select(),
                 NodeKind::Merge => NodeKind::merge(),
                 NodeKind::Toggle(config) => NodeKind::toggle(config.initial),
+                NodeKind::PulseDelay(config) => NodeKind::pulse_delay(config.delay),
             };
             crate::authored::NodeDef::new(
                 node.key(),

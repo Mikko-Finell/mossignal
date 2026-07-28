@@ -5,10 +5,12 @@ use crate::diagnostics::{Responsibility, Severity};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
 use crate::input::{InputDelta, InputSnapshot};
 use crate::key::{ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey};
-use crate::machine::{Machine, MachineStatus, NetworkRevision};
+use crate::machine::{
+    Machine, MachineStatus, NetworkRevision, PendingEventKey, PendingPulseDelay, Schedule,
+};
 use crate::policy::{RuntimePolicy, RuntimePolicyLimit};
 use crate::signal::{Level, LogicLevel, Pulse, PulseCount};
-use crate::time::Time;
+use crate::time::{Span, Time};
 use core::fmt;
 use core::marker::PhantomData;
 use std::collections::BTreeMap;
@@ -124,6 +126,7 @@ pub enum RuntimeFailureEvidence {
     PulseCountOverflow {
         node: NodeKey,
     },
+    TimeOverflow,
 }
 
 /// A structured rejection of one runtime transaction.
@@ -163,6 +166,7 @@ impl<D> RuntimeFailure<D> {
             RuntimeFailureEvidence::StaleInputSchema { .. } => "input.stale_schema",
             RuntimeFailureEvidence::BudgetExceeded { .. } => "runtime.budget_exceeded",
             RuntimeFailureEvidence::PulseCountOverflow { .. } => "runtime.pulse_count_overflow",
+            RuntimeFailureEvidence::TimeOverflow => "runtime.time_overflow",
         }
     }
 
@@ -186,7 +190,8 @@ impl<D> RuntimeFailure<D> {
             | RuntimeFailureEvidence::ForeignInputSchema { .. }
             | RuntimeFailureEvidence::StaleInputSchema { .. } => Responsibility::Compatibility,
             RuntimeFailureEvidence::BudgetExceeded { .. } => Responsibility::ResourceLimit,
-            RuntimeFailureEvidence::PulseCountOverflow { .. } => Responsibility::SemanticRejection,
+            RuntimeFailureEvidence::PulseCountOverflow { .. }
+            | RuntimeFailureEvidence::TimeOverflow => Responsibility::SemanticRejection,
         }
     }
 }
@@ -340,11 +345,13 @@ struct ProvenanceBuild<D> {
     output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     pulse_output_causes: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
     toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
+    pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
 }
 
 struct EvaluationProvenanceInputs<'a> {
     levels: &'a BTreeMap<ExternalInputKey<Level>, CauseRef>,
     pulses: &'a BTreeMap<ExternalInputKey<Pulse>, CauseRef>,
+    due_pulse_delays: &'a BTreeMap<NodeKey, Vec<CauseRef>>,
 }
 
 struct PreviousLevelOutputs<'a> {
@@ -513,6 +520,7 @@ pub struct TransactionResult<D> {
     before_revision: NetworkRevision,
     after_revision: NetworkRevision,
     output_events: Vec<OutputEvent<D>>,
+    schedule: Schedule<D>,
     provenance: ProvenanceView<D>,
 }
 
@@ -541,6 +549,12 @@ impl<D> TransactionResult<D> {
         &self.output_events
     }
 
+    /// Returns the next temporal wakeup state after this transaction.
+    #[must_use]
+    pub const fn schedule(&self) -> Schedule<D> {
+        self.schedule
+    }
+
     /// Returns the immutable view that resolves every event cause.
     #[must_use]
     pub const fn provenance(&self) -> &ProvenanceView<D> {
@@ -556,6 +570,7 @@ impl<D> fmt::Debug for TransactionResult<D> {
             .field("before_revision", &self.before_revision)
             .field("after_revision", &self.after_revision)
             .field("output_events", &self.output_events)
+            .field("schedule", &self.schedule)
             .field("provenance_records", &self.provenance.len())
             .finish()
     }
@@ -599,7 +614,7 @@ impl<D> Machine<D> {
         }
         validate_snapshot_binding::<D>(&self.compiled, &input)?;
 
-        enforce_reaction_budgets::<D>(&self.policy, &self.compiled)?;
+        enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, 1)?;
         let revision = self.store.revision;
         let (levels, pulses) = input.into_parts();
         let evaluation =
@@ -610,6 +625,7 @@ impl<D> Machine<D> {
             output_causes,
             pulse_output_causes,
             toggle_inversion_causes,
+            pulse_delay_schedules,
         } = build_initialization_provenance(
             self.compiled.network_key(),
             self.compiled.fingerprint(),
@@ -619,6 +635,21 @@ impl<D> Machine<D> {
             &pulses,
             &evaluation,
         );
+        let mut created_pending_events = 0_u64;
+        let mut pending_pulse_delays = BTreeMap::new();
+        let mut next_pending_event_serial = 0;
+        schedule_pulse_delays(
+            PulseDelayScheduling {
+                pending: &mut pending_pulse_delays,
+                next_serial: &mut next_pending_event_serial,
+                created_events: &mut created_pending_events,
+            },
+            at,
+            revision,
+            &evaluation,
+            &pulse_delay_schedules,
+            &self.policy,
+        )?;
         enforce_budget::<D>(
             &self.policy,
             RuntimePolicyLimit::MaxRequiredProvenanceGrowth,
@@ -633,16 +664,18 @@ impl<D> Machine<D> {
             &evaluation.pulse_outputs,
             &pulse_output_causes,
         );
-        enforce_budget::<D>(
+        enforce_created_event_budget::<D>(
             &self.policy,
-            RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
-            count_as_u64(output_events.len()),
+            created_pending_events,
+            output_events.len(),
         )?;
+        let schedule = schedule_from_pending(&pending_pulse_delays);
         let result = TransactionResult {
             requested_time: at,
             before_revision: revision,
             after_revision: revision,
             output_events,
+            schedule,
             provenance: provenance.clone(),
         };
 
@@ -656,6 +689,8 @@ impl<D> Machine<D> {
                 output_causes,
                 provenance,
                 toggle_inversion_causes,
+                pending_pulse_delays,
+                next_pending_event_serial,
             },
         );
         Ok(result)
@@ -688,25 +723,123 @@ impl<D> Machine<D> {
             ));
         }
 
-        enforce_reaction_budgets::<D>(&self.policy, &self.compiled)?;
-
         let revision = self.store.revision;
         let (explicit_levels, pulses) = input.into_parts();
         let mut levels = self.store.external_levels.clone();
-        levels.extend(explicit_levels.iter().map(|(key, value)| (*key, *value)));
-        let evaluation =
-            evaluate_reaction::<D>(&self.compiled, &levels, &pulses, &self.store.toggle_states)?;
-        let previous_provenance = match self.store.provenance.as_ref() {
-            Some(provenance) => provenance,
+        let mut pending_pulse_delays = self.store.pending_pulse_delays.clone();
+        let mut next_pending_event_serial = self.store.next_pending_event_serial;
+        let mut toggle_states = self.store.toggle_states.clone();
+        let mut output_baselines = self.store.output_baselines.clone();
+        let mut input_causes = self.store.input_causes.clone();
+        let mut output_causes = self.store.output_causes.clone();
+        let mut toggle_inversion_causes = self.store.toggle_inversion_causes.clone();
+        let mut provenance = match self.store.provenance.as_ref() {
+            Some(provenance) => provenance.clone(),
             None => panic!("ready machine must retain committed provenance"),
         };
-        let ProvenanceBuild {
-            provenance,
-            input_causes,
-            output_causes,
-            pulse_output_causes,
-            toggle_inversion_causes,
-        } = build_ready_provenance(
+        let previous_provenance_len = provenance.len();
+        let mut output_events = Vec::new();
+        let mut created_pending_events = 0_u64;
+        let mut reaction_count = 0_u64;
+        let empty_levels = BTreeMap::new();
+        let empty_pulses = BTreeMap::new();
+
+        while pending_pulse_delays
+            .keys()
+            .next()
+            .is_some_and(|deadline| *deadline < at)
+        {
+            let deadline = match pending_pulse_delays.keys().next().copied() {
+                Some(deadline) => deadline,
+                None => panic!("nonempty temporal calendar must have a least deadline"),
+            };
+            let batch = match pending_pulse_delays.remove(&deadline) {
+                Some(batch) => batch,
+                None => panic!("selected temporal deadline must retain its event batch"),
+            };
+            let due = aggregate_due::<D>(batch)?;
+            let internal = self
+                .compiled
+                .evaluate_temporal_reaction(&levels, &empty_pulses, &toggle_states, &due.counts)
+                .map_err(evaluation_failure)?;
+            reaction_count = reaction_count.saturating_add(1);
+            enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, reaction_count)?;
+
+            let built = build_ready_provenance(
+                self.compiled.network_key(),
+                self.compiled.fingerprint(),
+                revision,
+                deadline,
+                &levels,
+                &empty_levels,
+                &empty_pulses,
+                &internal,
+                &provenance,
+                &input_causes,
+                &output_causes,
+                &output_baselines,
+                &toggle_inversion_causes,
+                &due.causes,
+            );
+            remap_pending_causes(&mut pending_pulse_delays, built.provenance.scope);
+            remap_output_event_causes(&mut output_events, built.provenance.scope);
+            let mut reaction_events = changed_events(
+                deadline,
+                revision,
+                &output_baselines,
+                &internal.external_outputs,
+                &built.output_causes,
+                &internal.pulse_outputs,
+                &built.pulse_output_causes,
+            );
+            output_events.append(&mut reaction_events);
+
+            input_causes = built.input_causes;
+            output_causes = built.output_causes;
+            toggle_inversion_causes = built.toggle_inversion_causes;
+            provenance = built.provenance;
+            toggle_states = internal.proposed_toggle_states.clone();
+            output_baselines = internal.external_outputs.clone();
+            schedule_pulse_delays(
+                PulseDelayScheduling {
+                    pending: &mut pending_pulse_delays,
+                    next_serial: &mut next_pending_event_serial,
+                    created_events: &mut created_pending_events,
+                },
+                deadline,
+                revision,
+                &internal,
+                &built.pulse_delay_schedules,
+                &self.policy,
+            )?;
+            enforce_created_event_budget::<D>(
+                &self.policy,
+                created_pending_events,
+                output_events.len(),
+            )?;
+            enforce_provenance_growth::<D>(
+                &self.policy,
+                provenance.len(),
+                previous_provenance_len,
+            )?;
+        }
+
+        // Target-time external levels become authoritative only after every
+        // strictly earlier internal deadline has completed on candidate state.
+        levels.extend(explicit_levels.iter().map(|(key, value)| (*key, *value)));
+        let due = pending_pulse_delays
+            .remove(&at)
+            .map(aggregate_due::<D>)
+            .transpose()?
+            .unwrap_or_default();
+        let evaluation = self
+            .compiled
+            .evaluate_temporal_reaction(&levels, &pulses, &toggle_states, &due.counts)
+            .map_err(evaluation_failure)?;
+        reaction_count = reaction_count.saturating_add(1);
+        enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, reaction_count)?;
+
+        let built = build_ready_provenance(
             self.compiled.network_key(),
             self.compiled.fingerprint(),
             revision,
@@ -715,39 +848,55 @@ impl<D> Machine<D> {
             &explicit_levels,
             &pulses,
             &evaluation,
-            previous_provenance,
-            &self.store.input_causes,
-            &self.store.output_causes,
-            &self.store.output_baselines,
-            &self.store.toggle_inversion_causes,
+            &provenance,
+            &input_causes,
+            &output_causes,
+            &output_baselines,
+            &toggle_inversion_causes,
+            &due.causes,
         );
-        let provenance_growth = provenance.len().saturating_sub(previous_provenance.len());
-        enforce_budget::<D>(
-            &self.policy,
-            RuntimePolicyLimit::MaxRequiredProvenanceGrowth,
-            count_as_u64(provenance_growth),
-        )?;
-
-        let output_events = changed_events(
+        remap_pending_causes(&mut pending_pulse_delays, built.provenance.scope);
+        remap_output_event_causes(&mut output_events, built.provenance.scope);
+        let mut final_events = changed_events(
             at,
             revision,
-            &self.store.output_baselines,
+            &output_baselines,
             &evaluation.external_outputs,
-            &output_causes,
+            &built.output_causes,
             &evaluation.pulse_outputs,
-            &pulse_output_causes,
+            &built.pulse_output_causes,
         );
-        enforce_budget::<D>(
+        output_events.append(&mut final_events);
+        schedule_pulse_delays(
+            PulseDelayScheduling {
+                pending: &mut pending_pulse_delays,
+                next_serial: &mut next_pending_event_serial,
+                created_events: &mut created_pending_events,
+            },
+            at,
+            revision,
+            &evaluation,
+            &built.pulse_delay_schedules,
             &self.policy,
-            RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
-            count_as_u64(output_events.len()),
         )?;
+        enforce_created_event_budget::<D>(
+            &self.policy,
+            created_pending_events,
+            output_events.len(),
+        )?;
+        enforce_provenance_growth::<D>(
+            &self.policy,
+            built.provenance.len(),
+            previous_provenance_len,
+        )?;
+        let schedule = schedule_from_pending(&pending_pulse_delays);
         let result = TransactionResult {
             requested_time: at,
             before_revision: revision,
             after_revision: revision,
             output_events,
-            provenance: provenance.clone(),
+            schedule,
+            provenance: built.provenance.clone(),
         };
 
         publish_candidate(
@@ -756,10 +905,12 @@ impl<D> Machine<D> {
                 at,
                 levels,
                 evaluation,
-                input_causes,
-                output_causes,
-                provenance,
-                toggle_inversion_causes,
+                input_causes: built.input_causes,
+                output_causes: built.output_causes,
+                provenance: built.provenance,
+                toggle_inversion_causes: built.toggle_inversion_causes,
+                pending_pulse_delays,
+                next_pending_event_serial,
             },
         );
         Ok(result)
@@ -855,16 +1006,170 @@ fn evaluate_reaction<D>(
     }
 }
 
-fn enforce_reaction_budgets<D>(
+fn evaluation_failure<D>(failure: EvaluationFailure) -> RuntimeFailure<D> {
+    match failure {
+        EvaluationFailure::PulseCountOverflow { node } => {
+            RuntimeFailure::new(RuntimeFailureEvidence::PulseCountOverflow { node })
+        }
+        EvaluationFailure::Incomplete => {
+            panic!("validated topology and exact-bound inputs must evaluate completely")
+        }
+    }
+}
+
+#[derive(Default)]
+struct DuePulseDelays {
+    counts: BTreeMap<NodeKey, PulseCount>,
+    causes: BTreeMap<NodeKey, Vec<CauseRef>>,
+}
+
+struct PulseDelayScheduling<'a, D> {
+    pending: &'a mut BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
+    next_serial: &'a mut u64,
+    created_events: &'a mut u64,
+}
+
+fn aggregate_due<D>(batch: Vec<PendingPulseDelay<D>>) -> Result<DuePulseDelays, RuntimeFailure<D>> {
+    let mut due = DuePulseDelays::default();
+    for event in batch {
+        let previous = due
+            .counts
+            .get(&event.node)
+            .copied()
+            .unwrap_or(PulseCount::ZERO);
+        let combined = previous.checked_add(event.count).map_err(|_| {
+            RuntimeFailure::new(RuntimeFailureEvidence::PulseCountOverflow { node: event.node })
+        })?;
+        due.counts.insert(event.node, combined);
+        due.causes.entry(event.node).or_default().push(event.cause);
+    }
+    for causes in due.causes.values_mut() {
+        causes.sort();
+        causes.dedup();
+    }
+    Ok(due)
+}
+
+fn schedule_pulse_delays<D>(
+    scheduling: PulseDelayScheduling<'_, D>,
+    origin: Time<D>,
+    revision: NetworkRevision,
+    evaluation: &FullEvaluation,
+    proposal_causes: &BTreeMap<NodeKey, CauseRef>,
+    policy: &RuntimePolicy,
+) -> Result<(), RuntimeFailure<D>> {
+    for proposal in &evaluation.pulse_delay_proposals {
+        let deadline = origin
+            .checked_add(Span::from_ticks(proposal.delay_ticks))
+            .map_err(|_| RuntimeFailure::new(RuntimeFailureEvidence::TimeOverflow))?;
+        let key = PendingEventKey::from_serial(*scheduling.next_serial);
+        *scheduling.next_serial = scheduling.next_serial.checked_add(1).ok_or_else(|| {
+            RuntimeFailure::new(RuntimeFailureEvidence::BudgetExceeded {
+                budget: RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
+                limit: policy.max_events_created_per_transaction(),
+                consumed: u64::MAX,
+            })
+        })?;
+        let cause = match proposal_causes.get(&proposal.node).copied() {
+            Some(cause) => cause,
+            None => panic!("every PulseDelay proposal must retain a scheduling cause"),
+        };
+        scheduling
+            .pending
+            .entry(deadline)
+            .or_default()
+            .push(PendingPulseDelay {
+                key,
+                node: proposal.node,
+                origin,
+                deadline,
+                count: proposal.count,
+                revision,
+                cause,
+            });
+        *scheduling.created_events = scheduling.created_events.saturating_add(1);
+        enforce_budget::<D>(
+            policy,
+            RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
+            *scheduling.created_events,
+        )?;
+    }
+    let pending_count = scheduling.pending.values().map(Vec::len).sum::<usize>();
+    enforce_budget::<D>(
+        policy,
+        RuntimePolicyLimit::MaxPendingEvents,
+        count_as_u64(pending_count),
+    )?;
+    Ok(())
+}
+
+fn enforce_outer_reaction_budgets<D>(
     policy: &RuntimePolicy,
     compiled: &crate::CompiledNetwork<D>,
+    reaction_count: u64,
 ) -> Result<(), RuntimeFailure<D>> {
-    enforce_budget::<D>(policy, RuntimePolicyLimit::MaxInternalReactions, 1)?;
+    enforce_budget::<D>(
+        policy,
+        RuntimePolicyLimit::MaxInternalReactions,
+        reaction_count,
+    )?;
+    let operations = reaction_count.saturating_mul(count_as_u64(compiled.operation_count()));
     enforce_budget::<D>(
         policy,
         RuntimePolicyLimit::MaxEvaluatedOperations,
-        count_as_u64(compiled.operation_count()),
+        operations,
     )
+}
+
+fn enforce_created_event_budget<D>(
+    policy: &RuntimePolicy,
+    pending_created: u64,
+    output_events: usize,
+) -> Result<(), RuntimeFailure<D>> {
+    enforce_budget::<D>(
+        policy,
+        RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
+        pending_created.saturating_add(count_as_u64(output_events)),
+    )
+}
+
+fn enforce_provenance_growth<D>(
+    policy: &RuntimePolicy,
+    current_len: usize,
+    previous_len: usize,
+) -> Result<(), RuntimeFailure<D>> {
+    enforce_budget::<D>(
+        policy,
+        RuntimePolicyLimit::MaxRequiredProvenanceGrowth,
+        count_as_u64(current_len.saturating_sub(previous_len)),
+    )
+}
+
+fn schedule_from_pending<D>(pending: &BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>) -> Schedule<D> {
+    match pending.keys().next().copied() {
+        Some(deadline) => Schedule::WakeAt(deadline),
+        None => Schedule::Dormant,
+    }
+}
+
+fn remap_pending_causes<D>(
+    pending: &mut BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
+    scope: [u8; 16],
+) {
+    for event in pending.values_mut().flatten() {
+        event.cause = remap_cause(event.cause, scope);
+    }
+}
+
+fn remap_output_event_causes<D>(events: &mut [OutputEvent<D>], scope: [u8; 16]) {
+    for event in events {
+        let cause = match event {
+            OutputEvent::LevelEstablished { cause, .. }
+            | OutputEvent::LevelChanged { cause, .. }
+            | OutputEvent::Pulsed { cause, .. } => cause,
+        };
+        *cause = remap_cause(*cause, scope);
+    }
 }
 
 struct PublishedCandidate<D> {
@@ -875,6 +1180,8 @@ struct PublishedCandidate<D> {
     output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     provenance: ProvenanceView<D>,
     toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
+    pending_pulse_delays: BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
+    next_pending_event_serial: u64,
 }
 
 fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<D>) {
@@ -886,6 +1193,8 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
         output_causes,
         provenance,
         toggle_inversion_causes,
+        pending_pulse_delays,
+        next_pending_event_serial,
     } = published;
     // SPEC: docs/specs/processor_and_runtime_architecture.md §50 "Reference execution strategy"
     // Every fallible step precedes replacement of the complete private candidate.
@@ -899,6 +1208,8 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     candidate.provenance = Some(provenance);
     candidate.toggle_states = evaluation.proposed_toggle_states;
     candidate.toggle_inversion_causes = toggle_inversion_causes;
+    candidate.pending_pulse_delays = pending_pulse_delays;
+    candidate.next_pending_event_serial = next_pending_event_serial;
     machine.store = candidate;
 }
 
@@ -1014,6 +1325,7 @@ fn build_initialization_provenance<D>(
         EvaluationProvenanceInputs {
             levels: &input_causes,
             pulses: &pulse_input_causes,
+            due_pulse_delays: &BTreeMap::new(),
         },
         None,
         None,
@@ -1028,6 +1340,7 @@ fn build_initialization_provenance<D>(
         output_causes: evaluation_causes.level_outputs,
         pulse_output_causes: evaluation_causes.pulse_outputs,
         toggle_inversion_causes: evaluation_causes.toggle_inversions,
+        pulse_delay_schedules: evaluation_causes.pulse_delay_schedules,
     }
 }
 
@@ -1046,6 +1359,7 @@ fn build_ready_provenance<D>(
     previous_output_causes: &BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     previous_output_baselines: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     previous_toggle_inversion_causes: &BTreeMap<NodeKey, CauseRef>,
+    due_pulse_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
 ) -> ProvenanceBuild<D> {
     let scope = provenance_scope(network_key, fingerprint, revision, at, levels, pulses);
     let mut records = previous
@@ -1099,6 +1413,7 @@ fn build_ready_provenance<D>(
         EvaluationProvenanceInputs {
             levels: &input_causes,
             pulses: &pulse_input_causes,
+            due_pulse_delays,
         },
         Some(PreviousLevelOutputs {
             causes: &remapped_output_causes,
@@ -1116,6 +1431,7 @@ fn build_ready_provenance<D>(
         output_causes: evaluation_causes.level_outputs,
         pulse_output_causes: evaluation_causes.pulse_outputs,
         toggle_inversion_causes: evaluation_causes.toggle_inversions,
+        pulse_delay_schedules: evaluation_causes.pulse_delay_schedules,
     }
 }
 
@@ -1123,6 +1439,7 @@ struct EvaluationCauseMaps {
     level_outputs: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
     toggle_inversions: BTreeMap<NodeKey, CauseRef>,
+    pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
 }
 
 fn append_evaluation_provenance<D>(
@@ -1241,6 +1558,27 @@ fn append_evaluation_provenance<D>(
                 }
                 reference
             }
+            EvaluationCause::PulseDelay { node } => {
+                let mut supporters = vec![transaction_cause];
+                supporters.extend(
+                    input_causes
+                        .due_pulse_delays
+                        .get(node)
+                        .into_iter()
+                        .flatten()
+                        .map(|cause| remap_cause(*cause, scope)),
+                );
+                supporters.sort();
+                supporters.dedup();
+                push_record(
+                    scope,
+                    records,
+                    ProvenanceRecord::Derived {
+                        subject: ProvenanceSubject::Node(*node),
+                        supporters,
+                    },
+                )
+            }
             EvaluationCause::Alias(source) => operation_cause(&operation_causes, *source),
             EvaluationCause::ExternalOutput { output, source } => {
                 let unchanged_cause = previous_output_baselines
@@ -1293,10 +1631,29 @@ fn append_evaluation_provenance<D>(
         };
         operation_causes.push(resolved);
     }
+    let mut pulse_delay_schedules = BTreeMap::new();
+    for proposal in &evaluation.pulse_delay_proposals {
+        let mut supporters = vec![
+            transaction_cause,
+            operation_cause(&operation_causes, proposal.input_source),
+        ];
+        supporters.sort();
+        supporters.dedup();
+        let reference = push_record(
+            scope,
+            records,
+            ProvenanceRecord::Derived {
+                subject: ProvenanceSubject::Node(proposal.node),
+                supporters,
+            },
+        );
+        pulse_delay_schedules.insert(proposal.node, reference);
+    }
     EvaluationCauseMaps {
         level_outputs: output_causes,
         pulse_outputs: pulse_output_causes,
         toggle_inversions: toggle_inversion_causes,
+        pulse_delay_schedules,
     }
 }
 
@@ -1886,6 +2243,11 @@ mod tests {
         provenance: Option<([u8; 16], usize, usize)>,
         toggle_states: Vec<LogicLevel>,
         toggle_inversion_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
+        pending_pulse_delays: std::collections::BTreeMap<
+            crate::time::Time<()>,
+            Vec<crate::machine::PendingPulseDelay<()>>,
+        >,
+        next_pending_event_serial: u64,
     }
 
     fn observe(machine: &crate::Machine<()>) -> MachineObservation {
@@ -1910,6 +2272,8 @@ mod tests {
             }),
             toggle_states: machine.store.toggle_states.clone(),
             toggle_inversion_causes: machine.store.toggle_inversion_causes.clone(),
+            pending_pulse_delays: machine.store.pending_pulse_delays.clone(),
+            next_pending_event_serial: machine.store.next_pending_event_serial,
         }
     }
 

@@ -209,6 +209,14 @@ fn nodes<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
                 writer.field("initial", |writer| logic_level(writer, config.initial));
                 writer.field("state_schema", |writer| writer.variant_null("stored_level"));
             }
+            NodeKind::PulseDelay(config) => {
+                writer.variant_start("pulse_delay");
+                writer.record_start(2);
+                writer.field("delay_ticks", |writer| writer.uint(config.delay.ticks()));
+                writer.field("temporal_schema", |writer| {
+                    writer.variant_null("pending_pulse_group")
+                });
+            }
         });
     }
 }
@@ -258,6 +266,7 @@ fn ports<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
                     InputPortRole::WhenLow => "when_low",
                     InputPortRole::WhenHigh => "when_high",
                     InputPortRole::Toggle => "toggle",
+                    InputPortRole::PulseDelay => "pulse_delay",
                 }
             } else {
                 "output"
@@ -493,6 +502,7 @@ mod tests {
     };
     use crate::metadata::DiagnosticMeta;
     use crate::signal::{Level, Pulse};
+    use crate::time::NonZeroSpan;
 
     fn meta(name: &str) -> DiagnosticMeta {
         DiagnosticMeta {
@@ -828,6 +838,46 @@ mod tests {
         )
     }
 
+    fn golden_pulse_delay(delay_ticks: u64) -> UncheckedNetwork<()> {
+        let external = ExternalInputKey::<Pulse>::from_u128(10);
+        let input = InPortKey::<Pulse>::from_u128(20);
+        let output = OutPortKey::<Pulse>::from_u128(30);
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(2),
+                NodeKind::pulse_delay(
+                    NonZeroSpan::from_ticks(delay_ticks).unwrap_or_else(|failure| {
+                        panic!("golden delay must be positive: {failure}")
+                    }),
+                ),
+                NodePorts::with_input_roles(
+                    vec![input.into()],
+                    vec![InputPortRole::PulseDelay],
+                    vec![output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                external.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Pulse>::from_u128(40).into(),
+                SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(50),
+                external.into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )],
+        )
+    }
+
     fn toggle_pair(reverse_claims: bool) -> UncheckedNetwork<()> {
         let external_inputs = [
             ExternalInputKey::<Pulse>::from_u128(10),
@@ -1138,6 +1188,31 @@ mod tests {
             validated_fingerprints(toggle_pair(false)),
             validated_fingerprints(toggle_pair(true)),
             "multiple Toggle claims must ignore insertion order"
+        );
+    }
+
+    #[test]
+    fn pulse_delay_projection_vector_and_delay_sensitivity() {
+        let network = golden_pulse_delay(5);
+        let (network_bytes, _) = canonical_inputs(&network);
+        let fingerprints = validated_fingerprints(network);
+        assert_eq!(
+            hex(&network_bytes),
+            "838266646f6d61696e78206d6f737369676e616c2f6e6574776f726b5f66696e6765727072696e742f763182677061796c6f61648982781f6275696c745f696e5f6e6f64655f73656d616e746963735f76657273696f6e01826b636f6e6e656374696f6e73818382636b657950000000000000000000000000000000328266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000014826b7369676e616c5f6b696e64826570756c7365f68276636f72655f73656d616e746963735f76657273696f6e01826f65787465726e616c5f696e70757473818282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f6827065787465726e616c5f6f757470757473818382636b65795000000000000000000000000000000028826b7369676e616c5f6b696e64826570756c7365f68266736f7572636582686f75745f706f72748282636b6579500000000000000000000000000000001e826b7369676e616c5f6b696e64826570756c7365f6826b6e6574776f726b5f6b6579500000000000000000000000000000000182656e6f646573818282636b6579500000000000000000000000000000000282646b696e64826b70756c73655f64656c617982826b64656c61795f7469636b7305826f74656d706f72616c5f736368656d61827370656e64696e675f70756c73655f67726f7570f68265706f72747382858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001482656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c65826b70756c73655f64656c6179f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000001e82656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e64826570756c7365f6826e74696d655f646f6d61696e5f69645000000000000000000000000000000002826776657273696f6e01"
+        );
+        assert_eq!(
+            fingerprints.0.to_string(),
+            "cf0a49204d9bd204771c175e3edafad4ddb7d937f7f881b00ec6be0db0ec7288"
+        );
+        assert_ne!(
+            fingerprints.0,
+            validated_fingerprints(golden_pulse_delay(6)).0,
+            "the exact delay participates in identity"
+        );
+        assert_ne!(
+            fingerprints.0,
+            validated_fingerprints(golden_merge(false)).0,
+            "the temporal node kind and schema participate in identity"
         );
     }
 

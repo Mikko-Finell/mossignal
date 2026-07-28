@@ -4,8 +4,8 @@ use crate::compile::CompiledNetwork;
 use crate::identity::NetworkFingerprint;
 use crate::key::{ExternalInputKey, ExternalOutputKey, NodeKey};
 use crate::policy::{RuntimePolicy, RuntimePolicyId};
-use crate::signal::{Level, LogicLevel};
-use crate::time::Time;
+use crate::signal::{Level, LogicLevel, PulseCount};
+use crate::time::{NonZeroSpan, Time};
 use crate::transaction::{CauseRef, ProvenanceView};
 use core::fmt;
 use std::collections::BTreeMap;
@@ -16,6 +16,201 @@ use std::collections::BTreeMap;
 /// numeric representation is private and is not a persistence-format promise.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NetworkRevision(u64);
+
+/// A stable machine-local identity for one pending temporal obligation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PendingEventKey(u64);
+
+impl PendingEventKey {
+    pub(crate) const fn from_serial(value: u64) -> Self {
+        Self(value)
+    }
+    /// Returns the machine-local monotonically allocated serial.
+    #[must_use]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// The next caller-visible temporal wakeup state of a ready machine.
+#[non_exhaustive]
+pub enum Schedule<D> {
+    Dormant,
+    WakeAt(Time<D>),
+}
+
+impl<D> Clone for Schedule<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<D> Copy for Schedule<D> {}
+
+impl<D> PartialEq for Schedule<D> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Dormant, Self::Dormant) => true,
+            (Self::WakeAt(left), Self::WakeAt(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+impl<D> Eq for Schedule<D> {}
+
+impl<D> fmt::Debug for Schedule<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Dormant => formatter.write_str("Dormant"),
+            Self::WakeAt(deadline) => formatter.debug_tuple("WakeAt").field(deadline).finish(),
+        }
+    }
+}
+
+/// Failure to access ready-only scheduling state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduleFailure {
+    NotInitialized,
+}
+
+impl fmt::Display for ScheduleFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("schedule is unavailable before machine initialization")
+    }
+}
+
+impl std::error::Error for ScheduleFailure {}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PendingPulseDelay<D> {
+    pub(crate) key: PendingEventKey,
+    pub(crate) node: NodeKey,
+    pub(crate) origin: Time<D>,
+    pub(crate) deadline: Time<D>,
+    pub(crate) count: PulseCount,
+    pub(crate) revision: NetworkRevision,
+    pub(crate) cause: CauseRef,
+}
+
+impl<D> Clone for PendingPulseDelay<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<D> Copy for PendingPulseDelay<D> {}
+
+/// Structural information available for one compiled PulseDelay.
+pub struct PulseDelayDefinitionInspection<D> {
+    node: NodeKey,
+    delay: NonZeroSpan<D>,
+}
+
+impl<D> PulseDelayDefinitionInspection<D> {
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+
+    #[must_use]
+    pub const fn delay(&self) -> NonZeroSpan<D> {
+        self.delay
+    }
+}
+
+/// One owned observation of a pending PulseDelay group.
+pub struct PendingPulseDelayInspection<D> {
+    event: PendingEventKey,
+    origin: Time<D>,
+    deadline: Time<D>,
+    count: PulseCount,
+    revision: NetworkRevision,
+    cause: CauseRef,
+}
+
+impl<D> PendingPulseDelayInspection<D> {
+    #[must_use]
+    pub const fn event(&self) -> PendingEventKey {
+        self.event
+    }
+
+    #[must_use]
+    pub const fn origin(&self) -> Time<D> {
+        self.origin
+    }
+
+    #[must_use]
+    pub const fn deadline(&self) -> Time<D> {
+        self.deadline
+    }
+
+    #[must_use]
+    pub const fn count(&self) -> PulseCount {
+        self.count
+    }
+
+    #[must_use]
+    pub const fn revision(&self) -> NetworkRevision {
+        self.revision
+    }
+
+    #[must_use]
+    pub const fn cause(&self) -> CauseRef {
+        self.cause
+    }
+}
+
+/// One owned ready-machine observation of PulseDelay pending work.
+pub struct PulseDelayInspection<D> {
+    node: NodeKey,
+    delay: NonZeroSpan<D>,
+    revision: NetworkRevision,
+    at: Time<D>,
+    pending: Vec<PendingPulseDelayInspection<D>>,
+    next_deadline: Option<Time<D>>,
+}
+
+impl<D> PulseDelayInspection<D> {
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+
+    #[must_use]
+    pub const fn delay(&self) -> NonZeroSpan<D> {
+        self.delay
+    }
+
+    #[must_use]
+    pub const fn revision(&self) -> NetworkRevision {
+        self.revision
+    }
+
+    #[must_use]
+    pub const fn at(&self) -> Time<D> {
+        self.at
+    }
+
+    #[must_use]
+    pub fn pending(&self) -> &[PendingPulseDelayInspection<D>] {
+        &self.pending
+    }
+
+    #[must_use]
+    pub const fn next_deadline(&self) -> Option<Time<D>> {
+        self.next_deadline
+    }
+}
+
+/// A structural or lifecycle failure to inspect one node as PulseDelay.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PulseDelayInspectionFailure {
+    UnknownNode(NodeKey),
+    NotPulseDelay(NodeKey),
+    NotInitialized,
+}
 
 impl NetworkRevision {
     const INITIAL: Self = Self(0);
@@ -91,6 +286,8 @@ pub(crate) struct MachineStore<D> {
     pub(crate) provenance: Option<ProvenanceView<D>>,
     pub(crate) toggle_states: Vec<LogicLevel>,
     pub(crate) toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
+    pub(crate) pending_pulse_delays: BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
+    pub(crate) next_pending_event_serial: u64,
 }
 
 impl<D> Clone for MachineStore<D> {
@@ -106,6 +303,8 @@ impl<D> Clone for MachineStore<D> {
             provenance: self.provenance.clone(),
             toggle_states: self.toggle_states.clone(),
             toggle_inversion_causes: self.toggle_inversion_causes.clone(),
+            pending_pulse_delays: self.pending_pulse_delays.clone(),
+            next_pending_event_serial: self.next_pending_event_serial,
         }
     }
 }
@@ -227,6 +426,8 @@ impl<D> Machine<D> {
                 provenance: None,
                 toggle_states,
                 toggle_inversion_causes: BTreeMap::new(),
+                pending_pulse_delays: BTreeMap::new(),
+                next_pending_event_serial: 0,
             },
         }
     }
@@ -280,6 +481,73 @@ impl<D> Machine<D> {
     #[must_use]
     pub fn runtime_policy_id(&self) -> RuntimePolicyId {
         self.policy.id()
+    }
+
+    /// Returns the least pending deadline without changing machine state.
+    pub fn next_deadline(&self) -> Result<Option<Time<D>>, ScheduleFailure> {
+        if !self.is_initialized() {
+            return Err(ScheduleFailure::NotInitialized);
+        }
+        Ok(self.store.pending_pulse_delays.keys().next().copied())
+    }
+
+    /// Returns whether a ready machine is dormant or must be called at a deadline.
+    pub fn schedule(&self) -> Result<Schedule<D>, ScheduleFailure> {
+        match self.next_deadline()? {
+            Some(deadline) => Ok(Schedule::WakeAt(deadline)),
+            None => Ok(Schedule::Dormant),
+        }
+    }
+
+    /// Returns PulseDelay's immutable definition in either lifecycle phase.
+    pub fn inspect_pulse_delay_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<PulseDelayDefinitionInspection<D>, PulseDelayInspectionFailure> {
+        let Some(delay) = self.compiled.pulse_delay(node) else {
+            return Err(if self.compiled.contains_node(node) {
+                PulseDelayInspectionFailure::NotPulseDelay(node)
+            } else {
+                PulseDelayInspectionFailure::UnknownNode(node)
+            });
+        };
+        Ok(PulseDelayDefinitionInspection { node, delay })
+    }
+
+    /// Returns stable pending-group facts for one PulseDelay on a ready machine.
+    pub fn inspect_pulse_delay(
+        &self,
+        node: NodeKey,
+    ) -> Result<PulseDelayInspection<D>, PulseDelayInspectionFailure> {
+        let definition = self.inspect_pulse_delay_definition(node)?;
+        let MachineStatus::Ready { now } = self.store.status else {
+            return Err(PulseDelayInspectionFailure::NotInitialized);
+        };
+        let mut pending = self
+            .store
+            .pending_pulse_delays
+            .values()
+            .flatten()
+            .filter(|event| event.node == node)
+            .map(|event| PendingPulseDelayInspection {
+                event: event.key,
+                origin: event.origin,
+                deadline: event.deadline,
+                count: event.count,
+                revision: event.revision,
+                cause: event.cause,
+            })
+            .collect::<Vec<_>>();
+        pending.sort_by_key(|event| (event.deadline, event.event));
+        let next_deadline = pending.first().map(PendingPulseDelayInspection::deadline);
+        Ok(PulseDelayInspection {
+            node,
+            delay: definition.delay,
+            revision: self.store.revision,
+            at: now,
+            pending,
+            next_deadline,
+        })
     }
 
     /// Returns one authoritative external level after initialization.

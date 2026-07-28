@@ -168,6 +168,15 @@ impl ReactionDependencyGraph {
             let Some(&owner) = input_owners.get(&input) else {
                 continue;
             };
+            // SPEC: docs/specs/contracts/pulse-delay.yaml "temporal-causality-barrier"
+            // Current PulseDelay input schedules later work and never feeds its current output.
+            if network
+                .nodes()
+                .iter()
+                .any(|node| node.key() == owner && matches!(node.kind(), NodeKind::PulseDelay(_)))
+            {
+                continue;
+            }
             let Some(source) = reaction_source(connection.from()) else {
                 continue;
             };
@@ -545,6 +554,9 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         NodeKind::Select => DuplicateNodeKind::Select,
                         NodeKind::Merge => DuplicateNodeKind::Merge,
                         NodeKind::Toggle(config) => DuplicateNodeKind::Toggle(config.initial),
+                        NodeKind::PulseDelay(config) => {
+                            DuplicateNodeKind::PulseDelay(config.delay.ticks())
+                        }
                     },
                     inputs: node.ports().inputs().to_vec(),
                     input_roles: node.ports().input_roles().to_vec(),
@@ -643,11 +655,12 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 NodeKind::All | NodeKind::Any | NodeKind::Parity | NodeKind::AtLeast(_) => None,
                 NodeKind::Select => Some(3),
                 NodeKind::Merge => None,
-                NodeKind::Toggle(_) => Some(1),
+                NodeKind::Toggle(_) | NodeKind::PulseDelay(_) => Some(1),
             };
             let (expected_input_kind, expected_output_kind) = match node.kind() {
                 NodeKind::Merge => (SignalKind::Pulse, SignalKind::Pulse),
                 NodeKind::Toggle(_) => (SignalKind::Pulse, SignalKind::Level),
+                NodeKind::PulseDelay(_) => (SignalKind::Pulse, SignalKind::Pulse),
                 _ => (SignalKind::Level, SignalKind::Level),
             };
             let expected_outputs = 1;
@@ -679,7 +692,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
             }
             if matches!(
                 node.kind(),
-                NodeKind::Not | NodeKind::Select | NodeKind::Toggle(_)
+                NodeKind::Not | NodeKind::Select | NodeKind::Toggle(_) | NodeKind::PulseDelay(_)
             ) && expected_inputs.is_some_and(|expected| inputs.len() < expected)
             {
                 self.add(
@@ -737,6 +750,12 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     .input_roles()
                     .iter()
                     .filter(|role| **role == InputPortRole::Toggle)
+                    .count(),
+                NodeKind::PulseDelay(_) => node
+                    .ports()
+                    .input_roles()
+                    .iter()
+                    .filter(|role| **role == InputPortRole::PulseDelay)
                     .count(),
                 _ => node
                     .ports()
@@ -1116,6 +1135,7 @@ mod tests {
     };
     use crate::metadata::DiagnosticMeta;
     use crate::signal::{Level, LogicLevel, Pulse};
+    use crate::time::NonZeroSpan;
 
     fn all_definition(
         inputs: Vec<InPortKey<Level>>,
@@ -2651,6 +2671,71 @@ mod tests {
                 NodePorts::new(
                     vec![InPortKey::<Level>::from_u128(2).into()],
                     vec![OutPortKey::<Pulse>::from_u128(3).into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(malformed.validate_structural().artifact().is_none());
+    }
+
+    #[test]
+    fn pulse_delay_enforces_fixed_shape_and_is_a_current_reaction_barrier() {
+        let pulse = ExternalInputKey::<Pulse>::from_u128(1);
+        let input = InPortKey::<Pulse>::from_u128(2);
+        let output = OutPortKey::<Pulse>::from_u128(3);
+        let node = NodeKey::from_u128(4);
+        let delay = NonZeroSpan::from_ticks(5).unwrap();
+        let definition = UncheckedNetwork::new(
+            NetworkKey::from_u128(5),
+            TimeDomainId::from_u128(6),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                node,
+                NodeKind::pulse_delay(delay),
+                NodePorts::with_input_roles(
+                    vec![input.into()],
+                    vec![InputPortRole::PulseDelay],
+                    vec![output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                pulse.into(),
+                DiagnosticMeta::default(),
+            )],
+            Vec::new(),
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(7),
+                pulse.into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )],
+        );
+        let structural = definition.validate_structural();
+        let candidate = structural.artifact().unwrap();
+        let graph = candidate.reaction_dependencies();
+        assert!(!graph.dependencies().any(|edge| {
+            edge.from == ReactionVertex::ExternalInput(pulse.into())
+                && edge.to == ReactionVertex::NodeOperation(node)
+        }));
+        assert!(graph.dependencies().any(|edge| {
+            edge.from == ReactionVertex::NodeOperation(node)
+                && edge.to == ReactionVertex::NodeOutput(output.into())
+        }));
+
+        let malformed = UncheckedNetwork::<()>::new(
+            NetworkKey::from_u128(5),
+            TimeDomainId::from_u128(6),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                node,
+                NodeKind::pulse_delay(delay),
+                NodePorts::new(
+                    vec![InPortKey::<Level>::from_u128(2).into()],
+                    vec![OutPortKey::<Level>::from_u128(3).into()],
                 ),
                 DiagnosticMeta::default(),
             )],

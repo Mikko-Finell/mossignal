@@ -10,6 +10,9 @@ use crate::key::{
 };
 use crate::metadata::DiagnosticMeta;
 use crate::signal::{Level, LogicLevel, Pulse, SignalKind};
+use crate::time::NonZeroSpan;
+use core::fmt;
+use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
 /// An owned, stable-keyed network definition that may be structurally invalid.
@@ -169,6 +172,8 @@ pub enum NodeKind<D> {
     Merge,
     /// A pulse-controlled stored level with one pulse input and one level output.
     Toggle(ToggleConfig),
+    /// A temporal pulse reproducer with one pulse input and one pulse output.
+    PulseDelay(PulseDelayConfig<D>),
 }
 
 impl<D> NodeKind<D> {
@@ -225,6 +230,12 @@ impl<D> NodeKind<D> {
     pub const fn toggle(initial: LogicLevel) -> Self {
         Self::Toggle(ToggleConfig::new(initial))
     }
+
+    /// Creates a PulseDelay with the supplied positive delay.
+    #[must_use]
+    pub const fn pulse_delay(delay: NonZeroSpan<D>) -> Self {
+        Self::PulseDelay(PulseDelayConfig::new(delay))
+    }
 }
 
 /// The semantic configuration of an authored [`NodeKind::Constant`] claim.
@@ -273,6 +284,51 @@ pub struct ToggleConfig {
     pub initial: LogicLevel,
 }
 
+/// The semantic configuration of an authored [`NodeKind::PulseDelay`] claim.
+pub struct PulseDelayConfig<D> {
+    /// The strictly positive delay between input and reproduced output.
+    pub delay: NonZeroSpan<D>,
+}
+
+impl<D> Clone for PulseDelayConfig<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<D> Copy for PulseDelayConfig<D> {}
+
+impl<D> PartialEq for PulseDelayConfig<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.delay == other.delay
+    }
+}
+
+impl<D> Eq for PulseDelayConfig<D> {}
+
+impl<D> Hash for PulseDelayConfig<D> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.delay.hash(state);
+    }
+}
+
+impl<D> fmt::Debug for PulseDelayConfig<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PulseDelayConfig")
+            .field("delay", &self.delay)
+            .finish()
+    }
+}
+
+impl<D> PulseDelayConfig<D> {
+    /// Creates a PulseDelay configuration with a statically nonzero delay.
+    #[must_use]
+    pub const fn new(delay: NonZeroSpan<D>) -> Self {
+        Self { delay }
+    }
+}
+
 impl ToggleConfig {
     /// Creates a Toggle configuration with explicit declared initial state.
     #[must_use]
@@ -295,6 +351,8 @@ pub enum InputPortRole {
     WhenHigh,
     /// The pulse control input of [`NodeKind::Toggle`].
     Toggle,
+    /// The pulse input of [`NodeKind::PulseDelay`].
+    PulseDelay,
 }
 
 /// The claimed typed port identities of one node.

@@ -5,7 +5,7 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: 78de588a856c49774816e513e38326e8e714bda5
+  commit: 785e2f3221c2d9d93f1b700adb25b633810ad2e5
   working_tree: dirty
   modified_spec_paths:
     - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
@@ -48,8 +48,9 @@ requirements:
       DigestSuiteVersion 1 computes NetworkFingerprint as unkeyed BLAKE3 with a
       256-bit output over the canonical record containing domain label
       mossignal/network_fingerprint/v1, domain version 1, and the version-1
-      canonical semantic payload for the restricted Level, Pulse, and opening
-      stateful node family. CoreSemanticsVersion and BuiltInNodeSemanticsVersion are initially 1;
+      canonical semantic payload for the restricted Level, Pulse, opening
+      stateful, and opening temporal node family. CoreSemanticsVersion and
+      BuiltInNodeSemanticsVersion are initially 1;
       TopologyPatchSemanticsVersion does not participate in the restricted
       projection.
     sources: [digest-suite, domain-separation, digest-version-inputs, restricted-projection]
@@ -63,10 +64,11 @@ requirements:
       schemas fixed by the persistence specification, including nullary `not`,
       `all`, `any`, `parity`, `select`, and `merge` variants, the configured
       `at_least` variant, configured `toggle` initial level and `stored_level`
-      state schema, distinct `Select` and `Toggle` input semantic roles, and
-      the `level` and `pulse` signal-kind variants. Collections use the
-      specified stable semantic order and never Rust layout, discriminants, or
-      debug text.
+      state schema, configured `pulse_delay` delay ticks and
+      `pending_pulse_group` temporal schema, distinct `Select`, `Toggle`, and
+      `PulseDelay` input semantic roles, and the `level` and `pulse` signal-kind
+      variants. Collections use the specified stable semantic order and never
+      Rust layout, discriminants, or debug text.
     sources: [restricted-projection, canonical-ordering, canonical-enums]
 
   - id: pre-stability-projection-policy
@@ -115,8 +117,10 @@ requirements:
       The restricted projection includes `AtLeast`'s unsigned threshold and the
       `selector`, `when_low`, and `when_high` semantic roles of `Select` input
       ports, plus `Toggle`'s initial level, `stored_level` state schema, and
-      `toggle` Pulse-input role. Changing a represented parameter, state schema,
-      or role changes canonical identity even when stable keys remain unchanged.
+      `toggle` Pulse-input role, plus `PulseDelay`'s positive `delay_ticks`,
+      `pending_pulse_group` temporal schema, and `pulse_delay` Pulse-input role.
+      Changing a represented parameter, state or temporal schema, or role
+      changes canonical identity even when stable keys remain unchanged.
     sources: [network-projection, restricted-projection, deterministic-compilation]
 
   - id: golden-vector-verification
@@ -126,7 +130,9 @@ requirements:
       tests also establish insertion-order invariance, metadata exclusion, and
       sensitivity to mutable included semantic categories such as `AtLeast`
       thresholds, `Select` input roles, and `Toggle` initial state. Golden bytes
-      cover Toggle's fixed state-schema and input-role representation exactly.
+      cover Toggle's fixed state-schema and input-role representation and
+      PulseDelay's exact kind, delay, temporal-schema, and input-role
+      representation.
     sources: [canonical-vectors, digest-scope-verification, deterministic-compilation]
 
 recommendations:
@@ -172,7 +178,7 @@ sources:
       - Part VI — Digest and fingerprint suite
       - 54. Network and input-schema fingerprints
       - 54.2 Restricted network-fingerprint projection version 1
-    reviewed_hash: sha256:1e2eb1602794b948cb3d576271d9f37412f6a953dc7eba537675c9b79382257a
+    reviewed_hash: sha256:9cb7bd08e4e1c7affda1c7e772e5a6bfbeb7be1e129390ed2249980c0bab5f28
   canonical-ordering:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]

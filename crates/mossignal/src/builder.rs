@@ -3,7 +3,7 @@
 use crate::ValidatedNetwork;
 use crate::authored::{
     ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, NodeDef, NodeKind,
-    NodePorts, ToggleConfig, UncheckedNetwork,
+    NodePorts, PulseDelayConfig, ToggleConfig, UncheckedNetwork,
 };
 use crate::diagnostics::Report;
 use crate::identity::TimeDomainId;
@@ -548,6 +548,85 @@ impl<D> NetworkBuilder<D> {
             NodePorts::with_input_roles(
                 vec![input_port.into()],
                 vec![crate::authored::InputPortRole::Toggle],
+                vec![output_port.into()],
+            ),
+            meta,
+        ));
+        self.connections.push(ConnectionDef::new(
+            self.allocator.connection(),
+            source_endpoint_pulse(input.source),
+            ConnectionEndpoint::node_input(input_port.into()),
+            DiagnosticMeta::default(),
+        ));
+        Ok(AddedNode {
+            key,
+            outputs: self.signal(SignalSourceKey::NodeOutput(output_port)),
+        })
+    }
+
+    /// Adds a PulseDelay with locally allocated stable identities.
+    pub fn pulse_delay(
+        &mut self,
+        input: Signal<Pulse>,
+        config: PulseDelayConfig<D>,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        let key = self.next_node_key();
+        let input_port = self.next_pulse_in_port_key();
+        let output_port = self.next_pulse_out_port_key();
+        Ok(self
+            .add_pulse_delay_with_ports(
+                key,
+                input_port,
+                output_port,
+                input,
+                config,
+                DiagnosticMeta::default(),
+            )?
+            .into_outputs())
+    }
+
+    /// Adds an explicitly keyed PulseDelay with locally allocated port identities.
+    pub fn add_pulse_delay(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Pulse>,
+        config: PulseDelayConfig<D>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        let input_port = self.next_pulse_in_port_key();
+        let output_port = self.next_pulse_out_port_key();
+        self.add_pulse_delay_with_ports(key, input_port, output_port, input, config, meta)
+    }
+
+    /// Adds an explicitly keyed PulseDelay with exact fixed port identities.
+    pub fn add_pulse_delay_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Pulse>,
+        output_port: OutPortKey<Pulse>,
+        input: Signal<Pulse>,
+        config: PulseDelayConfig<D>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.require_local(input)?;
+        if self.node_keys.contains(&key) {
+            return Err(AuthoringFailure::DuplicateNodeKey(key));
+        }
+        if self.pulse_in_port_keys.contains(&input_port) {
+            return Err(AuthoringFailure::DuplicatePulseInPortKey(input_port));
+        }
+        if self.pulse_out_port_keys.contains(&output_port) {
+            return Err(AuthoringFailure::DuplicatePulseOutPortKey(output_port));
+        }
+        self.node_keys.insert(key);
+        self.pulse_in_port_keys.insert(input_port);
+        self.pulse_out_port_keys.insert(output_port);
+        self.nodes.push(NodeDef::new(
+            key,
+            NodeKind::PulseDelay(config),
+            NodePorts::with_input_roles(
+                vec![input_port.into()],
+                vec![crate::authored::InputPortRole::PulseDelay],
                 vec![output_port.into()],
             ),
             meta,
@@ -2090,6 +2169,84 @@ mod tests {
         assert_eq!(
             typed_machine.inspect_toggle(node).unwrap(),
             dynamic_machine.inspect_toggle(node).unwrap()
+        );
+    }
+
+    #[test]
+    fn typed_and_direct_dynamic_pulse_delay_paths_are_equivalent() {
+        let network = NetworkKey::from_u128(101);
+        let domain = TimeDomainId::from_u128(102);
+        let pulse = ExternalInputKey::<Pulse>::from_u128(103);
+        let node = NodeKey::from_u128(104);
+        let input = InPortKey::<Pulse>::from_u128(105);
+        let output = OutPortKey::<Pulse>::from_u128(106);
+        let external_output = ExternalOutputKey::<Pulse>::from_u128(107);
+        let delay = crate::time::NonZeroSpan::from_ticks(5).unwrap();
+        let config = PulseDelayConfig::new(delay);
+
+        let mut builder = NetworkBuilder::<()>::with_key(network, domain);
+        let signal = builder
+            .add_pulse_input(pulse, DiagnosticMeta::default())
+            .unwrap();
+        let delayed = builder
+            .add_pulse_delay_with_ports(
+                node,
+                input,
+                output,
+                signal,
+                config,
+                DiagnosticMeta::default(),
+            )
+            .unwrap()
+            .into_outputs();
+        builder
+            .add_pulse_output(external_output, delayed, DiagnosticMeta::default())
+            .unwrap();
+        let typed = builder.into_unchecked();
+        let connection = typed.connections()[0].key();
+
+        let dynamic = UncheckedNetwork::new(
+            network,
+            domain,
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                node,
+                NodeKind::PulseDelay(config),
+                NodePorts::with_input_roles(
+                    vec![input.into()],
+                    vec![InputPortRole::PulseDelay],
+                    vec![output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                pulse.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                external_output.into(),
+                SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ConnectionDef::new(
+                connection,
+                pulse.into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )],
+        );
+
+        let typed = typed.validate().require_artifact().unwrap();
+        let dynamic = dynamic.validate().require_artifact().unwrap();
+        assert_eq!(typed.fingerprint(), dynamic.fingerprint());
+        let typed = typed.compile().require_artifact().unwrap();
+        let dynamic = dynamic.compile().require_artifact().unwrap();
+        let pulses = BTreeMap::from([(pulse, PulseCount::new(4))]);
+        assert_eq!(
+            typed.evaluate_reaction(&BTreeMap::new(), &pulses).unwrap(),
+            dynamic
+                .evaluate_reaction(&BTreeMap::new(), &pulses)
+                .unwrap()
         );
     }
 }

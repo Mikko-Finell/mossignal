@@ -16,7 +16,7 @@ mod transaction;
 
 mod validation;
 
-pub use authored::ToggleConfig;
+pub use authored::{PulseDelayConfig, ToggleConfig};
 pub use builder::{NetworkBuilder, Signal};
 pub use compile::CompiledNetwork;
 pub use identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
@@ -24,8 +24,9 @@ pub use input::{
     InputBuildFailure, InputDelta, InputDeltaBuilder, InputSnapshot, InputSnapshotBuilder,
 };
 pub use machine::{
-    Machine, MachineStatus, NetworkRevision, ToggleDefinitionInspection, ToggleInspection,
-    ToggleInspectionFailure,
+    Machine, MachineStatus, NetworkRevision, PendingEventKey, PendingPulseDelayInspection,
+    PulseDelayDefinitionInspection, PulseDelayInspection, PulseDelayInspectionFailure, Schedule,
+    ScheduleFailure, ToggleDefinitionInspection, ToggleInspection, ToggleInspectionFailure,
 };
 pub use policy::{
     PolicyFailure, RuntimePolicy, RuntimePolicyBuilder, RuntimePolicyId, RuntimePolicyLimit,

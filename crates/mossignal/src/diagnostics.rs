@@ -247,6 +247,7 @@ pub enum DuplicateNodeKind {
     Select,
     Merge,
     Toggle(LogicLevel),
+    PulseDelay(u64),
 }
 
 /// A safe, machine-readable correction.  The opening validation catalogue has
