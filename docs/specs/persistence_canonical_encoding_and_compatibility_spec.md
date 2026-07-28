@@ -995,8 +995,8 @@ Semantically equivalent stable-keyed definitions must produce the same fingerpri
 
 ### 54.2 Restricted network-fingerprint projection version 1
 
-For the restricted combinational foundation containing `Constant`, `Not`,
-`All`, `Any`, `Parity`, `AtLeast`, `Select`, and pulse `Merge`, the exact
+For the restricted foundation containing `Constant`, `Not`, `All`, `Any`,
+`Parity`, `AtLeast`, `Select`, pulse `Merge`, and stateful `Toggle`, the exact
 canonical payload is the following record:
 
 ```text
@@ -1043,11 +1043,17 @@ kind = ["constant", record {
         }]
      | ["select", null]
      | ["merge", null]
+     | ["toggle", record {
+            initial,
+            state_schema,
+        }]
 
 value = ["low", null]
       | ["high", null]
 
 threshold = unsigned integer
+
+state_schema = ["stored_level", null]
 
 port = record {
     direction,
@@ -1062,6 +1068,7 @@ semantic_role = ["input", null]
               | ["selector", null]
               | ["when_low", null]
               | ["when_high", null]
+              | ["toggle", null]
               | ["output", null]
 signal_kind   = ["level", null]
               | ["pulse", null]
@@ -1101,9 +1108,11 @@ external_output = record {
 The `selector`, `when_low`, and `when_high` semantic roles apply to the three
 fixed input ports of `Select`; ordinary fixed and variadic level inputs use the
 `input` role. Pulse `Merge` ports use the ordinary `input` and `output` roles.
-The role is part of canonical semantic identity independently of the stable
-port key. `AtLeast` encodes its `u64` threshold as the canonical unsigned
-integer above.
+`Toggle` uses the `toggle` role for its Pulse input and `output` for its Level
+output. Its kind record includes the declared initial level and closed one-cell
+`stored_level` state schema. The role is part of canonical semantic identity
+independently of the stable port key. `AtLeast` encodes its `u64` threshold as
+the canonical unsigned integer above.
 
 Every `key` and `owner` field is the applicable 16-byte stable structural key.
 Node collections are ordered by `NodeKey`; connection collections by

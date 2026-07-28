@@ -3,7 +3,7 @@
 use crate::ValidatedNetwork;
 use crate::authored::{
     ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, NodeDef, NodeKind,
-    NodePorts, UncheckedNetwork,
+    NodePorts, ToggleConfig, UncheckedNetwork,
 };
 use crate::diagnostics::Report;
 use crate::identity::TimeDomainId;
@@ -483,6 +483,85 @@ impl<D> NetworkBuilder<D> {
         I: IntoIterator<Item = (InPortKey<Pulse>, Signal<Pulse>)>,
     {
         self.add_pulse_variadic_with_ports(key, output, inputs, meta)
+    }
+
+    /// Adds a pulse-controlled Toggle with locally allocated stable identities.
+    pub fn toggle(
+        &mut self,
+        input: Signal<Pulse>,
+        config: ToggleConfig,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        let key = self.next_node_key();
+        let input_port = self.next_pulse_in_port_key();
+        let output_port = self.next_out_port_key();
+        Ok(self
+            .add_toggle_with_ports(
+                key,
+                input_port,
+                output_port,
+                input,
+                config,
+                DiagnosticMeta::default(),
+            )?
+            .into_outputs())
+    }
+
+    /// Adds an explicitly keyed Toggle with locally allocated port identities.
+    pub fn add_toggle(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Pulse>,
+        config: ToggleConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        let input_port = self.next_pulse_in_port_key();
+        let output_port = self.next_out_port_key();
+        self.add_toggle_with_ports(key, input_port, output_port, input, config, meta)
+    }
+
+    /// Adds an explicitly keyed Toggle with exact fixed port identities.
+    pub fn add_toggle_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Pulse>,
+        output_port: OutPortKey<Level>,
+        input: Signal<Pulse>,
+        config: ToggleConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.require_local(input)?;
+        if self.node_keys.contains(&key) {
+            return Err(AuthoringFailure::DuplicateNodeKey(key));
+        }
+        if self.pulse_in_port_keys.contains(&input_port) {
+            return Err(AuthoringFailure::DuplicatePulseInPortKey(input_port));
+        }
+        if self.out_port_keys.contains(&output_port) {
+            return Err(AuthoringFailure::DuplicateOutPortKey(output_port));
+        }
+        self.node_keys.insert(key);
+        self.pulse_in_port_keys.insert(input_port);
+        self.out_port_keys.insert(output_port);
+        self.nodes.push(NodeDef::new(
+            key,
+            NodeKind::Toggle(config),
+            NodePorts::with_input_roles(
+                vec![input_port.into()],
+                vec![crate::authored::InputPortRole::Toggle],
+                vec![output_port.into()],
+            ),
+            meta,
+        ));
+        self.connections.push(ConnectionDef::new(
+            self.allocator.connection(),
+            source_endpoint_pulse(input.source),
+            ConnectionEndpoint::node_input(input_port.into()),
+            DiagnosticMeta::default(),
+        ));
+        Ok(AddedNode {
+            key,
+            outputs: self.signal(SignalSourceKey::NodeOutput(output_port)),
+        })
     }
 
     /// Adds a variadic level disjunction with locally allocated stable identities.
@@ -1888,5 +1967,129 @@ mod tests {
         assert_eq!(left.1, right.1);
         assert_eq!(left.2, right.2);
         assert_eq!(left.3, right.3);
+    }
+
+    #[test]
+    fn typed_and_direct_dynamic_toggle_paths_are_equivalent() {
+        let network = NetworkKey::from_u128(1);
+        let domain = TimeDomainId::from_u128(2);
+        let pulse = ExternalInputKey::<Pulse>::from_u128(3);
+        let node = NodeKey::from_u128(4);
+        let input = InPortKey::<Pulse>::from_u128(5);
+        let output = OutPortKey::<Level>::from_u128(6);
+        let external_output = ExternalOutputKey::<Level>::from_u128(7);
+        let mut builder = NetworkBuilder::<()>::with_key(network, domain);
+        let signal = builder
+            .add_pulse_input(pulse, DiagnosticMeta::default())
+            .unwrap();
+        let toggled = builder
+            .add_toggle_with_ports(
+                node,
+                input,
+                output,
+                signal,
+                ToggleConfig::new(LogicLevel::High),
+                DiagnosticMeta::default(),
+            )
+            .unwrap()
+            .into_outputs();
+        builder
+            .add_level_output(external_output, toggled, DiagnosticMeta::default())
+            .unwrap();
+        let typed = builder.into_unchecked();
+        let connection = typed.connections()[0].key();
+        let dynamic = UncheckedNetwork::new(
+            network,
+            domain,
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                node,
+                NodeKind::<()>::toggle(LogicLevel::High),
+                NodePorts::with_input_roles(
+                    vec![input.into()],
+                    vec![crate::authored::InputPortRole::Toggle],
+                    vec![output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                pulse.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                external_output.into(),
+                SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ConnectionDef::new(
+                connection,
+                pulse.into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )],
+        );
+        let typed = typed.validate().require_artifact().unwrap();
+        let dynamic = dynamic.validate().require_artifact().unwrap();
+        assert_eq!(typed.fingerprint(), dynamic.fingerprint());
+        let typed = typed.compile().require_artifact().unwrap();
+        let dynamic = dynamic.compile().require_artifact().unwrap();
+        for count in [0_u64, 1, 2, 3, 10, 11] {
+            let pulses = BTreeMap::from([(pulse, PulseCount::new(count))]);
+            assert_eq!(
+                typed.evaluate_reaction(&BTreeMap::new(), &pulses).unwrap(),
+                dynamic
+                    .evaluate_reaction(&BTreeMap::new(), &pulses)
+                    .unwrap()
+            );
+        }
+
+        let policy = || {
+            crate::RuntimePolicy::builder()
+                .max_internal_reactions(10)
+                .max_evaluated_operations(100)
+                .max_pending_events(0)
+                .max_events_created_per_transaction(100)
+                .max_required_provenance_growth(1_000)
+                .build()
+                .unwrap()
+        };
+        let mut typed_machine = typed.spawn(policy());
+        let mut dynamic_machine = dynamic.spawn(policy());
+        let snapshot = typed
+            .input_snapshot()
+            .pulse(pulse, PulseCount::ONE)
+            .and_then(crate::InputSnapshotBuilder::finish)
+            .unwrap();
+        for machine in [&mut typed_machine, &mut dynamic_machine] {
+            machine
+                .apply(crate::Transaction::initialize(
+                    crate::time::Time::from_ticks(1),
+                    machine.revision(),
+                    snapshot.clone(),
+                ))
+                .unwrap();
+        }
+        let delta = typed
+            .input_delta()
+            .pulse(pulse, PulseCount::new(3))
+            .and_then(crate::InputDeltaBuilder::finish)
+            .unwrap();
+        for machine in [&mut typed_machine, &mut dynamic_machine] {
+            machine
+                .apply(crate::Transaction::advance(
+                    crate::time::Time::from_ticks(2),
+                    machine.revision(),
+                    delta.clone(),
+                ))
+                .unwrap();
+        }
+        assert_eq!(
+            typed_machine.output_level(external_output),
+            dynamic_machine.output_level(external_output)
+        );
+        assert_eq!(
+            typed_machine.inspect_toggle(node).unwrap(),
+            dynamic_machine.inspect_toggle(node).unwrap()
+        );
     }
 }

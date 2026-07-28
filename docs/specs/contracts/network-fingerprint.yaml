@@ -5,11 +5,10 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: 9a489c4c66354430be9e7068247196fac732a954
+  commit: 78de588a856c49774816e513e38326e8e714bda5
   working_tree: dirty
   modified_spec_paths:
     - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
-    - docs/testing_and_verification_policy.md
 
 summary: >-
   NetworkFingerprint is the opaque, domain-separated 256-bit identity of a
@@ -49,8 +48,8 @@ requirements:
       DigestSuiteVersion 1 computes NetworkFingerprint as unkeyed BLAKE3 with a
       256-bit output over the canonical record containing domain label
       mossignal/network_fingerprint/v1, domain version 1, and the version-1
-      canonical semantic payload for the restricted combinational Level and
-      Pulse node family. CoreSemanticsVersion and BuiltInNodeSemanticsVersion are initially 1;
+      canonical semantic payload for the restricted Level, Pulse, and opening
+      stateful node family. CoreSemanticsVersion and BuiltInNodeSemanticsVersion are initially 1;
       TopologyPatchSemanticsVersion does not participate in the restricted
       projection.
     sources: [digest-suite, domain-separation, digest-version-inputs, restricted-projection]
@@ -63,8 +62,9 @@ requirements:
       direction, semantic-role, node-kind, and logic-level record and variant
       schemas fixed by the persistence specification, including nullary `not`,
       `all`, `any`, `parity`, `select`, and `merge` variants, the configured
-      `at_least` variant, distinct `Select` input semantic roles, and the
-      `level` and `pulse` signal-kind variants. Collections use the
+      `at_least` variant, configured `toggle` initial level and `stored_level`
+      state schema, distinct `Select` and `Toggle` input semantic roles, and
+      the `level` and `pulse` signal-kind variants. Collections use the
       specified stable semantic order and never Rust layout, discriminants, or
       debug text.
     sources: [restricted-projection, canonical-ordering, canonical-enums]
@@ -114,8 +114,9 @@ requirements:
     statement: >-
       The restricted projection includes `AtLeast`'s unsigned threshold and the
       `selector`, `when_low`, and `when_high` semantic roles of `Select` input
-      ports. Changing a represented parameter or role changes canonical
-      identity even when the stable node and port keys remain unchanged.
+      ports, plus `Toggle`'s initial level, `stored_level` state schema, and
+      `toggle` Pulse-input role. Changing a represented parameter, state schema,
+      or role changes canonical identity even when stable keys remain unchanged.
     sources: [network-projection, restricted-projection, deterministic-compilation]
 
   - id: golden-vector-verification
@@ -123,8 +124,9 @@ requirements:
     statement: >-
       Representative NetworkFingerprint values require versioned golden vectors;
       tests also establish insertion-order invariance, metadata exclusion, and
-      sensitivity to every included restricted semantic category, including
-      `AtLeast` thresholds and `Select` input roles.
+      sensitivity to mutable included semantic categories such as `AtLeast`
+      thresholds, `Select` input roles, and `Toggle` initial state. Golden bytes
+      cover Toggle's fixed state-schema and input-role representation exactly.
     sources: [canonical-vectors, digest-scope-verification, deterministic-compilation]
 
 recommendations:
@@ -170,7 +172,7 @@ sources:
       - Part VI — Digest and fingerprint suite
       - 54. Network and input-schema fingerprints
       - 54.2 Restricted network-fingerprint projection version 1
-    reviewed_hash: sha256:96c04c867dc6b4fb556d6f97a9cec32cde57c4205388307a47123adf1ed9cb53
+    reviewed_hash: sha256:1e2eb1602794b948cb3d576271d9f37412f6a953dc7eba537675c9b79382257a
   canonical-ordering:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]

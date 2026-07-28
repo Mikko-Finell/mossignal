@@ -167,6 +167,8 @@ pub enum NodeKind<D> {
     Select,
     /// A total variadic pulse multiplicity merge with one pulse output after validation.
     Merge,
+    /// A pulse-controlled stored level with one pulse input and one level output.
+    Toggle(ToggleConfig),
 }
 
 impl<D> NodeKind<D> {
@@ -217,6 +219,12 @@ impl<D> NodeKind<D> {
     pub const fn merge() -> Self {
         Self::Merge
     }
+
+    /// Creates a pulse-controlled Toggle with explicit declared initial state.
+    #[must_use]
+    pub const fn toggle(initial: LogicLevel) -> Self {
+        Self::Toggle(ToggleConfig::new(initial))
+    }
 }
 
 /// The semantic configuration of an authored [`NodeKind::Constant`] claim.
@@ -258,6 +266,21 @@ impl AtLeastConfig {
     }
 }
 
+/// The semantic configuration of an authored [`NodeKind::Toggle`] claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ToggleConfig {
+    /// The declared stored level used as previous state by the first reaction.
+    pub initial: LogicLevel,
+}
+
+impl ToggleConfig {
+    /// Creates a Toggle configuration with explicit declared initial state.
+    #[must_use]
+    pub const fn new(initial: LogicLevel) -> Self {
+        Self { initial }
+    }
+}
+
 /// The semantic role of one level input port.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -270,6 +293,8 @@ pub enum InputPortRole {
     WhenLow,
     /// The branch selected when the selector is High.
     WhenHigh,
+    /// The pulse control input of [`NodeKind::Toggle`].
+    Toggle,
 }
 
 /// The claimed typed port identities of one node.

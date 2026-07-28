@@ -2,7 +2,7 @@
 
 use crate::compile::CompiledNetwork;
 use crate::identity::NetworkFingerprint;
-use crate::key::{ExternalInputKey, ExternalOutputKey};
+use crate::key::{ExternalInputKey, ExternalOutputKey, NodeKey};
 use crate::policy::{RuntimePolicy, RuntimePolicyId};
 use crate::signal::{Level, LogicLevel};
 use crate::time::Time;
@@ -89,6 +89,8 @@ pub(crate) struct MachineStore<D> {
     pub(crate) input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
     pub(crate) output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     pub(crate) provenance: Option<ProvenanceView<D>>,
+    pub(crate) toggle_states: Vec<LogicLevel>,
+    pub(crate) toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
 }
 
 impl<D> Clone for MachineStore<D> {
@@ -102,6 +104,8 @@ impl<D> Clone for MachineStore<D> {
             input_causes: self.input_causes.clone(),
             output_causes: self.output_causes.clone(),
             provenance: self.provenance.clone(),
+            toggle_states: self.toggle_states.clone(),
+            toggle_inversion_causes: self.toggle_inversion_causes.clone(),
         }
     }
 }
@@ -129,8 +133,86 @@ pub struct Machine<D> {
     pub(crate) store: MachineStore<D>,
 }
 
+/// Structural information available for one compiled Toggle in every lifecycle phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToggleDefinitionInspection {
+    node: NodeKey,
+    initial: LogicLevel,
+}
+
+impl ToggleDefinitionInspection {
+    /// Returns the inspected Toggle's stable node identity.
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+
+    /// Returns the declared level used as previous state by the first reaction.
+    #[must_use]
+    pub const fn initial(&self) -> LogicLevel {
+        self.initial
+    }
+}
+
+/// One owned observation of committed Toggle state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToggleInspection<D> {
+    node: NodeKey,
+    initial: LogicLevel,
+    committed: LogicLevel,
+    revision: NetworkRevision,
+    at: Time<D>,
+    latest_inversion: Option<CauseRef>,
+}
+
+impl<D> ToggleInspection<D> {
+    /// Returns the inspected Toggle's stable node identity.
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+    /// Returns the Toggle's immutable declared initial level.
+    #[must_use]
+    pub const fn initial(&self) -> LogicLevel {
+        self.initial
+    }
+    /// Returns the currently committed stored level.
+    #[must_use]
+    pub const fn committed(&self) -> LogicLevel {
+        self.committed
+    }
+    /// Returns the topology revision at which this observation was made.
+    #[must_use]
+    pub const fn revision(&self) -> NetworkRevision {
+        self.revision
+    }
+    /// Returns the committed reaction time of this observation.
+    #[must_use]
+    pub const fn at(&self) -> Time<D> {
+        self.at
+    }
+    /// Returns the retained cause of the most recent odd-count inversion, if any.
+    #[must_use]
+    pub const fn latest_inversion(&self) -> Option<CauseRef> {
+        self.latest_inversion
+    }
+}
+
+/// A structural failure to inspect one node as a Toggle.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToggleInspectionFailure {
+    /// The requested stable node key is absent from this topology.
+    UnknownNode(NodeKey),
+    /// The requested stable node exists but is not a Toggle.
+    NotToggle(NodeKey),
+    /// Runtime state was requested before initialization committed.
+    NotInitialized,
+}
+
 impl<D> Machine<D> {
     pub(crate) fn new(compiled: CompiledNetwork<D>, policy: RuntimePolicy) -> Self {
+        let toggle_states = compiled.initial_toggle_states();
         Self {
             compiled,
             policy,
@@ -143,6 +225,8 @@ impl<D> Machine<D> {
                 input_causes: BTreeMap::new(),
                 output_causes: BTreeMap::new(),
                 provenance: None,
+                toggle_states,
+                toggle_inversion_causes: BTreeMap::new(),
             },
         }
     }
@@ -223,6 +307,50 @@ impl<D> Machine<D> {
             return None;
         }
         self.store.output_causes.get(&output).copied()
+    }
+
+    /// Returns declared Toggle state without requiring runtime initialization.
+    pub fn inspect_toggle_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<ToggleDefinitionInspection, ToggleInspectionFailure> {
+        let Some((_, initial)) = self.compiled.toggle_state_slot(node) else {
+            return Err(if self.compiled.contains_node(node) {
+                ToggleInspectionFailure::NotToggle(node)
+            } else {
+                ToggleInspectionFailure::UnknownNode(node)
+            });
+        };
+        Ok(ToggleDefinitionInspection { node, initial })
+    }
+
+    /// Returns an owned observation of committed Toggle state.
+    pub fn inspect_toggle(
+        &self,
+        node: NodeKey,
+    ) -> Result<ToggleInspection<D>, ToggleInspectionFailure> {
+        let definition = self.inspect_toggle_definition(node)?;
+        let MachineStatus::Ready { now } = self.store.status else {
+            return Err(ToggleInspectionFailure::NotInitialized);
+        };
+        let (slot, _) = self
+            .compiled
+            .toggle_state_slot(node)
+            .ok_or(ToggleInspectionFailure::NotToggle(node))?;
+        let committed = self
+            .store
+            .toggle_states
+            .get(slot.value())
+            .copied()
+            .ok_or(ToggleInspectionFailure::NotToggle(node))?;
+        Ok(ToggleInspection {
+            node,
+            initial: definition.initial,
+            committed,
+            revision: self.store.revision,
+            at: now,
+            latest_inversion: self.store.toggle_inversion_causes.get(&node).copied(),
+        })
     }
 }
 

@@ -203,6 +203,12 @@ fn nodes<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
             }
             NodeKind::Select => writer.variant_null("select"),
             NodeKind::Merge => writer.variant_null("merge"),
+            NodeKind::Toggle(config) => {
+                writer.variant_start("toggle");
+                writer.record_start(2);
+                writer.field("initial", |writer| logic_level(writer, config.initial));
+                writer.field("state_schema", |writer| writer.variant_null("stored_level"));
+            }
         });
     }
 }
@@ -251,6 +257,7 @@ fn ports<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
                     InputPortRole::Selector => "selector",
                     InputPortRole::WhenLow => "when_low",
                     InputPortRole::WhenHigh => "when_high",
+                    InputPortRole::Toggle => "toggle",
                 }
             } else {
                 "output"
@@ -783,6 +790,106 @@ mod tests {
         )
     }
 
+    fn golden_toggle(initial: LogicLevel, role: InputPortRole) -> UncheckedNetwork<()> {
+        let external = ExternalInputKey::<Pulse>::from_u128(10);
+        let input = InPortKey::<Pulse>::from_u128(20);
+        let output = OutPortKey::<Level>::from_u128(30);
+        let node = NodeDef::new(
+            NodeKey::from_u128(2),
+            NodeKind::<()>::toggle(initial),
+            NodePorts::with_input_roles(vec![input.into()], vec![role], vec![output.into()]),
+            DiagnosticMeta::default(),
+        );
+        let connection = ConnectionDef::new(
+            ConnectionKey::from_u128(50),
+            external.into(),
+            input.into(),
+            DiagnosticMeta::default(),
+        );
+        let nodes = vec![node];
+        let inputs = vec![ExternalInputDef::new(
+            external.into(),
+            DiagnosticMeta::default(),
+        )];
+        let outputs = vec![ExternalOutputDef::new(
+            ExternalOutputKey::<Level>::from_u128(40).into(),
+            SignalSourceKey::NodeOutput(output).into(),
+            DiagnosticMeta::default(),
+        )];
+        let connections = vec![connection];
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            nodes,
+            inputs,
+            outputs,
+            connections,
+        )
+    }
+
+    fn toggle_pair(reverse_claims: bool) -> UncheckedNetwork<()> {
+        let external_inputs = [
+            ExternalInputKey::<Pulse>::from_u128(10),
+            ExternalInputKey::<Pulse>::from_u128(11),
+        ];
+        let input_ports = [
+            InPortKey::<Pulse>::from_u128(20),
+            InPortKey::<Pulse>::from_u128(21),
+        ];
+        let output_ports = [
+            OutPortKey::<Level>::from_u128(30),
+            OutPortKey::<Level>::from_u128(31),
+        ];
+        let mut nodes = [LogicLevel::Low, LogicLevel::High]
+            .into_iter()
+            .enumerate()
+            .map(|(index, initial)| {
+                NodeDef::new(
+                    NodeKey::from_u128(2 + index as u128),
+                    NodeKind::<()>::toggle(initial),
+                    NodePorts::with_input_roles(
+                        vec![input_ports[index].into()],
+                        vec![InputPortRole::Toggle],
+                        vec![output_ports[index].into()],
+                    ),
+                    DiagnosticMeta::default(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut inputs = external_inputs
+            .into_iter()
+            .map(|key| ExternalInputDef::new(key.into(), DiagnosticMeta::default()))
+            .collect::<Vec<_>>();
+        let mut connections = external_inputs
+            .into_iter()
+            .zip(input_ports)
+            .enumerate()
+            .map(|(index, (source, target))| {
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(50 + index as u128),
+                    source.into(),
+                    target.into(),
+                    DiagnosticMeta::default(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if reverse_claims {
+            nodes.reverse();
+            inputs.reverse();
+            connections.reverse();
+        }
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            nodes,
+            inputs,
+            Vec::new(),
+            connections,
+        )
+    }
+
     fn golden_remaining(
         threshold: u64,
         select_roles: [InputPortRole; 3],
@@ -993,6 +1100,44 @@ mod tests {
             fingerprints,
             validated_fingerprints(golden_merge(true)),
             "stable pulse claims must ignore insertion order"
+        );
+    }
+
+    #[test]
+    fn toggle_projection_vector_and_semantic_sensitivity() {
+        let low = golden_toggle(LogicLevel::Low, InputPortRole::Toggle);
+        let (network_bytes, input_bytes) = canonical_inputs(&low);
+        let fingerprints = validated_fingerprints(low);
+        assert_eq!(
+            hex(&network_bytes),
+            "838266646f6d61696e78206d6f737369676e616c2f6e6574776f726b5f66696e6765727072696e742f763182677061796c6f61648982781f6275696c745f696e5f6e6f64655f73656d616e746963735f76657273696f6e01826b636f6e6e656374696f6e73818382636b657950000000000000000000000000000000328266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000014826b7369676e616c5f6b696e64826570756c7365f68276636f72655f73656d616e746963735f76657273696f6e01826f65787465726e616c5f696e70757473818282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f6827065787465726e616c5f6f757470757473818382636b65795000000000000000000000000000000028826b7369676e616c5f6b696e6482656c6576656cf68266736f7572636582686f75745f706f72748282636b6579500000000000000000000000000000001e826b7369676e616c5f6b696e6482656c6576656cf6826b6e6574776f726b5f6b6579500000000000000000000000000000000182656e6f646573818282636b6579500000000000000000000000000000000282646b696e648266746f67676c65828267696e697469616c82636c6f77f6826c73746174655f736368656d61826c73746f7265645f6c6576656cf68265706f72747382858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000001e82656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001482656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c658266746f67676c65f6826b7369676e616c5f6b696e64826570756c7365f6826e74696d655f646f6d61696e5f69645000000000000000000000000000000002826776657273696f6e01"
+        );
+        assert_eq!(
+            hex(&input_bytes),
+            "838266646f6d61696e78256d6f737369676e616c2f696e7075745f736368656d615f66696e6765727072696e742f763182677061796c6f6164818266696e707574738183826d65737461626c6973686d656e74826f7265616374696f6e5f73636f706564f682636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f6826776657273696f6e01"
+        );
+        assert_eq!(
+            fingerprints.0.to_string(),
+            "f3bc5a5c05e341010113f9574fe6ea6a6ca73d220f82249ef09e91cca2be64f0"
+        );
+        assert_eq!(
+            fingerprints.1.to_string(),
+            "8f2a36f2b979efb35168538889b9aa1594f7787166e39a0c958faf5dcc6f8c71"
+        );
+        assert_ne!(
+            fingerprints.0,
+            validated_fingerprints(golden_toggle(LogicLevel::High, InputPortRole::Toggle)).0,
+            "the declared initial state participates in identity"
+        );
+        assert_ne!(
+            network_bytes,
+            canonical_inputs(&golden_toggle(LogicLevel::Low, InputPortRole::Input)).0,
+            "the fixed Toggle input role participates in identity"
+        );
+        assert_eq!(
+            validated_fingerprints(toggle_pair(false)),
+            validated_fingerprints(toggle_pair(true)),
+            "multiple Toggle claims must ignore insertion order"
         );
     }
 

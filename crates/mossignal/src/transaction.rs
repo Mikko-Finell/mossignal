@@ -339,6 +339,7 @@ struct ProvenanceBuild<D> {
     input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
     output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     pulse_output_causes: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
+    toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
 }
 
 struct EvaluationProvenanceInputs<'a> {
@@ -601,12 +602,14 @@ impl<D> Machine<D> {
         enforce_reaction_budgets::<D>(&self.policy, &self.compiled)?;
         let revision = self.store.revision;
         let (levels, pulses) = input.into_parts();
-        let evaluation = evaluate_reaction::<D>(&self.compiled, &levels, &pulses)?;
+        let evaluation =
+            evaluate_reaction::<D>(&self.compiled, &levels, &pulses, &self.store.toggle_states)?;
         let ProvenanceBuild {
             provenance,
             input_causes,
             output_causes,
             pulse_output_causes,
+            toggle_inversion_causes,
         } = build_initialization_provenance(
             self.compiled.network_key(),
             self.compiled.fingerprint(),
@@ -645,12 +648,15 @@ impl<D> Machine<D> {
 
         publish_candidate(
             self,
-            at,
-            levels,
-            evaluation,
-            input_causes,
-            output_causes,
-            provenance,
+            PublishedCandidate {
+                at,
+                levels,
+                evaluation,
+                input_causes,
+                output_causes,
+                provenance,
+                toggle_inversion_causes,
+            },
         );
         Ok(result)
     }
@@ -688,7 +694,8 @@ impl<D> Machine<D> {
         let (explicit_levels, pulses) = input.into_parts();
         let mut levels = self.store.external_levels.clone();
         levels.extend(explicit_levels.iter().map(|(key, value)| (*key, *value)));
-        let evaluation = evaluate_reaction::<D>(&self.compiled, &levels, &pulses)?;
+        let evaluation =
+            evaluate_reaction::<D>(&self.compiled, &levels, &pulses, &self.store.toggle_states)?;
         let previous_provenance = match self.store.provenance.as_ref() {
             Some(provenance) => provenance,
             None => panic!("ready machine must retain committed provenance"),
@@ -698,6 +705,7 @@ impl<D> Machine<D> {
             input_causes,
             output_causes,
             pulse_output_causes,
+            toggle_inversion_causes,
         } = build_ready_provenance(
             self.compiled.network_key(),
             self.compiled.fingerprint(),
@@ -711,6 +719,7 @@ impl<D> Machine<D> {
             &self.store.input_causes,
             &self.store.output_causes,
             &self.store.output_baselines,
+            &self.store.toggle_inversion_causes,
         );
         let provenance_growth = provenance.len().saturating_sub(previous_provenance.len());
         enforce_budget::<D>(
@@ -743,12 +752,15 @@ impl<D> Machine<D> {
 
         publish_candidate(
             self,
-            at,
-            levels,
-            evaluation,
-            input_causes,
-            output_causes,
-            provenance,
+            PublishedCandidate {
+                at,
+                levels,
+                evaluation,
+                input_causes,
+                output_causes,
+                provenance,
+                toggle_inversion_causes,
+            },
         );
         Ok(result)
     }
@@ -830,8 +842,9 @@ fn evaluate_reaction<D>(
     compiled: &crate::CompiledNetwork<D>,
     levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+    previous_toggle_states: &[LogicLevel],
 ) -> Result<FullEvaluation, RuntimeFailure<D>> {
-    match compiled.evaluate_reaction(levels, pulses) {
+    match compiled.evaluate_reaction_with_state(levels, pulses, previous_toggle_states) {
         Ok(evaluation) => Ok(evaluation),
         Err(EvaluationFailure::PulseCountOverflow { node }) => Err(RuntimeFailure::new(
             RuntimeFailureEvidence::PulseCountOverflow { node },
@@ -854,15 +867,26 @@ fn enforce_reaction_budgets<D>(
     )
 }
 
-fn publish_candidate<D>(
-    machine: &mut Machine<D>,
+struct PublishedCandidate<D> {
     at: Time<D>,
     levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     evaluation: FullEvaluation,
     input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
     output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     provenance: ProvenanceView<D>,
-) {
+    toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
+}
+
+fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<D>) {
+    let PublishedCandidate {
+        at,
+        levels,
+        evaluation,
+        input_causes,
+        output_causes,
+        provenance,
+        toggle_inversion_causes,
+    } = published;
     // SPEC: docs/specs/processor_and_runtime_architecture.md §50 "Reference execution strategy"
     // Every fallible step precedes replacement of the complete private candidate.
     let mut candidate = machine.store.clone();
@@ -873,6 +897,8 @@ fn publish_candidate<D>(
     candidate.input_causes = input_causes;
     candidate.output_causes = output_causes;
     candidate.provenance = Some(provenance);
+    candidate.toggle_states = evaluation.proposed_toggle_states;
+    candidate.toggle_inversion_causes = toggle_inversion_causes;
     machine.store = candidate;
 }
 
@@ -980,7 +1006,7 @@ fn build_initialization_provenance<D>(
             (*input, cause)
         })
         .collect::<BTreeMap<_, _>>();
-    let (output_causes, pulse_output_causes) = append_evaluation_provenance(
+    let evaluation_causes = append_evaluation_provenance(
         scope,
         &mut records,
         transaction_cause,
@@ -990,6 +1016,7 @@ fn build_initialization_provenance<D>(
             pulses: &pulse_input_causes,
         },
         None,
+        None,
     );
 
     ProvenanceBuild {
@@ -998,8 +1025,9 @@ fn build_initialization_provenance<D>(
             records: Arc::new(records),
         },
         input_causes,
-        output_causes,
-        pulse_output_causes,
+        output_causes: evaluation_causes.level_outputs,
+        pulse_output_causes: evaluation_causes.pulse_outputs,
+        toggle_inversion_causes: evaluation_causes.toggle_inversions,
     }
 }
 
@@ -1017,6 +1045,7 @@ fn build_ready_provenance<D>(
     previous_input_causes: &BTreeMap<ExternalInputKey<Level>, CauseRef>,
     previous_output_causes: &BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     previous_output_baselines: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+    previous_toggle_inversion_causes: &BTreeMap<NodeKey, CauseRef>,
 ) -> ProvenanceBuild<D> {
     let scope = provenance_scope(network_key, fingerprint, revision, at, levels, pulses);
     let mut records = previous
@@ -1062,7 +1091,7 @@ fn build_ready_provenance<D>(
         .iter()
         .map(|(output, cause)| (*output, remap_cause(*cause, scope)))
         .collect::<BTreeMap<_, _>>();
-    let (output_causes, pulse_output_causes) = append_evaluation_provenance(
+    let evaluation_causes = append_evaluation_provenance(
         scope,
         &mut records,
         transaction_cause,
@@ -1075,6 +1104,7 @@ fn build_ready_provenance<D>(
             causes: &remapped_output_causes,
             baselines: previous_output_baselines,
         }),
+        Some(previous_toggle_inversion_causes),
     );
 
     ProvenanceBuild {
@@ -1083,9 +1113,16 @@ fn build_ready_provenance<D>(
             records: Arc::new(records),
         },
         input_causes,
-        output_causes,
-        pulse_output_causes,
+        output_causes: evaluation_causes.level_outputs,
+        pulse_output_causes: evaluation_causes.pulse_outputs,
+        toggle_inversion_causes: evaluation_causes.toggle_inversions,
     }
+}
+
+struct EvaluationCauseMaps {
+    level_outputs: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+    pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
+    toggle_inversions: BTreeMap<NodeKey, CauseRef>,
 }
 
 fn append_evaluation_provenance<D>(
@@ -1095,15 +1132,18 @@ fn append_evaluation_provenance<D>(
     evaluation: &FullEvaluation,
     input_causes: EvaluationProvenanceInputs<'_>,
     previous_outputs: Option<PreviousLevelOutputs<'_>>,
-) -> (
-    BTreeMap<ExternalOutputKey<Level>, CauseRef>,
-    BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
-) {
+    previous_toggle_inversions: Option<&BTreeMap<NodeKey, CauseRef>>,
+) -> EvaluationCauseMaps {
     let previous_output_causes = previous_outputs.as_ref().map(|previous| previous.causes);
     let previous_output_baselines = previous_outputs.as_ref().map(|previous| previous.baselines);
     let mut operation_causes = Vec::with_capacity(evaluation.causes.len());
     let mut output_causes = BTreeMap::new();
     let mut pulse_output_causes = BTreeMap::new();
+    let mut toggle_inversion_causes = previous_toggle_inversions
+        .into_iter()
+        .flat_map(|causes| causes.iter())
+        .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
+        .collect::<BTreeMap<_, _>>();
 
     for cause in &evaluation.causes {
         let resolved = match cause {
@@ -1171,6 +1211,36 @@ fn append_evaluation_provenance<D>(
                     },
                 )
             }
+            EvaluationCause::Toggle {
+                node,
+                input,
+                count: _,
+                previous: _,
+                result: _,
+                inverted,
+            } => {
+                let mut supporters = vec![
+                    transaction_cause,
+                    operation_cause(&operation_causes, *input),
+                ];
+                if let Some(previous_inversion) = toggle_inversion_causes.get(node).copied() {
+                    supporters.push(previous_inversion);
+                }
+                supporters.sort();
+                supporters.dedup();
+                let reference = push_record(
+                    scope,
+                    records,
+                    ProvenanceRecord::Derived {
+                        subject: ProvenanceSubject::Node(*node),
+                        supporters,
+                    },
+                );
+                if *inverted {
+                    toggle_inversion_causes.insert(*node, reference);
+                }
+                reference
+            }
             EvaluationCause::Alias(source) => operation_cause(&operation_causes, *source),
             EvaluationCause::ExternalOutput { output, source } => {
                 let unchanged_cause = previous_output_baselines
@@ -1223,7 +1293,11 @@ fn append_evaluation_provenance<D>(
         };
         operation_causes.push(resolved);
     }
-    (output_causes, pulse_output_causes)
+    EvaluationCauseMaps {
+        level_outputs: output_causes,
+        pulse_outputs: pulse_output_causes,
+        toggle_inversions: toggle_inversion_causes,
+    }
 }
 
 fn remap_cause(cause: CauseRef, scope: [u8; 16]) -> CauseRef {
@@ -1422,8 +1496,9 @@ mod tests {
     use crate::metadata::DiagnosticMeta;
     use crate::signal::{Level, LogicLevel, Pulse, PulseCount};
     use crate::{
-        CauseInspection, CauseRef, MachineStatus, NetworkRevision, OutputEvent, ProvenanceView,
-        RuntimeFailureEvidence, RuntimePolicy, RuntimePolicyLimit, TimeDomainId, Transaction,
+        CauseInspection, CauseRef, MachineStatus, NetworkRevision, OutputEvent, ProvenanceSubject,
+        ProvenanceView, RuntimeFailureEvidence, RuntimePolicy, RuntimePolicyLimit, TimeDomainId,
+        Transaction,
     };
     use std::collections::BTreeSet;
 
@@ -1628,6 +1703,139 @@ mod tests {
         .unwrap_or_else(|_| panic!("Select fixture must compile"))
     }
 
+    fn compiled_toggle(initial: LogicLevel, downstream_not: bool) -> crate::CompiledNetwork<()> {
+        let pulse = ExternalInputKey::<Pulse>::from_u128(1);
+        let toggle_input = InPortKey::<Pulse>::from_u128(11);
+        let toggle_output = OutPortKey::<Level>::from_u128(12);
+        let mut nodes = vec![NodeDef::new(
+            NodeKey::from_u128(10),
+            NodeKind::toggle(initial),
+            NodePorts::with_input_roles(
+                vec![toggle_input.into()],
+                vec![InputPortRole::Toggle],
+                vec![toggle_output.into()],
+            ),
+            DiagnosticMeta::default(),
+        )];
+        let mut connections = vec![ConnectionDef::new(
+            ConnectionKey::from_u128(40),
+            pulse.into(),
+            toggle_input.into(),
+            DiagnosticMeta::default(),
+        )];
+        let source = if downstream_not {
+            let input = InPortKey::<Level>::from_u128(21);
+            let output = OutPortKey::<Level>::from_u128(22);
+            nodes.push(NodeDef::new(
+                NodeKey::from_u128(20),
+                NodeKind::not(),
+                NodePorts::new(vec![input.into()], vec![output.into()]),
+                DiagnosticMeta::default(),
+            ));
+            connections.push(ConnectionDef::new(
+                ConnectionKey::from_u128(41),
+                toggle_output.into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            ));
+            output
+        } else {
+            toggle_output
+        };
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(20),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            nodes,
+            vec![ExternalInputDef::new(
+                pulse.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(30).into(),
+                SignalSourceKey::NodeOutput(source).into(),
+                DiagnosticMeta::default(),
+            )],
+            connections,
+        )
+        .validate()
+        .require_artifact()
+        .unwrap_or_else(|_| panic!("Toggle fixture must validate"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|_| panic!("Toggle fixture must compile"))
+    }
+
+    fn compiled_two_toggles() -> crate::CompiledNetwork<()> {
+        let inputs = [
+            ExternalInputKey::<Pulse>::from_u128(1),
+            ExternalInputKey::<Pulse>::from_u128(2),
+        ];
+        let ports = [
+            InPortKey::<Pulse>::from_u128(11),
+            InPortKey::<Pulse>::from_u128(21),
+        ];
+        let outputs = [
+            OutPortKey::<Level>::from_u128(12),
+            OutPortKey::<Level>::from_u128(22),
+        ];
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(20),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            [LogicLevel::Low, LogicLevel::High]
+                .into_iter()
+                .enumerate()
+                .map(|(index, initial)| {
+                    NodeDef::new(
+                        NodeKey::from_u128(10 + index as u128 * 10),
+                        NodeKind::toggle(initial),
+                        NodePorts::with_input_roles(
+                            vec![ports[index].into()],
+                            vec![InputPortRole::Toggle],
+                            vec![outputs[index].into()],
+                        ),
+                        DiagnosticMeta::default(),
+                    )
+                })
+                .collect(),
+            inputs
+                .into_iter()
+                .map(|key| ExternalInputDef::new(key.into(), DiagnosticMeta::default()))
+                .collect(),
+            outputs
+                .into_iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    ExternalOutputDef::new(
+                        ExternalOutputKey::<Level>::from_u128(30 + index as u128).into(),
+                        SignalSourceKey::NodeOutput(source).into(),
+                        DiagnosticMeta::default(),
+                    )
+                })
+                .collect(),
+            ports
+                .into_iter()
+                .zip(inputs)
+                .enumerate()
+                .map(|(index, (target, source))| {
+                    ConnectionDef::new(
+                        ConnectionKey::from_u128(40 + index as u128),
+                        source.into(),
+                        target.into(),
+                        DiagnosticMeta::default(),
+                    )
+                })
+                .collect(),
+        )
+        .validate()
+        .require_artifact()
+        .unwrap_or_else(|_| panic!("two-Toggle fixture must validate"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|_| panic!("two-Toggle fixture must compile"))
+    }
+
     fn policy() -> RuntimePolicy {
         policy_with([1, 2, 0, 1, 3])
     }
@@ -1676,6 +1884,8 @@ mod tests {
         input_causes: std::collections::BTreeMap<ExternalInputKey<Level>, CauseRef>,
         output_causes: std::collections::BTreeMap<ExternalOutputKey<Level>, CauseRef>,
         provenance: Option<([u8; 16], usize, usize)>,
+        toggle_states: Vec<LogicLevel>,
+        toggle_inversion_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
     }
 
     fn observe(machine: &crate::Machine<()>) -> MachineObservation {
@@ -1698,7 +1908,310 @@ mod tests {
                     std::sync::Arc::as_ptr(&view.records) as usize,
                 )
             }),
+            toggle_states: machine.store.toggle_states.clone(),
+            toggle_inversion_causes: machine.store.toggle_inversion_causes.clone(),
         }
+    }
+
+    #[test]
+    fn toggle_exhausts_initial_state_and_pulse_parity() {
+        for initial in [LogicLevel::Low, LogicLevel::High] {
+            for count in [0_u64, 1, 2, 3, 10, 11] {
+                let compiled = compiled_toggle(initial, false);
+                let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+                assert_eq!(
+                    machine
+                        .inspect_toggle_definition(NodeKey::from_u128(10))
+                        .unwrap()
+                        .initial(),
+                    initial
+                );
+                assert_eq!(
+                    machine.inspect_toggle(NodeKey::from_u128(10)),
+                    Err(crate::ToggleInspectionFailure::NotInitialized)
+                );
+                assert_eq!(
+                    machine.inspect_toggle_definition(NodeKey::from_u128(999)),
+                    Err(crate::ToggleInspectionFailure::UnknownNode(
+                        NodeKey::from_u128(999)
+                    ))
+                );
+                let mut snapshot = compiled.input_snapshot();
+                if count != 0 {
+                    snapshot = snapshot
+                        .pulse(ExternalInputKey::from_u128(1), PulseCount::new(count))
+                        .unwrap();
+                }
+                let result = machine
+                    .apply(Transaction::initialize(
+                        crate::time::Time::from_ticks(10),
+                        machine.revision(),
+                        snapshot.finish().unwrap(),
+                    ))
+                    .unwrap();
+                let expected = if count % 2 == 1 {
+                    initial.invert()
+                } else {
+                    initial
+                };
+                let inspected = machine.inspect_toggle(NodeKey::from_u128(10)).unwrap();
+                assert_eq!(inspected.node(), NodeKey::from_u128(10));
+                assert_eq!(inspected.committed(), expected);
+                assert_eq!(inspected.initial(), initial);
+                assert_eq!(inspected.revision(), machine.revision());
+                assert_eq!(inspected.at(), crate::time::Time::from_ticks(10));
+                assert_eq!(
+                    machine.output_level(ExternalOutputKey::from_u128(30)),
+                    Some(expected)
+                );
+                assert_eq!(inspected.latest_inversion().is_some(), count % 2 == 1);
+                if let Some(cause) = inspected.latest_inversion() {
+                    assert!(result.provenance().inspect(cause).is_ok());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn toggle_ready_reactions_commit_once_and_retain_latest_inversion_cause() {
+        let compiled = compiled_toggle(LogicLevel::Low, false);
+        let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        let snapshot = compiled
+            .input_snapshot()
+            .pulse(ExternalInputKey::from_u128(1), PulseCount::ONE)
+            .and_then(crate::InputSnapshotBuilder::finish)
+            .unwrap();
+        machine
+            .apply(Transaction::initialize(
+                crate::time::Time::from_ticks(5),
+                machine.revision(),
+                snapshot,
+            ))
+            .unwrap();
+        assert_eq!(
+            machine
+                .inspect_toggle(NodeKey::from_u128(10))
+                .unwrap()
+                .committed(),
+            LogicLevel::High
+        );
+
+        let even = compiled
+            .input_delta()
+            .pulse(ExternalInputKey::from_u128(1), PulseCount::new(2))
+            .and_then(crate::InputDeltaBuilder::finish)
+            .unwrap();
+        let even_result = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(6),
+                machine.revision(),
+                even,
+            ))
+            .unwrap();
+        assert!(even_result.output_events().is_empty());
+        let retained = machine
+            .inspect_toggle(NodeKey::from_u128(10))
+            .unwrap()
+            .latest_inversion()
+            .unwrap();
+        assert!(even_result.provenance().inspect(retained).is_ok());
+
+        let odd = compiled
+            .input_delta()
+            .pulse(ExternalInputKey::from_u128(1), PulseCount::new(3))
+            .and_then(crate::InputDeltaBuilder::finish)
+            .unwrap();
+        let odd_result = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(7),
+                machine.revision(),
+                odd,
+            ))
+            .unwrap();
+        assert!(matches!(
+            odd_result.output_events(),
+            [OutputEvent::LevelChanged {
+                from: LogicLevel::High,
+                to: LogicLevel::Low,
+                ..
+            }]
+        ));
+        let inspected = machine.inspect_toggle(NodeKey::from_u128(10)).unwrap();
+        assert_eq!(inspected.committed(), LogicLevel::Low);
+        let latest = odd_result
+            .provenance()
+            .inspect(inspected.latest_inversion().unwrap())
+            .unwrap();
+        let CauseInspection::Derived { supporters, .. } = latest else {
+            panic!("latest Toggle inversion must resolve to a derived cause");
+        };
+        assert!(supporters.iter().any(|supporter| matches!(
+            odd_result.provenance().inspect(*supporter),
+            Ok(CauseInspection::Derived {
+                subject: ProvenanceSubject::Node(node),
+                ..
+            }) if node == NodeKey::from_u128(10)
+        )));
+    }
+
+    #[test]
+    fn toggle_settles_downstream_in_same_reaction_and_machines_are_independent() {
+        let compiled = compiled_toggle(LogicLevel::Low, true);
+        let mut first = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        let mut second = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        assert_eq!(
+            first.inspect_toggle_definition(NodeKey::from_u128(20)),
+            Err(crate::ToggleInspectionFailure::NotToggle(
+                NodeKey::from_u128(20)
+            ))
+        );
+        for (machine, count) in [(&mut first, 1_u64), (&mut second, 2_u64)] {
+            let snapshot = compiled
+                .input_snapshot()
+                .pulse(ExternalInputKey::from_u128(1), PulseCount::new(count))
+                .and_then(crate::InputSnapshotBuilder::finish)
+                .unwrap();
+            machine
+                .apply(Transaction::initialize(
+                    crate::time::Time::from_ticks(10),
+                    machine.revision(),
+                    snapshot,
+                ))
+                .unwrap();
+        }
+        assert_eq!(
+            first
+                .inspect_toggle(NodeKey::from_u128(10))
+                .unwrap()
+                .committed(),
+            LogicLevel::High
+        );
+        assert_eq!(
+            second
+                .inspect_toggle(NodeKey::from_u128(10))
+                .unwrap()
+                .committed(),
+            LogicLevel::Low
+        );
+        assert_eq!(
+            first.output_level(ExternalOutputKey::from_u128(30)),
+            Some(LogicLevel::Low)
+        );
+        assert_eq!(
+            second.output_level(ExternalOutputKey::from_u128(30)),
+            Some(LogicLevel::High)
+        );
+    }
+
+    #[test]
+    fn toggle_state_and_cause_are_failure_atomic() {
+        let compiled = compiled_toggle(LogicLevel::Low, false);
+        let mut rejected_initialization = compiled.spawn(policy_with([10, 100, 0, 0, 1_000]));
+        let before_initialization = observe(&rejected_initialization);
+        let proposed_odd = compiled
+            .input_snapshot()
+            .pulse(ExternalInputKey::from_u128(1), PulseCount::ONE)
+            .and_then(crate::InputSnapshotBuilder::finish)
+            .unwrap();
+        let failure = rejected_initialization
+            .apply(Transaction::initialize(
+                crate::time::Time::from_ticks(1),
+                rejected_initialization.revision(),
+                proposed_odd,
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            failure.evidence(),
+            RuntimeFailureEvidence::BudgetExceeded {
+                budget: RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
+                ..
+            }
+        ));
+        assert_eq!(observe(&rejected_initialization), before_initialization);
+
+        let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        let snapshot = compiled
+            .input_snapshot()
+            .pulse(ExternalInputKey::from_u128(1), PulseCount::ONE)
+            .and_then(crate::InputSnapshotBuilder::finish)
+            .unwrap();
+        machine
+            .apply(Transaction::initialize(
+                crate::time::Time::from_ticks(10),
+                machine.revision(),
+                snapshot,
+            ))
+            .unwrap();
+        let before = observe(&machine);
+        let odd = compiled
+            .input_delta()
+            .pulse(ExternalInputKey::from_u128(1), PulseCount::ONE)
+            .and_then(crate::InputDeltaBuilder::finish)
+            .unwrap();
+        let failure = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(10),
+                machine.revision(),
+                odd,
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            failure.evidence(),
+            RuntimeFailureEvidence::TimeNotStrictlyIncreasing { .. }
+        ));
+        assert_eq!(observe(&machine), before);
+    }
+
+    #[test]
+    fn multiple_toggle_cells_commit_atomically_and_ignore_input_claim_order() {
+        let compiled = compiled_two_toggles();
+        let initialize = |reverse: bool| {
+            let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+            let mut snapshot = compiled.input_snapshot();
+            let claims = if reverse {
+                [(2_u128, 3_u64), (1, 1)]
+            } else {
+                [(1_u128, 1_u64), (2, 3)]
+            };
+            for (key, count) in claims {
+                snapshot = snapshot
+                    .pulse(ExternalInputKey::from_u128(key), PulseCount::new(count))
+                    .unwrap();
+            }
+            machine
+                .apply(Transaction::initialize(
+                    crate::time::Time::from_ticks(10),
+                    machine.revision(),
+                    snapshot.finish().unwrap(),
+                ))
+                .unwrap();
+            machine
+        };
+
+        let forward = initialize(false);
+        let reverse = initialize(true);
+        for machine in [&forward, &reverse] {
+            assert_eq!(
+                machine
+                    .inspect_toggle(NodeKey::from_u128(10))
+                    .unwrap()
+                    .committed(),
+                LogicLevel::High
+            );
+            assert_eq!(
+                machine
+                    .inspect_toggle(NodeKey::from_u128(20))
+                    .unwrap()
+                    .committed(),
+                LogicLevel::Low
+            );
+            assert_eq!(
+                machine.store.toggle_states,
+                [LogicLevel::High, LogicLevel::Low]
+            );
+            assert_eq!(machine.store.toggle_inversion_causes.len(), 2);
+        }
+        assert_eq!(forward.store.toggle_states, reverse.store.toggle_states);
     }
 
     fn complex_compiled(reverse_claims: bool) -> crate::CompiledNetwork<()> {

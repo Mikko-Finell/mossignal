@@ -51,6 +51,7 @@ struct CompiledInner<D> {
     external_input_lookup: BTreeMap<AnyExternalInputKey, ExternalInputIndex>,
     external_output_lookup: BTreeMap<AnyExternalOutputKey, ExternalOutputIndex>,
     operation_lookup: BTreeMap<ReactionVertex, OperationIndex>,
+    toggle_initial_states: Vec<LogicLevel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -67,6 +68,15 @@ struct ExternalOutputIndex(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct OperationIndex(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ToggleStateIndex(usize);
+
+impl ToggleStateIndex {
+    pub(crate) const fn value(self) -> usize {
+        self.0
+    }
+}
 
 #[derive(Debug)]
 struct NodeDescriptor {
@@ -90,6 +100,10 @@ enum CompiledNodeKind {
         when_high: PortIndex,
     },
     Merge,
+    Toggle {
+        input: PortIndex,
+        state: ToggleStateIndex,
+    },
 }
 
 #[derive(Debug)]
@@ -140,6 +154,8 @@ pub(crate) struct FullEvaluation {
     pub(crate) causes: Vec<EvaluationCause>,
     pub(crate) external_outputs: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     pub(crate) pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
+    pub(crate) proposed_toggle_states: Vec<LogicLevel>,
+    pub(crate) toggle_inversions: BTreeMap<NodeKey, usize>,
     #[cfg(test)]
     execution_counts: Vec<usize>,
 }
@@ -157,6 +173,14 @@ pub(crate) enum EvaluationCause {
         node: NodeKey,
         contributions: Vec<PulseEvaluationContribution>,
         result: PulseCount,
+    },
+    Toggle {
+        node: NodeKey,
+        input: usize,
+        count: PulseCount,
+        previous: LogicLevel,
+        result: LogicLevel,
+        inverted: bool,
     },
     Alias(usize),
     ExternalOutput {
@@ -289,21 +313,60 @@ impl<D> CompiledNetwork<D> {
         external_inputs: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     ) -> Option<FullEvaluation> {
         self.inner
-            .evaluate_reaction(external_inputs, &BTreeMap::new())
+            .evaluate_reaction(
+                external_inputs,
+                &BTreeMap::new(),
+                &self.inner.toggle_initial_states,
+            )
             .ok()
     }
 
+    #[cfg(test)]
     pub(crate) fn evaluate_reaction(
         &self,
         external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     ) -> Result<FullEvaluation, EvaluationFailure> {
+        self.inner.evaluate_reaction(
+            external_levels,
+            external_pulses,
+            &self.inner.toggle_initial_states,
+        )
+    }
+
+    pub(crate) fn evaluate_reaction_with_state(
+        &self,
+        external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+        external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+        previous_toggle_states: &[LogicLevel],
+    ) -> Result<FullEvaluation, EvaluationFailure> {
         self.inner
-            .evaluate_reaction(external_levels, external_pulses)
+            .evaluate_reaction(external_levels, external_pulses, previous_toggle_states)
     }
 
     pub(crate) fn operation_count(&self) -> usize {
         self.inner.operations.len()
+    }
+
+    pub(crate) fn initial_toggle_states(&self) -> Vec<LogicLevel> {
+        self.inner.toggle_initial_states.clone()
+    }
+
+    pub(crate) fn toggle_state_slot(
+        &self,
+        node: NodeKey,
+    ) -> Option<(ToggleStateIndex, LogicLevel)> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        match descriptor.kind {
+            CompiledNodeKind::Toggle { state, .. } => {
+                Some((state, self.inner.toggle_initial_states[state.0]))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn contains_node(&self, node: NodeKey) -> bool {
+        self.inner.node_lookup.contains_key(&node)
     }
 }
 
@@ -312,11 +375,17 @@ impl<D> CompiledInner<D> {
         &self,
         external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+        previous_toggle_states: &[LogicLevel],
     ) -> Result<FullEvaluation, EvaluationFailure> {
+        if previous_toggle_states.len() != self.toggle_initial_states.len() {
+            return Err(EvaluationFailure::Incomplete);
+        }
         let mut values = vec![None; self.operations.len()];
         let mut causes = Vec::with_capacity(self.operations.len());
         let mut external_outputs = BTreeMap::new();
         let mut pulse_outputs = BTreeMap::new();
+        let mut proposed_toggle_states = previous_toggle_states.to_vec();
+        let mut toggle_inversions = BTreeMap::new();
         #[cfg(test)]
         let mut execution_counts = vec![0; self.operations.len()];
 
@@ -558,6 +627,40 @@ impl<D> CompiledInner<D> {
                             },
                         )
                     }
+                    NodeDescriptor {
+                        key,
+                        kind: CompiledNodeKind::Toggle { input, state },
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/toggle.yaml "parity-output-and-successor-law"
+                        // Every operation reads the shared previous vector and only stages a successor.
+                        let count = self.pulse_input_value(*input, &values)?;
+                        let previous = previous_toggle_states
+                            .get(state.0)
+                            .copied()
+                            .ok_or(EvaluationFailure::Incomplete)?;
+                        let inverted = count.get() % 2 == 1;
+                        let result = if inverted {
+                            previous.invert()
+                        } else {
+                            previous
+                        };
+                        proposed_toggle_states[state.0] = result;
+                        if inverted {
+                            toggle_inversions.insert(*key, index);
+                        }
+                        (
+                            EvaluationValue::Level(result),
+                            EvaluationCause::Toggle {
+                                node: *key,
+                                input: self.input_source(*input)?.0,
+                                count,
+                                previous,
+                                result,
+                                inverted,
+                            },
+                        )
+                    }
                 },
                 OperationDescriptor::NodeOutput(port) => {
                     let predecessor = self.predecessors[index]
@@ -625,6 +728,8 @@ impl<D> CompiledInner<D> {
             causes,
             external_outputs,
             pulse_outputs,
+            proposed_toggle_states,
+            toggle_inversions,
             #[cfg(test)]
             execution_counts,
         })
@@ -678,6 +783,7 @@ impl<D> CompiledInner<D> {
         let mut node_lookup = BTreeMap::new();
         let mut input_port_lookup = BTreeMap::new();
         let mut output_port_lookup = BTreeMap::new();
+        let mut toggle_initial_states = Vec::new();
 
         let mut authored_nodes: Vec<_> = definition.nodes().iter().collect();
         authored_nodes.sort_by_key(|node| node.key());
@@ -733,6 +839,14 @@ impl<D> CompiledInner<D> {
                     }
                 }
                 NodeKind::Merge => CompiledNodeKind::Merge,
+                NodeKind::Toggle(config) => {
+                    let input = inputs.first().copied().unwrap_or_else(|| {
+                        panic!("validated Toggle descriptor must retain its pulse input")
+                    });
+                    let state = ToggleStateIndex(toggle_initial_states.len());
+                    toggle_initial_states.push(config.initial);
+                    CompiledNodeKind::Toggle { input, state }
+                }
             };
             nodes.push(NodeDescriptor {
                 key: node.key(),
@@ -839,6 +953,7 @@ impl<D> CompiledInner<D> {
             external_input_lookup,
             external_output_lookup,
             operation_lookup,
+            toggle_initial_states,
         }
     }
 
@@ -867,6 +982,12 @@ impl<D> CompiledInner<D> {
                 | CompiledNodeKind::Parity
                 | CompiledNodeKind::AtLeast(_)
                 | CompiledNodeKind::Merge => node.outputs.len() == 1,
+                CompiledNodeKind::Toggle { input, state } => {
+                    node.inputs.len() == 1
+                        && node.outputs.len() == 1
+                        && node.inputs[0] == input
+                        && state.0 < self.toggle_initial_states.len()
+                }
                 CompiledNodeKind::Select {
                     selector,
                     when_low,
@@ -885,16 +1006,24 @@ impl<D> CompiledInner<D> {
             if !shape_valid {
                 return Err("compiled descriptor disagrees with node kind");
             }
-            let expected_kind = if matches!(node.kind, CompiledNodeKind::Merge) {
-                SignalKind::Pulse
-            } else {
-                SignalKind::Level
+            let (input_kind, output_kind) = match node.kind {
+                CompiledNodeKind::Merge => (SignalKind::Pulse, SignalKind::Pulse),
+                CompiledNodeKind::Toggle { .. } => (SignalKind::Pulse, SignalKind::Level),
+                _ => (SignalKind::Level, SignalKind::Level),
             };
-            for index in node.inputs.iter().chain(node.outputs.iter()) {
+            for index in &node.inputs {
                 let Some(port) = self.ports.get(index.0) else {
                     return Err("compiled port reference is out of bounds");
                 };
-                if port.owner != self.node_lookup[&node.key] || port.kind != expected_kind {
+                if port.owner != self.node_lookup[&node.key] || port.kind != input_kind {
+                    return Err("compiled port disagrees with validated node");
+                }
+            }
+            for index in &node.outputs {
+                let Some(port) = self.ports.get(index.0) else {
+                    return Err("compiled port reference is out of bounds");
+                };
+                if port.owner != self.node_lookup[&node.key] || port.kind != output_kind {
                     return Err("compiled port disagrees with validated node");
                 }
             }
@@ -1032,6 +1161,7 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
                 NodeKind::AtLeast(config) => NodeKind::at_least(config.threshold),
                 NodeKind::Select => NodeKind::select(),
                 NodeKind::Merge => NodeKind::merge(),
+                NodeKind::Toggle(config) => NodeKind::toggle(config.initial),
             };
             crate::authored::NodeDef::new(
                 node.key(),

@@ -544,6 +544,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         NodeKind::AtLeast(config) => DuplicateNodeKind::AtLeast(config.threshold),
                         NodeKind::Select => DuplicateNodeKind::Select,
                         NodeKind::Merge => DuplicateNodeKind::Merge,
+                        NodeKind::Toggle(config) => DuplicateNodeKind::Toggle(config.initial),
                     },
                     inputs: node.ports().inputs().to_vec(),
                     input_roles: node.ports().input_roles().to_vec(),
@@ -642,11 +643,12 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 NodeKind::All | NodeKind::Any | NodeKind::Parity | NodeKind::AtLeast(_) => None,
                 NodeKind::Select => Some(3),
                 NodeKind::Merge => None,
+                NodeKind::Toggle(_) => Some(1),
             };
-            let expected_kind = if matches!(node.kind(), NodeKind::Merge) {
-                SignalKind::Pulse
-            } else {
-                SignalKind::Level
+            let (expected_input_kind, expected_output_kind) = match node.kind() {
+                NodeKind::Merge => (SignalKind::Pulse, SignalKind::Pulse),
+                NodeKind::Toggle(_) => (SignalKind::Pulse, SignalKind::Level),
+                _ => (SignalKind::Level, SignalKind::Level),
             };
             let expected_outputs = 1;
             let inputs = node.ports().inputs();
@@ -675,18 +677,20 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ),
                 );
             }
-            if matches!(node.kind(), NodeKind::Not | NodeKind::Select)
-                && expected_inputs.is_some_and(|expected| inputs.len() < expected)
+            if matches!(
+                node.kind(),
+                NodeKind::Not | NodeKind::Select | NodeKind::Toggle(_)
+            ) && expected_inputs.is_some_and(|expected| inputs.len() < expected)
             {
                 self.add(
                     SubjectRef::Node(node.key()),
                     ProblemEvidence::missing_required_input(
                         SubjectRef::Node(node.key()),
-                        expected_kind,
+                        expected_input_kind,
                     ),
                 );
             }
-            if inputs.iter().any(|key| key.kind() != expected_kind) {
+            if inputs.iter().any(|key| key.kind() != expected_input_kind) {
                 self.add(
                     SubjectRef::Node(node.key()),
                     ProblemEvidence::invalid_fixed_arity(
@@ -697,7 +701,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ),
                 );
             }
-            if outputs.iter().any(|key| key.kind() != expected_kind) {
+            if outputs.iter().any(|key| key.kind() != expected_output_kind) {
                 self.add(
                     SubjectRef::Node(node.key()),
                     ProblemEvidence::invalid_fixed_arity(
@@ -728,6 +732,12 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         })
                         .count()
                 }
+                NodeKind::Toggle(_) => node
+                    .ports()
+                    .input_roles()
+                    .iter()
+                    .filter(|role| **role == InputPortRole::Toggle)
+                    .count(),
                 _ => node
                     .ports()
                     .input_roles()
@@ -755,8 +765,8 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     | NodeKind::AtLeast(_)
                     | NodeKind::Merge
             ) && outputs.len() == 1
-                && outputs.iter().all(|key| key.kind() == expected_kind)
-                && inputs.iter().all(|key| key.kind() == expected_kind)
+                && outputs.iter().all(|key| key.kind() == expected_output_kind)
+                && inputs.iter().all(|key| key.kind() == expected_input_kind)
                 && role_count == inputs.len()
                 && valid_role_count == inputs.len()
             {
@@ -2589,5 +2599,65 @@ mod tests {
             }
             _ => unreachable!("duplicate-key diagnostic has its registered evidence"),
         }
+    }
+
+    #[test]
+    fn toggle_enforces_fixed_shape_and_retains_immediate_dependency() {
+        let pulse = ExternalInputKey::<Pulse>::from_u128(1);
+        let input = InPortKey::<Pulse>::from_u128(2);
+        let output = OutPortKey::<Level>::from_u128(3);
+        let node = NodeKey::from_u128(4);
+        let definition = UncheckedNetwork::new(
+            NetworkKey::from_u128(5),
+            TimeDomainId::from_u128(6),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                node,
+                NodeKind::<()>::toggle(LogicLevel::Low),
+                NodePorts::with_input_roles(
+                    vec![input.into()],
+                    vec![InputPortRole::Toggle],
+                    vec![output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                pulse.into(),
+                DiagnosticMeta::default(),
+            )],
+            Vec::new(),
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(7),
+                pulse.into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )],
+        );
+        let structural = definition.validate_structural();
+        let candidate = structural.artifact().unwrap();
+        let graph = candidate.reaction_dependencies();
+        assert!(graph.dependencies().any(|edge| {
+            edge.from == ReactionVertex::ExternalInput(pulse.into())
+                && edge.to == ReactionVertex::NodeOperation(node)
+        }));
+
+        let malformed = UncheckedNetwork::<()>::new(
+            NetworkKey::from_u128(5),
+            TimeDomainId::from_u128(6),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                node,
+                NodeKind::toggle(LogicLevel::Low),
+                NodePorts::new(
+                    vec![InPortKey::<Level>::from_u128(2).into()],
+                    vec![OutPortKey::<Pulse>::from_u128(3).into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(malformed.validate_structural().artifact().is_none());
     }
 }
