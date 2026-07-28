@@ -1,0 +1,138 @@
+schema_version: "0.1"
+id: mossignal.authoring.typed_network_builder
+title: Typed network builder foundation
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: dc8a2e64db7be7002a1e6329f81ab44027c3943d
+  working_tree: clean
+
+summary: >-
+  NetworkBuilder<D> is the owning strongly typed Rust authoring surface. It
+  gives callers builder-scoped typed Signal<S> handles and lowers its authored
+  structure into the canonical dynamic UncheckedNetwork<D> boundary.
+
+scope:
+  includes:
+    - builder-owned network and time-domain identity
+    - builder-scoped typed signal handles and foreign-signal rejection
+    - level external-endpoint authoring
+    - Constant and Not primitive authoring
+    - completion into unchecked and validated network artifacts
+  excludes:
+    - dynamic unchecked-definition storage and validation semantics
+    - pulse endpoint authoring
+    - primitive families other than Constant and Not
+    - modules, hierarchy, binding, persistence, and reconfiguration
+
+known_uncovered:
+  - Pulse endpoint authoring
+  - Typed support for variadic, stateful, temporal, and module primitives
+
+aliases:
+  - NetworkBuilder<D>
+  - Signal<S>
+  - typed authoring
+
+requirements:
+  - id: owning-identity-boundary
+    kind: lifecycle
+    statement: >-
+      NetworkBuilder<D> owns its authored state, one network identity, and one
+      caller-supplied TimeDomainId; it must not borrow external storage and
+      cannot lower or finish without the identity already bound.
+    sources: [api-typed-builder, concrete-builder]
+
+  - id: typed-builder-scoped-signals
+    kind: public_surface
+    statement: >-
+      Signal<S> carries its signal kind, builder identity, and source reference;
+      it is an opaque builder-only authoring handle, not a persistent structural
+      key or a value that may appear in snapshots, bindings, replay frames, or
+      persisted definitions.
+    sources: [api-typed-builder, concrete-signals]
+
+  - id: foreign-signal-is-structured-failure
+    kind: prohibition
+    statement: >-
+      A consuming builder operation supplied a Signal from another builder must
+      return AuthoringFailure::ForeignSignal, rather than panic or silently
+      connect an unrelated source.
+    sources: [concrete-signals, catalogue-authoring]
+
+  - id: typed-endpoint-authoring
+    kind: public_surface
+    statement: >-
+      The foundation provides typed level external-input and external-output
+      authoring forms. Its explicit level-input form accepts an
+      ExternalInputKey<Level> and DiagnosticMeta and rejects immediately
+      determinable duplicate keys; its output forms accept only Signal<Level>.
+    sources: [api-typed-builder, concrete-inputs, concrete-outputs]
+
+  - id: primitive-authoring-contract
+    kind: public_surface
+    statement: >-
+      The foundation offers signal-free Constant construction and signal-taking
+      Not construction. Constant construction is infallible and every call
+      creates a distinct Constant with its own stable identity; Not returns a
+      structured authoring result. Explicit keyed Constant and Not forms accept
+      NodeKey and DiagnosticMeta and expose the authored node identity.
+    sources: [concrete-primitives, concrete-explicit-keyed, concrete-constant-rules]
+
+  - id: completion-boundary
+    kind: lifecycle
+    statement: >-
+      Builder completion consumes the builder. into_unchecked materializes its
+      canonical dynamic definition, while finish materializes it, runs complete
+      validation, and returns the common Report boundary.
+    sources: [concrete-completion]
+
+implementation_freedom:
+  - Constructor spelling and argument grouping are free when identity is bound before lowering.
+  - Private builder identity, signal representation, allocation mechanics, lowering decomposition, and module placement are free.
+  - Initial bounded slices may support only selected typed node and endpoint families without placeholder semantics for later families.
+
+open_questions: []
+
+sources:
+  api-typed-builder:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 11. `NetworkBuilder<D>`]
+    reviewed_hash: sha256:619764394d49d756d164e43a5a55c2acff8e2f069ae41e17996bbbdf03c5ef97
+  concrete-builder:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 22. `NetworkBuilder<D>`]
+    reviewed_hash: sha256:2ec40564b2ad418160efe3725bfed2e729b543bd65146eec38a8ba6ad463d6da
+  concrete-signals:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 23. Builder-scoped signals]
+    reviewed_hash: sha256:b200d59e0de48f3f401776baa69a2e37fa07f8cebded5b7663fd771436e4d72d
+  concrete-inputs:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 24. External input authoring]
+    reviewed_hash: sha256:21211c7e9da4c2fca3d328c71301013a941eb1d74bf216025511a2f0743354e6
+  concrete-outputs:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 25. External output authoring]
+    reviewed_hash: sha256:541513a7c22658a15a3d8d80407da124c85a3c4b22c8790e20f7cb61df138abe
+  concrete-primitives:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 27. Primitive construction style]
+    reviewed_hash: sha256:f82aec0ab24fa3b054888b29444264961c9dfee4e6ae57b38745f9ffd0483671
+  concrete-explicit-keyed:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 28. Explicit keyed primitive construction]
+    reviewed_hash: sha256:eebf1d5f4f29d91da4e1483f86545fa1ed80b3aa7abb514939fd3dd2a7f8efdf
+  concrete-constant-rules:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  concrete-completion:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 35. Builder completion]
+    reviewed_hash: sha256:170aadbc9a1c85f55c9b59b38ae72ba730daa0d6d6511c3e024b27dc4e1a9fa5
+  catalogue-authoring:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 25. Authoring]
+    reviewed_hash: sha256:2f9e3a0f43a065ff23b7af2d620e049419eab0f73276f508ec73996fa8a00480
