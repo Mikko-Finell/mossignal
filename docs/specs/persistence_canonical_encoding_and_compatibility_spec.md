@@ -995,7 +995,8 @@ Semantically equivalent stable-keyed definitions must produce the same fingerpri
 
 ### 54.2 Restricted network-fingerprint projection version 1
 
-For the restricted `Constant`/`Not`/`All` foundation, the exact canonical
+For the restricted level-combinational foundation containing `Constant`,
+`Not`, `All`, `Any`, `Parity`, `AtLeast`, and `Select`, the exact canonical
 payload is the following record:
 
 ```text
@@ -1035,9 +1036,17 @@ kind = ["constant", record {
         }]
      | ["not", null]
      | ["all", null]
+     | ["any", null]
+     | ["parity", null]
+     | ["at_least", record {
+            threshold,
+        }]
+     | ["select", null]
 
 value = ["low", null]
       | ["high", null]
+
+threshold = unsigned integer
 
 port = record {
     direction,
@@ -1048,7 +1057,11 @@ port = record {
 }
 
 direction     = ["input", null] | ["output", null]
-semantic_role = ["input", null] | ["output", null]
+semantic_role = ["input", null]
+              | ["selector", null]
+              | ["when_low", null]
+              | ["when_high", null]
+              | ["output", null]
 signal_kind   = ["level", null]
 
 connection = record {
@@ -1082,6 +1095,12 @@ external_output = record {
     source,
 }
 ```
+
+The `selector`, `when_low`, and `when_high` semantic roles apply to the three
+fixed input ports of `Select`; ordinary fixed and variadic level inputs use the
+`input` role. The role is part of canonical semantic identity independently of
+the stable port key. `AtLeast` encodes its `u64` threshold as the canonical
+unsigned integer above.
 
 Every `key` and `owner` field is the applicable 16-byte stable structural key.
 Node collections are ordered by `NodeKey`; connection collections by

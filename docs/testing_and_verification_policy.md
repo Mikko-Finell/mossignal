@@ -530,7 +530,7 @@ Dense-index assignment may differ only where the public semantics permit it. Any
 
 ### 21.1 Restricted semantic fingerprint verification
 
-The opening `Constant`/`Not`/`All` semantic identity implementation must verify:
+The restricted level-combinational semantic identity implementation must verify:
 
 1. equal stable semantic networks built with different node, port, connection,
    and external-endpoint insertion orders produce identical canonical projection
@@ -540,20 +540,25 @@ The opening `Constant`/`Not`/`All` semantic identity implementation must verify:
 3. changing only `TimeDomainId` changes `NetworkFingerprint`;
 4. changing only `NetworkKey` changes `NetworkFingerprint`;
 5. changing a `Constant` value changes `NetworkFingerprint`;
-6. changing connection incidence changes `NetworkFingerprint`;
-7. changing selected topological order, reaction-operation allocation, dense
+6. changing an `AtLeast` threshold changes `NetworkFingerprint`;
+7. changing a `Select` input's semantic role changes `NetworkFingerprint` even
+   when the same stable port keys remain present;
+8. changing connection incidence changes `NetworkFingerprint`;
+9. changing selected topological order, reaction-operation allocation, dense
    layout, caches, or other private representation does not change either
    fingerprint;
-8. topology changes that preserve the complete external-input schema preserve
+10. topology changes that preserve the complete external-input schema preserve
    `InputSchemaFingerprint`;
-9. adding or removing an external input changes `InputSchemaFingerprint`; a
-   future supported projection with multiple signal-kind or establishment
-   variants must likewise verify sensitivity to those fields;
-10. network and input-schema domain labels produce different digests for equal
+11. adding or removing an external input changes `InputSchemaFingerprint`; a
+    future supported projection with multiple signal-kind or establishment
+    variants must likewise verify sensitivity to those fields;
+12. network and input-schema domain labels produce different digests for equal
     canonical payload bytes; and
-11. hand-reviewed golden canonical bytes and BLAKE3-256 results cover an empty
-    or minimal network, a nontrivial `Constant`/`Not` network, and a variadic
-    `All` network with distinct stable input ports.
+13. hand-reviewed golden canonical bytes and BLAKE3-256 results cover an empty
+    or minimal network, a nontrivial `Constant`/`Not` network, a variadic `All`
+    network with distinct stable input ports, and the remaining restricted
+    level-combinational node kinds including `AtLeast`'s threshold and
+    `Select`'s fixed input roles.
 
 Validation tests must also establish that a blocking-invalid unchecked network
 cannot expose a validated `NetworkFingerprint` or `InputSchemaFingerprint`.

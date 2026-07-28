@@ -1,0 +1,261 @@
+schema_version: "0.1"
+id: mossignal.node.level_combinational_expansion
+title: Remaining level-combinational primitive family
+kind: family
+status: reviewed
+
+source_baseline:
+  commit: 9a489c4c66354430be9e7068247196fac732a954
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    - docs/testing_and_verification_policy.md
+
+summary: >-
+  Any, Parity, AtLeast, and Select complete the initial level-combinational
+  primitive family using the established authored graph, typed builder,
+  validation, dependency, compilation, settlement, and fingerprint boundaries.
+
+scope:
+  includes:
+    - total level laws and port shapes for Any, Parity, AtLeast, and Select
+    - typed and dynamic authoring, structural validation, and quality advisories
+    - conservative dependency signatures, compilation, and full settlement
+    - bounded primitive conformance and pre-stability fingerprint representation
+  excludes:
+    - composed adders and reusable cross-topology equivalence harnesses
+    - explanation and provenance rendering
+    - pulse, stateful, temporal, module, persistence-decoding, and reconfiguration work
+
+known_uncovered:
+  - Explicit durable reconstruction policy for individual locally allocated variadic ports beyond the optional keyed builder forms
+  - Current explanation and why-not rendering for the four primitives
+
+aliases:
+  - Any
+  - Parity
+  - AtLeast
+  - Select
+  - remaining level-combinational primitives
+
+requirements:
+  - id: any-total-law
+    kind: semantic
+    statement: >-
+      Any has zero or more level inputs and one level output, yielding High if
+      and only if at least one input is High. Any([]) is Low and Any([x]) is x;
+      both arities are valid rather than blocking structural errors.
+    sources: [any-law, total-semantics]
+
+  - id: parity-total-law
+    kind: semantic
+    statement: >-
+      Parity has zero or more level inputs and one level output, yielding High
+      if and only if an odd number of inputs are High. Parity([]) is Low,
+      Parity([x]) is x, and binary Parity is XOR rather than an exactly-one law.
+    sources: [parity-law, total-semantics]
+
+  - id: at-least-total-law
+    kind: semantic
+    statement: >-
+      AtLeast has zero or more level inputs, one level output, and a
+      non-negative `u64` threshold. It yields High if and only if at least that
+      many input ports are High; threshold zero always yields High and a
+      threshold greater than arity always yields Low without invalidating the
+      network.
+    sources: [at-least-law, config-values, total-semantics]
+
+  - id: select-branch-law
+    kind: semantic
+    statement: >-
+      Select has three fixed level inputs with distinct selector, when-low, and
+      when-high roles and one level output. A Low selector yields the when-low
+      branch and a High selector yields the when-high branch; the unselected
+      branch remains structural but does not currently support the result.
+    sources: [select-law, dependency-signature]
+
+  - id: variadic-port-identity-and-multiplicity
+    kind: semantic
+    statement: >-
+      Any, Parity, and AtLeast preserve one independent stable input-port
+      identity and one contribution per port. Port permutation cannot change
+      their commutative behavior, while connecting one source to several ports
+      remains valid and contributes once per port.
+    sources: [variadic-inputs, duplicate-sources, level-algebra]
+
+  - id: typed-and-dynamic-authoring
+    kind: public_surface
+    statement: >-
+      NetworkBuilder exposes immediately consumed variadic constructors for
+      Any, Parity, and AtLeast, a direct fixed-argument Select constructor, and
+      an explicit keyed form for every primitive. Dynamic authored definitions
+      represent the closed Any, Parity, AtLeast(AtLeastConfig), and Select node
+      kinds with stable typed ports and ordinary connection records.
+    sources: [builder-style, builder-keyed, config-values, constructor-family, dynamic-node-kind, dynamic-ports]
+
+  - id: causality-and-settlement
+    kind: semantic
+    statement: >-
+      Every Any, Parity, and AtLeast input contributes a conservative
+      current-reaction dependency to its output; Select contributes dependencies
+      from its selector and both branches. Validation and compilation retain
+      those incidences in the acyclic reaction graph, and full settlement
+      evaluates the applicable total law without publishing evaluator
+      intermediates.
+    sources: [dependency-signature, reaction-graph, compiled-invariants, glitch-freedom]
+
+  - id: nonblocking-quality-findings
+    kind: system_effect
+    statement: >-
+      Valid zero-input and unary variadic forms emit their applicable
+      empty-variadic or unary-degenerate advisories, and constant-result
+      AtLeast configurations emit the applicable constant-result advisory.
+      These findings remain non-blocking and do not suppress a valid artifact,
+      with a more specific warning suppressing constant-result when both
+      describe the same cause.
+    sources: [total-semantics, validation-advisories, diagnostic-reports]
+
+  - id: primitive-conformance
+    kind: verification
+    statement: >-
+      Each primitive requires reusable built-in conformance coverage for every
+      applicable matrix field. Tests exhaust bounded variadic valuations and
+      all Select valuations, include total-law boundaries and duplicate-source
+      multiplicity, preserve stable port identity under commutative
+      permutations, and exercise the specified simultaneous-change glitch cases.
+    sources: [glitch-verification, level-algebra, node-conformance, exhaustive-primitive-testing]
+
+  - id: canonical-fingerprint-boundary
+    kind: compatibility
+    statement: >-
+      Before the first stable fingerprint baseline, the authoritative version-1
+      projection represents Any, Parity, and Select with their exact nullary
+      node-kind variants and AtLeast with its exact threshold-bearing variant.
+      Select's three input roles are distinct canonical identity and the
+      threshold is an unsigned canonical integer; the synchronized accepted
+      change must update affected golden vectors.
+    sources: [restricted-fingerprint, fingerprint-versions, fingerprint-verification]
+
+recommendations:
+  - id: duplicate-source-advisory
+    statement: >-
+      Repeated use of one source on several Any, Parity, or AtLeast ports should
+      produce the non-blocking duplicate-source diagnostic while preserving
+      port-based multiplicity.
+    sources: [duplicate-sources, validation-advisories]
+
+implementation_freedom:
+  - Private descriptor layouts, Boolean reductions, counting strategy, and evaluator dispatch are unconstrained when observable laws and structural identity are preserved.
+  - Locally allocated variadic and fixed ports may use the simplest deterministic allocation order; implementers must test and record the concrete choice without treating it as reusable product policy.
+  - Exact explicit-keyed constructor grouping and private AtLeast threshold storage are free within the represented public-surface and canonical-identity requirements.
+
+open_questions: []
+
+sources:
+  any-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part II — Level combinational nodes, 25. `Any`]
+    reviewed_hash: sha256:6a102356525457f6840a6569d8d85eaa3412e45cdfc4b69b0737b749b9ee0743
+  parity-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part II — Level combinational nodes, 26. `Parity`]
+    reviewed_hash: sha256:81eb8a1896a618ec770d129ad2021c524808c8956ada45140d1eadfd44815407
+  at-least-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part II — Level combinational nodes, 27. `AtLeast`]
+    reviewed_hash: sha256:2feb35dffc22ede9240e29d5ad24106f7a66a6820072224eb042748bfeec0321
+  select-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part II — Level combinational nodes, 28. `Select`]
+    reviewed_hash: sha256:622357463f8e656dc0974286d87cb8ac78f4edf40e2e4b829b89da9ba616fe34
+  dependency-signature:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
+  variadic-inputs:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 15. Variadic inputs]
+    reviewed_hash: sha256:a97e9f25203740259ea4bec054f12cbd7a847dd8251e8055a89776b3f836c596
+  duplicate-sources:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 16. Duplicate sources]
+    reviewed_hash: sha256:f97907902b2fe39c74ca9b4e81bbfcedd2004edd622b0a00240540dfebbe408e
+  total-semantics:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 17. Total semantics]
+    reviewed_hash: sha256:c462078beb1cf6ab341eccc742f4c852589955c66b3f1fa2753f3220ca743f8d
+  builder-style:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 27. Primitive construction style]
+    reviewed_hash: sha256:f82aec0ab24fa3b054888b29444264961c9dfee4e6ae57b38745f9ffd0483671
+  builder-keyed:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 28. Explicit keyed primitive construction]
+    reviewed_hash: sha256:eebf1d5f4f29d91da4e1483f86545fa1ed80b3aa7abb514939fd3dd2a7f8efdf
+  config-values:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 29. Built-in configuration values]
+    reviewed_hash: sha256:b989b03bf932e65581c5878a208b6d619f3667762f9a547c2daa6366db6abc84
+  constructor-family:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  dynamic-node-kind:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
+  dynamic-ports:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 38. Dynamic ports and connections]
+    reviewed_hash: sha256:5fbea1f67eb6eea247e70168f60b4b3c3c348da10d98ab75e5b30406712e01ca
+  reaction-graph:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 15. Reaction dependency graph]
+    reviewed_hash: sha256:bb051caaa0cd3627f58f17edca8b2e09df6b72c3b042238f523b0dfb40dcda9a
+  compiled-invariants:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 22. Compiled invariants]
+    reviewed_hash: sha256:746554b068081f15488f90197bf4c03ad4b384836a2fca010cd0c90eb81e56fe
+  glitch-freedom:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 32. Glitch freedom]
+    reviewed_hash: sha256:5e497703203dd236303204e3d58726b76af3a0d88150bb265b01f0faeae5af8e
+  validation-advisories:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 27. Validation — non-blocking conditions]
+    reviewed_hash: sha256:3e0f26d778d325bd809cb0f11606c9d8acd1d290b85f13fd8244aa6ab9cca38b
+  diagnostic-reports:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 45. Reports]
+    reviewed_hash: sha256:20197431f1ff31d0d39de2a9463f1688aea0f9e0f56323267fac4ef5177684e6
+  fingerprint-versions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 15. Version representation]
+    reviewed_hash: sha256:a59d0cb9deab2c9b183e95c55b2e4df660b7927c8c6cc074defe68bee36c68b1
+  restricted-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part VI — Digest and fingerprint suite
+      - 54. Network and input-schema fingerprints
+      - 54.2 Restricted network-fingerprint projection version 1
+    reviewed_hash: sha256:f6a9a3b7807edda9bc462296209b594dadb786aa24f961daf19e80f57424d14e
+  fingerprint-verification:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation, 21.1 Restricted semantic fingerprint verification]
+    reviewed_hash: sha256:b7f3bccfbfc01a2c4c8e9d1f37d799598091126d00b1fced10e984f9f9c8a777
+  glitch-verification:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 33. Glitch freedom]
+    reviewed_hash: sha256:08db88081ab0905a1bb4e88fcde96d9a16beaaea2cf7166d40467e790b39a97c
+  level-algebra:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 35. Level algebra]
+    reviewed_hash: sha256:7bfeaeb70eaef3c526c6a2ad00ea1f81cf9190f287394342eb9c6487bf588a9a
+  node-conformance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 37. Node conformance requirement]
+    reviewed_hash: sha256:7bf27eaa2865945e6661a140c0f888a31d87ad380479dd90d3d06de5568a461d
+  exhaustive-primitive-testing:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 39. Exhaustive primitive testing]
+    reviewed_hash: sha256:c67d2593f52b5536672661e3cdb833b44716d657c7a9d23dabb0f698adcdb3de

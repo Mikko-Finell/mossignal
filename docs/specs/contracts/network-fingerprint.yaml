@@ -5,7 +5,7 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: 4ec13bc3b6202fb61817d01d8cbc58ec6201c8d9
+  commit: 9a489c4c66354430be9e7068247196fac732a954
   working_tree: dirty
   modified_spec_paths:
     - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
@@ -49,8 +49,8 @@ requirements:
       DigestSuiteVersion 1 computes NetworkFingerprint as unkeyed BLAKE3 with a
       256-bit output over the canonical record containing domain label
       mossignal/network_fingerprint/v1, domain version 1, and the version-1
-      canonical semantic payload for Constant, Not, and All. CoreSemanticsVersion
-      and BuiltInNodeSemanticsVersion are initially 1;
+      canonical semantic payload for the restricted level-combinational node
+      family. CoreSemanticsVersion and BuiltInNodeSemanticsVersion are initially 1;
       TopologyPatchSemanticsVersion does not participate in the restricted
       projection.
     sources: [digest-suite, domain-separation, digest-version-inputs, restricted-projection]
@@ -61,8 +61,9 @@ requirements:
       The restricted version-1 payload uses the exact network, node, port,
       connection, external-input, external-output, source, target, signal-kind,
       direction, semantic-role, node-kind, and logic-level record and variant
-      schemas fixed by the persistence specification, including nullary `not`
-      and `all` node-kind variants. Collections use the
+      schemas fixed by the persistence specification, including nullary `not`,
+      `all`, `any`, `parity`, and `select` variants, the configured `at_least`
+      variant, and distinct `Select` input semantic roles. Collections use the
       specified stable semantic order and never Rust layout, discriminants, or
       debug text.
     sources: [restricted-projection, canonical-ordering, canonical-enums]
@@ -107,12 +108,22 @@ requirements:
       the canonical digest input.
     sources: [network-projection, restricted-projection, runtime-fingerprint, deterministic-compilation]
 
+  - id: parameter-and-role-sensitivity
+    kind: semantic
+    statement: >-
+      The restricted projection includes `AtLeast`'s unsigned threshold and the
+      `selector`, `when_low`, and `when_high` semantic roles of `Select` input
+      ports. Changing a represented parameter or role changes canonical
+      identity even when the stable node and port keys remain unchanged.
+    sources: [network-projection, restricted-projection, deterministic-compilation]
+
   - id: golden-vector-verification
     kind: verification
     statement: >-
       Representative NetworkFingerprint values require versioned golden vectors;
       tests also establish insertion-order invariance, metadata exclusion, and
-      sensitivity to every included restricted semantic category.
+      sensitivity to every included restricted semantic category, including
+      `AtLeast` thresholds and `Select` input roles.
     sources: [canonical-vectors, digest-scope-verification, deterministic-compilation]
 
 recommendations:
@@ -158,7 +169,7 @@ sources:
       - Part VI — Digest and fingerprint suite
       - 54. Network and input-schema fingerprints
       - 54.2 Restricted network-fingerprint projection version 1
-    reviewed_hash: sha256:99055f4736e6ad265b903829a90f1c4c5f5ba963d09f2c024b81f613a4022356
+    reviewed_hash: sha256:f6a9a3b7807edda9bc462296209b594dadb786aa24f961daf19e80f57424d14e
   canonical-ordering:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]
@@ -199,7 +210,7 @@ sources:
   deterministic-compilation:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
-    reviewed_hash: sha256:7dc343e07b5615dcd1ead8a690d5fbd8de0c21d0fa442ad26edabf35f5b3f23f
+    reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72
   digest-scope-verification:
     document: docs/testing_and_verification_policy.md
     heading_path:
