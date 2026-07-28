@@ -1,0 +1,364 @@
+schema_version: "0.1"
+id: mossignal.runtime.ready_level_transaction
+title: Restricted ready-machine level transaction
+kind: lifecycle
+status: reviewed
+
+source_baseline:
+  commit: 27d343c64e3176ebccb7383c3cb268427d6d38cb
+  working_tree: clean
+
+summary: >-
+  A ready-machine level transaction advances one initialized restricted machine
+  to a strictly later caller-supplied time, overlays one exact-bound InputDelta
+  on its authoritative external levels, fully settles the Constant/Not graph,
+  and atomically publishes changed level outputs without changing topology.
+
+scope:
+  includes:
+    - owned explicit level-only advancement transaction and exact preconditions
+    - strict ready-machine time progression without temporal deadlines
+    - retained omitted inputs and complete restricted full reevaluation
+    - atomic Ready-state replacement and unchanged topology revision
+    - deterministic LevelChanged events with resolvable causes
+    - correctness-oriented staging, rejection, and applicable runtime budgets
+  excludes:
+    - initialization and InputSnapshot application
+    - pulse, stateful, temporal, pending-event, and diagnostic-episode semantics
+    - topology patches, reconfiguration, migration, and revision advancement
+    - persistence, replay, forecasting, observers, and optimized sparse execution
+
+known_uncovered:
+  - Ready-machine execution across temporal deadlines and same-time pending events.
+  - Complete explanation-oriented provenance beyond the roots and result-owned view needed to resolve this slice's changed-output events.
+  - Execution and observable state digests, schedules, and the eventual complete SemanticChangeSet surface.
+
+aliases:
+  - Transaction<D>::advance
+  - Machine<D>::apply
+  - ready-machine transaction
+  - LevelChanged
+
+requirements:
+  - id: owned-explicit-advance-value
+    kind: public_surface
+    statement: >-
+      Ready advancement is represented by an owned explicit Transaction<D>
+      value. Transaction::advance takes the requested Time<D>, exact expected
+      NetworkRevision, and one InputDelta<D>; the transaction remains
+      inspectable before execution and is consumed by Machine::apply.
+    sources: [api-transactions, concrete-transaction-values, concrete-transaction-constructors, concrete-apply]
+
+  - id: exact-ready-preconditions
+    kind: semantic
+    statement: >-
+      Applying an advance transaction requires a Ready machine, an expected
+      revision equal to the current revision, and a delta bound separately to
+      the machine's exact NetworkKey, NetworkFingerprint, and
+      InputSchemaFingerprint. Lifecycle, revision, network, and schema
+      mismatches are structured runtime rejections.
+    sources: [api-ready-transaction, api-delta, schema-binding, concrete-transaction-constructors, lifecycle-codes, runtime-codes, input-codes]
+
+  - id: strictly-later-caller-time
+    kind: semantic
+    statement: >-
+      The requested time of every successful ready-machine transaction is
+      strictly later than the machine's current time. Equal or earlier times
+      receive a structured rejection so call order cannot become hidden same-time
+      semantics; the library supplies no wall clock or automatic advancement.
+    sources: [api-caller-time, api-time-progression, runtime-codes]
+
+  - id: delta-overlay-retention
+    kind: semantic
+    statement: >-
+      The delta's explicit level observations replace the corresponding values
+      in the candidate authoritative external valuation. Every unmentioned
+      external level retains its prior authoritative value, including Low or
+      High, and omission is never interpreted as a default.
+    sources: [api-ready-transaction, api-delta, api-atomic-input]
+
+  - id: ordinary-restricted-settlement
+    kind: semantic
+    statement: >-
+      After forming the complete candidate external valuation, the restricted
+      level-only transaction evaluates the complete Constant/Not reaction graph
+      and settles all immediate consequences at the requested time. Each
+      operation observes only settled predecessors, and the transaction must not
+      expose partial propagation or evaluator glitches. A full topological pass
+      is the correctness reference, while equivalent private staging remains
+      implementation freedom.
+    sources: [runtime-reaction-io, runtime-glitch-freedom, runtime-full-evaluation, api-ready-transaction, api-settlement]
+
+  - id: complete-ready-state-on-success
+    kind: lifecycle
+    statement: >-
+      One successful commit keeps the machine Ready, advances its current time
+      to the request, installs the complete candidate external valuation and
+      complete settled level state, replaces external output baselines, and
+      retains the same compiled topology, NetworkRevision, and runtime policy.
+      A state-only transaction does not advance topology revision.
+    sources: [runtime-transition-model, api-time-progression, api-revision, concrete-apply]
+
+  - id: changed-output-events
+    kind: system_effect
+    statement: >-
+      Each preserved external level output whose newly settled value differs
+      from its prior published baseline emits exactly one LevelChanged event
+      containing the output, prior value, new value, requested time, current
+      revision, and cause. An unchanged output emits no event. The flat event
+      collection is deterministic and is published only with successful commit.
+    sources: [runtime-output-publication, api-output-events, api-causal-provenance, concrete-output-events]
+
+  - id: resolvable-ready-causes
+    kind: system_effect
+    statement: >-
+      Every returned LevelChanged cause resolves through the successful owned
+      result's immutable ProvenanceView to an acyclic derivation terminating in
+      authoritative roots such as the committed transaction and applicable
+      external observations. Later machine updates must not invalidate causes
+      retained by an earlier result, and private arena positions are not durable
+      external identity.
+    sources: [runtime-provenance-records, runtime-causal-provenance, runtime-causal-order, runtime-authoritative-roots, api-causal-provenance, concrete-result, concrete-cause-references]
+
+  - id: applicable-runtime-policy-budgets
+    kind: semantic
+    statement: >-
+      Ready advancement enforces every associated runtime-policy budget whose
+      accounting boundary exists in this restricted path, including full
+      operation evaluation, created output events, and required provenance
+      growth. Exceeding a budget rejects the complete transaction rather than
+      skipping required work or publishing partial settlement.
+    sources: [api-runtime-policy, runtime-budget-failure]
+
+  - id: single-atomic-publication
+    kind: semantic
+    statement: >-
+      Precondition checks, delta overlay, full evaluation, candidate state,
+      output-event and provenance construction, applicable budget checks, and
+      result construction all complete before one non-fallible publication
+      point. Public inspection observes either the complete old Ready machine
+      or the complete new Ready machine.
+    sources: [runtime-transition-model, runtime-commit-point, runtime-preparation, runtime-output-publication, api-settlement, concrete-apply]
+
+  - id: correctness-oriented-staging
+    kind: verification
+    statement: >-
+      Clone-and-swap is the reference transaction strategy: execute against a
+      complete private candidate and replace the published machine only on
+      success. Any later optimized staging must remain equivalent to this path.
+    sources: [runtime-reference-strategy, testing-reference-transaction, testing-candidate-equivalence]
+
+  - id: failure-preserves-complete-machine
+    kind: semantic
+    statement: >-
+      Every structured rejection leaves the complete published machine
+      semantically unchanged, including lifecycle, topology and revision,
+      logical time, external levels, settled levels, output baselines and
+      causes, provenance roots, policy association, and every other represented
+      semantic field.
+    sources: [runtime-transition-model, concrete-apply, testing-failure-atomicity]
+
+  - id: restricted-ready-verification
+    kind: verification
+    statement: >-
+      Tests cover empty, partial, complete, and explicit-reassertion deltas;
+      strict time increase; retained omitted levels; complete reevaluation;
+      changed and unchanged output behavior; deterministic event order and
+      resolvable causes; unchanged revision; applicable budget boundaries; and
+      complete unchanged-state comparison after each supported rejection.
+      Every applicable budget is checked one below, exactly at, and one above
+      its limit where representable. Equivalent unordered batches must remain
+      behaviorally equivalent.
+    sources: [api-atomic-input, api-output-events, concrete-result, testing-transaction-history, testing-full-reaction, testing-input-order, testing-failure-atomicity, testing-rejections, testing-provenance-acyclicity, testing-budget-boundaries]
+
+implementation_freedom:
+  - Transaction variant storage, lifecycle-aware transaction inspection accessors, module placement, candidate-cloning details, and stable-key event sorting are unconstrained; choose the simplest deterministic auditable forms and do not preserve an initialization-only accessor through a panic or compatibility shim.
+  - Private failure representation is unconstrained when reachable rejection categories retain their catalogue distinctions and structured evidence.
+  - Provenance storage may share immutable prior records or build a private replacement view when every returned cause remains resolvable and the published machine preserves required current causal roots.
+  - Budgets without an implemented accounting boundary require no invented counter; once an accounting boundary exists, the policy and verification obligations apply.
+
+open_questions: []
+
+sources:
+  runtime-provenance-records:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part V — Runtime storage, 30. Provenance records]
+    reviewed_hash: sha256:ece55fde4f056390ef43c3a64c7a2a7bea4bf3e94870f43c51e6778905e97e56
+  runtime-reaction-io:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 31. Reaction inputs and outputs]
+    reviewed_hash: sha256:6c05eca14526fe17d08c8f26062ad9b52c082778d8a6492b5ad820cffb7a9bc4
+  runtime-glitch-freedom:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 32. Glitch freedom]
+    reviewed_hash: sha256:5e497703203dd236303204e3d58726b76af3a0d88150bb265b01f0faeae5af8e
+  runtime-full-evaluation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 33. Full reference evaluation]
+    reviewed_hash: sha256:582cdbde0046465fa88793dfa2f0e58976170719a591231f70d2a38b77ebe621
+  runtime-transition-model:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 47. State-transition model]
+    reviewed_hash: sha256:fcccb31e85f023ec9af8b0fcf6033427bb165f9b34130192dd7d1b00f281abd0
+  runtime-commit-point:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 48. Single commit point]
+    reviewed_hash: sha256:2f52d5b43dc3cb41ef234b07953c0648120301b22c62d91af1bc0aaef6f7d184
+  runtime-preparation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 49. Preparation and commitment]
+    reviewed_hash: sha256:163dacd480758eeb4ec962bdc4c0b78f09dee01337e4bbf9868efea30c3687df
+  runtime-reference-strategy:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 50. Reference execution strategy]
+    reviewed_hash: sha256:14a09030d1616cd4e3ed02260d2876305580d2ba1f81e54a1e080349e2edffc2
+  runtime-output-publication:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 52. Output and diagnostic publication]
+    reviewed_hash: sha256:f284a92845bb0bdc7254ae3a674e2397a1a6613a57d46db71bc8bccffc7bbd80
+  runtime-causal-order:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 64. Causal order]
+    reviewed_hash: sha256:fe3199f5d66e4d27a982954372a012f701f5e39948fb997e88cc909638eda3d4
+  runtime-causal-provenance:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 63. Derivation structure]
+    reviewed_hash: sha256:bb1973d9aea76fb8f7e039c7f9713ad91418c3f68c0968605819de55ca0a2c37
+  runtime-authoritative-roots:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 66. Authoritative roots]
+    reviewed_hash: sha256:68f43b8e827267e8d5ba81bd05517606d862d3312dea24469bf6f3e7bb8028ab
+  runtime-budget-failure:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XIV — Runtime policy and replay, 91. Budget failure]
+    reviewed_hash: sha256:2ca78ad09dfa909af6d1ad6e2685bbeea97ea77dc45df56832e4f27c3be4d879
+  api-caller-time:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IV — Logical time, 21. Caller-owned time]
+    reviewed_hash: sha256:b336045926930239fbe29e3b6c8a11a23ab6ce12f67e9c6834b50196ac030577
+  api-time-progression:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IV — Logical time, 22. Time progression]
+    reviewed_hash: sha256:c655529403d48a58bad273bd902e7eeeacbfb4782ccfdf35426acec04eaab48b
+  api-transactions:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 23. Explicit transaction values]
+    reviewed_hash: sha256:0c99fb78a8bf6a0e4c253c47536e4b4a108c1b4da1b36dbf7dfdf6e6ecdc48ca
+  api-ready-transaction:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 24. Transaction ordering, 24.2 Ready-machine transaction]
+    reviewed_hash: sha256:cb4a0f7d6e21f6ac09877096aedc3516c516b714865f34e3ce5279d50f4ec78b
+  api-atomic-input:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 25. Atomic input semantics]
+    reviewed_hash: sha256:4018d4bb1c96c7961fd79c43975d7dc7c2caf9b6246e713fafe9d5c2fd31271e
+  api-settlement:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 26. Settlement]
+    reviewed_hash: sha256:875bead35fccd63f762bf9fc87fbe484c579f99908d5e175bc8b135351296e23
+  api-revision:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 19. Revision, fingerprint, digests, and runtime policy
+      - 19.1 Topology revision
+    reviewed_hash: sha256:f5bc9a25453285db32ad2fadf01c9cc3176d5399f3cbb347ea6641de69c90bd3
+  api-runtime-policy:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 19. Revision, fingerprint, digests, and runtime policy
+      - 19.4 Runtime policy
+    reviewed_hash: sha256:f96ee53258acadc3a49b9b8cca7ffd18c66b573302712473614b7c91f3aa468a
+  api-delta:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VI — Inputs and outputs, 29. `InputDelta`]
+    reviewed_hash: sha256:958e08534ced9e8911a287b64d28b417d81d7db221bad002df633e6e198ae1d9
+  api-output-events:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VI — Inputs and outputs, 32. `OutputEvent<D>`]
+    reviewed_hash: sha256:007184f2cb51c1ebbc203631028d62385aad769a6846027c9cb606f432afb364
+  api-causal-provenance:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 53. Causal provenance]
+    reviewed_hash: sha256:9a55ead387cffd6833521d6efa179e653027358990c73721faf8e258eb064574
+  schema-binding:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 75. Input schema binding
+    reviewed_hash: sha256:eb95f049f168441a248456ba4f8e24135c9ce7e046f7e102af14b5732e6dd987
+  concrete-transaction-values:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XV — Transactions, 57. Owned explicit transaction values]
+    reviewed_hash: sha256:033d15615380a747bc0ee2a8b7cdd0bf81aa2e77094281080873b18fa6edc674
+  concrete-transaction-constructors:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XV — Transactions, 58. Distinct constructors]
+    reviewed_hash: sha256:99c4783a9c2d269f0a3782d11385267bed3f73a44eabfda228e8375d41e65d57
+  concrete-apply:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVI — Apply and forecast, 61. Applying transactions]
+    reviewed_hash: sha256:b374b5157312dc9d464980f48fed78fa084f78559542509570b30b1d82dc3ce6
+  concrete-result:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, 64. `TransactionResult<D>`]
+    reviewed_hash: sha256:20fb868dbf44f94e61a1e06e7f9f5ac08b5b7dbd7db5584777630bae19f6f295
+  concrete-output-events:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, 66. Output events]
+    reviewed_hash: sha256:2fa14b1c92982a2f8bdba90ca3ebed0cb078987d88be60027c14a094813f6fa7
+  concrete-cause-references:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XX — Explanation and provenance, 76. Cause references]
+    reviewed_hash: sha256:812a33c6984f4f42065c3e2d8272bc5f6721ec60e4d5cb8748e65f11223e5742
+  lifecycle-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 28. Lifecycle]
+    reviewed_hash: sha256:e26c76bc0b2d925d95f497c33d4e0f78989ac6987bedf97250df10dd92c6be3d
+  runtime-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part V — Exhaustive initial catalogue
+      - 29. Runtime values, time, policy, and semantic rejection
+    reviewed_hash: sha256:c9f66339774d5f873cdf36804834c8e71d0ea3025aef36badde12a1ca570e825
+  input-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 30. Input construction and projection]
+    reviewed_hash: sha256:3953dbde0d5f72123a26a59dc49c35ff13fe36622490c09d31e57557be10452c
+  testing-reference-transaction:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part III — Reference implementations, 9. Required reference paths, 9.2 Clone-and-swap transaction executor]
+    reviewed_hash: sha256:72818525b1160179b437b1003f4132287738e5c8ebe731c1baa147e527038f35
+  testing-transaction-history:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IV — Test data generation and reproducibility, 15. Transaction-history generation]
+    reviewed_hash: sha256:a3c1557600b2dd8f80380d918419d747d29871c56e0bcbc954ae9992209c5683
+  testing-full-reaction:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 29. Full reaction semantics]
+    reviewed_hash: sha256:09490fcbb877503a0aa2b2e00b65c7436ca4d072010eb25fbfbb44edb19f6401
+  testing-input-order:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 32. Input-order invariance]
+    reviewed_hash: sha256:6bb063631903f75427fb410642aadddc444776fe412e1ce90b2d74ac139fd9d6
+  testing-candidate-equivalence:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 53. Candidate-versus-clone equivalence]
+    reviewed_hash: sha256:9dc17269cf7c9067ef1fedd26757f1c4a5e4e3fa0fa5c42b8c19cbbf6d76ef94
+  testing-failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
+  testing-rejections:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 56. Rejection categories]
+    reviewed_hash: sha256:33243021df94512d72edbf1c2d5609e8847f3194205f58ffd764a2638323d03a
+  testing-provenance-acyclicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 67. Provenance acyclicity]
+    reviewed_hash: sha256:9a1337ae39cf3aa552706924fff14a6df935a49eb937012b4eaef213acf13084
+  testing-budget-boundaries:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XVI — Runtime-policy and budget verification, 92. Budget boundaries]
+    reviewed_hash: sha256:cff7fe7bd3bcc9e478cfdf31ec758817d34bf117517d9eb4250402db640d6789
