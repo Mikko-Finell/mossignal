@@ -458,9 +458,6 @@ impl<D> UncheckedNetwork<D> {
         if !cyclic_components.is_empty() {
             return Report::new(None, diagnostics);
         }
-        if !is_restricted_level_network(&self) {
-            return Report::new(None, diagnostics);
-        }
         let order = graph.topological_order();
         let (fingerprint, input_schema_fingerprint) = fingerprints(&self);
         Report::new(
@@ -546,6 +543,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         NodeKind::Parity => DuplicateNodeKind::Parity,
                         NodeKind::AtLeast(config) => DuplicateNodeKind::AtLeast(config.threshold),
                         NodeKind::Select => DuplicateNodeKind::Select,
+                        NodeKind::Merge => DuplicateNodeKind::Merge,
                     },
                     inputs: node.ports().inputs().to_vec(),
                     input_roles: node.ports().input_roles().to_vec(),
@@ -643,6 +641,12 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 NodeKind::Not => Some(1),
                 NodeKind::All | NodeKind::Any | NodeKind::Parity | NodeKind::AtLeast(_) => None,
                 NodeKind::Select => Some(3),
+                NodeKind::Merge => None,
+            };
+            let expected_kind = if matches!(node.kind(), NodeKind::Merge) {
+                SignalKind::Pulse
+            } else {
+                SignalKind::Level
             };
             let expected_outputs = 1;
             let inputs = node.ports().inputs();
@@ -678,11 +682,11 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     SubjectRef::Node(node.key()),
                     ProblemEvidence::missing_required_input(
                         SubjectRef::Node(node.key()),
-                        SignalKind::Level,
+                        expected_kind,
                     ),
                 );
             }
-            if inputs.iter().any(|key| key.kind() != SignalKind::Level) {
+            if inputs.iter().any(|key| key.kind() != expected_kind) {
                 self.add(
                     SubjectRef::Node(node.key()),
                     ProblemEvidence::invalid_fixed_arity(
@@ -693,7 +697,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ),
                 );
             }
-            if outputs.iter().any(|key| key.kind() != SignalKind::Level) {
+            if outputs.iter().any(|key| key.kind() != expected_kind) {
                 self.add(
                     SubjectRef::Node(node.key()),
                     ProblemEvidence::invalid_fixed_arity(
@@ -745,10 +749,14 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
             }
             if matches!(
                 node.kind(),
-                NodeKind::All | NodeKind::Any | NodeKind::Parity | NodeKind::AtLeast(_)
+                NodeKind::All
+                    | NodeKind::Any
+                    | NodeKind::Parity
+                    | NodeKind::AtLeast(_)
+                    | NodeKind::Merge
             ) && outputs.len() == 1
-                && outputs.iter().all(|key| key.kind() == SignalKind::Level)
-                && inputs.iter().all(|key| key.kind() == SignalKind::Level)
+                && outputs.iter().all(|key| key.kind() == expected_kind)
+                && inputs.iter().all(|key| key.kind() == expected_kind)
                 && role_count == inputs.len()
                 && valid_role_count == inputs.len()
             {
@@ -795,7 +803,11 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
         for node in self.network.nodes().iter().filter(|node| {
             matches!(
                 node.kind(),
-                NodeKind::All | NodeKind::Any | NodeKind::Parity | NodeKind::AtLeast(_)
+                NodeKind::All
+                    | NodeKind::Any
+                    | NodeKind::Parity
+                    | NodeKind::AtLeast(_)
+                    | NodeKind::Merge
             )
         }) {
             for input in node.ports().inputs() {
@@ -928,6 +940,17 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
 
     fn validate_external_outputs(&mut self) {
         for output in self.network.external_outputs() {
+            if output.key().kind() != output.source().kind() {
+                self.add(
+                    SubjectRef::ExternalOutput(output.key()),
+                    ProblemEvidence::signal_kind_mismatch(
+                        signal_source_subject(output.source()),
+                        SubjectRef::ExternalOutput(output.key()),
+                        output.source().kind(),
+                        output.key().kind(),
+                    ),
+                );
+            }
             match output.source() {
                 AnySignalSourceKey::Level(SignalSourceKey::ExternalInput(key))
                     if !self.external_inputs.contains(&key.into()) =>
@@ -988,30 +1011,6 @@ fn is_source(endpoint: ConnectionEndpoint) -> bool {
 
 fn is_target(endpoint: ConnectionEndpoint) -> bool {
     matches!(endpoint, ConnectionEndpoint::NodeInput(_))
-}
-
-fn is_restricted_level_network<D>(network: &UncheckedNetwork<D>) -> bool {
-    network.nodes().iter().all(|node| {
-        node.ports()
-            .inputs()
-            .iter()
-            .all(|port| port.kind() == SignalKind::Level)
-            && node
-                .ports()
-                .outputs()
-                .iter()
-                .all(|port| port.kind() == SignalKind::Level)
-    }) && network
-        .external_inputs()
-        .iter()
-        .all(|input| input.key().kind() == SignalKind::Level)
-        && network.external_outputs().iter().all(|output| {
-            output.key().kind() == SignalKind::Level && output.source().kind() == SignalKind::Level
-        })
-        && network.connections().iter().all(|connection| {
-            connection.from().kind() == SignalKind::Level
-                && connection.to().kind() == SignalKind::Level
-        })
 }
 
 fn reaction_source(endpoint: ConnectionEndpoint) -> Option<ReactionVertex> {
@@ -1106,7 +1105,7 @@ mod tests {
         OutPortKey, SignalSourceKey,
     };
     use crate::metadata::DiagnosticMeta;
-    use crate::signal::{Level, LogicLevel};
+    use crate::signal::{Level, LogicLevel, Pulse};
 
     fn all_definition(
         inputs: Vec<InPortKey<Level>>,
@@ -1559,6 +1558,33 @@ mod tests {
             }));
         }
 
+        let pulse_input = InPortKey::<Pulse>::from_u128(20);
+        let pulse_output = OutPortKey::<Pulse>::from_u128(21);
+        let merge = UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(3),
+                NodeKind::<()>::merge(),
+                NodePorts::new(vec![pulse_input.into()], vec![pulse_output.into()]),
+                DiagnosticMeta::default(),
+            )],
+            Vec::new(),
+            Vec::new(),
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(4),
+                pulse_output.into(),
+                pulse_input.into(),
+                DiagnosticMeta::default(),
+            )],
+        )
+        .validate();
+        assert!(merge.artifact().is_none());
+        assert!(merge.diagnostics().iter().any(|diagnostic| {
+            diagnostic.problem().code() == DiagnosticCode::ValidationCurrentReactionCycle
+        }));
+
         let ports = [
             InPortKey::<Level>::from_u128(10),
             InPortKey::<Level>::from_u128(11),
@@ -1879,6 +1905,47 @@ mod tests {
         let report = network.validate_structural();
         assert!(report.artifact().is_some());
         assert!(report.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn external_outputs_reject_sources_of_the_other_signal_kind() {
+        for output in [
+            ExternalOutputDef::new(
+                ExternalOutputKey::<Pulse>::from_u128(2).into(),
+                SignalSourceKey::ExternalInput(ExternalInputKey::<Level>::from_u128(1)).into(),
+                DiagnosticMeta::default(),
+            ),
+            ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(2).into(),
+                SignalSourceKey::ExternalInput(ExternalInputKey::<Pulse>::from_u128(1)).into(),
+                DiagnosticMeta::default(),
+            ),
+        ] {
+            let input = match output.source() {
+                crate::key::AnySignalSourceKey::Level(SignalSourceKey::ExternalInput(key)) => {
+                    ExternalInputDef::new(key.into(), DiagnosticMeta::default())
+                }
+                crate::key::AnySignalSourceKey::Pulse(SignalSourceKey::ExternalInput(key)) => {
+                    ExternalInputDef::new(key.into(), DiagnosticMeta::default())
+                }
+                _ => panic!("fixture source must be an external input"),
+            };
+            let report = UncheckedNetwork::<()>::new(
+                NetworkKey::from_u128(1),
+                crate::identity::TimeDomainId::from_u128(1),
+                DiagnosticMeta::default(),
+                vec![],
+                vec![input],
+                vec![output],
+                vec![],
+            )
+            .validate();
+
+            assert!(report.artifact().is_none());
+            assert!(report.diagnostics().iter().any(|diagnostic| {
+                diagnostic.problem().code() == DiagnosticCode::ValidationSignalKindMismatch
+            }));
+        }
     }
 
     #[test]

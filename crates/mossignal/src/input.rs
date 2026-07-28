@@ -1,19 +1,20 @@
-//! Complete and incremental external level-input artifacts.
+//! Complete and incremental external Level and Pulse input artifacts.
 
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
-use crate::key::{ExternalInputKey, NetworkKey};
-use crate::signal::{Level, LogicLevel};
+use crate::key::{AnyExternalInputKey, ExternalInputKey, NetworkKey};
+use crate::signal::{Level, LogicLevel, Pulse, PulseCount, SignalKind};
 use core::fmt;
 use core::marker::PhantomData;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// An owned complete valuation of one compiled network's external level inputs.
+/// An owned complete external-input batch for one compiled network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputSnapshot<D> {
     network_key: NetworkKey,
     network_fingerprint: NetworkFingerprint,
     input_schema_fingerprint: InputSchemaFingerprint,
     pub(crate) levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    pub(crate) pulses: BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     domain: PhantomData<fn() -> D>,
 }
 
@@ -36,19 +37,26 @@ impl<D> InputSnapshot<D> {
         self.input_schema_fingerprint
     }
 
-    pub(crate) fn into_levels(self) -> BTreeMap<ExternalInputKey<Level>, LogicLevel> {
-        self.levels
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+        BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+    ) {
+        (self.levels, self.pulses)
     }
 }
 
-/// An owned builder for a complete external level-input snapshot.
+/// An owned builder for a complete external-input snapshot.
 #[derive(Debug)]
 pub struct InputSnapshotBuilder<D> {
     network_key: NetworkKey,
     network_fingerprint: NetworkFingerprint,
     input_schema_fingerprint: InputSchemaFingerprint,
     required_inputs: BTreeSet<ExternalInputKey<Level>>,
+    pulse_inputs: BTreeSet<ExternalInputKey<Pulse>>,
     levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    pulses: BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     domain: PhantomData<fn() -> D>,
 }
 
@@ -58,13 +66,16 @@ impl<D> InputSnapshotBuilder<D> {
         network_fingerprint: NetworkFingerprint,
         input_schema_fingerprint: InputSchemaFingerprint,
         required_inputs: impl IntoIterator<Item = ExternalInputKey<Level>>,
+        pulse_inputs: impl IntoIterator<Item = ExternalInputKey<Pulse>>,
     ) -> Self {
         Self {
             network_key,
             network_fingerprint,
             input_schema_fingerprint,
             required_inputs: required_inputs.into_iter().collect(),
+            pulse_inputs: pulse_inputs.into_iter().collect(),
             levels: BTreeMap::new(),
+            pulses: BTreeMap::new(),
             domain: PhantomData,
         }
     }
@@ -76,6 +87,17 @@ impl<D> InputSnapshotBuilder<D> {
         value: LogicLevel,
     ) -> Result<Self, InputBuildFailure> {
         if !self.required_inputs.contains(&input) {
+            if self
+                .pulse_inputs
+                .iter()
+                .any(|pulse| pulse.as_u128() == input.as_u128())
+            {
+                return Err(InputBuildFailure::WrongSignalKind {
+                    input: input.into(),
+                    expected: SignalKind::Pulse,
+                    actual: SignalKind::Level,
+                });
+            }
             return Err(InputBuildFailure::UnknownInput { input });
         }
 
@@ -92,6 +114,40 @@ impl<D> InputSnapshotBuilder<D> {
             return Err(failure);
         }
 
+        Ok(self)
+    }
+
+    /// Adds one reaction-scoped external pulse observation.
+    pub fn pulse(
+        mut self,
+        input: ExternalInputKey<Pulse>,
+        count: PulseCount,
+    ) -> Result<Self, InputBuildFailure> {
+        if !self.pulse_inputs.contains(&input) {
+            if self
+                .required_inputs
+                .iter()
+                .any(|level| level.as_u128() == input.as_u128())
+            {
+                return Err(InputBuildFailure::WrongSignalKind {
+                    input: input.into(),
+                    expected: SignalKind::Level,
+                    actual: SignalKind::Pulse,
+                });
+            }
+            return Err(InputBuildFailure::UnknownPulseInput { input });
+        }
+        if let Some(previous) = self.pulses.insert(input, count) {
+            return Err(if previous == count {
+                InputBuildFailure::DuplicatePulseObservation { input, count }
+            } else {
+                InputBuildFailure::ConflictingPulseObservation {
+                    input,
+                    first: previous,
+                    second: count,
+                }
+            });
+        }
         Ok(self)
     }
 
@@ -112,6 +168,7 @@ impl<D> InputSnapshotBuilder<D> {
             network_fingerprint: self.network_fingerprint,
             input_schema_fingerprint: self.input_schema_fingerprint,
             levels: self.levels,
+            pulses: self.pulses,
             domain: PhantomData,
         })
     }
@@ -127,6 +184,7 @@ pub struct InputDelta<D> {
     network_fingerprint: NetworkFingerprint,
     input_schema_fingerprint: InputSchemaFingerprint,
     pub(crate) levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    pub(crate) pulses: BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     domain: PhantomData<fn() -> D>,
 }
 
@@ -137,6 +195,7 @@ impl<D> Clone for InputDelta<D> {
             network_fingerprint: self.network_fingerprint,
             input_schema_fingerprint: self.input_schema_fingerprint,
             levels: self.levels.clone(),
+            pulses: self.pulses.clone(),
             domain: PhantomData,
         }
     }
@@ -150,6 +209,7 @@ impl<D> fmt::Debug for InputDelta<D> {
             .field("network_fingerprint", &self.network_fingerprint)
             .field("input_schema_fingerprint", &self.input_schema_fingerprint)
             .field("levels", &self.levels)
+            .field("pulses", &self.pulses)
             .finish()
     }
 }
@@ -160,6 +220,7 @@ impl<D> PartialEq for InputDelta<D> {
             && self.network_fingerprint == other.network_fingerprint
             && self.input_schema_fingerprint == other.input_schema_fingerprint
             && self.levels == other.levels
+            && self.pulses == other.pulses
     }
 }
 
@@ -184,8 +245,13 @@ impl<D> InputDelta<D> {
         self.input_schema_fingerprint
     }
 
-    pub(crate) fn into_levels(self) -> BTreeMap<ExternalInputKey<Level>, LogicLevel> {
-        self.levels
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+        BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+    ) {
+        (self.levels, self.pulses)
     }
 
     #[cfg(test)]
@@ -206,7 +272,9 @@ pub struct InputDeltaBuilder<D> {
     network_fingerprint: NetworkFingerprint,
     input_schema_fingerprint: InputSchemaFingerprint,
     existing_inputs: BTreeSet<ExternalInputKey<Level>>,
+    pulse_inputs: BTreeSet<ExternalInputKey<Pulse>>,
     levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    pulses: BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     domain: PhantomData<fn() -> D>,
 }
 
@@ -218,7 +286,9 @@ impl<D> fmt::Debug for InputDeltaBuilder<D> {
             .field("network_fingerprint", &self.network_fingerprint)
             .field("input_schema_fingerprint", &self.input_schema_fingerprint)
             .field("existing_inputs", &self.existing_inputs)
+            .field("pulse_inputs", &self.pulse_inputs)
             .field("levels", &self.levels)
+            .field("pulses", &self.pulses)
             .finish()
     }
 }
@@ -229,13 +299,16 @@ impl<D> InputDeltaBuilder<D> {
         network_fingerprint: NetworkFingerprint,
         input_schema_fingerprint: InputSchemaFingerprint,
         existing_inputs: impl IntoIterator<Item = ExternalInputKey<Level>>,
+        pulse_inputs: impl IntoIterator<Item = ExternalInputKey<Pulse>>,
     ) -> Self {
         Self {
             network_key,
             network_fingerprint,
             input_schema_fingerprint,
             existing_inputs: existing_inputs.into_iter().collect(),
+            pulse_inputs: pulse_inputs.into_iter().collect(),
             levels: BTreeMap::new(),
+            pulses: BTreeMap::new(),
             domain: PhantomData,
         }
     }
@@ -247,6 +320,17 @@ impl<D> InputDeltaBuilder<D> {
         value: LogicLevel,
     ) -> Result<Self, InputBuildFailure> {
         if !self.existing_inputs.contains(&input) {
+            if self
+                .pulse_inputs
+                .iter()
+                .any(|pulse| pulse.as_u128() == input.as_u128())
+            {
+                return Err(InputBuildFailure::WrongSignalKind {
+                    input: input.into(),
+                    expected: SignalKind::Pulse,
+                    actual: SignalKind::Level,
+                });
+            }
             return Err(InputBuildFailure::UnknownInput { input });
         }
 
@@ -266,6 +350,40 @@ impl<D> InputDeltaBuilder<D> {
         Ok(self)
     }
 
+    /// Adds one reaction-scoped external pulse observation.
+    pub fn pulse(
+        mut self,
+        input: ExternalInputKey<Pulse>,
+        count: PulseCount,
+    ) -> Result<Self, InputBuildFailure> {
+        if !self.pulse_inputs.contains(&input) {
+            if self
+                .existing_inputs
+                .iter()
+                .any(|level| level.as_u128() == input.as_u128())
+            {
+                return Err(InputBuildFailure::WrongSignalKind {
+                    input: input.into(),
+                    expected: SignalKind::Level,
+                    actual: SignalKind::Pulse,
+                });
+            }
+            return Err(InputBuildFailure::UnknownPulseInput { input });
+        }
+        if let Some(previous) = self.pulses.insert(input, count) {
+            return Err(if previous == count {
+                InputBuildFailure::DuplicatePulseObservation { input, count }
+            } else {
+                InputBuildFailure::ConflictingPulseObservation {
+                    input,
+                    first: previous,
+                    second: count,
+                }
+            });
+        }
+        Ok(self)
+    }
+
     /// Completes this delta without requiring omitted existing level inputs.
     pub fn finish(self) -> Result<InputDelta<D>, InputBuildFailure> {
         Ok(InputDelta {
@@ -273,6 +391,7 @@ impl<D> InputDeltaBuilder<D> {
             network_fingerprint: self.network_fingerprint,
             input_schema_fingerprint: self.input_schema_fingerprint,
             levels: self.levels,
+            pulses: self.pulses,
             domain: PhantomData,
         })
     }
@@ -283,6 +402,14 @@ impl<D> InputDeltaBuilder<D> {
 pub enum InputBuildFailure {
     /// An observation named an external level input outside the bound schema.
     UnknownInput { input: ExternalInputKey<Level> },
+    /// An observation named an external pulse input outside the bound schema.
+    UnknownPulseInput { input: ExternalInputKey<Pulse> },
+    /// An observation used a typed key whose payload belongs to the other signal kind.
+    WrongSignalKind {
+        input: AnyExternalInputKey,
+        expected: SignalKind,
+        actual: SignalKind,
+    },
     /// An equivalent observation was supplied more than once.
     DuplicateObservation {
         input: ExternalInputKey<Level>,
@@ -294,6 +421,17 @@ pub enum InputBuildFailure {
         first: LogicLevel,
         second: LogicLevel,
     },
+    /// An equivalent pulse observation was supplied more than once.
+    DuplicatePulseObservation {
+        input: ExternalInputKey<Pulse>,
+        count: PulseCount,
+    },
+    /// Two pulse observations for one input supplied different counts.
+    ConflictingPulseObservation {
+        input: ExternalInputKey<Pulse>,
+        first: PulseCount,
+        second: PulseCount,
+    },
     /// Completion omitted one or more required external level inputs.
     MissingRequiredLevels {
         missing: Vec<ExternalInputKey<Level>>,
@@ -303,13 +441,23 @@ pub enum InputBuildFailure {
 impl fmt::Display for InputBuildFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownInput { .. } => formatter.write_str("input is outside the bound schema"),
+            Self::UnknownInput { .. } | Self::UnknownPulseInput { .. } => {
+                formatter.write_str("input is outside the bound schema")
+            }
+            Self::WrongSignalKind { .. } => {
+                formatter.write_str("input observation uses the wrong signal kind")
+            }
             Self::DuplicateObservation { .. } => {
                 formatter.write_str("input was observed more than once with the same value")
             }
             Self::ConflictingObservation { .. } => {
                 formatter.write_str("input was observed more than once with conflicting values")
             }
+            Self::DuplicatePulseObservation { .. } => {
+                formatter.write_str("pulse input was observed more than once with the same count")
+            }
+            Self::ConflictingPulseObservation { .. } => formatter
+                .write_str("pulse input was observed more than once with conflicting counts"),
             Self::MissingRequiredLevels { .. } => {
                 formatter.write_str("snapshot omits one or more required level inputs")
             }

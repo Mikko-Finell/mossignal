@@ -28,6 +28,6 @@ pub use policy::{
 };
 pub use transaction::{
     CauseInspection, CauseLookupFailure, CauseRef, OutputEvent, ProvenanceSubject, ProvenanceView,
-    RuntimeFailure, RuntimeFailureEvidence, Transaction, TransactionResult,
+    PulseContribution, RuntimeFailure, RuntimeFailureEvidence, Transaction, TransactionResult,
 };
 pub use validation::ValidatedNetwork;

@@ -1,4 +1,4 @@
-//! Typed authoring for the restricted level-only network foundation.
+//! Typed authoring for the restricted Level and Pulse network foundation.
 
 use crate::ValidatedNetwork;
 use crate::authored::{
@@ -12,7 +12,7 @@ use crate::key::{
     SignalSourceKey,
 };
 use crate::metadata::DiagnosticMeta;
-use crate::signal::{Level, LogicLevel, SignalType};
+use crate::signal::{Level, LogicLevel, Pulse, SignalType};
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::BTreeSet;
 
@@ -47,12 +47,20 @@ pub enum AuthoringFailure {
     DuplicateExternalInputKey(ExternalInputKey<Level>),
     /// An explicit external output key is already present in this builder.
     DuplicateExternalOutputKey(ExternalOutputKey<Level>),
+    /// An explicit pulse input key is already present in this builder.
+    DuplicatePulseExternalInputKey(ExternalInputKey<Pulse>),
+    /// An explicit pulse output key is already present in this builder.
+    DuplicatePulseExternalOutputKey(ExternalOutputKey<Pulse>),
     /// An explicit node key is already present in this builder.
     DuplicateNodeKey(NodeKey),
     /// An explicit input-port key is already present in this builder.
     DuplicateInPortKey(InPortKey<Level>),
     /// An explicit output-port key is already present in this builder.
     DuplicateOutPortKey(OutPortKey<Level>),
+    /// An explicit pulse input-port key is already present in this builder.
+    DuplicatePulseInPortKey(InPortKey<Pulse>),
+    /// An explicit pulse output-port key is already present in this builder.
+    DuplicatePulseOutPortKey(OutPortKey<Pulse>),
 }
 
 /// A typed, builder-scoped reference to one authored signal source.
@@ -130,6 +138,10 @@ pub struct NetworkBuilder<D> {
     output_keys: BTreeSet<ExternalOutputKey<Level>>,
     in_port_keys: BTreeSet<InPortKey<Level>>,
     out_port_keys: BTreeSet<OutPortKey<Level>>,
+    pulse_input_keys: BTreeSet<ExternalInputKey<Pulse>>,
+    pulse_output_keys: BTreeSet<ExternalOutputKey<Pulse>>,
+    pulse_in_port_keys: BTreeSet<InPortKey<Pulse>>,
+    pulse_out_port_keys: BTreeSet<OutPortKey<Pulse>>,
 }
 
 impl<D> NetworkBuilder<D> {
@@ -171,6 +183,10 @@ impl<D> NetworkBuilder<D> {
             output_keys: BTreeSet::new(),
             in_port_keys: BTreeSet::new(),
             out_port_keys: BTreeSet::new(),
+            pulse_input_keys: BTreeSet::new(),
+            pulse_output_keys: BTreeSet::new(),
+            pulse_in_port_keys: BTreeSet::new(),
+            pulse_out_port_keys: BTreeSet::new(),
         }
     }
 
@@ -234,6 +250,63 @@ impl<D> NetworkBuilder<D> {
         self.require_local(source)?;
         if !self.output_keys.insert(key) {
             return Err(AuthoringFailure::DuplicateExternalOutputKey(key));
+        }
+        self.external_outputs.push(ExternalOutputDef::new(
+            key.into(),
+            source.source.into(),
+            meta,
+        ));
+        Ok(())
+    }
+
+    /// Adds a convenience pulse input with locally allocated stable identity.
+    pub fn pulse_input(
+        &mut self,
+        name: impl Into<String>,
+    ) -> (ExternalInputKey<Pulse>, Signal<Pulse>) {
+        let key = self.next_pulse_external_input_key();
+        let signal = match self.add_pulse_input(key, named_meta(name)) {
+            Ok(signal) => signal,
+            Err(_) => panic!("fresh pulse input key must not conflict with builder state"),
+        };
+        (key, signal)
+    }
+
+    /// Adds an explicit pulse input and retains its metadata unchanged.
+    pub fn add_pulse_input(
+        &mut self,
+        key: ExternalInputKey<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        if !self.pulse_input_keys.insert(key) {
+            return Err(AuthoringFailure::DuplicatePulseExternalInputKey(key));
+        }
+        self.external_inputs
+            .push(ExternalInputDef::new(key.into(), meta));
+        Ok(self.signal(SignalSourceKey::ExternalInput(key)))
+    }
+
+    /// Adds a convenience pulse output with locally allocated stable identity.
+    pub fn pulse_output(
+        &mut self,
+        name: impl Into<String>,
+        source: Signal<Pulse>,
+    ) -> Result<ExternalOutputKey<Pulse>, AuthoringFailure> {
+        let key = self.next_pulse_external_output_key();
+        self.add_pulse_output(key, source, named_meta(name))?;
+        Ok(key)
+    }
+
+    /// Adds an explicit pulse output and retains its metadata unchanged.
+    pub fn add_pulse_output(
+        &mut self,
+        key: ExternalOutputKey<Pulse>,
+        source: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<(), AuthoringFailure> {
+        self.require_local(source)?;
+        if !self.pulse_output_keys.insert(key) {
+            return Err(AuthoringFailure::DuplicatePulseExternalOutputKey(key));
         }
         self.external_outputs.push(ExternalOutputDef::new(
             key.into(),
@@ -375,6 +448,41 @@ impl<D> NetworkBuilder<D> {
         I: IntoIterator<Item = (InPortKey<Level>, Signal<Level>)>,
     {
         self.add_variadic_with_ports(key, output, inputs, meta, VariadicNodeKind::All)
+    }
+
+    /// Adds a variadic pulse Merge with locally allocated stable identities.
+    pub fn merge<I>(&mut self, inputs: I) -> Result<Signal<Pulse>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Pulse>>,
+    {
+        self.pulse_variadic(inputs)
+    }
+
+    /// Adds an explicitly keyed Merge with locally allocated port identities.
+    pub fn add_merge<I>(
+        &mut self,
+        key: NodeKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Pulse>>,
+    {
+        self.add_pulse_variadic(key, inputs, meta)
+    }
+
+    /// Adds an explicitly keyed Merge with exact stable pulse-port identities.
+    pub fn add_merge_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Pulse>,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Pulse>, Signal<Pulse>)>,
+    {
+        self.add_pulse_variadic_with_ports(key, output, inputs, meta)
     }
 
     /// Adds a variadic level disjunction with locally allocated stable identities.
@@ -740,6 +848,86 @@ impl<D> NetworkBuilder<D> {
         })
     }
 
+    fn pulse_variadic<I>(&mut self, inputs: I) -> Result<Signal<Pulse>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Pulse>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.require_all_local(&inputs)?;
+        let key = self.next_node_key();
+        let output = self.next_pulse_out_port_key();
+        let mut keyed_inputs = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            keyed_inputs.push((self.next_pulse_in_port_key(), input));
+        }
+        match self.add_pulse_variadic_with_ports(
+            key,
+            output,
+            keyed_inputs,
+            DiagnosticMeta::default(),
+        ) {
+            Ok(added) => Ok(added.into_outputs()),
+            Err(_) => panic!("fresh pulse node keys must not conflict with builder state"),
+        }
+    }
+
+    fn add_pulse_variadic<I>(
+        &mut self,
+        key: NodeKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Pulse>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.require_all_local(&inputs)?;
+        let output = self.next_pulse_out_port_key();
+        let mut keyed_inputs = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            keyed_inputs.push((self.next_pulse_in_port_key(), input));
+        }
+        self.add_pulse_variadic_with_ports(key, output, keyed_inputs, meta)
+    }
+
+    fn add_pulse_variadic_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Pulse>,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Pulse>, Signal<Pulse>)>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        for (_, input) in &inputs {
+            self.require_local(*input)?;
+        }
+        self.insert_pulse_variadic_node_keys(key, inputs.iter().map(|(port, _)| *port), output)?;
+        self.nodes.push(NodeDef::new(
+            key,
+            NodeKind::merge(),
+            NodePorts::new(
+                inputs.iter().map(|(port, _)| (*port).into()).collect(),
+                vec![output.into()],
+            ),
+            meta,
+        ));
+        for (port, input) in inputs {
+            self.connections.push(ConnectionDef::new(
+                self.allocator.connection(),
+                source_endpoint_pulse(input.source),
+                ConnectionEndpoint::node_input(port.into()),
+                DiagnosticMeta::default(),
+            ));
+        }
+        Ok(AddedNode {
+            key,
+            outputs: self.signal(SignalSourceKey::NodeOutput(output)),
+        })
+    }
+
     fn insert_node_keys(
         &mut self,
         key: NodeKey,
@@ -793,6 +981,34 @@ impl<D> NetworkBuilder<D> {
         Ok(())
     }
 
+    fn insert_pulse_variadic_node_keys<I>(
+        &mut self,
+        key: NodeKey,
+        inputs: I,
+        output: OutPortKey<Pulse>,
+    ) -> Result<(), AuthoringFailure>
+    where
+        I: IntoIterator<Item = InPortKey<Pulse>>,
+    {
+        if self.node_keys.contains(&key) {
+            return Err(AuthoringFailure::DuplicateNodeKey(key));
+        }
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        let mut proposed = BTreeSet::new();
+        for input in &inputs {
+            if self.pulse_in_port_keys.contains(input) || !proposed.insert(*input) {
+                return Err(AuthoringFailure::DuplicatePulseInPortKey(*input));
+            }
+        }
+        if self.pulse_out_port_keys.contains(&output) {
+            return Err(AuthoringFailure::DuplicatePulseOutPortKey(output));
+        }
+        self.node_keys.insert(key);
+        self.pulse_in_port_keys.extend(inputs);
+        self.pulse_out_port_keys.insert(output);
+        Ok(())
+    }
+
     fn next_node_key(&mut self) -> NodeKey {
         loop {
             let key = self.allocator.node();
@@ -820,6 +1036,24 @@ impl<D> NetworkBuilder<D> {
         }
     }
 
+    fn next_pulse_in_port_key(&mut self) -> InPortKey<Pulse> {
+        loop {
+            let key = self.allocator.in_port();
+            if !self.pulse_in_port_keys.contains(&key) {
+                return key;
+            }
+        }
+    }
+
+    fn next_pulse_out_port_key(&mut self) -> OutPortKey<Pulse> {
+        loop {
+            let key = self.allocator.out_port();
+            if !self.pulse_out_port_keys.contains(&key) {
+                return key;
+            }
+        }
+    }
+
     fn next_external_input_key(&mut self) -> ExternalInputKey<Level> {
         loop {
             let key = self.allocator.external_input();
@@ -833,6 +1067,24 @@ impl<D> NetworkBuilder<D> {
         loop {
             let key = self.allocator.external_output();
             if !self.output_keys.contains(&key) {
+                return key;
+            }
+        }
+    }
+
+    fn next_pulse_external_input_key(&mut self) -> ExternalInputKey<Pulse> {
+        loop {
+            let key = self.allocator.external_input();
+            if !self.pulse_input_keys.contains(&key) {
+                return key;
+            }
+        }
+    }
+
+    fn next_pulse_external_output_key(&mut self) -> ExternalOutputKey<Pulse> {
+        loop {
+            let key = self.allocator.external_output();
+            if !self.pulse_output_keys.contains(&key) {
                 return key;
             }
         }
@@ -853,6 +1105,13 @@ fn source_endpoint(source: SignalSourceKey<Level>) -> ConnectionEndpoint {
     }
 }
 
+fn source_endpoint_pulse(source: SignalSourceKey<Pulse>) -> ConnectionEndpoint {
+    match source {
+        SignalSourceKey::ExternalInput(key) => ConnectionEndpoint::external_input(key.into()),
+        SignalSourceKey::NodeOutput(key) => ConnectionEndpoint::node_output(key.into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -861,6 +1120,7 @@ mod tests {
         NodePorts, UncheckedNetwork,
     };
     use crate::key::AnySignalSourceKey;
+    use crate::signal::PulseCount;
     use std::collections::BTreeMap;
 
     fn meta(name: &str) -> DiagnosticMeta {
@@ -1256,6 +1516,105 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn typed_and_dynamic_merge_definitions_have_identical_identity_and_behavior() {
+        let domain = TimeDomainId::from_u128(10);
+        let network = NetworkKey::from_u128(1);
+        let first = ExternalInputKey::<Pulse>::from_u128(2);
+        let second = ExternalInputKey::<Pulse>::from_u128(3);
+        let node = NodeKey::from_u128(4);
+        let first_port = InPortKey::<Pulse>::from_u128(5);
+        let second_port = InPortKey::<Pulse>::from_u128(6);
+        let node_output = OutPortKey::<Pulse>::from_u128(7);
+        let output = ExternalOutputKey::<Pulse>::from_u128(8);
+
+        let mut typed = NetworkBuilder::<()>::with_key(network, domain);
+        let first_signal = typed
+            .add_pulse_input(first, DiagnosticMeta::default())
+            .unwrap();
+        let second_signal = typed
+            .add_pulse_input(second, DiagnosticMeta::default())
+            .unwrap();
+        let merge = typed
+            .add_merge_with_ports(
+                node,
+                node_output,
+                [(first_port, first_signal), (second_port, second_signal)],
+                DiagnosticMeta::default(),
+            )
+            .unwrap()
+            .into_outputs();
+        typed
+            .add_pulse_output(output, merge, DiagnosticMeta::default())
+            .unwrap();
+        let typed = typed.finish().require_artifact().unwrap();
+
+        let dynamic = UncheckedNetwork::new(
+            network,
+            domain,
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                node,
+                NodeKind::<()>::merge(),
+                NodePorts::new(
+                    vec![first_port.into(), second_port.into()],
+                    vec![node_output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![
+                ExternalInputDef::new(first.into(), DiagnosticMeta::default()),
+                ExternalInputDef::new(second.into(), DiagnosticMeta::default()),
+            ],
+            vec![ExternalOutputDef::new(
+                output.into(),
+                SignalSourceKey::NodeOutput(node_output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![
+                ConnectionDef::new(
+                    crate::key::ConnectionKey::from_u128(0),
+                    first.into(),
+                    first_port.into(),
+                    DiagnosticMeta::default(),
+                ),
+                ConnectionDef::new(
+                    crate::key::ConnectionKey::from_u128(1),
+                    second.into(),
+                    second_port.into(),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+        )
+        .validate()
+        .require_artifact()
+        .unwrap();
+
+        assert_eq!(typed.fingerprint(), dynamic.fingerprint());
+        assert_eq!(
+            typed.input_schema_fingerprint(),
+            dynamic.input_schema_fingerprint()
+        );
+        assert_eq!(
+            typed.reaction_dependencies(),
+            dynamic.reaction_dependencies()
+        );
+        assert_eq!(typed.topological_order(), dynamic.topological_order());
+        let typed = typed.compile().require_artifact().unwrap();
+        let dynamic = dynamic.compile().require_artifact().unwrap();
+        let pulses = BTreeMap::from([(first, PulseCount::new(2)), (second, PulseCount::new(5))]);
+        assert_eq!(
+            typed
+                .evaluate_reaction(&BTreeMap::new(), &pulses)
+                .unwrap()
+                .pulse_outputs,
+            dynamic
+                .evaluate_reaction(&BTreeMap::new(), &pulses)
+                .unwrap()
+                .pulse_outputs
+        );
     }
 
     #[test]

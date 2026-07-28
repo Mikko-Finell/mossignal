@@ -1,13 +1,13 @@
-//! Restricted initialization and ready-machine level transactions.
+//! Restricted initialization and ready-machine Level and Pulse transactions.
 
-use crate::compile::{EvaluationCause, FullEvaluation};
+use crate::compile::{EvaluationCause, EvaluationFailure, FullEvaluation};
 use crate::diagnostics::{Responsibility, Severity};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
 use crate::input::{InputDelta, InputSnapshot};
-use crate::key::{ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey};
+use crate::key::{ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey};
 use crate::machine::{Machine, MachineStatus, NetworkRevision};
 use crate::policy::{RuntimePolicy, RuntimePolicyLimit};
-use crate::signal::{Level, LogicLevel};
+use crate::signal::{Level, LogicLevel, Pulse, PulseCount};
 use crate::time::Time;
 use core::fmt;
 use core::marker::PhantomData;
@@ -121,6 +121,9 @@ pub enum RuntimeFailureEvidence {
         limit: u64,
         consumed: u64,
     },
+    PulseCountOverflow {
+        node: NodeKey,
+    },
 }
 
 /// A structured rejection of one runtime transaction.
@@ -159,6 +162,7 @@ impl<D> RuntimeFailure<D> {
             RuntimeFailureEvidence::ForeignInputSchema { .. } => "input.foreign_schema",
             RuntimeFailureEvidence::StaleInputSchema { .. } => "input.stale_schema",
             RuntimeFailureEvidence::BudgetExceeded { .. } => "runtime.budget_exceeded",
+            RuntimeFailureEvidence::PulseCountOverflow { .. } => "runtime.pulse_count_overflow",
         }
     }
 
@@ -182,6 +186,7 @@ impl<D> RuntimeFailure<D> {
             | RuntimeFailureEvidence::ForeignInputSchema { .. }
             | RuntimeFailureEvidence::StaleInputSchema { .. } => Responsibility::Compatibility,
             RuntimeFailureEvidence::BudgetExceeded { .. } => Responsibility::ResourceLimit,
+            RuntimeFailureEvidence::PulseCountOverflow { .. } => Responsibility::SemanticRejection,
         }
     }
 }
@@ -223,6 +228,32 @@ impl fmt::Debug for CauseRef {
 pub enum ProvenanceSubject {
     Node(NodeKey),
     ExternalOutput(ExternalOutputKey<Level>),
+    PulseExternalOutput(ExternalOutputKey<Pulse>),
+}
+
+/// One stable Merge input-port contribution to a simultaneous pulse result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PulseContribution {
+    port: InPortKey<Pulse>,
+    count: PulseCount,
+    cause: CauseRef,
+}
+
+impl PulseContribution {
+    #[must_use]
+    pub const fn port(&self) -> InPortKey<Pulse> {
+        self.port
+    }
+
+    #[must_use]
+    pub const fn count(&self) -> PulseCount {
+        self.count
+    }
+
+    #[must_use]
+    pub const fn cause(&self) -> CauseRef {
+        self.cause
+    }
 }
 
 enum ProvenanceRecord<D> {
@@ -238,8 +269,18 @@ enum ProvenanceRecord<D> {
         input: ExternalInputKey<Level>,
         value: LogicLevel,
     },
+    ExternalPulseObservation {
+        input: ExternalInputKey<Pulse>,
+        count: PulseCount,
+    },
     Derived {
         subject: ProvenanceSubject,
+        supporters: Vec<CauseRef>,
+    },
+    PulseDerived {
+        subject: ProvenanceSubject,
+        contributions: Vec<PulseContribution>,
+        result: PulseCount,
         supporters: Vec<CauseRef>,
     },
 }
@@ -259,8 +300,18 @@ pub enum CauseInspection<'a, D> {
         input: ExternalInputKey<Level>,
         value: LogicLevel,
     },
+    ExternalPulseObservation {
+        input: ExternalInputKey<Pulse>,
+        count: PulseCount,
+    },
     Derived {
         subject: ProvenanceSubject,
+        supporters: &'a [CauseRef],
+    },
+    PulseDerived {
+        subject: ProvenanceSubject,
+        contributions: &'a [PulseContribution],
+        result: PulseCount,
         supporters: &'a [CauseRef],
     },
 }
@@ -287,6 +338,17 @@ struct ProvenanceBuild<D> {
     provenance: ProvenanceView<D>,
     input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
     output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+    pulse_output_causes: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
+}
+
+struct EvaluationProvenanceInputs<'a> {
+    levels: &'a BTreeMap<ExternalInputKey<Level>, CauseRef>,
+    pulses: &'a BTreeMap<ExternalInputKey<Pulse>, CauseRef>,
+}
+
+struct PreviousLevelOutputs<'a> {
+    causes: &'a BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+    baselines: &'a BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
 }
 
 impl<D> Clone for ProvenanceView<D> {
@@ -326,11 +388,28 @@ impl<D> ProvenanceView<D> {
                     value: *value,
                 }
             }
+            ProvenanceRecord::ExternalPulseObservation { input, count } => {
+                CauseInspection::ExternalPulseObservation {
+                    input: *input,
+                    count: *count,
+                }
+            }
             ProvenanceRecord::Derived {
                 subject,
                 supporters,
             } => CauseInspection::Derived {
                 subject: *subject,
+                supporters,
+            },
+            ProvenanceRecord::PulseDerived {
+                subject,
+                contributions,
+                result,
+                supporters,
+            } => CauseInspection::PulseDerived {
+                subject: *subject,
+                contributions,
+                result: *result,
                 supporters,
             },
         })
@@ -367,6 +446,13 @@ pub enum OutputEvent<D> {
         cause: CauseRef,
         revision: NetworkRevision,
     },
+    Pulsed {
+        output: ExternalOutputKey<Pulse>,
+        count: PulseCount,
+        at: Time<D>,
+        cause: CauseRef,
+        revision: NetworkRevision,
+    },
 }
 
 impl<D> fmt::Debug for OutputEvent<D> {
@@ -398,6 +484,20 @@ impl<D> fmt::Debug for OutputEvent<D> {
                 .field("output", output)
                 .field("from", from)
                 .field("to", to)
+                .field("at", at)
+                .field("cause", cause)
+                .field("revision", revision)
+                .finish(),
+            Self::Pulsed {
+                output,
+                count,
+                at,
+                cause,
+                revision,
+            } => formatter
+                .debug_struct("Pulsed")
+                .field("output", output)
+                .field("count", count)
                 .field("at", at)
                 .field("cause", cause)
                 .field("revision", revision)
@@ -499,27 +599,21 @@ impl<D> Machine<D> {
         validate_snapshot_binding::<D>(&self.compiled, &input)?;
 
         enforce_reaction_budgets::<D>(&self.policy, &self.compiled)?;
-        enforce_budget::<D>(
-            &self.policy,
-            RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
-            count_as_u64(self.compiled.external_output_count()),
-        )?;
-
         let revision = self.store.revision;
-        let levels = input.into_levels();
-        let Some(evaluation) = self.compiled.evaluate_full(&levels) else {
-            panic!("validated restricted topology and complete snapshot must evaluate fully");
-        };
+        let (levels, pulses) = input.into_parts();
+        let evaluation = evaluate_reaction::<D>(&self.compiled, &levels, &pulses)?;
         let ProvenanceBuild {
             provenance,
             input_causes,
             output_causes,
+            pulse_output_causes,
         } = build_initialization_provenance(
             self.compiled.network_key(),
             self.compiled.fingerprint(),
             revision,
             at,
             &levels,
+            &pulses,
             &evaluation,
         );
         enforce_budget::<D>(
@@ -528,8 +622,19 @@ impl<D> Machine<D> {
             count_as_u64(provenance.len()),
         )?;
 
-        let output_events =
-            initialization_events(at, revision, &evaluation.external_outputs, &output_causes);
+        let output_events = initialization_events(
+            at,
+            revision,
+            &evaluation.external_outputs,
+            &output_causes,
+            &evaluation.pulse_outputs,
+            &pulse_output_causes,
+        );
+        enforce_budget::<D>(
+            &self.policy,
+            RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
+            count_as_u64(output_events.len()),
+        )?;
         let result = TransactionResult {
             requested_time: at,
             before_revision: revision,
@@ -580,12 +685,10 @@ impl<D> Machine<D> {
         enforce_reaction_budgets::<D>(&self.policy, &self.compiled)?;
 
         let revision = self.store.revision;
-        let explicit_levels = input.into_levels();
+        let (explicit_levels, pulses) = input.into_parts();
         let mut levels = self.store.external_levels.clone();
         levels.extend(explicit_levels.iter().map(|(key, value)| (*key, *value)));
-        let Some(evaluation) = self.compiled.evaluate_full(&levels) else {
-            panic!("ready machine and compatible delta must provide complete external facts");
-        };
+        let evaluation = evaluate_reaction::<D>(&self.compiled, &levels, &pulses)?;
         let previous_provenance = match self.store.provenance.as_ref() {
             Some(provenance) => provenance,
             None => panic!("ready machine must retain committed provenance"),
@@ -594,6 +697,7 @@ impl<D> Machine<D> {
             provenance,
             input_causes,
             output_causes,
+            pulse_output_causes,
         } = build_ready_provenance(
             self.compiled.network_key(),
             self.compiled.fingerprint(),
@@ -601,6 +705,7 @@ impl<D> Machine<D> {
             at,
             &levels,
             &explicit_levels,
+            &pulses,
             &evaluation,
             previous_provenance,
             &self.store.input_causes,
@@ -620,6 +725,8 @@ impl<D> Machine<D> {
             &self.store.output_baselines,
             &evaluation.external_outputs,
             &output_causes,
+            &evaluation.pulse_outputs,
+            &pulse_output_causes,
         );
         enforce_budget::<D>(
             &self.policy,
@@ -719,6 +826,22 @@ fn validate_delta_binding<D>(
     Ok(())
 }
 
+fn evaluate_reaction<D>(
+    compiled: &crate::CompiledNetwork<D>,
+    levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+) -> Result<FullEvaluation, RuntimeFailure<D>> {
+    match compiled.evaluate_reaction(levels, pulses) {
+        Ok(evaluation) => Ok(evaluation),
+        Err(EvaluationFailure::PulseCountOverflow { node }) => Err(RuntimeFailure::new(
+            RuntimeFailureEvidence::PulseCountOverflow { node },
+        )),
+        Err(EvaluationFailure::Incomplete) => {
+            panic!("validated topology and exact-bound inputs must evaluate completely")
+        }
+    }
+}
+
 fn enforce_reaction_budgets<D>(
     policy: &RuntimePolicy,
     compiled: &crate::CompiledNetwork<D>,
@@ -789,6 +912,7 @@ fn provenance_scope<D>(
     revision: NetworkRevision,
     at: Time<D>,
     levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
 ) -> [u8; 16] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(PROVENANCE_SCOPE_DOMAIN);
@@ -797,8 +921,14 @@ fn provenance_scope<D>(
     hasher.update(&revision.value().to_be_bytes());
     hasher.update(&at.ticks().to_be_bytes());
     for (input, value) in levels {
+        hasher.update(&[0]);
         hasher.update(&input.as_u128().to_be_bytes());
         hasher.update(&[u8::from(value.is_high())]);
+    }
+    for (input, count) in pulses {
+        hasher.update(&[1]);
+        hasher.update(&input.as_u128().to_be_bytes());
+        hasher.update(&count.get().to_be_bytes());
     }
     let digest = hasher.finalize();
     let mut scope = [0_u8; 16];
@@ -812,9 +942,10 @@ fn build_initialization_provenance<D>(
     revision: NetworkRevision,
     at: Time<D>,
     levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     evaluation: &FullEvaluation,
 ) -> ProvenanceBuild<D> {
-    let scope = provenance_scope(network_key, fingerprint, revision, at, levels);
+    let scope = provenance_scope(network_key, fingerprint, revision, at, levels, pulses);
     let mut records = Vec::new();
     let transaction_cause = push_record(
         scope,
@@ -835,13 +966,29 @@ fn build_initialization_provenance<D>(
             (*input, cause)
         })
         .collect::<BTreeMap<_, _>>();
-    let output_causes = append_evaluation_provenance(
+    let pulse_input_causes = pulses
+        .iter()
+        .map(|(input, count)| {
+            let cause = push_record(
+                scope,
+                &mut records,
+                ProvenanceRecord::ExternalPulseObservation {
+                    input: *input,
+                    count: *count,
+                },
+            );
+            (*input, cause)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let (output_causes, pulse_output_causes) = append_evaluation_provenance(
         scope,
         &mut records,
         transaction_cause,
         evaluation,
-        &input_causes,
-        None,
+        EvaluationProvenanceInputs {
+            levels: &input_causes,
+            pulses: &pulse_input_causes,
+        },
         None,
     );
 
@@ -852,6 +999,7 @@ fn build_initialization_provenance<D>(
         },
         input_causes,
         output_causes,
+        pulse_output_causes,
     }
 }
 
@@ -863,13 +1011,14 @@ fn build_ready_provenance<D>(
     at: Time<D>,
     levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     explicit_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     evaluation: &FullEvaluation,
     previous: &ProvenanceView<D>,
     previous_input_causes: &BTreeMap<ExternalInputKey<Level>, CauseRef>,
     previous_output_causes: &BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     previous_output_baselines: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
 ) -> ProvenanceBuild<D> {
-    let scope = provenance_scope(network_key, fingerprint, revision, at, levels);
+    let scope = provenance_scope(network_key, fingerprint, revision, at, levels, pulses);
     let mut records = previous
         .records
         .iter()
@@ -895,18 +1044,37 @@ fn build_ready_provenance<D>(
         );
         input_causes.insert(*input, cause);
     }
+    let pulse_input_causes = pulses
+        .iter()
+        .map(|(input, count)| {
+            let cause = push_record(
+                scope,
+                &mut records,
+                ProvenanceRecord::ExternalPulseObservation {
+                    input: *input,
+                    count: *count,
+                },
+            );
+            (*input, cause)
+        })
+        .collect::<BTreeMap<_, _>>();
     let remapped_output_causes = previous_output_causes
         .iter()
         .map(|(output, cause)| (*output, remap_cause(*cause, scope)))
         .collect::<BTreeMap<_, _>>();
-    let output_causes = append_evaluation_provenance(
+    let (output_causes, pulse_output_causes) = append_evaluation_provenance(
         scope,
         &mut records,
         transaction_cause,
         evaluation,
-        &input_causes,
-        Some(&remapped_output_causes),
-        Some(previous_output_baselines),
+        EvaluationProvenanceInputs {
+            levels: &input_causes,
+            pulses: &pulse_input_causes,
+        },
+        Some(PreviousLevelOutputs {
+            causes: &remapped_output_causes,
+            baselines: previous_output_baselines,
+        }),
     );
 
     ProvenanceBuild {
@@ -916,6 +1084,7 @@ fn build_ready_provenance<D>(
         },
         input_causes,
         output_causes,
+        pulse_output_causes,
     }
 }
 
@@ -924,21 +1093,31 @@ fn append_evaluation_provenance<D>(
     records: &mut Vec<ProvenanceRecord<D>>,
     transaction_cause: CauseRef,
     evaluation: &FullEvaluation,
-    input_causes: &BTreeMap<ExternalInputKey<Level>, CauseRef>,
-    previous_output_causes: Option<&BTreeMap<ExternalOutputKey<Level>, CauseRef>>,
-    previous_output_baselines: Option<&BTreeMap<ExternalOutputKey<Level>, LogicLevel>>,
-) -> BTreeMap<ExternalOutputKey<Level>, CauseRef> {
+    input_causes: EvaluationProvenanceInputs<'_>,
+    previous_outputs: Option<PreviousLevelOutputs<'_>>,
+) -> (
+    BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+    BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
+) {
+    let previous_output_causes = previous_outputs.as_ref().map(|previous| previous.causes);
+    let previous_output_baselines = previous_outputs.as_ref().map(|previous| previous.baselines);
     let mut operation_causes = Vec::with_capacity(evaluation.causes.len());
     let mut output_causes = BTreeMap::new();
+    let mut pulse_output_causes = BTreeMap::new();
 
     for cause in &evaluation.causes {
         let resolved = match cause {
             EvaluationCause::ExternalInput(input) => {
-                let Some(cause) = input_causes.get(input).copied() else {
+                let Some(cause) = input_causes.levels.get(input).copied() else {
                     panic!("evaluated external input must retain one authoritative cause");
                 };
                 cause
             }
+            EvaluationCause::PulseExternalInput(input) => input_causes
+                .pulses
+                .get(input)
+                .copied()
+                .unwrap_or(transaction_cause),
             EvaluationCause::Constant(node) => push_record(
                 scope,
                 records,
@@ -959,6 +1138,35 @@ fn append_evaluation_provenance<D>(
                     records,
                     ProvenanceRecord::Derived {
                         subject: ProvenanceSubject::Node(*node),
+                        supporters,
+                    },
+                )
+            }
+            EvaluationCause::PulseMerge {
+                node,
+                contributions,
+                result,
+            } => {
+                let mut grouped = contributions
+                    .iter()
+                    .map(|contribution| PulseContribution {
+                        port: contribution.port,
+                        count: contribution.count,
+                        cause: operation_cause(&operation_causes, contribution.source),
+                    })
+                    .collect::<Vec<_>>();
+                grouped.sort_by_key(|contribution| contribution.port);
+                let mut supporters = vec![transaction_cause];
+                supporters.extend(grouped.iter().map(|contribution| contribution.cause));
+                supporters.sort();
+                supporters.dedup();
+                push_record(
+                    scope,
+                    records,
+                    ProvenanceRecord::PulseDerived {
+                        subject: ProvenanceSubject::Node(*node),
+                        contributions: grouped,
+                        result: *result,
                         supporters,
                     },
                 )
@@ -994,10 +1202,28 @@ fn append_evaluation_provenance<D>(
                 output_causes.insert(*output, reference);
                 reference
             }
+            EvaluationCause::PulseExternalOutput { output, source } => {
+                let mut supporters = vec![
+                    transaction_cause,
+                    operation_cause(&operation_causes, *source),
+                ];
+                supporters.sort();
+                supporters.dedup();
+                let reference = push_record(
+                    scope,
+                    records,
+                    ProvenanceRecord::Derived {
+                        subject: ProvenanceSubject::PulseExternalOutput(*output),
+                        supporters,
+                    },
+                );
+                pulse_output_causes.insert(*output, reference);
+                reference
+            }
         };
         operation_causes.push(resolved);
     }
-    output_causes
+    (output_causes, pulse_output_causes)
 }
 
 fn remap_cause(cause: CauseRef, scope: [u8; 16]) -> CauseRef {
@@ -1025,11 +1251,38 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: [u8; 16]) -> ProvenanceR
                 value: *value,
             }
         }
+        ProvenanceRecord::ExternalPulseObservation { input, count } => {
+            ProvenanceRecord::ExternalPulseObservation {
+                input: *input,
+                count: *count,
+            }
+        }
         ProvenanceRecord::Derived {
             subject,
             supporters,
         } => ProvenanceRecord::Derived {
             subject: *subject,
+            supporters: supporters
+                .iter()
+                .map(|cause| remap_cause(*cause, scope))
+                .collect(),
+        },
+        ProvenanceRecord::PulseDerived {
+            subject,
+            contributions,
+            result,
+            supporters,
+        } => ProvenanceRecord::PulseDerived {
+            subject: *subject,
+            contributions: contributions
+                .iter()
+                .map(|contribution| PulseContribution {
+                    port: contribution.port,
+                    count: contribution.count,
+                    cause: remap_cause(contribution.cause, scope),
+                })
+                .collect(),
+            result: *result,
             supporters: supporters
                 .iter()
                 .map(|cause| remap_cause(*cause, scope))
@@ -1063,8 +1316,10 @@ fn initialization_events<D>(
     revision: NetworkRevision,
     values: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     causes: &BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+    pulse_values: &BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
+    pulse_causes: &BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
 ) -> Vec<OutputEvent<D>> {
-    values
+    let mut events = values
         .iter()
         .map(|(output, value)| {
             let Some(cause) = causes.get(output).copied() else {
@@ -1078,7 +1333,10 @@ fn initialization_events<D>(
                 revision,
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    events.extend(pulse_events(at, revision, pulse_values, pulse_causes));
+    sort_output_events(&mut events);
+    events
 }
 
 fn changed_events<D>(
@@ -1087,8 +1345,10 @@ fn changed_events<D>(
     previous: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     settled: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     causes: &BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+    pulse_values: &BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
+    pulse_causes: &BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
 ) -> Vec<OutputEvent<D>> {
-    settled
+    let mut events = settled
         .iter()
         .filter_map(|(output, to)| {
             let Some(from) = previous.get(output).copied() else {
@@ -1109,7 +1369,43 @@ fn changed_events<D>(
                 revision,
             })
         })
+        .collect::<Vec<_>>();
+    events.extend(pulse_events(at, revision, pulse_values, pulse_causes));
+    sort_output_events(&mut events);
+    events
+}
+
+fn pulse_events<D>(
+    at: Time<D>,
+    revision: NetworkRevision,
+    values: &BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
+    causes: &BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
+) -> Vec<OutputEvent<D>> {
+    values
+        .iter()
+        .filter(|(_, count)| count.is_positive())
+        .map(|(output, count)| {
+            let Some(cause) = causes.get(output).copied() else {
+                panic!("every nonzero pulse output must retain one committed cause");
+            };
+            OutputEvent::Pulsed {
+                output: *output,
+                count: *count,
+                at,
+                cause,
+                revision,
+            }
+        })
         .collect()
+}
+
+fn sort_output_events<D>(events: &mut [OutputEvent<D>]) {
+    events.sort_by_key(|event| match event {
+        OutputEvent::LevelEstablished { output, .. } | OutputEvent::LevelChanged { output, .. } => {
+            (0_u8, output.as_u128())
+        }
+        OutputEvent::Pulsed { output, .. } => (1_u8, output.as_u128()),
+    });
 }
 
 #[cfg(test)]
@@ -1124,7 +1420,7 @@ mod tests {
         OutPortKey, SignalSourceKey,
     };
     use crate::metadata::DiagnosticMeta;
-    use crate::signal::{Level, LogicLevel};
+    use crate::signal::{Level, LogicLevel, Pulse, PulseCount};
     use crate::{
         CauseInspection, CauseRef, MachineStatus, NetworkRevision, OutputEvent, ProvenanceView,
         RuntimeFailureEvidence, RuntimePolicy, RuntimePolicyLimit, TimeDomainId, Transaction,
@@ -1218,6 +1514,57 @@ mod tests {
         .compile()
         .require_artifact()
         .unwrap_or_else(|_| panic!("variadic fixture must compile"))
+    }
+
+    fn compiled_merge() -> crate::CompiledNetwork<()> {
+        let first = ExternalInputKey::<Pulse>::from_u128(1);
+        let second = ExternalInputKey::<Pulse>::from_u128(2);
+        let first_port = InPortKey::<Pulse>::from_u128(11);
+        let second_port = InPortKey::<Pulse>::from_u128(12);
+        let node_output = OutPortKey::<Pulse>::from_u128(13);
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(20),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(10),
+                NodeKind::merge(),
+                NodePorts::new(
+                    vec![first_port.into(), second_port.into()],
+                    vec![node_output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![
+                ExternalInputDef::new(first.into(), DiagnosticMeta::default()),
+                ExternalInputDef::new(second.into(), DiagnosticMeta::default()),
+            ],
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Pulse>::from_u128(30).into(),
+                SignalSourceKey::NodeOutput(node_output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(40),
+                    first.into(),
+                    first_port.into(),
+                    DiagnosticMeta::default(),
+                ),
+                ConnectionDef::new(
+                    ConnectionKey::from_u128(41),
+                    second.into(),
+                    second_port.into(),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+        )
+        .validate()
+        .require_artifact()
+        .unwrap_or_else(|_| panic!("Merge fixture must validate"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|_| panic!("Merge fixture must compile"))
     }
 
     fn compiled_select() -> crate::CompiledNetwork<()> {
@@ -1470,9 +1817,16 @@ mod tests {
                         visit(view, *supporter, visiting, visited);
                     }
                 }
+                CauseInspection::PulseDerived { supporters, .. } => {
+                    assert!(!supporters.is_empty());
+                    for supporter in supporters {
+                        visit(view, *supporter, visiting, visited);
+                    }
+                }
                 CauseInspection::InitializationTransaction { .. }
                 | CauseInspection::ReadyTransaction { .. }
-                | CauseInspection::ExternalObservation { .. } => {}
+                | CauseInspection::ExternalObservation { .. }
+                | CauseInspection::ExternalPulseObservation { .. } => {}
             }
             assert!(visiting.remove(&cause));
             visited.insert(cause);
@@ -1796,6 +2150,9 @@ mod tests {
                     } => (*output, *value, *cause),
                     OutputEvent::LevelChanged { .. } => {
                         panic!("initialization must not emit level changes")
+                    }
+                    OutputEvent::Pulsed { .. } => {
+                        panic!("level-only fixture must not emit pulse events")
                     }
                 })
                 .collect::<Vec<_>>();
@@ -2352,7 +2709,7 @@ mod tests {
                 .iter()
                 .filter_map(|event| match event {
                     OutputEvent::LevelChanged { output, .. } => Some(*output),
-                    OutputEvent::LevelEstablished { .. } => None,
+                    OutputEvent::LevelEstablished { .. } | OutputEvent::Pulsed { .. } => None,
                 })
                 .collect::<Vec<_>>(),
             vec![
@@ -2493,6 +2850,58 @@ mod tests {
     }
 
     #[test]
+    fn merge_accepts_the_maximum_count_and_overflow_preserves_complete_machine() {
+        let compiled = compiled_merge();
+        let first = ExternalInputKey::<Pulse>::from_u128(1);
+        let second = ExternalInputKey::<Pulse>::from_u128(2);
+        let output = ExternalOutputKey::<Pulse>::from_u128(30);
+        let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        let initialized = machine
+            .apply(Transaction::initialize(
+                crate::time::Time::from_ticks(10),
+                machine.revision(),
+                compiled
+                    .input_snapshot()
+                    .pulse(first, PulseCount::new(u64::MAX))
+                    .and_then(|builder| builder.pulse(second, PulseCount::ZERO))
+                    .and_then(crate::InputSnapshotBuilder::finish)
+                    .unwrap_or_else(|_| panic!("boundary snapshot must build")),
+            ))
+            .unwrap_or_else(|failure| {
+                panic!("maximum representable count must succeed: {failure}")
+            });
+        assert!(matches!(
+            initialized.output_events(),
+            [OutputEvent::Pulsed {
+                output: actual_output,
+                count,
+                ..
+            }] if *actual_output == output && count.get() == u64::MAX
+        ));
+
+        let before = observe(&machine);
+        let failure = machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(11),
+                machine.revision(),
+                compiled
+                    .input_delta()
+                    .pulse(first, PulseCount::new(u64::MAX))
+                    .and_then(|builder| builder.pulse(second, PulseCount::ONE))
+                    .and_then(crate::InputDeltaBuilder::finish)
+                    .unwrap_or_else(|_| panic!("overflowing delta must build")),
+            ))
+            .unwrap_err();
+        assert_eq!(
+            failure.evidence(),
+            &RuntimeFailureEvidence::PulseCountOverflow {
+                node: NodeKey::from_u128(10),
+            }
+        );
+        assert_eq!(observe(&machine), before);
+    }
+
+    #[test]
     fn equivalent_ready_batches_ignore_insertion_authored_and_metadata_order() {
         let mut outcomes = Vec::new();
         for (reverse_claims, network_name, reverse_delta) in
@@ -2545,7 +2954,7 @@ mod tests {
                         cause,
                         ..
                     } => Some((*output, *from, *to, *cause)),
-                    OutputEvent::LevelEstablished { .. } => None,
+                    OutputEvent::LevelEstablished { .. } | OutputEvent::Pulsed { .. } => None,
                 })
                 .collect::<Vec<_>>();
             outcomes.push((

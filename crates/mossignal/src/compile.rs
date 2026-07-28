@@ -6,11 +6,11 @@ use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
 use crate::input::{InputDeltaBuilder, InputSnapshotBuilder};
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, ConnectionKey,
-    ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey,
+    ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey,
 };
 use crate::machine::Machine;
 use crate::policy::RuntimePolicy;
-use crate::signal::{Level, LogicLevel, SignalKind};
+use crate::signal::{Level, LogicLevel, Pulse, PulseCount, SignalKind};
 use crate::validation::{ReactionDependencyGraph, ReactionVertex, ValidatedNetwork};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -89,6 +89,7 @@ enum CompiledNodeKind {
         when_low: PortIndex,
         when_high: PortIndex,
     },
+    Merge,
 }
 
 #[derive(Debug)]
@@ -138,6 +139,7 @@ pub(crate) struct FullEvaluation {
     pub(crate) values: Vec<LogicLevel>,
     pub(crate) causes: Vec<EvaluationCause>,
     pub(crate) external_outputs: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+    pub(crate) pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
     #[cfg(test)]
     execution_counts: Vec<usize>,
 }
@@ -145,16 +147,45 @@ pub(crate) struct FullEvaluation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EvaluationCause {
     ExternalInput(ExternalInputKey<Level>),
+    PulseExternalInput(ExternalInputKey<Pulse>),
     Constant(NodeKey),
     Node {
         node: NodeKey,
         predecessors: Vec<usize>,
+    },
+    PulseMerge {
+        node: NodeKey,
+        contributions: Vec<PulseEvaluationContribution>,
+        result: PulseCount,
     },
     Alias(usize),
     ExternalOutput {
         output: ExternalOutputKey<Level>,
         source: usize,
     },
+    PulseExternalOutput {
+        output: ExternalOutputKey<Pulse>,
+        source: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PulseEvaluationContribution {
+    pub(crate) port: InPortKey<Pulse>,
+    pub(crate) count: PulseCount,
+    pub(crate) source: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EvaluationFailure {
+    Incomplete,
+    PulseCountOverflow { node: NodeKey },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvaluationValue {
+    Level(LogicLevel),
+    Pulse(PulseCount),
 }
 
 impl<D> CompiledNetwork<D> {
@@ -204,7 +235,7 @@ impl<D> CompiledNetwork<D> {
         Machine::new(self.clone(), policy)
     }
 
-    /// Starts a complete level-input snapshot bound to this exact topology.
+    /// Starts a complete input snapshot bound to this exact topology.
     #[must_use]
     pub fn input_snapshot(&self) -> InputSnapshotBuilder<D> {
         InputSnapshotBuilder::new(
@@ -218,10 +249,17 @@ impl<D> CompiledNetwork<D> {
                     AnyExternalInputKey::Level(key) => Some(key),
                     AnyExternalInputKey::Pulse(_) => None,
                 }),
+            self.inner
+                .external_inputs
+                .iter()
+                .filter_map(|input| match input.key {
+                    AnyExternalInputKey::Pulse(key) => Some(key),
+                    AnyExternalInputKey::Level(_) => None,
+                }),
         )
     }
 
-    /// Starts a level-input delta bound to this exact current topology.
+    /// Starts an input delta bound to this exact current topology.
     #[must_use]
     pub fn input_delta(&self) -> InputDeltaBuilder<D> {
         InputDeltaBuilder::new(
@@ -235,33 +273,50 @@ impl<D> CompiledNetwork<D> {
                     AnyExternalInputKey::Level(key) => Some(key),
                     AnyExternalInputKey::Pulse(_) => None,
                 }),
+            self.inner
+                .external_inputs
+                .iter()
+                .filter_map(|input| match input.key {
+                    AnyExternalInputKey::Pulse(key) => Some(key),
+                    AnyExternalInputKey::Level(_) => None,
+                }),
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn evaluate_full(
         &self,
         external_inputs: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     ) -> Option<FullEvaluation> {
-        self.inner.evaluate_full(external_inputs)
+        self.inner
+            .evaluate_reaction(external_inputs, &BTreeMap::new())
+            .ok()
+    }
+
+    pub(crate) fn evaluate_reaction(
+        &self,
+        external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+        external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+    ) -> Result<FullEvaluation, EvaluationFailure> {
+        self.inner
+            .evaluate_reaction(external_levels, external_pulses)
     }
 
     pub(crate) fn operation_count(&self) -> usize {
         self.inner.operations.len()
     }
-
-    pub(crate) fn external_output_count(&self) -> usize {
-        self.inner.external_outputs.len()
-    }
 }
 
 impl<D> CompiledInner<D> {
-    fn evaluate_full(
+    fn evaluate_reaction(
         &self,
-        external_inputs: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
-    ) -> Option<FullEvaluation> {
+        external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+        external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+    ) -> Result<FullEvaluation, EvaluationFailure> {
         let mut values = vec![None; self.operations.len()];
         let mut causes = Vec::with_capacity(self.operations.len());
         let mut external_outputs = BTreeMap::new();
+        let mut pulse_outputs = BTreeMap::new();
         #[cfg(test)]
         let mut execution_counts = vec![0; self.operations.len()];
 
@@ -270,7 +325,7 @@ impl<D> CompiledInner<D> {
                 .iter()
                 .any(|predecessor| values[predecessor.0].is_none())
             {
-                return None;
+                return Err(EvaluationFailure::Incomplete);
             }
 
             #[cfg(test)]
@@ -279,29 +334,61 @@ impl<D> CompiledInner<D> {
             }
             let (value, cause) = match operation {
                 OperationDescriptor::ExternalInput(input) => {
-                    let key = match self.external_inputs.get(input.0)?.key {
-                        AnyExternalInputKey::Level(key) => key,
-                        AnyExternalInputKey::Pulse(_) => return None,
-                    };
-                    (
-                        external_inputs.get(&key).copied()?,
-                        EvaluationCause::ExternalInput(key),
-                    )
+                    match self
+                        .external_inputs
+                        .get(input.0)
+                        .ok_or(EvaluationFailure::Incomplete)?
+                        .key
+                    {
+                        AnyExternalInputKey::Level(key) => (
+                            EvaluationValue::Level(
+                                external_levels
+                                    .get(&key)
+                                    .copied()
+                                    .ok_or(EvaluationFailure::Incomplete)?,
+                            ),
+                            EvaluationCause::ExternalInput(key),
+                        ),
+                        AnyExternalInputKey::Pulse(key) => (
+                            EvaluationValue::Pulse(
+                                external_pulses
+                                    .get(&key)
+                                    .copied()
+                                    .unwrap_or(PulseCount::ZERO),
+                            ),
+                            EvaluationCause::PulseExternalInput(key),
+                        ),
+                    }
                 }
-                OperationDescriptor::Node(node) => match self.nodes.get(node.0)? {
+                OperationDescriptor::Node(node) => match self
+                    .nodes
+                    .get(node.0)
+                    .ok_or(EvaluationFailure::Incomplete)?
+                {
                     NodeDescriptor {
                         key,
                         kind: CompiledNodeKind::Constant(value),
                         ..
-                    } => (*value, EvaluationCause::Constant(*key)),
+                    } => (
+                        EvaluationValue::Level(*value),
+                        EvaluationCause::Constant(*key),
+                    ),
                     NodeDescriptor {
                         key,
                         kind: CompiledNodeKind::Not,
                         inputs,
                         ..
                     } => (
-                        self.input_value(inputs.first().copied()?, &values)?
+                        EvaluationValue::Level(
+                            self.level_input_value(
+                                inputs
+                                    .first()
+                                    .copied()
+                                    .ok_or(EvaluationFailure::Incomplete)?,
+                                &values,
+                            )?
                             .invert(),
+                        ),
                         EvaluationCause::Node {
                             node: *key,
                             predecessors: self.predecessors[index]
@@ -320,13 +407,13 @@ impl<D> CompiledInner<D> {
                         // High is the conjunction identity, including for zero inputs.
                         let mut value = LogicLevel::High;
                         for input in inputs {
-                            if self.input_value(*input, &values)?.is_low() {
+                            if self.level_input_value(*input, &values)?.is_low() {
                                 value = LogicLevel::Low;
                                 break;
                             }
                         }
                         (
-                            value,
+                            EvaluationValue::Level(value),
                             EvaluationCause::Node {
                                 node: *key,
                                 predecessors: self.predecessors[index]
@@ -346,13 +433,13 @@ impl<D> CompiledInner<D> {
                         // Low is the disjunction identity, including for zero inputs.
                         let mut value = LogicLevel::Low;
                         for input in inputs {
-                            if self.input_value(*input, &values)?.is_high() {
+                            if self.level_input_value(*input, &values)?.is_high() {
                                 value = LogicLevel::High;
                                 break;
                             }
                         }
                         (
-                            value,
+                            EvaluationValue::Level(value),
                             EvaluationCause::Node {
                                 node: *key,
                                 predecessors: self.predecessors[index]
@@ -370,14 +457,14 @@ impl<D> CompiledInner<D> {
                     } => {
                         let mut high = false;
                         for input in inputs {
-                            high ^= self.input_value(*input, &values)?.is_high();
+                            high ^= self.level_input_value(*input, &values)?.is_high();
                         }
                         (
-                            if high {
+                            EvaluationValue::Level(if high {
                                 LogicLevel::High
                             } else {
                                 LogicLevel::Low
-                            },
+                            }),
                             EvaluationCause::Node {
                                 node: *key,
                                 predecessors: self.predecessors[index]
@@ -395,16 +482,16 @@ impl<D> CompiledInner<D> {
                     } => {
                         let mut high_count = 0_u64;
                         for input in inputs {
-                            if self.input_value(*input, &values)?.is_high() {
+                            if self.level_input_value(*input, &values)?.is_high() {
                                 high_count = high_count.saturating_add(1);
                             }
                         }
                         (
-                            if high_count >= *threshold {
+                            EvaluationValue::Level(if high_count >= *threshold {
                                 LogicLevel::High
                             } else {
                                 LogicLevel::Low
-                            },
+                            }),
                             EvaluationCause::Node {
                                 node: *key,
                                 predecessors: self.predecessors[index]
@@ -424,14 +511,14 @@ impl<D> CompiledInner<D> {
                             },
                         ..
                     } => {
-                        let selector = self.input_value(*selector, &values)?;
+                        let selector = self.level_input_value(*selector, &values)?;
                         let branch = if selector.is_low() {
                             *when_low
                         } else {
                             *when_high
                         };
                         (
-                            self.input_value(branch, &values)?,
+                            EvaluationValue::Level(self.level_input_value(branch, &values)?),
                             EvaluationCause::Node {
                                 node: *key,
                                 predecessors: self.predecessors[index]
@@ -441,55 +528,147 @@ impl<D> CompiledInner<D> {
                             },
                         )
                     }
+                    NodeDescriptor {
+                        key,
+                        kind: CompiledNodeKind::Merge,
+                        inputs,
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/pulse-merge.yaml "total-checked-sum-law"
+                        // Every stable port contributes its complete simultaneous count.
+                        let mut total = PulseCount::ZERO;
+                        let mut contributions = Vec::with_capacity(inputs.len());
+                        for input in inputs {
+                            let count = self.pulse_input_value(*input, &values)?;
+                            total = total.checked_add(count).map_err(|_| {
+                                EvaluationFailure::PulseCountOverflow { node: *key }
+                            })?;
+                            contributions.push(PulseEvaluationContribution {
+                                port: self.pulse_port_key(*input)?,
+                                count,
+                                source: self.input_source(*input)?.0,
+                            });
+                        }
+                        (
+                            EvaluationValue::Pulse(total),
+                            EvaluationCause::PulseMerge {
+                                node: *key,
+                                contributions,
+                                result: total,
+                            },
+                        )
+                    }
                 },
                 OperationDescriptor::NodeOutput(port) => {
-                    let predecessor = self.predecessors[index].first()?;
-                    let port = self.ports.get(port.0)?;
+                    let predecessor = self.predecessors[index]
+                        .first()
+                        .ok_or(EvaluationFailure::Incomplete)?;
+                    let port = self
+                        .ports
+                        .get(port.0)
+                        .ok_or(EvaluationFailure::Incomplete)?;
                     if port.direction != PortDirection::Output {
-                        return None;
+                        return Err(EvaluationFailure::Incomplete);
                     }
                     (
-                        values[predecessor.0]?,
+                        values[predecessor.0].ok_or(EvaluationFailure::Incomplete)?,
                         EvaluationCause::Alias(predecessor.0),
                     )
                 }
                 OperationDescriptor::ExternalOutput(output) => {
-                    let descriptor = self.external_outputs.get(output.0)?;
-                    let key = match descriptor.key {
-                        AnyExternalOutputKey::Level(key) => key,
-                        AnyExternalOutputKey::Pulse(_) => return None,
-                    };
-                    let value = values[descriptor.source.0]?;
-                    external_outputs.insert(key, value);
-                    (
-                        value,
-                        EvaluationCause::ExternalOutput {
-                            output: key,
-                            source: descriptor.source.0,
-                        },
-                    )
+                    let descriptor = self
+                        .external_outputs
+                        .get(output.0)
+                        .ok_or(EvaluationFailure::Incomplete)?;
+                    let value = values[descriptor.source.0].ok_or(EvaluationFailure::Incomplete)?;
+                    match (descriptor.key, value) {
+                        (AnyExternalOutputKey::Level(key), EvaluationValue::Level(value)) => {
+                            external_outputs.insert(key, value);
+                            (
+                                EvaluationValue::Level(value),
+                                EvaluationCause::ExternalOutput {
+                                    output: key,
+                                    source: descriptor.source.0,
+                                },
+                            )
+                        }
+                        (AnyExternalOutputKey::Pulse(key), EvaluationValue::Pulse(value)) => {
+                            pulse_outputs.insert(key, value);
+                            (
+                                EvaluationValue::Pulse(value),
+                                EvaluationCause::PulseExternalOutput {
+                                    output: key,
+                                    source: descriptor.source.0,
+                                },
+                            )
+                        }
+                        _ => return Err(EvaluationFailure::Incomplete),
+                    }
                 }
             };
             values[index] = Some(value);
             causes.push(cause);
         }
 
-        Some(FullEvaluation {
-            values: values.into_iter().collect::<Option<Vec<_>>>()?,
+        let complete_values = values
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(EvaluationFailure::Incomplete)?;
+        Ok(FullEvaluation {
+            values: complete_values
+                .iter()
+                .filter_map(|value| match value {
+                    EvaluationValue::Level(value) => Some(*value),
+                    EvaluationValue::Pulse(_) => None,
+                })
+                .collect(),
             causes,
             external_outputs,
+            pulse_outputs,
             #[cfg(test)]
             execution_counts,
         })
     }
 
-    fn input_value(&self, port: PortIndex, values: &[Option<LogicLevel>]) -> Option<LogicLevel> {
-        let source = self
-            .connections
+    fn input_source(&self, port: PortIndex) -> Result<OperationIndex, EvaluationFailure> {
+        self.connections
             .iter()
-            .find(|connection| connection.target == port)?
-            .source;
-        values.get(source.0).copied().flatten()
+            .find(|connection| connection.target == port)
+            .map(|connection| connection.source)
+            .ok_or(EvaluationFailure::Incomplete)
+    }
+
+    fn level_input_value(
+        &self,
+        port: PortIndex,
+        values: &[Option<EvaluationValue>],
+    ) -> Result<LogicLevel, EvaluationFailure> {
+        match values.get(self.input_source(port)?.0).copied().flatten() {
+            Some(EvaluationValue::Level(value)) => Ok(value),
+            _ => Err(EvaluationFailure::Incomplete),
+        }
+    }
+
+    fn pulse_input_value(
+        &self,
+        port: PortIndex,
+        values: &[Option<EvaluationValue>],
+    ) -> Result<PulseCount, EvaluationFailure> {
+        match values.get(self.input_source(port)?.0).copied().flatten() {
+            Some(EvaluationValue::Pulse(value)) => Ok(value),
+            _ => Err(EvaluationFailure::Incomplete),
+        }
+    }
+
+    fn pulse_port_key(&self, port: PortIndex) -> Result<InPortKey<Pulse>, EvaluationFailure> {
+        self.input_port_lookup
+            .iter()
+            .find_map(|(key, index)| (*index == port).then_some(*key))
+            .and_then(|key| match key {
+                AnyInPortKey::Pulse(key) => Some(key),
+                AnyInPortKey::Level(_) => None,
+            })
+            .ok_or(EvaluationFailure::Incomplete)
     }
 
     fn build(validated: &ValidatedNetwork<D>, graph: &ReactionDependencyGraph) -> Self {
@@ -553,6 +732,7 @@ impl<D> CompiledInner<D> {
                         when_high: role_port(InputPortRole::WhenHigh),
                     }
                 }
+                NodeKind::Merge => CompiledNodeKind::Merge,
             };
             nodes.push(NodeDescriptor {
                 key: node.key(),
@@ -685,7 +865,8 @@ impl<D> CompiledInner<D> {
                 CompiledNodeKind::All
                 | CompiledNodeKind::Any
                 | CompiledNodeKind::Parity
-                | CompiledNodeKind::AtLeast(_) => node.outputs.len() == 1,
+                | CompiledNodeKind::AtLeast(_)
+                | CompiledNodeKind::Merge => node.outputs.len() == 1,
                 CompiledNodeKind::Select {
                     selector,
                     when_low,
@@ -704,32 +885,35 @@ impl<D> CompiledInner<D> {
             if !shape_valid {
                 return Err("compiled descriptor disagrees with node kind");
             }
+            let expected_kind = if matches!(node.kind, CompiledNodeKind::Merge) {
+                SignalKind::Pulse
+            } else {
+                SignalKind::Level
+            };
             for index in node.inputs.iter().chain(node.outputs.iter()) {
                 let Some(port) = self.ports.get(index.0) else {
                     return Err("compiled port reference is out of bounds");
                 };
-                if port.owner != self.node_lookup[&node.key] || port.kind != SignalKind::Level {
+                if port.owner != self.node_lookup[&node.key] || port.kind != expected_kind {
                     return Err("compiled port disagrees with validated node");
                 }
             }
         }
         for (key, index) in &self.input_port_lookup {
             if self.ports.get(index.0).map(|port| port.direction) != Some(PortDirection::Input)
-                || key.kind() != SignalKind::Level
+                || self.ports.get(index.0).map(|port| port.kind) != Some(key.kind())
             {
                 return Err("compiled input-port lookup is invalid");
             }
         }
         for (key, index) in &self.external_input_lookup {
-            if self.external_inputs.get(index.0).map(|input| input.key) != Some(*key)
-                || key.kind() != SignalKind::Level
-            {
+            if self.external_inputs.get(index.0).map(|input| input.key) != Some(*key) {
                 return Err("compiled external-input lookup is invalid");
             }
         }
         for (key, index) in &self.output_port_lookup {
             if self.ports.get(index.0).map(|port| port.direction) != Some(PortDirection::Output)
-                || key.kind() != SignalKind::Level
+                || self.ports.get(index.0).map(|port| port.kind) != Some(key.kind())
             {
                 return Err("compiled output-port lookup is invalid");
             }
@@ -780,7 +964,7 @@ impl<D> CompiledInner<D> {
             }
         }
         for output in &self.external_outputs {
-            if output.key.kind() != SignalKind::Level || output.source.0 >= self.operations.len() {
+            if output.source.0 >= self.operations.len() {
                 return Err("compiled external endpoint table is incomplete");
             }
         }
@@ -825,8 +1009,11 @@ fn reaction_source(source: crate::key::AnySignalSourceKey) -> ReactionVertex {
         crate::key::AnySignalSourceKey::Level(crate::key::SignalSourceKey::NodeOutput(key)) => {
             ReactionVertex::NodeOutput(key.into())
         }
-        crate::key::AnySignalSourceKey::Pulse(_) => {
-            panic!("restricted validated compilation cannot contain pulse sources")
+        crate::key::AnySignalSourceKey::Pulse(crate::key::SignalSourceKey::ExternalInput(key)) => {
+            ReactionVertex::ExternalInput(key.into())
+        }
+        crate::key::AnySignalSourceKey::Pulse(crate::key::SignalSourceKey::NodeOutput(key)) => {
+            ReactionVertex::NodeOutput(key.into())
         }
     }
 }
@@ -844,6 +1031,7 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
                 NodeKind::Parity => NodeKind::parity(),
                 NodeKind::AtLeast(config) => NodeKind::at_least(config.threshold),
                 NodeKind::Select => NodeKind::select(),
+                NodeKind::Merge => NodeKind::merge(),
             };
             crate::authored::NodeDef::new(
                 node.key(),

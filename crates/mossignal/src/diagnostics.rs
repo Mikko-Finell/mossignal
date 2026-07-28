@@ -245,6 +245,7 @@ pub enum DuplicateNodeKind {
     Parity,
     AtLeast(u64),
     Select,
+    Merge,
 }
 
 /// A safe, machine-readable correction.  The opening validation catalogue has

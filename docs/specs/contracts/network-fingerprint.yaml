@@ -49,8 +49,8 @@ requirements:
       DigestSuiteVersion 1 computes NetworkFingerprint as unkeyed BLAKE3 with a
       256-bit output over the canonical record containing domain label
       mossignal/network_fingerprint/v1, domain version 1, and the version-1
-      canonical semantic payload for the restricted level-combinational node
-      family. CoreSemanticsVersion and BuiltInNodeSemanticsVersion are initially 1;
+      canonical semantic payload for the restricted combinational Level and
+      Pulse node family. CoreSemanticsVersion and BuiltInNodeSemanticsVersion are initially 1;
       TopologyPatchSemanticsVersion does not participate in the restricted
       projection.
     sources: [digest-suite, domain-separation, digest-version-inputs, restricted-projection]
@@ -62,8 +62,9 @@ requirements:
       connection, external-input, external-output, source, target, signal-kind,
       direction, semantic-role, node-kind, and logic-level record and variant
       schemas fixed by the persistence specification, including nullary `not`,
-      `all`, `any`, `parity`, and `select` variants, the configured `at_least`
-      variant, and distinct `Select` input semantic roles. Collections use the
+      `all`, `any`, `parity`, `select`, and `merge` variants, the configured
+      `at_least` variant, distinct `Select` input semantic roles, and the
+      `level` and `pulse` signal-kind variants. Collections use the
       specified stable semantic order and never Rust layout, discriminants, or
       debug text.
     sources: [restricted-projection, canonical-ordering, canonical-enums]
@@ -169,7 +170,7 @@ sources:
       - Part VI — Digest and fingerprint suite
       - 54. Network and input-schema fingerprints
       - 54.2 Restricted network-fingerprint projection version 1
-    reviewed_hash: sha256:f6a9a3b7807edda9bc462296209b594dadb786aa24f961daf19e80f57424d14e
+    reviewed_hash: sha256:96c04c867dc6b4fb556d6f97a9cec32cde57c4205388307a47123adf1ed9cb53
   canonical-ordering:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]

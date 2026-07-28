@@ -166,7 +166,7 @@ recommendations:
 implementation_freedom:
   - Private pulse-slot layout, generation representation, batch maps, evaluator descriptor shape, and event sorting mechanism are free when reaction isolation, multiplicity, stable identity, and deterministic observations are preserved.
   - Explicit zero pulse observations may be retained or normalized to absence internally because both mean zero in the same reaction; choose one deterministic representation, test it, and record the decision without making it a persistence promise.
-  - The exact pre-stability canonical tags and record extension are chosen by the synchronized accepted fingerprint change; no historical migration is required before stabilization.
+  - The synchronized pre-stability version-1 projection uses the canonical `pulse`, `merge`, and `reaction_scoped` tags alongside the existing level projection; no historical migration is required before stabilization.
 
 open_questions: []
 
@@ -300,11 +300,11 @@ sources:
   restricted-network-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
-    reviewed_hash: sha256:f6a9a3b7807edda9bc462296209b594dadb786aa24f961daf19e80f57424d14e
+    reviewed_hash: sha256:96c04c867dc6b4fb556d6f97a9cec32cde57c4205388307a47123adf1ed9cb53
   input-schema-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.3 Input schema fingerprint]
-    reviewed_hash: sha256:d64e93e16a849cce1b1af9a4edd1fdbd09734e570b61845c9a87096d3ebaf69a
+    reviewed_hash: sha256:a9399c1c6199a02b8677b50c588e109e7d4e50d9a71560c0f132e5dae1d4406d
   fingerprint-versions:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part III — Version and compatibility model, 15. Version representation]

@@ -50,10 +50,11 @@ requirements:
     statement: >-
       The restricted version-1 payload is the exact canonical inputs record
       defined by the persistence specification. Each entry contains its stable
-      external-input key, level signal kind, and required establishment variant,
-      ordered by signal-kind tag then stable key bytes. Required applies when no
-      prior authoritative value exists and does not require later deltas to
-      repeat retained values.
+      external-input key, its level or pulse signal kind, and the corresponding
+      required or reaction-scoped establishment variant, ordered by signal-kind
+      tag then stable key bytes. Required applies when no prior authoritative
+      level exists and does not require later deltas to repeat retained values;
+      reaction-scoped pulse inputs default to zero and never retain a value.
     sources: [input-schema-projection]
 
   - id: digest-construction
@@ -127,7 +128,7 @@ sources:
       - Part VI — Digest and fingerprint suite
       - 54. Network and input-schema fingerprints
       - 54.3 Input schema fingerprint
-    reviewed_hash: sha256:d64e93e16a849cce1b1af9a4edd1fdbd09734e570b61845c9a87096d3ebaf69a
+    reviewed_hash: sha256:a9399c1c6199a02b8677b50c588e109e7d4e50d9a71560c0f132e5dae1d4406d
   input-schema-binding:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path:
@@ -143,7 +144,7 @@ sources:
   deterministic-compilation:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
-    reviewed_hash: sha256:99ab9c49b94049116514b2b2c03ee5c5fdc9fc028172cef5e86fb15964ee5737
+    reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72
   api-validated:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]

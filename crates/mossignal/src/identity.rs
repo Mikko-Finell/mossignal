@@ -87,7 +87,7 @@ fingerprint!(
 );
 fingerprint!(
     InputSchemaFingerprint,
-    "The opaque identity of one complete external level-input schema."
+    "The opaque identity of one complete typed external-input schema."
 );
 
 pub(crate) fn fingerprints<D>(
@@ -163,11 +163,18 @@ fn input_schema_payload<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
         inputs.sort_by_key(|input| external_input_order(input.key()));
         writer.array_start(inputs.len());
         for input in inputs {
-            let key = level_external_input(input.key());
+            let key = external_input_key(input.key());
             writer.record_start(3);
-            writer.field("establishment", |writer| writer.variant_null("required"));
+            writer.field("establishment", |writer| {
+                writer.variant_null(match input.key().kind() {
+                    SignalKind::Level => "required",
+                    SignalKind::Pulse => "reaction_scoped",
+                });
+            });
             writer.field("key", |writer| writer.key(key));
-            writer.field("signal_kind", |writer| writer.variant_null("level"));
+            writer.field("signal_kind", |writer| {
+                signal_kind(writer, input.key().kind())
+            });
         }
     });
 }
@@ -195,6 +202,7 @@ fn nodes<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
                 writer.field("threshold", |writer| writer.uint(config.threshold));
             }
             NodeKind::Select => writer.variant_null("select"),
+            NodeKind::Merge => writer.variant_null("merge"),
         });
     }
 }
@@ -211,7 +219,7 @@ fn ports<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
                     (
                         true,
                         key.kind(),
-                        level_in_port(*key),
+                        in_port_key(*key),
                         node.key().as_u128(),
                         *role,
                     )
@@ -221,7 +229,7 @@ fn ports<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
             (
                 false,
                 key.kind(),
-                level_out_port(*key),
+                out_port_key(*key),
                 node.key().as_u128(),
                 InputPortRole::Input,
             )
@@ -257,10 +265,12 @@ fn external_inputs<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
     inputs.sort_by_key(|input| external_input_order(input.key()));
     writer.array_start(inputs.len());
     for input in inputs {
-        let key = level_external_input(input.key());
+        let key = external_input_key(input.key());
         writer.record_start(2);
         writer.field("key", |writer| writer.key(key));
-        writer.field("signal_kind", |writer| writer.variant_null("level"));
+        writer.field("signal_kind", |writer| {
+            signal_kind(writer, input.key().kind())
+        });
     }
 }
 
@@ -269,10 +279,12 @@ fn external_outputs<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
     outputs.sort_by_key(|output| external_output_order(output.key()));
     writer.array_start(outputs.len());
     for output in outputs {
-        let key = level_external_output(output.key());
+        let key = external_output_key(output.key());
         writer.record_start(3);
         writer.field("key", |writer| writer.key(key));
-        writer.field("signal_kind", |writer| writer.variant_null("level"));
+        writer.field("signal_kind", |writer| {
+            signal_kind(writer, output.key().kind())
+        });
         writer.field("source", |writer| {
             source_from_signal(writer, output.source())
         });
@@ -299,8 +311,11 @@ fn source_from_signal(writer: &mut Cbor, source: AnySignalSourceKey) {
         AnySignalSourceKey::Level(SignalSourceKey::NodeOutput(key)) => {
             source_out_port(writer, key.into())
         }
-        AnySignalSourceKey::Pulse(_) => {
-            panic!("validated restricted network must contain only level signals")
+        AnySignalSourceKey::Pulse(SignalSourceKey::ExternalInput(key)) => {
+            source_external_input(writer, key.into());
+        }
+        AnySignalSourceKey::Pulse(SignalSourceKey::NodeOutput(key)) => {
+            source_out_port(writer, key.into())
         }
     }
 }
@@ -308,15 +323,15 @@ fn source_from_signal(writer: &mut Cbor, source: AnySignalSourceKey) {
 fn source_external_input(writer: &mut Cbor, key: AnyExternalInputKey) {
     writer.variant_start("external_input");
     writer.record_start(2);
-    writer.field("key", |writer| writer.key(level_external_input(key)));
-    writer.field("signal_kind", |writer| writer.variant_null("level"));
+    writer.field("key", |writer| writer.key(external_input_key(key)));
+    writer.field("signal_kind", |writer| signal_kind(writer, key.kind()));
 }
 
 fn source_out_port(writer: &mut Cbor, key: AnyOutPortKey) {
     writer.variant_start("out_port");
     writer.record_start(2);
-    writer.field("key", |writer| writer.key(level_out_port(key)));
-    writer.field("signal_kind", |writer| writer.variant_null("level"));
+    writer.field("key", |writer| writer.key(out_port_key(key)));
+    writer.field("signal_kind", |writer| signal_kind(writer, key.kind()));
 }
 
 fn target(writer: &mut Cbor, endpoint: ConnectionEndpoint) {
@@ -325,8 +340,8 @@ fn target(writer: &mut Cbor, endpoint: ConnectionEndpoint) {
     };
     writer.variant_start("in_port");
     writer.record_start(2);
-    writer.field("key", |writer| writer.key(level_in_port(key)));
-    writer.field("signal_kind", |writer| writer.variant_null("level"));
+    writer.field("key", |writer| writer.key(in_port_key(key)));
+    writer.field("signal_kind", |writer| signal_kind(writer, key.kind()));
 }
 
 fn logic_level(writer: &mut Cbor, value: LogicLevel) {
@@ -339,7 +354,7 @@ fn logic_level(writer: &mut Cbor, value: LogicLevel) {
 fn signal_kind(writer: &mut Cbor, kind: SignalKind) {
     match kind {
         SignalKind::Level => writer.variant_null("level"),
-        SignalKind::Pulse => panic!("validated restricted network must contain only level signals"),
+        SignalKind::Pulse => writer.variant_null("pulse"),
     }
 }
 
@@ -350,47 +365,39 @@ fn signal_kind_tag(kind: SignalKind) -> u8 {
     }
 }
 
-fn level_in_port(key: AnyInPortKey) -> u128 {
+fn in_port_key(key: AnyInPortKey) -> u128 {
     match key {
         AnyInPortKey::Level(key) => key.as_u128(),
-        AnyInPortKey::Pulse(_) => {
-            panic!("validated restricted network must contain only level signals")
-        }
+        AnyInPortKey::Pulse(key) => key.as_u128(),
     }
 }
 
-fn level_out_port(key: AnyOutPortKey) -> u128 {
+fn out_port_key(key: AnyOutPortKey) -> u128 {
     match key {
         AnyOutPortKey::Level(key) => key.as_u128(),
-        AnyOutPortKey::Pulse(_) => {
-            panic!("validated restricted network must contain only level signals")
-        }
+        AnyOutPortKey::Pulse(key) => key.as_u128(),
     }
 }
 
 fn external_input_order(key: AnyExternalInputKey) -> (u8, u128) {
-    (signal_kind_tag(key.kind()), level_external_input(key))
+    (signal_kind_tag(key.kind()), external_input_key(key))
 }
 
 fn external_output_order(key: AnyExternalOutputKey) -> (u8, u128) {
-    (signal_kind_tag(key.kind()), level_external_output(key))
+    (signal_kind_tag(key.kind()), external_output_key(key))
 }
 
-fn level_external_input(key: AnyExternalInputKey) -> u128 {
+fn external_input_key(key: AnyExternalInputKey) -> u128 {
     match key {
         AnyExternalInputKey::Level(key) => key.as_u128(),
-        AnyExternalInputKey::Pulse(_) => {
-            panic!("validated restricted network must contain only level signals")
-        }
+        AnyExternalInputKey::Pulse(key) => key.as_u128(),
     }
 }
 
-fn level_external_output(key: AnyExternalOutputKey) -> u128 {
+fn external_output_key(key: AnyExternalOutputKey) -> u128 {
     match key {
         AnyExternalOutputKey::Level(key) => key.as_u128(),
-        AnyExternalOutputKey::Pulse(_) => {
-            panic!("validated restricted network must contain only level signals")
-        }
+        AnyExternalOutputKey::Pulse(key) => key.as_u128(),
     }
 }
 
@@ -478,7 +485,7 @@ mod tests {
         OutPortKey,
     };
     use crate::metadata::DiagnosticMeta;
-    use crate::signal::Level;
+    use crate::signal::{Level, Pulse};
 
     fn meta(name: &str) -> DiagnosticMeta {
         DiagnosticMeta {
@@ -729,6 +736,53 @@ mod tests {
         )
     }
 
+    fn golden_merge(reverse_claims: bool) -> UncheckedNetwork<()> {
+        let external = ExternalInputKey::<Pulse>::from_u128(10);
+        let first = InPortKey::<Pulse>::from_u128(20);
+        let second = InPortKey::<Pulse>::from_u128(21);
+        let output = OutPortKey::<Pulse>::from_u128(30);
+        let mut ports = vec![first.into(), second.into()];
+        let mut connections = vec![
+            ConnectionDef::new(
+                ConnectionKey::from_u128(50),
+                external.into(),
+                first.into(),
+                DiagnosticMeta::default(),
+            ),
+            ConnectionDef::new(
+                ConnectionKey::from_u128(51),
+                external.into(),
+                second.into(),
+                DiagnosticMeta::default(),
+            ),
+        ];
+        if reverse_claims {
+            ports.reverse();
+            connections.reverse();
+        }
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(2),
+                NodeKind::merge(),
+                NodePorts::new(ports, vec![output.into()]),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                external.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Pulse>::from_u128(40).into(),
+                SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            connections,
+        )
+    }
+
     fn golden_remaining(
         threshold: u64,
         select_roles: [InputPortRole; 3],
@@ -915,6 +969,34 @@ mod tests {
     }
 
     #[test]
+    fn pulse_projection_has_versioned_golden_vectors() {
+        let network = golden_merge(false);
+        let (network_bytes, input_bytes) = canonical_inputs(&network);
+        let fingerprints = validated_fingerprints(network);
+        assert_eq!(
+            hex(&network_bytes),
+            "838266646f6d61696e78206d6f737369676e616c2f6e6574776f726b5f66696e6765727072696e742f763182677061796c6f61648982781f6275696c745f696e5f6e6f64655f73656d616e746963735f76657273696f6e01826b636f6e6e656374696f6e73828382636b657950000000000000000000000000000000328266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000014826b7369676e616c5f6b696e64826570756c7365f68382636b657950000000000000000000000000000000338266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000015826b7369676e616c5f6b696e64826570756c7365f68276636f72655f73656d616e746963735f76657273696f6e01826f65787465726e616c5f696e70757473818282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f6827065787465726e616c5f6f757470757473818382636b65795000000000000000000000000000000028826b7369676e616c5f6b696e64826570756c7365f68266736f7572636582686f75745f706f72748282636b6579500000000000000000000000000000001e826b7369676e616c5f6b696e64826570756c7365f6826b6e6574776f726b5f6b6579500000000000000000000000000000000182656e6f646573818282636b6579500000000000000000000000000000000282646b696e6482656d65726765f68265706f72747383858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001482656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c658265696e707574f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001582656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c658265696e707574f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000001e82656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e64826570756c7365f6826e74696d655f646f6d61696e5f69645000000000000000000000000000000002826776657273696f6e01"
+        );
+        assert_eq!(
+            hex(&input_bytes),
+            "838266646f6d61696e78256d6f737369676e616c2f696e7075745f736368656d615f66696e6765727072696e742f763182677061796c6f6164818266696e707574738183826d65737461626c6973686d656e74826f7265616374696f6e5f73636f706564f682636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f6826776657273696f6e01"
+        );
+        assert_eq!(
+            fingerprints.0.to_string(),
+            "5f71d14befa79fdbda578e9d95a6b8d81fc0e8f508b6e5d302c4ad2d3c0b1381"
+        );
+        assert_eq!(
+            fingerprints.1.to_string(),
+            "8f2a36f2b979efb35168538889b9aa1594f7787166e39a0c958faf5dcc6f8c71"
+        );
+        assert_eq!(
+            fingerprints,
+            validated_fingerprints(golden_merge(true)),
+            "stable pulse claims must ignore insertion order"
+        );
+    }
+
+    #[test]
     fn all_fingerprint_is_port_order_invariant_but_port_identity_sensitive() {
         let forward = validated_fingerprints(golden_all(TimeDomainId::from_u128(2), false, 21));
         let reverse = validated_fingerprints(golden_all(TimeDomainId::from_u128(2), true, 21));
@@ -1047,8 +1129,8 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_pulse_claims_cannot_publish_restricted_fingerprints() {
-        let network = UncheckedNetwork::<()>::new(
+    fn pulse_input_kind_changes_the_validated_input_schema_identity() {
+        let pulse = UncheckedNetwork::<()>::new(
             NetworkKey::from_u128(1),
             TimeDomainId::from_u128(2),
             DiagnosticMeta::default(),
@@ -1060,6 +1142,30 @@ mod tests {
             vec![],
             vec![],
         );
-        assert!(network.validate().artifact().is_none());
+        let level = UncheckedNetwork::<()>::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![],
+            vec![ExternalInputDef::new(
+                crate::key::ExternalInputKey::<crate::signal::Level>::from_u128(3).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![],
+            vec![],
+        );
+        let pulse = pulse
+            .validate()
+            .require_artifact()
+            .unwrap_or_else(|_| panic!("pulse schema must validate"));
+        let level = level
+            .validate()
+            .require_artifact()
+            .unwrap_or_else(|_| panic!("level schema must validate"));
+        assert_ne!(pulse.fingerprint(), level.fingerprint());
+        assert_ne!(
+            pulse.input_schema_fingerprint(),
+            level.input_schema_fingerprint()
+        );
     }
 }

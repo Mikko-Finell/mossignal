@@ -995,9 +995,9 @@ Semantically equivalent stable-keyed definitions must produce the same fingerpri
 
 ### 54.2 Restricted network-fingerprint projection version 1
 
-For the restricted level-combinational foundation containing `Constant`,
-`Not`, `All`, `Any`, `Parity`, `AtLeast`, and `Select`, the exact canonical
-payload is the following record:
+For the restricted combinational foundation containing `Constant`, `Not`,
+`All`, `Any`, `Parity`, `AtLeast`, `Select`, and pulse `Merge`, the exact
+canonical payload is the following record:
 
 ```text
 network_fingerprint_payload_v1 = record {
@@ -1042,6 +1042,7 @@ kind = ["constant", record {
             threshold,
         }]
      | ["select", null]
+     | ["merge", null]
 
 value = ["low", null]
       | ["high", null]
@@ -1063,6 +1064,7 @@ semantic_role = ["input", null]
               | ["when_high", null]
               | ["output", null]
 signal_kind   = ["level", null]
+              | ["pulse", null]
 
 connection = record {
     key,
@@ -1098,16 +1100,17 @@ external_output = record {
 
 The `selector`, `when_low`, and `when_high` semantic roles apply to the three
 fixed input ports of `Select`; ordinary fixed and variadic level inputs use the
-`input` role. The role is part of canonical semantic identity independently of
-the stable port key. `AtLeast` encodes its `u64` threshold as the canonical
-unsigned integer above.
+`input` role. Pulse `Merge` ports use the ordinary `input` and `output` roles.
+The role is part of canonical semantic identity independently of the stable
+port key. `AtLeast` encodes its `u64` threshold as the canonical unsigned
+integer above.
 
 Every `key` and `owner` field is the applicable 16-byte stable structural key.
 Node collections are ordered by `NodeKey`; connection collections by
 `ConnectionKey`; external inputs and outputs by signal-kind canonical tag then
 stable key bytes. The heterogeneous port collection is ordered by signal-kind
 canonical tag, direction tag with `input` before `output`, then stable key
-bytes. Version 1 has only the `level` signal-kind tag.
+bytes. The canonical signal-kind tags are `level` and `pulse` in that order.
 
 The digest input is exactly:
 
@@ -1150,13 +1153,16 @@ input = record {
 }
 
 establishment = ["required", null]
+              | ["reaction_scoped", null]
 signal_kind   = ["level", null]
+              | ["pulse", null]
 ```
 
 `required` means an authoritative level must be supplied when no prior
 authoritative valuation exists, including a complete initialization snapshot.
 It does not require a later `InputDelta` to repeat an already authoritative
-value.
+value. `reaction_scoped` applies to pulse inputs: omission means zero in the
+current reaction and no value is retained for a later reaction.
 
 Input entries are ordered by signal-kind canonical tag and then external-input
 stable key bytes. The digest input is exactly:

@@ -165,6 +165,8 @@ pub enum NodeKind<D> {
     AtLeast(AtLeastConfig),
     /// A fixed level branch selector with one level output after validation.
     Select,
+    /// A total variadic pulse multiplicity merge with one pulse output after validation.
+    Merge,
 }
 
 impl<D> NodeKind<D> {
@@ -208,6 +210,12 @@ impl<D> NodeKind<D> {
     #[must_use]
     pub const fn select() -> Self {
         Self::Select
+    }
+
+    /// Creates the total variadic pulse-merge node kind.
+    #[must_use]
+    pub const fn merge() -> Self {
+        Self::Merge
     }
 }
 
