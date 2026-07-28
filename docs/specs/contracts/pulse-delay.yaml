@@ -1,0 +1,304 @@
+schema_version: "0.1"
+id: mossignal.node.pulse_delay
+title: PulseDelay temporal primitive
+kind: node
+status: reviewed
+
+source_baseline:
+  commit: b52c1738fdfca82ceeb7462c85614e6701d88275
+  working_tree: dirty
+
+summary: >-
+  PulseDelay is a fixed Pulse-to-Pulse temporal primitive that reproduces each
+  complete simultaneous input count once at exactly origin plus a positive
+  configured delay, with pending groups owned by the machine event calendar.
+
+scope:
+  includes:
+    - PulseDelay port shape, positive delay parameter, and temporal law
+    - typed and dynamic authoring, validation, dependency, and compilation
+    - initialization, pending-group scheduling, due emission, and provenance
+    - focused pending-work inspection and conformance verification
+    - pre-stability network-fingerprint extension boundary
+  excludes:
+    - TransportDelay, InertialDelay, Periodic, and temporal standard modules
+    - general calendar advancement and pending-event identity allocation
+    - topology-patch migration and alternative duration-change policies
+    - snapshot encoding, restoration, replay, and complete explanation rendering
+
+known_uncovered:
+  - Snapshot and restoration representation for PulseDelay pending groups
+  - Topology-patch duration changes and explicit pending-group migration policies
+  - Generic pending-event inspection, complete explanation rendering, and subscriptions
+
+aliases:
+  - PulseDelay
+  - PulseDelayConfig<D>
+  - delayed pulse group
+
+requirements:
+  - id: fixed-shape-positive-delay
+    kind: semantic
+    statement: >-
+      PulseDelay has exactly one Pulse input, one Pulse output, a required
+      NonZeroSpan<D> delay parameter, and pending pulse groups as temporal work.
+      It has no Level port, zero-duration mode, optional control port, or
+      instantaneous pass-through path.
+    sources: [pulse-delay-law, concrete-config]
+
+  - id: exact-reproduction-law
+    kind: semantic
+    statement: >-
+      A complete simultaneous input count n received at logical time T creates
+      future work for exactly T + delay and is reproduced once with the same
+      multiplicity at that deadline. Zero is semantic absence and creates no
+      pulse group; checked deadline or count arithmetic never wraps.
+    sources: [pulse-delay-law, pulse-multiplicity, time-api]
+
+  - id: due-and-new-input-boundary
+    kind: semantic
+    statement: >-
+      A group due at T emits its complete count regardless of new input at T.
+      New input at T cannot suppress, modify, or join the already-due obligation;
+      it creates only strictly future work under the configured delay.
+    sources: [exact-deadline, pulse-delay-law]
+
+  - id: temporal-causality-barrier
+    kind: semantic
+    statement: >-
+      PulseDelay has no current-input-to-current-output dependency. Its settled
+      current Pulse input affects only a proposed future event after that input
+      settles, while a due-event reaction root affects the current Pulse output.
+      Validation and compilation therefore break current-reaction causality
+      across the future obligation without treating the entire node as an
+      unspecified barrier or adding same-time microsteps.
+    sources: [dependency-signature, cycle-tests]
+
+  - id: typed-and-dynamic-authoring
+    kind: public_surface
+    statement: >-
+      PulseDelayConfig<D> is a small value configuration containing its
+      NonZeroSpan<D> delay. NetworkBuilder provides typed convenience and
+      explicit keyed PulseDelay construction over Signal<Pulse>; dynamic
+      definitions use the closed NodeKind::PulseDelay configuration with stable
+      typed fixed-shape ports, while malformed direct claims remain validation input.
+    sources: [builder-keyed, concrete-config, builder-family, dynamic-kind]
+
+  - id: validation-compilation-and-identity
+    kind: semantic
+    statement: >-
+      Structural validation enforces PulseDelay's exact Pulse port shape and
+      positive typed duration, dependency derivation preserves its future-work
+      barrier and due-event root, and compilation retains stable node and port
+      correspondence plus a temporal descriptor sufficient to schedule and
+      recognize its events without exposing dense runtime identity.
+    sources: [dependency-signature, runtime-compilation, runtime-invariants]
+
+  - id: fresh-initialization
+    kind: lifecycle
+    statement: >-
+      A fresh PulseDelay begins with no pending groups. The initialization
+      reaction processes any initial external pulse through the ordinary delay
+      law, creating strictly future work but emitting no current PulseDelay
+      output in response to that new input.
+    sources: [temporal-initialization, pulse-delay-law, first-transaction]
+
+  - id: machine-owned-pending-groups
+    kind: lifecycle
+    statement: >-
+      Each scheduled group is a machine-owned pending event retaining stable
+      event identity, PulseDelay owner, exact origin and deadline, complete
+      multiplicity, originating revision, and causal contributors. Firing
+      removes it from the pending calendar and exposes the due obligation as
+      the causal support for the emitted pulse.
+    sources: [pending-events, api-pulse-delay, pulse-delay-law]
+
+  - id: equal-deadline-grouping
+    kind: semantic
+    statement: >-
+      PulseDelay groups sharing one deadline participate in the complete
+      unordered due batch. Equivalent groups may be combined with checked
+      multiplicity addition only when grouped causal contributions and all
+      observable pending-event facts remain preserved.
+    sources: [pending-events, pulse-delay-law]
+
+  - id: chronological-output-and-provenance
+    kind: system_effect
+    statement: >-
+      Every nonzero due group that reaches an external Pulse output publishes a
+      Pulsed event at its actual deadline with exact count and revision in the
+      transaction's chronological output stream. Its CauseRef resolves through
+      the result and preserves the originating input cause, scheduling node,
+      origin time, pending event, and grouped contributors without inventing an
+      order among simultaneous pulses.
+    sources: [output-events, api-pulse-delay, causal-retention]
+
+  - id: focused-pending-work-inspection
+    kind: public_surface
+    statement: >-
+      Owned PulseDelay inspection provides the opening temporal
+      inspection surface. Before initialization it exposes structural kind and
+      delay only; when ready it additionally identifies observed revision and
+      time plus every pending group's public key, origin, deadline,
+      multiplicity, causal root, and the node's next eligible deadline.
+    sources: [node-inspection, temporal-inspection, concrete-inspection]
+
+  - id: pre-stability-pulse-delay-identity-extension
+    kind: compatibility
+    statement: >-
+      Network identity distinguishes PulseDelay's kind, Pulse input and output
+      roles, temporal pending-group schema, and configured delay. Before the
+      first stable fingerprint baseline, the exact deterministic version-1
+      projection may be extended by an accepted semantic-foundation change that synchronizes the
+      authoritative projection, affected contracts, and golden vectors without
+      a historical reader or migration path.
+    sources: [network-fingerprint, fingerprint-versions]
+
+  - id: pulse-delay-conformance
+    kind: verification
+    statement: >-
+      Reusable conformance covers typed-versus-dynamic authoring, exact port
+      kinds, positive non-unit delay, empty initialization, initial and ready
+      pulse scheduling, zero/one/two/larger counts, multiple origins, equal
+      deadlines, due-time new input, fan-out, temporal causality and cycle
+      boundaries, pending inspection, chronological Pulsed events, grouped
+      provenance, insertion-order invariance, fingerprint delay sensitivity,
+      checked time and count boundaries, direct-jump equivalence, and complete
+      failure atomicity.
+    sources: [pulse-delay-tests, temporal-initialization-tests, validation-tests, compilation-tests, fingerprint-tests, failure-atomicity]
+
+implementation_freedom:
+  - Exact fixed-port derivation, keyed-constructor grouping, compiled descriptor fields, and private pending-group representation are free when stable subject identity and the temporal law are preserved.
+  - Equal-deadline groups may remain separate or aggregate through checked arithmetic; choose the simplest deterministic representation, test it, and record the decision while preserving public keys and grouped causal facts.
+  - Choose the simplest deterministic PulseDelay variant, delay, port-role, and temporal-schema spelling for the synchronized pre-stability fingerprint projection, then record it in authority, affected contracts, and golden vectors during implementation.
+  - The bounded foundation may defer duration-change migration, generic inspect_pending, snapshots, restoration, replay, and full explanation UI.
+
+open_questions: []
+
+sources:
+  pulse-multiplicity:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 11. Pulse multiplicity]
+    reviewed_hash: sha256:fb65a99f6ae2ce4401cd80e6c20aad5a23606740411cd7c9fc9def8f0b57a130
+  dependency-signature:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
+  pending-events:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 48. Pending events]
+    reviewed_hash: sha256:4a12fbbb26768a755ecfcba0ca51c811ff0d8bdce4aecf8efd99eb3374ace179
+  exact-deadline:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 49. Exact-deadline principle]
+    reviewed_hash: sha256:c6cd154d3936e1a08678d6e28e27feeced9066f8fed720f4e74041a3f6dc636d
+  temporal-initialization:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 50. Temporal initialization]
+    reviewed_hash: sha256:319dc1e0c17339f409f801b5101b152961d9f1980f53a93f857b28f10bdea0d4
+  pulse-delay-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 51. `PulseDelay`]
+    reviewed_hash: sha256:4ad3540caca916178ca22e9b3f7a65ec21afadf1d917ed6e472f074106095243
+  node-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path:
+      - Part VIII — Inspection, explanation, and migration obligations
+      - 61. Node inspection
+    reviewed_hash: sha256:109589c8402f33c1ea69f83627b4d39073bd3e3f37fc24e0494f8daaf2c5c88d
+  temporal-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path:
+      - Part VIII — Inspection, explanation, and migration obligations
+      - 62. Temporal inspection
+    reviewed_hash: sha256:8443220398b6d411c9fad55a65408b86674cbafca845ec53880fbf68bd093ae2
+  api-pulse-delay:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VII — Stateful and temporal semantics, 37. Pulse delay]
+    reviewed_hash: sha256:207228e9382fda455cba29d57fe8306e3a179caac70d642300e404798e518eed
+  first-transaction:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 24. Transaction ordering, 24.1 First transaction]
+    reviewed_hash: sha256:58ff436c7845528a88fada70a559c8f56ecf881f8b4b98007b086f463540f001
+  causal-retention:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 53. Causal provenance]
+    reviewed_hash: sha256:9a55ead387cffd6833521d6efa179e653027358990c73721faf8e258eb064574
+  time-api:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part IV — Exact logical time, 15. Time constructors and accessors]
+    reviewed_hash: sha256:ba4d56aa16b64ef80a2be79e9ec99babcf030a14aba0f54b54fc90095bbb32de
+  builder-keyed:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 28. Explicit keyed primitive construction]
+    reviewed_hash: sha256:eebf1d5f4f29d91da4e1483f86545fa1ed80b3aa7abb514939fd3dd2a7f8efdf
+  concrete-config:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 29. Built-in configuration values]
+    reviewed_hash: sha256:b989b03bf932e65581c5878a208b6d619f3667762f9a547c2daa6366db6abc84
+  builder-family:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  dynamic-kind:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
+  concrete-inspection:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIX — Inspection, 72. Owned inspection values]
+    reviewed_hash: sha256:90f6d3724be4c8c5f52adb19ab3c9960c57c3ce1c2b01854cf013bf633b2272f
+  output-events:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, 66. Output events]
+    reviewed_hash: sha256:2fa14b1c92982a2f8bdba90ca3ebed0cb078987d88be60027c14a094813f6fa7
+  runtime-compilation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 21. Compilation responsibilities]
+    reviewed_hash: sha256:f086a8575e9ed012b3a9aca9d4b8b193a323040e8b58b341c77d9de835db2237
+  runtime-invariants:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 22. Compiled invariants]
+    reviewed_hash: sha256:746554b068081f15488f90197bf4c03ad4b384836a2fca010cd0c90eb81e56fe
+  network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part VI — Digest and fingerprint suite
+      - 54. Network and input-schema fingerprints
+      - 54.1 Network fingerprint
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  fingerprint-versions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 15. Version representation]
+    reviewed_hash: sha256:a59d0cb9deab2c9b183e95c55b2e4df660b7927c8c6cc074defe68bee36c68b1
+  temporal-initialization-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VI — Initialization verification, 28. Temporal initialization]
+    reviewed_hash: sha256:1f8018be6049f1d3e096355f32454b72fc111d5f61c920584145d4d8fa895966
+  cycle-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 20. Reaction-cycle verification]
+    reviewed_hash: sha256:7ed65b9139b73dc81b0d4125ade9829700a70bd0577e383e0797f2e02f451d6e
+  validation-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 18. Validation soundness]
+    reviewed_hash: sha256:7e7bd7cced7e93356936c7bf1017af878f79a818d1532f705d40609f2d9e9ee5
+  compilation-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72
+  fingerprint-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part V — Validation and compilation verification
+      - 21. Deterministic compilation
+      - 21.1 Restricted semantic fingerprint verification
+    reviewed_hash: sha256:b7f3bccfbfc01a2c4c8e9d1f37d799598091126d00b1fced10e984f9f9c8a777
+  pulse-delay-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 47. `PulseDelay`]
+    reviewed_hash: sha256:5c16e62f2b1dff57248fd048d3ae1b2f3354e48d7e0a8ed2ef4d2e73d10c1412
+  failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6

@@ -1,0 +1,296 @@
+schema_version: "0.1"
+id: mossignal.runtime.temporal_event_execution
+title: Ordered temporal event execution
+kind: family
+status: reviewed
+
+source_baseline:
+  commit: b52c1738fdfca82ceeb7462c85614e6701d88275
+  working_tree: dirty
+
+summary: >-
+  Ready-machine temporal execution owns a stable-identified pending-event
+  calendar whose exact deadlines are processed chronologically as complete
+  unordered batches inside one failure-atomic outer transaction.
+
+scope:
+  includes:
+    - semantic event calendar, stable pending-event identity, and next deadline
+    - strictly future scheduling and checked deadline creation
+    - chronological ready-machine advancement across internal deadlines
+    - equal-deadline batching, schedule reporting, and atomic publication
+    - ordered reference calendar and temporal-foundation verification
+  excludes:
+    - node-specific event kinds, payload laws, and cancellation policies
+    - topology-patch migration and reconfiguration-time deadline handling
+    - snapshot encoding, restoration, replay, and semantic digest encoding
+    - forecast execution, observer delivery, and optimized calendar structures
+
+known_uncovered:
+  - Generic pending-event inspection and complete temporal explanation rendering
+  - Persistent reconstruction and validation of event identity allocation state
+  - Topology-patch migration of pending events, including work due at patch time
+
+aliases:
+  - semantic event calendar
+  - pending event calendar
+  - PendingEventKey
+  - chronological deadline advancement
+
+requirements:
+  - id: ordered-deadline-unordered-batches
+    kind: semantic
+    statement: >-
+      The semantic calendar maps each exact Time<D> deadline to one complete
+      finite unordered batch of pending events. Deadlines are totally ordered,
+      the next deadline is the least calendar key, and events sharing a deadline
+      have no semantic internal order.
+    sources: [runtime-calendar, simultaneous-batches]
+
+  - id: stable-machine-local-event-identity
+    kind: public_surface
+    statement: >-
+      Every pending event has a public PendingEventKey distinct from private
+      arena, heap, or ordered-map position. Its value is a machine-local u64
+      monotonic serial that is never reused within one machine history; private
+      storage movement or removal cannot retarget a surviving public key.
+    sources: [runtime-event-records, persisted-event-identity]
+
+  - id: complete-pending-event-facts
+    kind: semantic
+    statement: >-
+      A pending record retains its stable key, owner node, kind, exact deadline,
+      semantic payload, applicable multiplicity, originating logical time,
+      originating revision, causal origin, and migration-relevant metadata.
+      Pending work is machine-owned temporal state separate from reaction-scoped
+      signal values and from private node-owned queues.
+    sources: [builtin-pending-events, persisted-event-calendar, persisted-event-records, distinct-state]
+
+  - id: strictly-future-checked-scheduling
+    kind: semantic
+    statement: >-
+      Every event created by a reaction at time T has a deadline strictly later
+      than T. Immediate behavior is represented directly in the current
+      reaction, never as same-time calendar work, and checked time arithmetic
+      rejects overflow without wrapping.
+    sources: [api-time-progression, runtime-future-scheduling, exact-time-tests]
+
+  - id: chronological-ready-advancement
+    kind: lifecycle
+    statement: >-
+      A ready-machine transaction requested at T processes each least pending
+      deadline strictly before T in chronological order as one complete
+      reaction, then combines surviving events due exactly at T with the single
+      current-time external stimulus batch. Internal deadline reactions remain
+      private steps of the one outer transaction rather than independent commits.
+    sources: [api-ready-ordering, runtime-advancement]
+
+  - id: equal-deadline-batch-invariance
+    kind: semantic
+    statement: >-
+      Every due event at one deadline participates in one unordered semantic
+      batch. Reaction results must be invariant under event storage order,
+      calendar representation, evaluator traversal order, and any arbitrary
+      ordering among simultaneous events.
+    sources: [runtime-calendar, simultaneous-batches, equal-deadline-tests]
+
+  - id: direct-jump-equivalence
+    kind: semantic
+    statement: >-
+      Direct advancement from a ready state to target T is observationally
+      equivalent to chronological advancement through every meaningful pending
+      deadline before T followed by the reaction at T. Distinct logical times
+      remain distinct reactions even when crossed by one caller transaction.
+    sources: [api-large-jumps, runtime-jump-equivalence, jump-tests]
+
+  - id: single-atomic-publication
+    kind: system_effect
+    statement: >-
+      All internal deadline reactions and the requested-time reaction prepare
+      one candidate machine and one immutable result. Failure in deadline
+      arithmetic, reaction evaluation, event creation, provenance, a runtime
+      budget, or any later preparation rejects the complete outer transaction
+      and preserves logical time, event calendar, public event-serial cursor,
+      signals, state, output baselines, and prior published provenance.
+    sources: [api-settlement, runtime-transition, persisted-event-identity, failure-atomicity]
+
+  - id: schedule-and-chronological-result
+    kind: public_surface
+    statement: >-
+      On a ready machine, next_deadline returns the least pending deadline and
+      schedule returns Dormant or WakeAt(the same least deadline), without
+      mutation. Successful results expose the resulting schedule and retain
+      output events in one deterministic chronological network-wide stream at
+      their actual reaction times. Pre-initialization schedule access fails as
+      not initialized rather than reporting Dormant.
+    sources: [api-scheduling, api-results, concrete-schedule, concrete-results, concrete-output-events]
+
+  - id: explicit-runtime-budgets
+    kind: system_effect
+    statement: >-
+      Temporal advancement observes the existing explicit limits for internal
+      reactions, pending events, events created per transaction, evaluated
+      operations, and required provenance growth. Exceeding a named limit is a
+      structured atomic rejection and cannot skip required work.
+    sources: [concrete-policy, api-policy]
+
+  - id: ordered-reference-calendar
+    kind: verification
+    statement: >-
+      Ordinary tests retain a simple ordered mapping from exact deadlines to
+      complete equal-deadline batches as the semantic reference calendar.
+      Optimized calendars, if introduced, are differentially checked against
+      it after semantic removal of canceled work.
+    sources: [reference-calendar, calendar-cancellation-tests]
+
+  - id: temporal-execution-verification
+    kind: verification
+    statement: >-
+      Verification covers arbitrary initial times, non-unit spans, checked
+      arithmetic boundaries, strictly future work after every reaction,
+      equal-deadline permutation invariance, multiple internal deadlines,
+      exact-target deadlines, dormant and wake schedules, direct-jump versus
+      stepwise equivalence, deterministic public event identity, budget edges,
+      and complete before/after failure atomicity.
+    sources: [exact-time-tests, future-tests, jump-tests, equal-deadline-tests, calendar-cancellation-tests, failure-atomicity]
+
+recommendations:
+  - id: separated-event-access-and-deadline-index
+    statement: >-
+      Runtime storage should separate stable access to event records from
+      chronological extraction by deadline.
+    sources: [runtime-event-records]
+
+implementation_freedom:
+  - The first implementation may use the ordered reference map directly; private event-record, batch, and index types are unconstrained.
+  - Choose one deterministic stable-subject order for simultaneous public event-key allocation, test insertion-order independence, and record the concrete choice without presenting it as a compatibility promise.
+  - Focused temporal-node inspection may establish pending-key observability before the generic inspect_pending, explanation, subscription, snapshot, and replay surfaces are implemented.
+
+open_questions: []
+
+sources:
+  simultaneous-batches:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 7. Simultaneous batches]
+    reviewed_hash: sha256:6f0c086ed445bf436c4974044bddc2eb224e4d6299620fedf775de6c641c4941
+  distinct-state:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 12. Distinct state concepts]
+    reviewed_hash: sha256:0c4fa882271e2f1f3558e2d73a7d7773fd8800c51d4339526fe83c782305352a
+  builtin-pending-events:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 48. Pending events]
+    reviewed_hash: sha256:4a12fbbb26768a755ecfcba0ca51c811ff0d8bdce4aecf8efd99eb3374ace179
+  api-time-progression:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IV — Logical time, 22. Time progression]
+    reviewed_hash: sha256:c655529403d48a58bad273bd902e7eeeacbfb4782ccfdf35426acec04eaab48b
+  api-ready-ordering:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 24. Transaction ordering, 24.2 Ready-machine transaction]
+    reviewed_hash: sha256:cb4a0f7d6e21f6ac09877096aedc3516c516b714865f34e3ce5279d50f4ec78b
+  api-settlement:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 26. Settlement]
+    reviewed_hash: sha256:875bead35fccd63f762bf9fc87fbe484c579f99908d5e175bc8b135351296e23
+  api-large-jumps:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VII — Stateful and temporal semantics, 40. Large time jumps]
+    reviewed_hash: sha256:414a5a3d3a96e9b61f98fe17b8a71b8d302a0957edecac13a5b4c23189164a34
+  api-scheduling:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part XII — Scheduling, forecasting, persistence, and replay
+      - 67. Scheduling
+    reviewed_hash: sha256:bcdb596c957f0741895d7bc3d04a08e11ca88d8430f61dfe132be620c5a0dc9d
+  api-policy:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 19. Revision, fingerprint, digests, and runtime policy
+      - 19.4 Runtime policy
+    reviewed_hash: sha256:f96ee53258acadc3a49b9b8cca7ffd18c66b573302712473614b7c91f3aa468a
+  api-results:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VI — Inputs and outputs, 31. `TransactionResult<D>` and semantic change sets]
+    reviewed_hash: sha256:0d3c33b0638857da3b4a5b504098f3ccb809fc9e684057ab704088b2a80dad31
+  runtime-event-records:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part V — Runtime storage, 29. Event records and deadline index]
+    reviewed_hash: sha256:15de2111e766635277858006abd706b6aa669be84fcbc98cb3594257aeb61341
+  runtime-calendar:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 39. Event calendar]
+    reviewed_hash: sha256:46f0c541624dc42caffb4a8f9f3e0d41185fad2382a2ad2b9a7d0528e3958d4e
+  runtime-future-scheduling:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 40. Strictly future scheduling]
+    reviewed_hash: sha256:0bb63823143fbc899e9214d59df208ef221385c3dc1720c15d9563333f4f99e0
+  runtime-advancement:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 41. Advancing time]
+    reviewed_hash: sha256:2cd676a9ab1fa86bc37437cc7d485b15104ba231359672e214b1c0cff38bc278
+  runtime-jump-equivalence:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 42. Large-time-jump equivalence]
+    reviewed_hash: sha256:af5b05c8286794fc47ca7318ca477aae3208739ee6a00967151c4982e1413370
+  runtime-transition:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 47. State-transition model]
+    reviewed_hash: sha256:fcccb31e85f023ec9af8b0fcf6033427bb165f9b34130192dd7d1b00f281abd0
+  persisted-event-records:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 92. Pending event records]
+    reviewed_hash: sha256:9d40b747e57c3e3392c351477272393b2c91536672b112fd87c2df41889d7c20
+  persisted-event-calendar:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 91. Built-in state schemas]
+    reviewed_hash: sha256:bcd3acfcc57b21fe48ea8ee2a94094339138c900cf3f9fc1ff65ed4676c492a8
+  persisted-event-identity:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 93. Public pending-event identity]
+    reviewed_hash: sha256:5a58fb2c0a11c9af98011cc3753ff44e9633f7d9046a10683281e5549aa87d67
+  concrete-schedule:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIII — Machine lifecycle and access, 51. Schedule access]
+    reviewed_hash: sha256:4f3352f6ec7c19a13ce8cad4894c36be0c290c6766698a98703852c25f143722
+  concrete-policy:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XII — Runtime policy, 48. `RuntimePolicy`]
+    reviewed_hash: sha256:4602815f113190d459cc9dce4fb0a120306de9173e6e99c3e53c5352ec993d00
+  concrete-results:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, 64. `TransactionResult<D>`]
+    reviewed_hash: sha256:20fb868dbf44f94e61a1e06e7f9f5ac08b5b7dbd7db5584777630bae19f6f295
+  concrete-output-events:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, 66. Output events]
+    reviewed_hash: sha256:2fa14b1c92982a2f8bdba90ca3ebed0cb078987d88be60027c14a094813f6fa7
+  reference-calendar:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part III — Reference implementations, 9. Required reference paths, 9.3 Ordered semantic event calendar]
+    reviewed_hash: sha256:ab719a32f6dc477cd0d770df39c7e63d37a7aa61c1b89a5c5abdb69db6f0938e
+  exact-time-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 42. Exact discrete time]
+    reviewed_hash: sha256:2cc1494b4a42e2186af3553ed5bfc1bf0bc1fff8020bdaf853feaccbd018eb8b
+  future-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 43. Strictly future scheduling]
+    reviewed_hash: sha256:5bcb9cce33c8832ac1d9c732bdda5a38ff034bb32335221a68e727335c1573d4
+  jump-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 44. Direct-jump equivalence]
+    reviewed_hash: sha256:9b7524d7e25090b847af11c47ba86e311e4dc91f2af6fdb4de927c3f34c17954
+  equal-deadline-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 45. Equal-deadline batching]
+    reviewed_hash: sha256:c3cdac96d22950302e7992e040651702a9f45b225d7113ffc1560279ae768c01
+  calendar-cancellation-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 51. Event cancellation and next deadline]
+    reviewed_hash: sha256:d92fefc365bf0d4f3d515813ac8a28e4fdd58a3c87297a617b961d82b743b796
+  failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
