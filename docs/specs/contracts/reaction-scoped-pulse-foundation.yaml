@@ -1,0 +1,335 @@
+schema_version: "0.1"
+id: mossignal.runtime.reaction_scoped_pulse_foundation
+title: Reaction-scoped pulse foundation
+kind: family
+status: reviewed
+
+source_baseline:
+  commit: 01ac220b38653e69c8433b7370502b4ca28f72f8
+  working_tree: dirty
+
+summary: >-
+  Pulse values are typed, reaction-scoped simultaneous multiplicities that enter
+  through exact-bound input artifacts, propagate without implicit consumption
+  or persistence, and publish nonzero external pulse activity atomically with
+  checked overflow and grouped causal support.
+
+scope:
+  includes:
+    - pulse value, endpoint, and same-time batch semantics
+    - pulse input authoring and exact-bound snapshot and delta observations
+    - reaction-scoped runtime storage, fan-out, and full settlement
+    - pulse participation in initialization and ready-machine transactions
+    - external Pulsed events, checked-overflow rejection, and grouped provenance
+    - pre-stability semantic and input-schema fingerprint extension boundary
+  excludes:
+    - stateful, edge-sensitive, level-controlled pulse, and temporal behavior
+    - node-specific pulse transformations beyond their use of this foundation
+    - persistent pulse history, inspection subscriptions, and explanation rendering
+    - persistence artifact decoding, replay, topology patches, and reconfiguration
+
+known_uncovered:
+  - Exact retained-history and current-reaction pulse inspection surfaces
+  - Pulse-aware binding projection and prepared-patch target input construction
+
+aliases:
+  - Pulse
+  - PulseCount
+  - pulse input batch
+  - Pulsed output event
+
+requirements:
+  - id: reaction-scoped-simultaneous-count
+    kind: semantic
+    statement: >-
+      Pulse is a signal kind distinct from Level. Its value in one logical
+      reaction is one non-negative simultaneous PulseCount, not an ordered token
+      sequence, temporary High, self-resetting level, or persistent current port
+      value. Equivalent same-time batches are order-independent, and activity at
+      different logical times remains in distinct reactions.
+    sources: [api-pulse, builtin-pulse, simultaneous-batches, reaction-scoped-storage]
+
+  - id: checked-fixed-width-count
+    kind: public_surface
+    statement: >-
+      PulseCount is the public checked u64 count with ZERO, ONE, construction,
+      read-only value and zero/positive inspection, and checked addition.
+      Ordinary arithmetic that may wrap is unavailable; representational
+      overflow is a structured semantic rejection rather than wrap, saturation,
+      truncation, or panic.
+    sources: [concrete-count, pulse-overflow-code]
+
+  - id: typed-pulse-boundaries
+    kind: public_surface
+    statement: >-
+      NetworkBuilder provides convenience and explicit stable-keyed external
+      Pulse inputs and outputs using Signal<Pulse>, ExternalInputKey<Pulse>, and
+      ExternalOutputKey<Pulse>. Explicit input keys reject immediately
+      determinable duplicates, foreign builder signals remain structured
+      authoring failures, and no API silently converts between Pulse and Level.
+    sources: [builder-scoped-signals, concrete-input-authoring, concrete-output-authoring, api-conversion]
+
+  - id: exact-bound-pulse-inputs
+    kind: semantic
+    statement: >-
+      InputSnapshot and InputDelta remain owned, distinct, exact-schema-bound
+      artifacts and accept typed pulse observations by stable endpoint key.
+      Absence of a pulse input means zero for that reaction; pulse input never
+      becomes a retained external valuation. Input construction and application
+      retain structured rejection categories for unknown, duplicate, wrong-kind,
+      wrong-network, foreign-schema, and stale-schema cases.
+    sources: [api-snapshot, api-delta, concrete-snapshot, concrete-delta, input-codes]
+
+  - id: fanout-and-reaction-settlement
+    kind: semantic
+    statement: >-
+      The complete count on one pulse source is copied to every connected input,
+      and each pulse-consuming operation receives the complete settled
+      simultaneous counts of all predecessors. Full topological reaction
+      evaluation settles every operation once after its predecessors and cannot
+      expose traversal-order intermediates or carry counts into a later reaction.
+    sources: [pulse-fanout, runtime-reaction-io, runtime-full-evaluation, runtime-glitch-freedom]
+
+  - id: lifecycle-transaction-integration
+    kind: lifecycle
+    statement: >-
+      Initialization combines the complete external level snapshot with its
+      initial pulse batch and uses the ordinary reaction evaluator. A ready
+      transaction combines its pulse delta with current-time level observations
+      and other same-time roots. Both paths stage the complete reaction and
+      publish atomically; pulse counts expire after their reaction and are never
+      retained as ready-machine current signal state.
+    sources: [api-first-transaction, api-ready-transaction, runtime-first-transaction, runtime-transition]
+
+  - id: external-pulse-publication
+    kind: system_effect
+    statement: >-
+      A genuinely nonzero external Pulse output publishes one Pulsed event with
+      its exact count, logical time, current revision, and resolvable CauseRef,
+      including during initialization. Pulse events share the deterministic flat
+      network-wide event stream, and canonical ordering among same-time events
+      does not imply pulse causality.
+    sources: [api-output-events, concrete-transaction-result, concrete-output-events, builtin-output-establishment]
+
+  - id: overflow-is-atomic-rejection
+    kind: semantic
+    statement: >-
+      Checked overflow encountered while deriving pulse multiplicity rejects the
+      complete outer transaction as runtime.pulse_count_overflow. The published
+      machine, logical time, external levels, output baselines, provenance, and
+      every other semantic field remain unchanged, and no partial pulse event is
+      published.
+    sources: [pulse-overflow-code, runtime-transition, runtime-publication, testing-pulse-algebra]
+
+  - id: grouped-pulse-provenance
+    kind: system_effect
+    statement: >-
+      Pulse provenance records grouped contribution counts and unordered
+      supporters without inventing individual pulse identity or an order among
+      simultaneous occurrences. Equivalent executions have equivalent
+      derivations up to non-semantic provenance-reference renaming and canonical
+      representation order.
+    sources: [runtime-pulse-provenance]
+
+  - id: pre-stability-pulse-identity-extension
+    kind: compatibility
+    statement: >-
+      Valid pulse-bearing definitions require network identity to represent
+      pulse signal kinds, typed endpoints, ports, connections, and included
+      pulse node kinds, while input-schema identity distinguishes pulse inputs
+      from level inputs. Before the first stable fingerprint baseline, the
+      accepted pulse-foundation change may extend development projection version
+      1 without a historical reader, but must synchronize the exact authoritative
+      projections, affected contracts, and golden vectors without accidental
+      byte drift.
+    sources: [network-fingerprint, restricted-network-fingerprint, input-schema-fingerprint, fingerprint-versions, deterministic-compilation]
+
+  - id: pulse-foundation-verification
+    kind: verification
+    statement: >-
+      Verification covers initialization and ready reactions, absent and
+      explicit zero pulses, counts one, two, and a larger representable value,
+      fan-out, input-order invariance, no cross-reaction persistence, exact Pulsed
+      events, grouped provenance, same-topology fingerprint determinism, and
+      checked-overflow failure atomicity.
+    sources: [testing-first-transaction, testing-input-order, testing-pulse-algebra, testing-joint-support, testing-failure-atomicity]
+
+recommendations:
+  - id: family-partitioned-storage
+    statement: >-
+      Runtime storage should group reaction-scoped pulse counts by semantic
+      family rather than allocate a trait object per node; generation-stamped
+      sparse slots are a recommended way to make counts from older reactions
+      semantically zero without clearing all storage.
+    sources: [runtime-family-storage, reaction-scoped-storage]
+
+implementation_freedom:
+  - Private pulse-slot layout, generation representation, batch maps, evaluator descriptor shape, and event sorting mechanism are free when reaction isolation, multiplicity, stable identity, and deterministic observations are preserved.
+  - Explicit zero pulse observations may be retained or normalized to absence internally because both mean zero in the same reaction; choose one deterministic representation, test it, and record the decision without making it a persistence promise.
+  - The exact pre-stability canonical tags and record extension are chosen by the synchronized accepted fingerprint change; no historical migration is required before stabilization.
+
+open_questions: []
+
+sources:
+  api-pulse:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 5. Signal kinds, 5.2 Pulse]
+    reviewed_hash: sha256:5f40ffb50a2b7ce46271026003bbee20c6a3cf26c437d9966a54a58b02416b18
+  builtin-pulse:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 2. Signal kinds, 2.2 Pulse]
+    reviewed_hash: sha256:2e98f41b0fafbf3ea18b0d59e659d04ebcfc941d73620b0a594e746009db6298
+  api-conversion:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 5. Signal kinds, 5.3 Explicit conversion]
+    reviewed_hash: sha256:3e283d1d2356f33bb366e3a1cf3a51d395441c27707d1cbe8c4caf7ba82be235
+  builder-scoped-signals:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 23. Builder-scoped signals]
+    reviewed_hash: sha256:b200d59e0de48f3f401776baa69a2e37fa07f8cebded5b7663fd771436e4d72d
+  simultaneous-batches:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 7. Simultaneous batches]
+    reviewed_hash: sha256:6f0c086ed445bf436c4974044bddc2eb224e4d6299620fedf775de6c641c4941
+  concrete-count:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part III — Fundamental signal types, 12. Pulse counts]
+    reviewed_hash: sha256:2b37aa087122229ea39aa53b64e32889b43a1806ac08cedb742a45cf66e9eada
+  concrete-input-authoring:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 24. External input authoring]
+    reviewed_hash: sha256:21211c7e9da4c2fca3d328c71301013a941eb1d74bf216025511a2f0743354e6
+  concrete-output-authoring:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 25. External output authoring]
+    reviewed_hash: sha256:541513a7c22658a15a3d8d80407da124c85a3c4b22c8790e20f7cb61df138abe
+  api-snapshot:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VI — Inputs and outputs, 28. `InputSnapshot`]
+    reviewed_hash: sha256:47f9c6700f6a9c3163970645dafb11470000a0e32491201f3d84405ff50f78b9
+  api-delta:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VI — Inputs and outputs, 29. `InputDelta`]
+    reviewed_hash: sha256:958e08534ced9e8911a287b64d28b417d81d7db221bad002df633e6e198ae1d9
+  concrete-snapshot:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIV — Input schemas and values, 54. `InputSnapshot<D>`]
+    reviewed_hash: sha256:f3042cea78cad6e87bcc602374e512a460ae2740e416dcb9d29507f70abb77ba
+  concrete-delta:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIV — Input schemas and values, 55. `InputDelta<D>`]
+    reviewed_hash: sha256:c2b2685fd582c0ac511cbb502c6de622135bb6d08e823ab487d0855b28439fd4
+  input-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 30. Input construction and projection]
+    reviewed_hash: sha256:3953dbde0d5f72123a26a59dc49c35ff13fe36622490c09d31e57557be10452c
+  pulse-fanout:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 10. Pulse fan-out]
+    reviewed_hash: sha256:2b0cd8792087a22409650dd3e4b6e836d1485136a8f7c02b26678ba6c482c9aa
+  runtime-family-storage:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part V — Runtime storage, 24. Storage by semantic family]
+    reviewed_hash: sha256:1a617b381c940086fb932cd2e87c7075e8e1adf5caf0e9d4494da702cc60c3f4
+  reaction-scoped-storage:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part V — Runtime storage, 26. Reaction-scoped pulses]
+    reviewed_hash: sha256:03a199f1f9392131f8279158205ecdc9615ce61d2a35e3d3763d7b36350f399a
+  runtime-reaction-io:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 31. Reaction inputs and outputs]
+    reviewed_hash: sha256:6c05eca14526fe17d08c8f26062ad9b52c082778d8a6492b5ad820cffb7a9bc4
+  runtime-glitch-freedom:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 32. Glitch freedom]
+    reviewed_hash: sha256:5e497703203dd236303204e3d58726b76af3a0d88150bb265b01f0faeae5af8e
+  runtime-full-evaluation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 33. Full reference evaluation]
+    reviewed_hash: sha256:582cdbde0046465fa88793dfa2f0e58976170719a591231f70d2a38b77ebe621
+  api-first-transaction:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 24. Transaction ordering, 24.1 First transaction]
+    reviewed_hash: sha256:58ff436c7845528a88fada70a559c8f56ecf881f8b4b98007b086f463540f001
+  api-ready-transaction:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 24. Transaction ordering, 24.2 Ready-machine transaction]
+    reviewed_hash: sha256:cb4a0f7d6e21f6ac09877096aedc3516c516b714865f34e3ce5279d50f4ec78b
+  runtime-first-transaction:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part II — Initialization, 7. First transaction]
+    reviewed_hash: sha256:9d9e2caba99ca7055f8a3ffa08f461a80f2036755a21127c31cffed6a36185d4
+  runtime-transition:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 47. State-transition model]
+    reviewed_hash: sha256:fcccb31e85f023ec9af8b0fcf6033427bb165f9b34130192dd7d1b00f281abd0
+  runtime-publication:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 52. Output and diagnostic publication]
+    reviewed_hash: sha256:f284a92845bb0bdc7254ae3a674e2397a1a6613a57d46db71bc8bccffc7bbd80
+  api-output-events:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VI — Inputs and outputs, 32. `OutputEvent<D>`]
+    reviewed_hash: sha256:007184f2cb51c1ebbc203631028d62385aad769a6846027c9cb606f432afb364
+  concrete-transaction-result:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, 64. `TransactionResult<D>`]
+    reviewed_hash: sha256:20fb868dbf44f94e61a1e06e7f9f5ac08b5b7dbd7db5584777630bae19f6f295
+  concrete-output-events:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, 66. Output events]
+    reviewed_hash: sha256:2fa14b1c92982a2f8bdba90ca3ebed0cb078987d88be60027c14a094813f6fa7
+  builtin-output-establishment:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VII — Boundaries and utilities, 57. Output establishment]
+    reviewed_hash: sha256:abed7beae1d37db81547baabca2b42e8f5b9e95885dfc0a8d85c69338363b4c2
+  pulse-overflow-code:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part V — Exhaustive initial catalogue
+      - 29. Runtime values, time, policy, and semantic rejection
+    reviewed_hash: sha256:c9f66339774d5f873cdf36804834c8e71d0ea3025aef36badde12a1ca570e825
+  runtime-pulse-provenance:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 69. Pulse provenance]
+    reviewed_hash: sha256:18a5cfbbc600cc44fab9fed9d6730472865bb0b06d8a93eda6bff220c976e3ca
+  network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.1 Network fingerprint]
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  restricted-network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
+    reviewed_hash: sha256:f6a9a3b7807edda9bc462296209b594dadb786aa24f961daf19e80f57424d14e
+  input-schema-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.3 Input schema fingerprint]
+    reviewed_hash: sha256:d64e93e16a849cce1b1af9a4edd1fdbd09734e570b61845c9a87096d3ebaf69a
+  fingerprint-versions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 15. Version representation]
+    reviewed_hash: sha256:a59d0cb9deab2c9b183e95c55b2e4df660b7927c8c6cc074defe68bee36c68b1
+  deterministic-compilation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72
+  testing-first-transaction:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VI — Initialization verification, 24. First-transaction obligations]
+    reviewed_hash: sha256:6473e120417525b0974d49b6a773cfcec8f711ebfd12c38ae53c9da5c83e4683
+  testing-input-order:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 32. Input-order invariance]
+    reviewed_hash: sha256:6bb063631903f75427fb410642aadddc444776fe412e1ce90b2d74ac139fd9d6
+  testing-pulse-algebra:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 34. Pulse algebra]
+    reviewed_hash: sha256:0e9cad7bccffb06aa64c8b1f0a75ff2d73862c35e36f7bac2d1ea44aafef0e31
+  testing-joint-support:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 69. Joint and unordered support]
+    reviewed_hash: sha256:3b2733fa8677bd720ac117940b9a9f355a75e54f8f9170f4731999309a7555bd
+  testing-failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6

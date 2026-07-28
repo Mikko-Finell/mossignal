@@ -1,0 +1,216 @@
+schema_version: "0.1"
+id: mossignal.node.pulse_merge
+title: Variadic pulse Merge primitive
+kind: node
+status: reviewed
+
+source_baseline:
+  commit: 01ac220b38653e69c8433b7370502b4ca28f72f8
+  working_tree: dirty
+
+summary: >-
+  Merge is a stateless variadic Pulse primitive whose output is the checked sum
+  of every stable input port's complete simultaneous count, preserving
+  multiplicity and grouped causal contribution without inventing pulse order.
+
+scope:
+  includes:
+    - Merge's variadic pulse-port shape and total summation law
+    - typed and dynamic authoring with stable variadic pulse ports
+    - structural validation, dependency extraction, compilation, and full evaluation
+    - checked-overflow behavior, grouped provenance, and conformance verification
+  excludes:
+    - Coalesce, Zip, level-controlled pulse, stateful, and temporal primitives
+    - general pulse input, transaction, storage, and output-event semantics
+    - explanation rendering, persistence decoding, and topology reconfiguration
+
+known_uncovered:
+  - Exact current explanation and why-not rendering for grouped Merge contributions
+
+aliases:
+  - Merge
+  - variadic pulse sum
+  - pulse multiplicity merge
+
+requirements:
+  - id: total-checked-sum-law
+    kind: semantic
+    statement: >-
+      Merge has zero or more Pulse inputs and one Pulse output. In each reaction
+      its output count is the checked sum of every input-port count; Merge([]) is
+      zero, Merge([n]) is n, and zero and unary arities are valid rather than
+      blocking structural errors.
+    sources: [merge-law, concrete-count]
+
+  - id: stable-commutative-port-multiplicity
+    kind: semantic
+    statement: >-
+      Each variadic input slot has stable pulse-port identity. Port permutation
+      cannot change the commutative sum, while connecting one source to several
+      ports remains valid and contributes its complete count once per port;
+      ordinary fan-out copies rather than consumes the source count.
+    sources: [variadic-inputs, duplicate-sources, pulse-fanout, pulse-algebra]
+
+  - id: typed-and-dynamic-authoring
+    kind: public_surface
+    statement: >-
+      Typed Merge authoring consumes an IntoIterator of Signal<Pulse> immediately
+      and returns a structured authoring result. Dynamic definitions represent
+      the closed NodeKind::Merge with stable typed ports and connections. An
+      explicit keyed form exposes NodeKey and DiagnosticMeta and may accept exact
+      variadic input-port identities.
+    sources: [variadic-inputs, builder-variadic, builder-keyed, dynamic-node-kind, dynamic-ports]
+
+  - id: causality-compilation-and-settlement
+    kind: semantic
+    statement: >-
+      Merge's conservative current-reaction signature contains every pulse
+      input-to-output influence. Validation, cycle analysis, and compilation
+      retain the resulting dependencies in an acyclic reaction graph while the
+      executable topology preserves every stable port incidence. Full topological
+      settlement evaluates the complete checked sum only after all predecessors
+      settle without traversal-order artifacts.
+    sources: [dependency-signature, reaction-graph, compiled-invariants, full-evaluation]
+
+  - id: checked-overflow-rejection
+    kind: semantic
+    statement: >-
+      If Merge's u64 output sum is unrepresentable, evaluation returns the
+      structured runtime.pulse_count_overflow semantic rejection. The containing
+      transaction remains wholly atomic and publishes neither a partial count nor
+      any partial machine change.
+    sources: [concrete-count, overflow-code, failure-atomicity]
+
+  - id: nonblocking-variadic-findings
+    kind: system_effect
+    statement: >-
+      Valid empty and unary Merge forms emit the applicable non-blocking
+      empty-variadic or unary-degenerate advisory without suppressing the
+      artifact.
+    sources: [merge-law, validation-advisories, diagnostic-reports]
+
+  - id: grouped-contribution-provenance
+    kind: system_effect
+    statement: >-
+      Merge causality preserves each contributing port and its count as an
+      unordered grouped derivation and records the resulting multiplicity. It
+      must not manufacture an ordering or individual identity for simultaneous
+      pulse occurrences.
+    sources: [merge-law, pulse-provenance]
+
+  - id: merge-conformance
+    kind: verification
+    statement: >-
+      Reusable built-in conformance covers Merge's pulse port kinds, variadic
+      arities, current-reaction signature, total output law, simultaneous batch
+      law, multiplicity, grouped provenance, and non-applicable matrix fields.
+      Focused pulse algebra includes zero, one, two, a larger representable
+      count, fan-out, duplicate-source multiplication, port permutation, and
+      representable boundary counts plus checked-overflow rejection.
+    sources: [node-conformance, conformance-matrix, pulse-algebra, joint-support-verification]
+
+recommendations:
+  - id: duplicate-source-advisory
+    statement: >-
+      Repeated use of one source on distinct Merge ports should produce the
+      non-blocking duplicate-source advisory while preserving port-based
+      multiplicity.
+    sources: [duplicate-sources, validation-advisories]
+
+implementation_freedom:
+  - Private descriptor layout, checked reduction order, pulse-slot representation, stable-port allocation helper, and evaluation decomposition are free when they preserve exact stable incidences, commutative semantics, deterministic success, and deterministic overflow rejection.
+  - Locally allocated variadic ports use one deterministic iterator-based rule selected, tested, and recorded during implementation; callers may use the exact keyed form when independent durable reconstruction matters.
+
+open_questions: []
+
+sources:
+  merge-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part III — Pulse combinational nodes, 30. `Merge`]
+    reviewed_hash: sha256:c28ec1b934c49e30847b01d33dac705bb86a42b3023270e30753f0775e4116b1
+  variadic-inputs:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 15. Variadic inputs]
+    reviewed_hash: sha256:a97e9f25203740259ea4bec054f12cbd7a847dd8251e8055a89776b3f836c596
+  duplicate-sources:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 16. Duplicate sources]
+    reviewed_hash: sha256:f97907902b2fe39c74ca9b4e81bbfcedd2004edd622b0a00240540dfebbe408e
+  pulse-fanout:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 10. Pulse fan-out]
+    reviewed_hash: sha256:2b0cd8792087a22409650dd3e4b6e836d1485136a8f7c02b26678ba6c482c9aa
+  dependency-signature:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
+  builder-variadic:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 27. Primitive construction style]
+    reviewed_hash: sha256:f82aec0ab24fa3b054888b29444264961c9dfee4e6ae57b38745f9ffd0483671
+  builder-keyed:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  dynamic-node-kind:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
+  dynamic-ports:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 38. Dynamic ports and connections]
+    reviewed_hash: sha256:5fbea1f67eb6eea247e70168f60b4b3c3c348da10d98ab75e5b30406712e01ca
+  concrete-count:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part III — Fundamental signal types, 12. Pulse counts]
+    reviewed_hash: sha256:2b37aa087122229ea39aa53b64e32889b43a1806ac08cedb742a45cf66e9eada
+  reaction-graph:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 15. Reaction dependency graph]
+    reviewed_hash: sha256:bb051caaa0cd3627f58f17edca8b2e09df6b72c3b042238f523b0dfb40dcda9a
+  compiled-invariants:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 22. Compiled invariants]
+    reviewed_hash: sha256:746554b068081f15488f90197bf4c03ad4b384836a2fca010cd0c90eb81e56fe
+  full-evaluation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 33. Full reference evaluation]
+    reviewed_hash: sha256:582cdbde0046465fa88793dfa2f0e58976170719a591231f70d2a38b77ebe621
+  overflow-code:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part V — Exhaustive initial catalogue
+      - 29. Runtime values, time, policy, and semantic rejection
+    reviewed_hash: sha256:c9f66339774d5f873cdf36804834c8e71d0ea3025aef36badde12a1ca570e825
+  validation-advisories:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 27. Validation — non-blocking conditions]
+    reviewed_hash: sha256:3e0f26d778d325bd809cb0f11606c9d8acd1d290b85f13fd8244aa6ab9cca38b
+  diagnostic-reports:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 45. Reports]
+    reviewed_hash: sha256:20197431f1ff31d0d39de2a9463f1688aea0f9e0f56323267fac4ef5177684e6
+  pulse-provenance:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 69. Pulse provenance]
+    reviewed_hash: sha256:18a5cfbbc600cc44fab9fed9d6730472865bb0b06d8a93eda6bff220c976e3ca
+  node-conformance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 37. Node conformance requirement]
+    reviewed_hash: sha256:7bf27eaa2865945e6661a140c0f888a31d87ad380479dd90d3d06de5568a461d
+  conformance-matrix:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 38. Common conformance matrix]
+    reviewed_hash: sha256:d37d3539bb2e78723780838aede84b7ec5b6c3539db83d92e769e935022d1942
+  pulse-algebra:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 34. Pulse algebra]
+    reviewed_hash: sha256:0e9cad7bccffb06aa64c8b1f0a75ff2d73862c35e36f7bac2d1ea44aafef0e31
+  joint-support-verification:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 69. Joint and unordered support]
+    reviewed_hash: sha256:3b2733fa8677bd720ac117940b9a9f355a75e54f8f9170f4731999309a7555bd
+  failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
