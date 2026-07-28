@@ -196,13 +196,19 @@ Repository Python scripts use the locked `uv` environment. Run them with `uv run
 
 Use `// SPEC:` comments where a non-obvious implementation choice directly enforces a normative specification requirement or invariant that a future maintainer might otherwise weaken, remove, or “simplify” incorrectly.
 
-Keep comments brief. Reference the specification path and section heading, then state the implementation consequence. NEVER add `SPEC:` comments for obvious code, repeat rustdoc, quote long passages, or use line numbers.
+Keep comments brief. Prefer the applicable specification contract path and exact
+requirement or recommendation ID, then state the implementation consequence.
+When no suitable contract represents the enforced rule, reference the
+authoritative specification path and section heading instead. Existing valid
+trace comments need not be migrated solely for consistency. NEVER add `SPEC:`
+comments for obvious code, repeat rustdoc, quote long passages, or use line
+numbers.
 
 Example:
 
 ```rust
-// SPEC: docs/specs/concrete_rust_api_surface.md §16 "Stable keys"
-// Structural category remains part of identity even when opaque payloads are equal.
+// SPEC: docs/specs/contracts/variadic-all.yaml "total-commutative-port-law"
+// High is the conjunction identity, including for zero inputs.
 ```
 
 ## Beads and commits

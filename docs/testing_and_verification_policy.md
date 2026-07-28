@@ -825,6 +825,30 @@ This includes:
 - sample-and-hold over both stored values, both sampled values, and zero/nonzero sample count;
 - diagnostic episode transitions for level latch conflicts.
 
+### 39.1 Composed level-circuit equivalence
+
+A permanent reusable equivalence harness MUST construct composed level circuits
+only through the public authoring and runtime APIs, exercise each circuit over
+its complete finite input domain, and compare initialization results, later
+level-transaction results, ordered observable output events, and final settled
+outputs.
+
+The harness MUST keep these comparison classes distinct:
+
+- insertion-order variants of the same stable-keyed semantic topology produce
+  equal network fingerprints and equivalent observable behavior;
+- structurally different but logically equivalent networks produce equivalent
+  observable behavior, while their fingerprints are not required to be equal.
+
+The permanent circuit inventory MUST include half adders; full adders expressed
+with direct canonical primitives, conventional gate compositions, and NAND-only
+composition through `Not(All(...))`; and a four-bit ripple-carry adder checked
+exhaustively across both carry-in levels and every operand pair.
+
+The harness MUST remain reusable for later combinational and trace-equivalence
+suites rather than embedding the comparison machinery into individual circuit
+tests.
+
 ## 40. Stateful chain testing
 
 Focused multi-node cases must cover same-reaction chains such as:
