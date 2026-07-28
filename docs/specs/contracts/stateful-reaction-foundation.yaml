@@ -1,0 +1,243 @@
+schema_version: "0.1"
+id: mossignal.runtime.stateful_reaction_foundation
+title: Previous-and-proposed stateful reaction foundation
+kind: family
+status: reviewed
+
+source_baseline:
+  commit: 8ea64824a2ac4f984502879fea938bfac41e0b4a
+  working_tree: dirty
+
+summary: >-
+  Stateful reactions read one previous committed state vector, expose settled
+  current outputs in the same reaction, stage at most one successor per state
+  cell, and commit every successor atomically only after complete settlement.
+
+scope:
+  includes:
+    - previous committed and proposed successor state semantics
+    - declared-state initialization and ready-machine state ownership
+    - compiled state-family slots and runtime staging
+    - same-reaction visibility, atomic commitment, and state inspection
+  excludes:
+    - node-specific state schemas and transition laws
+    - pending temporal obligations and diagnostic-episode state
+    - snapshot encoding, restoration, replay, and topology-state migration
+    - optimized incremental settlement and inspection subscriptions
+
+known_uncovered:
+  - Canonical persistence and digest encoding for stateful machine state
+  - Topology-patch compatibility and migration of state cells
+
+aliases:
+  - previous committed state
+  - proposed successor state
+  - state cell
+  - atomic state commitment
+
+requirements:
+  - id: previous-and-proposed-state
+    kind: semantic
+    statement: >-
+      Every stateful reaction reads the same previous committed value for each
+      state cell and may stage at most one proposed successor for that cell.
+      Proposed state is not visible as stored state or fed back into the same
+      reaction, and no cell performs repeated same-time transitions.
+    sources: [builtin-transducer, runtime-reaction-equations, runtime-state-storage]
+
+  - id: current-output-and-causality
+    kind: semantic
+    statement: >-
+      A stateful operation computes its settled current output from previous
+      state and settled current inputs. That output is available to downstream
+      operations in the same reaction, so every possible current input-to-output
+      influence remains in the conservative acyclic reaction graph. The
+      proposed successor is a terminal product and a causality barrier.
+    sources: [builtin-dependencies, api-causality, runtime-causality]
+
+  - id: declared-state-initialization
+    kind: lifecycle
+    statement: >-
+      Every stateful node declares explicit initial state. A spawned
+      AwaitingInitialization machine owns that declared state but no fabricated
+      settled runtime values. The first ordinary reaction reads declared state
+      as previous state, may produce a different current output and successor,
+      and atomically installs the successor when initialization succeeds.
+    sources: [builtin-initialization, api-lifecycle, testing-initialization]
+
+  - id: family-partitioned-state-layout
+    kind: lifecycle
+    statement: >-
+      Compilation assigns each state cell to a descriptor and state-family slot
+      of the correct schema. Each spawned machine owns an independent mutable
+      state store, while CompiledNetwork remains immutable and free of runtime
+      state. Dense layout and slot identity remain private and revision-local.
+    sources: [runtime-compilation, runtime-invariants, runtime-family-storage, api-machine]
+
+  - id: complete-stateful-settlement
+    kind: semantic
+    statement: >-
+      Full topological evaluation computes settled outputs and a private set of
+      proposed state transitions after all reaction predecessors settle. It may
+      not overwrite committed state during evaluation, expose evaluator-order
+      glitches, or make one operation observe another operation's proposal.
+    sources: [runtime-full-evaluation, runtime-glitch-freedom, runtime-state-storage]
+
+  - id: atomic-successor-commit
+    kind: system_effect
+    statement: >-
+      All proposed successors commit together with settled signals, output
+      baselines, provenance, and the rest of the prepared machine at the single
+      transaction publication point. Any structured rejection preserves every
+      prior node-state value and publishes no partial state or output change.
+    sources: [api-settlement, runtime-transition, runtime-commit, testing-failure-atomicity]
+
+  - id: committed-state-inspection
+    kind: public_surface
+    statement: >-
+      Owned node inspection identifies the observed revision and logical time
+      and distinguishes internal committed state from current port values,
+      reaction-scoped pulse history, pending work, diagnostics, and causal
+      facts. Before initialization, structural inspection may expose declared
+      initial state, while current runtime inspection fails as not initialized.
+    sources: [builtin-inspection, api-inspection, concrete-inspection, testing-preinit-inspection]
+
+  - id: stateful-foundation-verification
+    kind: verification
+    statement: >-
+      Verification covers both lifecycle phases, declared state as the first
+      reaction's previous state, current downstream visibility, at most one
+      proposal per cell, atomic multi-cell commitment, equivalence across valid
+      reaction work orders and same-time input permutations, complete failure
+      atomicity, and deterministic compiled state-slot correspondence.
+    sources: [testing-current-state, testing-stateful-chain, testing-work-order, testing-input-order, testing-failure-atomicity, testing-reference-path]
+
+recommendations:
+  - id: semantic-family-storage
+    statement: >-
+      Runtime state should be grouped by semantic family rather than represented
+      by one heap-allocated trait object per node.
+    sources: [runtime-family-storage]
+
+implementation_freedom:
+  - Private state-slot widths, family tables, descriptor fields, staging maps, and clone-and-swap decomposition are free when stable identity, state isolation, and atomic publication are preserved.
+  - The first foundation may expose the smallest owned node-inspection value that distinguishes declared or committed state and its applicable causal fact; broader query planning, subscriptions, and history remain outside scope.
+  - StateChange collection shape is optional in this opening slice because the API specification makes it a recommendation; committed state must still be directly inspectable and failure-atomic.
+
+open_questions: []
+
+sources:
+  builtin-transducer:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 5. Synchronous transducer model]
+    reviewed_hash: sha256:46df1ec2d023eb21458fa24b6c8fc69f0b56c46ebeaf7195c56b4787bf5f57ec
+  builtin-dependencies:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
+  builtin-initialization:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 13. Machine and node initialization]
+    reviewed_hash: sha256:9fef8b08457ff277136cf9fb3e6c9d5311de22c3f95bb086257bd89d4019e887
+  builtin-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path:
+      - Part VIII — Inspection, explanation, and migration obligations
+      - 61. Node inspection
+    reviewed_hash: sha256:109589c8402f33c1ea69f83627b4d39073bd3e3f37fc24e0494f8daaf2c5c88d
+  api-causality:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 8. Current-reaction causality and cycles]
+    reviewed_hash: sha256:2e50e375a8b29141d0adc2a9515570c1109c82a274fbcd7d38efefd9094f6b8c
+  api-lifecycle:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 10. Lifecycle]
+    reviewed_hash: sha256:871bd06010d5d2d3c90d4011795dd2e6aeb9266c3a897fb3e3a519e664adec03
+  api-machine:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 15. `Machine<D>`]
+    reviewed_hash: sha256:b2b9b53e507c925bf597ff720d73b3523b09c46d1be3fe935a2fbbabdc0c44ae
+  api-settlement:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 26. Settlement]
+    reviewed_hash: sha256:875bead35fccd63f762bf9fc87fbe484c579f99908d5e175bc8b135351296e23
+  api-inspection:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 50. Node inspection]
+    reviewed_hash: sha256:7f7ea35ea75be92ce5b6c936a20f45d2cc824d64c747959ae65233bcf143f5f4
+  concrete-inspection:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIX — Inspection, 72. Owned inspection values]
+    reviewed_hash: sha256:90f6d3724be4c8c5f52adb19ab3c9960c57c3ce1c2b01854cf013bf633b2272f
+  runtime-reaction-equations:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 14. Reaction equations]
+    reviewed_hash: sha256:2f22b3e16393ff38a69cb94268c996ee3e933f3966937647096ddc49758d355c
+  runtime-causality:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 16. Dependency-specific causality barriers]
+    reviewed_hash: sha256:61d5a8687ed510a7e8b059d411c6b65b8c7e7d813e832f9240300a3b796de0f7
+  runtime-compilation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 21. Compilation responsibilities]
+    reviewed_hash: sha256:f086a8575e9ed012b3a9aca9d4b8b193a323040e8b58b341c77d9de835db2237
+  runtime-invariants:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 22. Compiled invariants]
+    reviewed_hash: sha256:746554b068081f15488f90197bf4c03ad4b384836a2fca010cd0c90eb81e56fe
+  runtime-family-storage:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part V — Runtime storage, 24. Storage by semantic family]
+    reviewed_hash: sha256:1a617b381c940086fb932cd2e87c7075e8e1adf5caf0e9d4494da702cc60c3f4
+  runtime-state-storage:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part V — Runtime storage, 27. Previous and proposed state]
+    reviewed_hash: sha256:484b7e5f9121da346bc2df3176671942a0fb8e684da85104d48ae9b728a53461
+  runtime-full-evaluation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 33. Full reference evaluation]
+    reviewed_hash: sha256:582cdbde0046465fa88793dfa2f0e58976170719a591231f70d2a38b77ebe621
+  runtime-glitch-freedom:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 32. Glitch freedom]
+    reviewed_hash: sha256:5e497703203dd236303204e3d58726b76af3a0d88150bb265b01f0faeae5af8e
+  runtime-transition:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 47. State-transition model]
+    reviewed_hash: sha256:fcccb31e85f023ec9af8b0fcf6033427bb165f9b34130192dd7d1b00f281abd0
+  runtime-commit:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 48. Single commit point]
+    reviewed_hash: sha256:2f52d5b43dc3cb41ef234b07953c0648120301b22c62d91af1bc0aaef6f7d184
+  testing-reference-path:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part III — Reference implementations, 9. Required reference paths, 9.4 Full validation and compilation]
+    reviewed_hash: sha256:146dd6da32cd463d9b1566549ba0f057725aa877a04136b5f6c223ab06b7c533
+  testing-initialization:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VI — Initialization verification, 24. First-transaction obligations]
+    reviewed_hash: sha256:6473e120417525b0974d49b6a773cfcec8f711ebfd12c38ae53c9da5c83e4683
+  testing-preinit-inspection:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VI — Initialization verification, 26. Pre-initialization inspection]
+    reviewed_hash: sha256:c48296040e195ca658218654b2c3510802c5dcd0dd30c756f51892393514902e
+  testing-current-state:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 36. Current-state isolation]
+    reviewed_hash: sha256:4b26150e2f39bd5e89b72ecb0f36aa0c321a6d1a0f5f109ad110dc91611b69b8
+  testing-stateful-chain:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 40. Stateful chain testing]
+    reviewed_hash: sha256:b83754e36e34c9cbfe974203926f6761f76ac2b38268564b2eb3a8db0709da4e
+  testing-work-order:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 31. Work-order invariance]
+    reviewed_hash: sha256:8c1c30a0f4074fa39644273d73b72060f4baf5b3849ca81f95ea246e1f402822
+  testing-input-order:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 32. Input-order invariance]
+    reviewed_hash: sha256:6bb063631903f75427fb410642aadddc444776fe412e1ce90b2d74ac139fd9d6
+  testing-failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6

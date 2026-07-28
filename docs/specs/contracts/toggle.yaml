@@ -1,0 +1,255 @@
+schema_version: "0.1"
+id: mossignal.node.toggle
+title: Pulse-controlled Toggle primitive
+kind: node
+status: reviewed
+
+source_baseline:
+  commit: 8ea64824a2ac4f984502879fea938bfac41e0b4a
+  working_tree: dirty
+
+summary: >-
+  Toggle is a one-cell stateful Pulse-to-Level primitive whose current output
+  and committed successor invert exactly when the simultaneous pulse count is odd.
+
+scope:
+  includes:
+    - Toggle's port shape, configuration, parity transition law, and causality
+    - typed and dynamic authoring, validation, compilation, and evaluation
+    - initialization, committed-state inspection, provenance, and conformance
+    - pre-stability network-fingerprint extension boundary
+  excludes:
+    - resettable toggles, edge detectors, latches, sample-hold, and temporal nodes
+    - general state-slot ownership and atomic successor commitment
+    - snapshot encoding, restoration, replay, and topology migration
+    - complete explanation rendering and inspection subscriptions
+
+known_uncovered:
+  - Canonical snapshot state schema and restoration validation for Toggle
+  - Compatible topology migration and reset handling for Toggle state
+  - Complete current and why-not explanation rendering for even pulse batches
+  - Authored Toggle cycle conformance once a Level-to-Pulse primitive is available
+
+aliases:
+  - Toggle
+  - ToggleConfig
+  - pulse-controlled parity state
+
+requirements:
+  - id: fixed-shape-and-explicit-initial-state
+    kind: semantic
+    statement: >-
+      Toggle has exactly one Pulse input named toggle, one Level output, one
+      stored LogicLevel state cell, and a required explicit initial LogicLevel.
+      It has no optional reset port; resettable behavior belongs to a named
+      module or a separately specified future node.
+    sources: [toggle-law, concrete-config]
+
+  - id: parity-output-and-successor-law
+    kind: semantic
+    statement: >-
+      Given previous stored level s and complete simultaneous pulse count n,
+      even n produces current output s and proposes s, while odd n produces
+      current output not-s and proposes not-s. Pulse multiplicity is interpreted
+      only by parity, and the state cell commits once after complete settlement.
+    sources: [toggle-law, simultaneous-batches]
+
+  - id: immediate-dependency-and-visibility
+    kind: semantic
+    statement: >-
+      Toggle's conservative current-reaction signature contains its Pulse
+      input-to-Level-output dependency. The settled current output is available
+      downstream in the same reaction, while the proposed successor never feeds
+      the same reaction; cycles through Toggle remain blocking current-reaction
+      cycles when they follow its instantaneous input-to-output path.
+    sources: [toggle-law, dependency-signature, api-causality]
+
+  - id: typed-and-dynamic-authoring
+    kind: public_surface
+    statement: >-
+      The public configuration value is ToggleConfig with an initial LogicLevel.
+      NetworkBuilder provides a typed toggle convenience accepting Signal<Pulse>
+      and an explicit add_toggle form exposing NodeKey and metadata. Dynamic
+      definitions use the closed NodeKind::Toggle(ToggleConfig) and stable typed
+      fixed-shape ports; malformed direct definitions remain validation input.
+    sources: [builder-toggle, builder-keyed, concrete-config, dynamic-node-kind]
+
+  - id: validation-compilation-and-state-layout
+    kind: semantic
+    statement: >-
+      Structural validation enforces Toggle's one-Pulse-input and one-Level-output
+      shape and retains its current dependency for cycle analysis. Compilation
+      preserves stable subject correspondence, assigns exactly one Toggle-family
+      state slot with the declared initial value, and emits a descriptor that
+      reads that slot and settled pulse input without public dense identities.
+    sources: [dependency-signature, runtime-compilation, runtime-invariants]
+
+  - id: initialization-and-ready-reactions
+    kind: lifecycle
+    statement: >-
+      During initialization, declared initial level is the previous state and
+      the initial pulse batch is processed by the ordinary Toggle law before the
+      first settled output and successor commit. Every ready reaction likewise
+      uses its complete same-time pulse count; a zero count does not invert
+      state.
+    sources: [builtin-initialization, toggle-law, first-transaction, ready-transaction]
+
+  - id: inversion-causality-and-inspection
+    kind: system_effect
+    statement: >-
+      Toggle retains the cause of its latest inversion. Node inspection exposes
+      the declared initial level before initialization and the committed stored
+      level plus applicable latest inversion cause after initialization. An even
+      batch may support the current output explanation but does not replace the
+      latest inversion cause.
+    sources: [toggle-law, builtin-inspection, concrete-inspection]
+
+  - id: pre-stability-toggle-identity-extension
+    kind: compatibility
+    statement: >-
+      Network identity represents Toggle's node kind, Pulse input and Level
+      output roles, one-cell state schema, and declared initial level. Before the
+      first stable fingerprint baseline, adding Toggle to development projection
+      version 1 does not require a historical reader, upgrader, or migration
+      path, but the exact authoritative projection, affected contract, and every
+      affected golden vector must change together; accidental byte drift remains
+      prohibited.
+    sources: [network-fingerprint, restricted-network-fingerprint, fingerprint-versions]
+
+  - id: toggle-conformance
+    kind: verification
+    statement: >-
+      Reusable conformance exhausts both previous levels and bounded even and odd
+      pulse counts, including zero and counts greater than one, and covers
+      declared-state initialization, later reactions, same-reaction downstream
+      visibility, the immediate dependency signature, typed-versus-dynamic
+      equivalence, state inspection, latest-inversion causal rooting,
+      insertion-order invariance, fingerprint parameter sensitivity, and
+      complete failure atomicity.
+    sources: [builder-toggle, dynamic-node-kind, network-fingerprint, testing-validation, testing-compilation, testing-fingerprint, testing-initialization, testing-current-state, testing-primitive, testing-stateful-chain, testing-provenance, testing-current-vs-latest, testing-failure-atomicity]
+
+implementation_freedom:
+  - Exact fixed-port derivation, explicit exact-port constructor grouping, private descriptor fields, parity calculation, and Toggle state-slot representation are free when stable identity and the parity law are preserved.
+  - Choose the simplest deterministic Toggle variant and state-schema spelling for the synchronized pre-stability version-1 fingerprint projection, then record it in authority, the affected contract, and golden vectors during implementation.
+  - A focused owned Toggle inspection result may precede the broader generic inspection-query and subscription system.
+
+open_questions: []
+
+sources:
+  simultaneous-batches:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 7. Simultaneous batches]
+    reviewed_hash: sha256:6f0c086ed445bf436c4974044bddc2eb224e4d6299620fedf775de6c641c4941
+  dependency-signature:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
+  builtin-initialization:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 13. Machine and node initialization]
+    reviewed_hash: sha256:9fef8b08457ff277136cf9fb3e6c9d5311de22c3f95bb086257bd89d4019e887
+  toggle-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 42. `Toggle`]
+    reviewed_hash: sha256:537229ed2f019956533b64078194533679252e5ea68c7229c7ca04b57fea41fa
+  builtin-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path:
+      - Part VIII — Inspection, explanation, and migration obligations
+      - 61. Node inspection
+    reviewed_hash: sha256:109589c8402f33c1ea69f83627b4d39073bd3e3f37fc24e0494f8daaf2c5c88d
+  api-causality:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 8. Current-reaction causality and cycles]
+    reviewed_hash: sha256:2e50e375a8b29141d0adc2a9515570c1109c82a274fbcd7d38efefd9094f6b8c
+  first-transaction:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 24. Transaction ordering, 24.1 First transaction]
+    reviewed_hash: sha256:58ff436c7845528a88fada70a559c8f56ecf881f8b4b98007b086f463540f001
+  ready-transaction:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 24. Transaction ordering, 24.2 Ready-machine transaction]
+    reviewed_hash: sha256:cb4a0f7d6e21f6ac09877096aedc3516c516b714865f34e3ce5279d50f4ec78b
+  builder-toggle:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  builder-keyed:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 28. Explicit keyed primitive construction]
+    reviewed_hash: sha256:eebf1d5f4f29d91da4e1483f86545fa1ed80b3aa7abb514939fd3dd2a7f8efdf
+  concrete-config:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 29. Built-in configuration values]
+    reviewed_hash: sha256:b989b03bf932e65581c5878a208b6d619f3667762f9a547c2daa6366db6abc84
+  dynamic-node-kind:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
+  concrete-inspection:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIX — Inspection, 72. Owned inspection values]
+    reviewed_hash: sha256:90f6d3724be4c8c5f52adb19ab3c9960c57c3ce1c2b01854cf013bf633b2272f
+  runtime-compilation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 21. Compilation responsibilities]
+    reviewed_hash: sha256:f086a8575e9ed012b3a9aca9d4b8b193a323040e8b58b341c77d9de835db2237
+  runtime-invariants:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 22. Compiled invariants]
+    reviewed_hash: sha256:746554b068081f15488f90197bf4c03ad4b384836a2fca010cd0c90eb81e56fe
+  network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.1 Network fingerprint]
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  restricted-network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
+    reviewed_hash: sha256:96c04c867dc6b4fb556d6f97a9cec32cde57c4205388307a47123adf1ed9cb53
+  fingerprint-versions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 15. Version representation]
+    reviewed_hash: sha256:a59d0cb9deab2c9b183e95c55b2e4df660b7927c8c6cc074defe68bee36c68b1
+  testing-current-state:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 36. Current-state isolation]
+    reviewed_hash: sha256:4b26150e2f39bd5e89b72ecb0f36aa0c321a6d1a0f5f109ad110dc91611b69b8
+  testing-primitive:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 39. Exhaustive primitive testing]
+    reviewed_hash: sha256:c67d2593f52b5536672661e3cdb833b44716d657c7a9d23dabb0f698adcdb3de
+  testing-stateful-chain:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 40. Stateful chain testing]
+    reviewed_hash: sha256:b83754e36e34c9cbfe974203926f6761f76ac2b38268564b2eb3a8db0709da4e
+  testing-validation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 18. Validation soundness]
+    reviewed_hash: sha256:7e7bd7cced7e93356936c7bf1017af878f79a818d1532f705d40609f2d9e9ee5
+  testing-compilation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72
+  testing-fingerprint:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part V — Validation and compilation verification
+      - 21. Deterministic compilation
+      - 21.1 Restricted semantic fingerprint verification
+    reviewed_hash: sha256:b7f3bccfbfc01a2c4c8e9d1f37d799598091126d00b1fced10e984f9f9c8a777
+  testing-initialization:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VI — Initialization verification, 24. First-transaction obligations]
+    reviewed_hash: sha256:6473e120417525b0974d49b6a773cfcec8f711ebfd12c38ae53c9da5c83e4683
+  testing-provenance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 68. Authoritative-root completeness]
+    reviewed_hash: sha256:31301008860a4fec9c0cd20e272a80b5323700daa6818a7c21cc57bd3de40523
+  testing-current-vs-latest:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 70. Current support versus latest transition]
+    reviewed_hash: sha256:b4740b878989222112bdfa1c20e0f0d819014635cc4bdaadf4f671048eff0e49
+  testing-failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
