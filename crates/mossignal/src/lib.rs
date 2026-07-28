@@ -11,6 +11,7 @@ pub mod metadata;
 mod policy;
 pub mod signal;
 pub mod time;
+mod transaction;
 
 mod validation;
 
@@ -20,5 +21,9 @@ pub use input::{InputBuildFailure, InputSnapshot, InputSnapshotBuilder};
 pub use machine::{Machine, MachineStatus, NetworkRevision};
 pub use policy::{
     PolicyFailure, RuntimePolicy, RuntimePolicyBuilder, RuntimePolicyId, RuntimePolicyLimit,
+};
+pub use transaction::{
+    CauseInspection, CauseLookupFailure, CauseRef, OutputEvent, ProvenanceSubject, ProvenanceView,
+    RuntimeFailure, RuntimeFailureEvidence, Transaction, TransactionResult,
 };
 pub use validation::ValidatedNetwork;

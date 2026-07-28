@@ -4,17 +4,13 @@ use crate::authored::{ConnectionEndpoint, NodeKind, UncheckedNetwork};
 use crate::diagnostics::{DiagnosticSet, Report};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
 use crate::input::InputSnapshotBuilder;
-#[cfg(test)]
-use crate::key::ExternalInputKey;
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, ConnectionKey,
-    NetworkKey, NodeKey,
+    ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey,
 };
 use crate::machine::Machine;
 use crate::policy::RuntimePolicy;
-#[cfg(test)]
-use crate::signal::Level;
-use crate::signal::{LogicLevel, SignalKind};
+use crate::signal::{Level, LogicLevel, SignalKind};
 use crate::validation::{ReactionDependencyGraph, ReactionVertex, ValidatedNetwork};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -127,13 +123,29 @@ enum OperationDescriptor {
 
 /// Complete outcomes of one restricted full reference evaluation.
 ///
-/// This remains crate-private because the public input-snapshot and runtime
-/// result boundaries are intentionally deferred.
+/// This remains crate-private staging behind the public transaction result.
 #[derive(Debug, PartialEq, Eq)]
-#[cfg(test)]
 pub(crate) struct FullEvaluation {
-    values: Vec<LogicLevel>,
+    pub(crate) values: Vec<LogicLevel>,
+    pub(crate) causes: Vec<EvaluationCause>,
+    pub(crate) external_outputs: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+    #[cfg(test)]
     execution_counts: Vec<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EvaluationCause {
+    ExternalInput(ExternalInputKey<Level>),
+    Constant(NodeKey),
+    Node {
+        node: NodeKey,
+        predecessors: Vec<usize>,
+    },
+    Alias(usize),
+    ExternalOutput {
+        output: ExternalOutputKey<Level>,
+        source: usize,
+    },
 }
 
 impl<D> CompiledNetwork<D> {
@@ -200,22 +212,31 @@ impl<D> CompiledNetwork<D> {
         )
     }
 
-    #[cfg(test)]
     pub(crate) fn evaluate_full(
         &self,
         external_inputs: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     ) -> Option<FullEvaluation> {
         self.inner.evaluate_full(external_inputs)
     }
+
+    pub(crate) fn operation_count(&self) -> usize {
+        self.inner.operations.len()
+    }
+
+    pub(crate) fn external_output_count(&self) -> usize {
+        self.inner.external_outputs.len()
+    }
 }
 
 impl<D> CompiledInner<D> {
-    #[cfg(test)]
     fn evaluate_full(
         &self,
         external_inputs: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     ) -> Option<FullEvaluation> {
         let mut values = vec![None; self.operations.len()];
+        let mut causes = Vec::with_capacity(self.operations.len());
+        let mut external_outputs = BTreeMap::new();
+        #[cfg(test)]
         let mut execution_counts = vec![0; self.operations.len()];
 
         for (index, operation) in self.operations.iter().enumerate() {
@@ -226,27 +247,43 @@ impl<D> CompiledInner<D> {
                 return None;
             }
 
-            execution_counts[index] += 1;
-            let value = match operation {
+            #[cfg(test)]
+            {
+                execution_counts[index] += 1;
+            }
+            let (value, cause) = match operation {
                 OperationDescriptor::ExternalInput(input) => {
                     let key = match self.external_inputs.get(input.0)?.key {
                         AnyExternalInputKey::Level(key) => key,
                         AnyExternalInputKey::Pulse(_) => return None,
                     };
-                    external_inputs.get(&key).copied()?
+                    (
+                        external_inputs.get(&key).copied()?,
+                        EvaluationCause::ExternalInput(key),
+                    )
                 }
                 OperationDescriptor::Node(node) => match self.nodes.get(node.0)? {
                     NodeDescriptor {
+                        key,
                         kind: CompiledNodeKind::Constant(value),
                         ..
-                    } => *value,
+                    } => (*value, EvaluationCause::Constant(*key)),
                     NodeDescriptor {
+                        key,
                         kind: CompiledNodeKind::Not,
                         inputs,
                         ..
-                    } => self
-                        .input_value(inputs.first().copied()?, &values)?
-                        .invert(),
+                    } => (
+                        self.input_value(inputs.first().copied()?, &values)?
+                            .invert(),
+                        EvaluationCause::Node {
+                            node: *key,
+                            predecessors: self.predecessors[index]
+                                .iter()
+                                .map(|predecessor| predecessor.0)
+                                .collect(),
+                        },
+                    ),
                 },
                 OperationDescriptor::NodeOutput(port) => {
                     let predecessor = self.predecessors[index].first()?;
@@ -254,23 +291,41 @@ impl<D> CompiledInner<D> {
                     if port.direction != PortDirection::Output {
                         return None;
                     }
-                    values[predecessor.0]?
+                    (
+                        values[predecessor.0]?,
+                        EvaluationCause::Alias(predecessor.0),
+                    )
                 }
                 OperationDescriptor::ExternalOutput(output) => {
-                    let source = self.external_outputs.get(output.0)?.source;
-                    values[source.0]?
+                    let descriptor = self.external_outputs.get(output.0)?;
+                    let key = match descriptor.key {
+                        AnyExternalOutputKey::Level(key) => key,
+                        AnyExternalOutputKey::Pulse(_) => return None,
+                    };
+                    let value = values[descriptor.source.0]?;
+                    external_outputs.insert(key, value);
+                    (
+                        value,
+                        EvaluationCause::ExternalOutput {
+                            output: key,
+                            source: descriptor.source.0,
+                        },
+                    )
                 }
             };
             values[index] = Some(value);
+            causes.push(cause);
         }
 
         Some(FullEvaluation {
             values: values.into_iter().collect::<Option<Vec<_>>>()?,
+            causes,
+            external_outputs,
+            #[cfg(test)]
             execution_counts,
         })
     }
 
-    #[cfg(test)]
     fn input_value(&self, port: PortIndex, values: &[Option<LogicLevel>]) -> Option<LogicLevel> {
         let source = self
             .connections

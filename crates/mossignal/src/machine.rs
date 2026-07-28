@@ -2,9 +2,13 @@
 
 use crate::compile::CompiledNetwork;
 use crate::identity::NetworkFingerprint;
+use crate::key::{ExternalInputKey, ExternalOutputKey};
 use crate::policy::{RuntimePolicy, RuntimePolicyId};
+use crate::signal::{Level, LogicLevel};
 use crate::time::Time;
+use crate::transaction::{CauseRef, ProvenanceView};
 use core::fmt;
+use std::collections::BTreeMap;
 
 /// The opaque machine-local revision of the currently installed topology.
 ///
@@ -15,6 +19,15 @@ pub struct NetworkRevision(u64);
 
 impl NetworkRevision {
     const INITIAL: Self = Self(0);
+
+    #[cfg(test)]
+    pub(crate) const fn from_value(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub(crate) const fn value(self) -> u64 {
+        self.0
+    }
 }
 
 impl fmt::Debug for NetworkRevision {
@@ -67,9 +80,28 @@ impl<D> fmt::Debug for MachineStatus<D> {
     }
 }
 
-struct MachineStore<D> {
-    status: MachineStatus<D>,
-    revision: NetworkRevision,
+pub(crate) struct MachineStore<D> {
+    pub(crate) status: MachineStatus<D>,
+    pub(crate) revision: NetworkRevision,
+    pub(crate) external_levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+    pub(crate) settled_levels: Vec<LogicLevel>,
+    pub(crate) output_baselines: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+    pub(crate) output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+    pub(crate) provenance: Option<ProvenanceView<D>>,
+}
+
+impl<D> Clone for MachineStore<D> {
+    fn clone(&self) -> Self {
+        Self {
+            status: self.status,
+            revision: self.revision,
+            external_levels: self.external_levels.clone(),
+            settled_levels: self.settled_levels.clone(),
+            output_baselines: self.output_baselines.clone(),
+            output_causes: self.output_causes.clone(),
+            provenance: self.provenance.clone(),
+        }
+    }
 }
 
 /// One mutable semantic execution instance of a compiled network.
@@ -88,11 +120,11 @@ struct MachineStore<D> {
 /// }
 /// ```
 pub struct Machine<D> {
-    compiled: CompiledNetwork<D>,
-    policy: RuntimePolicy,
+    pub(crate) compiled: CompiledNetwork<D>,
+    pub(crate) policy: RuntimePolicy,
     // SPEC: docs/specs/processor_and_runtime_architecture.md §6 "Machine lifecycle states"
     // Absence before initialization is lifecycle state, never fabricated Low values.
-    store: MachineStore<D>,
+    pub(crate) store: MachineStore<D>,
 }
 
 impl<D> Machine<D> {
@@ -103,6 +135,11 @@ impl<D> Machine<D> {
             store: MachineStore {
                 status: MachineStatus::AwaitingInitialization,
                 revision: NetworkRevision::INITIAL,
+                external_levels: BTreeMap::new(),
+                settled_levels: Vec::new(),
+                output_baselines: BTreeMap::new(),
+                output_causes: BTreeMap::new(),
+                provenance: None,
             },
         }
     }
@@ -156,6 +193,33 @@ impl<D> Machine<D> {
     #[must_use]
     pub fn runtime_policy_id(&self) -> RuntimePolicyId {
         self.policy.id()
+    }
+
+    /// Returns one authoritative external level after initialization.
+    #[must_use]
+    pub fn external_level(&self, input: ExternalInputKey<Level>) -> Option<LogicLevel> {
+        if !self.is_initialized() {
+            return None;
+        }
+        self.store.external_levels.get(&input).copied()
+    }
+
+    /// Returns one established external level-output baseline after initialization.
+    #[must_use]
+    pub fn output_level(&self, output: ExternalOutputKey<Level>) -> Option<LogicLevel> {
+        if !self.is_initialized() {
+            return None;
+        }
+        self.store.output_baselines.get(&output).copied()
+    }
+
+    /// Returns the current retained cause of an established external level output.
+    #[must_use]
+    pub fn output_cause(&self, output: ExternalOutputKey<Level>) -> Option<CauseRef> {
+        if !self.is_initialized() {
+            return None;
+        }
+        self.store.output_causes.get(&output).copied()
     }
 }
 

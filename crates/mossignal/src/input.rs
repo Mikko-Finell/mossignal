@@ -35,6 +35,10 @@ impl<D> InputSnapshot<D> {
     pub const fn input_schema_fingerprint(&self) -> InputSchemaFingerprint {
         self.input_schema_fingerprint
     }
+
+    pub(crate) fn into_levels(self) -> BTreeMap<ExternalInputKey<Level>, LogicLevel> {
+        self.levels
+    }
 }
 
 /// An owned builder for a complete external level-input snapshot.
