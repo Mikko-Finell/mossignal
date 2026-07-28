@@ -1,6 +1,7 @@
 //! Core value types for Mossignal.
 
 pub mod authored;
+pub mod builder;
 mod compile;
 pub mod diagnostics;
 pub mod identity;
@@ -15,6 +16,7 @@ mod transaction;
 
 mod validation;
 
+pub use builder::{NetworkBuilder, Signal};
 pub use compile::CompiledNetwork;
 pub use identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
 pub use input::{
