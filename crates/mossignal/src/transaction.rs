@@ -320,26 +320,31 @@ pub struct TransactionResult<D> {
 }
 
 impl<D> TransactionResult<D> {
+    /// Returns the logical time requested by the applied transaction.
     #[must_use]
     pub const fn requested_time(&self) -> Time<D> {
         self.requested_time
     }
 
+    /// Returns the machine revision observed before application.
     #[must_use]
     pub const fn before_revision(&self) -> NetworkRevision {
         self.before_revision
     }
 
+    /// Returns the machine revision retained after application.
     #[must_use]
     pub const fn after_revision(&self) -> NetworkRevision {
         self.after_revision
     }
 
+    /// Returns the deterministic external output event stream.
     #[must_use]
     pub fn output_events(&self) -> &[OutputEvent<D>] {
         &self.output_events
     }
 
+    /// Returns the immutable view that resolves every event cause.
     #[must_use]
     pub const fn provenance(&self) -> &ProvenanceView<D> {
         &self.provenance
@@ -715,14 +720,41 @@ mod tests {
             .unwrap_or_else(|failure| panic!("policy must build: {failure}"))
     }
 
-    fn assert_pristine(machine: &crate::Machine<()>) {
-        assert_eq!(machine.status(), MachineStatus::AwaitingInitialization);
-        assert_eq!(machine.now(), None);
-        assert!(machine.store.external_levels.is_empty());
-        assert!(machine.store.settled_levels.is_empty());
-        assert!(machine.store.output_baselines.is_empty());
-        assert!(machine.store.output_causes.is_empty());
-        assert!(machine.store.provenance.is_none());
+    #[derive(Debug, PartialEq, Eq)]
+    struct MachineObservation {
+        network_key: NetworkKey,
+        network_fingerprint: crate::NetworkFingerprint,
+        input_schema_fingerprint: crate::InputSchemaFingerprint,
+        policy_id: crate::RuntimePolicyId,
+        status: MachineStatus<()>,
+        revision: NetworkRevision,
+        external_levels: std::collections::BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+        settled_levels: Vec<LogicLevel>,
+        output_baselines: std::collections::BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+        output_causes: std::collections::BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+        provenance: Option<([u8; 16], usize, usize)>,
+    }
+
+    fn observe(machine: &crate::Machine<()>) -> MachineObservation {
+        MachineObservation {
+            network_key: machine.compiled.network_key(),
+            network_fingerprint: machine.compiled.fingerprint(),
+            input_schema_fingerprint: machine.compiled.input_schema_fingerprint(),
+            policy_id: machine.policy.id(),
+            status: machine.store.status,
+            revision: machine.store.revision,
+            external_levels: machine.store.external_levels.clone(),
+            settled_levels: machine.store.settled_levels.clone(),
+            output_baselines: machine.store.output_baselines.clone(),
+            output_causes: machine.store.output_causes.clone(),
+            provenance: machine.store.provenance.as_ref().map(|view| {
+                (
+                    view.scope,
+                    view.len(),
+                    std::sync::Arc::as_ptr(&view.records) as usize,
+                )
+            }),
+        }
     }
 
     fn complex_compiled(reverse_claims: bool) -> crate::CompiledNetwork<()> {
@@ -818,13 +850,21 @@ mod tests {
                 return;
             }
             assert!(visiting.insert(cause), "provenance must remain acyclic");
-            if let CauseInspection::Derived { supporters, .. } = view
+            match view
                 .inspect(cause)
                 .unwrap_or_else(|failure| panic!("cause must resolve: {failure}"))
             {
-                for supporter in supporters {
-                    visit(view, *supporter, visiting, visited);
+                CauseInspection::Derived { supporters, .. } => {
+                    assert!(
+                        !supporters.is_empty(),
+                        "derived provenance must terminate in authoritative roots"
+                    );
+                    for supporter in supporters {
+                        visit(view, *supporter, visiting, visited);
+                    }
                 }
+                CauseInspection::InitializationTransaction { .. }
+                | CauseInspection::ExternalObservation { .. } => {}
             }
             assert!(visiting.remove(&cause));
             visited.insert(cause);
@@ -861,6 +901,7 @@ mod tests {
             }
         );
         assert_eq!(machine.revision(), revision);
+        assert_eq!(machine.runtime_policy_id(), policy().id());
         assert_eq!(machine.external_level(input), Some(LogicLevel::High));
         assert_eq!(machine.output_level(output), Some(LogicLevel::High));
         let [
@@ -899,6 +940,7 @@ mod tests {
             .unwrap_or_else(|_| panic!("snapshot must build"));
         let mut machine = local.spawn(policy());
         let revision = machine.revision();
+        let before = observe(&machine);
 
         let failure = machine
             .apply(Transaction::initialize(
@@ -912,7 +954,7 @@ mod tests {
             failure.evidence(),
             RuntimeFailureEvidence::WrongNetwork { .. }
         ));
-        assert_pristine(&machine);
+        assert_eq!(observe(&machine), before);
         assert_eq!(machine.revision(), revision);
         assert_eq!(machine.external_level(input), None);
         assert_eq!(machine.output_level(ExternalOutputKey::from_u128(30)), None);
@@ -964,6 +1006,79 @@ mod tests {
             assert_eq!(machine.store.settled_levels.len(), 9);
             for (_, _, cause) in events {
                 recursively_assert_acyclic(result.provenance(), cause);
+            }
+        }
+    }
+
+    #[test]
+    fn equivalent_initializations_differ_only_by_requested_time() {
+        let compiled = complex_compiled(false);
+        let input = || {
+            compiled
+                .input_snapshot()
+                .set(ExternalInputKey::from_u128(1), LogicLevel::Low)
+                .and_then(|builder| builder.set(ExternalInputKey::from_u128(2), LogicLevel::High))
+                .and_then(crate::InputSnapshotBuilder::finish)
+                .unwrap_or_else(|_| panic!("snapshot must build"))
+        };
+        let expected_policy = policy_with([1, 9, 0, 3, 8]);
+        let expected_policy_id = expected_policy.id();
+        let mut at_zero = compiled.spawn(expected_policy.clone());
+        let mut later = compiled.spawn(expected_policy);
+
+        let zero_result = at_zero
+            .apply(Transaction::initialize(
+                crate::time::Time::from_ticks(0),
+                at_zero.revision(),
+                input(),
+            ))
+            .unwrap_or_else(|failure| panic!("zero-time initialization must succeed: {failure}"));
+        let later_result = later
+            .apply(Transaction::initialize(
+                crate::time::Time::from_ticks(91),
+                later.revision(),
+                input(),
+            ))
+            .unwrap_or_else(|failure| {
+                panic!("nonzero-time initialization must succeed: {failure}")
+            });
+
+        assert_eq!(at_zero.now(), Some(crate::time::Time::from_ticks(0)));
+        assert_eq!(later.now(), Some(crate::time::Time::from_ticks(91)));
+        assert_eq!(at_zero.revision(), later.revision());
+        assert_eq!(at_zero.runtime_policy_id(), expected_policy_id);
+        assert_eq!(later.runtime_policy_id(), expected_policy_id);
+        assert_eq!(at_zero.store.external_levels, later.store.external_levels);
+        assert_eq!(at_zero.store.settled_levels, later.store.settled_levels);
+        assert_eq!(at_zero.store.output_baselines, later.store.output_baselines);
+        assert_eq!(
+            zero_result.output_events().len(),
+            later_result.output_events().len()
+        );
+        for (zero, nonzero) in zero_result
+            .output_events()
+            .iter()
+            .zip(later_result.output_events())
+        {
+            match (zero, nonzero) {
+                (
+                    OutputEvent::LevelEstablished {
+                        output: zero_output,
+                        value: zero_value,
+                        revision: zero_revision,
+                        ..
+                    },
+                    OutputEvent::LevelEstablished {
+                        output: later_output,
+                        value: later_value,
+                        revision: later_revision,
+                        ..
+                    },
+                ) => {
+                    assert_eq!(zero_output, later_output);
+                    assert_eq!(zero_value, later_value);
+                    assert_eq!(zero_revision, later_revision);
+                }
             }
         }
     }
@@ -1054,6 +1169,7 @@ mod tests {
         let mut stale = local.spawn(policy());
         let expected = stale.revision();
         stale.store.revision = NetworkRevision::from_value(9);
+        let before = observe(&stale);
         let failure = stale
             .apply(Transaction::initialize(
                 crate::time::Time::from_ticks(1),
@@ -1069,11 +1185,12 @@ mod tests {
             failure.evidence(),
             RuntimeFailureEvidence::StaleRevision { .. }
         ));
-        assert_pristine(&stale);
+        assert_eq!(observe(&stale), before);
         assert_eq!(stale.revision(), NetworkRevision::from_value(9));
 
         let same_schema_other_topology = compiled(10, 31);
         let mut fingerprint_machine = local.spawn(policy());
+        let before = observe(&fingerprint_machine);
         let failure = fingerprint_machine
             .apply(Transaction::initialize(
                 crate::time::Time::from_ticks(1),
@@ -1089,10 +1206,11 @@ mod tests {
             failure.evidence(),
             RuntimeFailureEvidence::WrongNetwork { .. }
         ));
-        assert_pristine(&fingerprint_machine);
+        assert_eq!(observe(&fingerprint_machine), before);
 
         let other_schema = compiled_with_input(10, 2, 30);
         let mut schema_machine = local.spawn(policy());
+        let before = observe(&schema_machine);
         let failure = schema_machine
             .apply(Transaction::initialize(
                 crate::time::Time::from_ticks(1),
@@ -1108,7 +1226,7 @@ mod tests {
             failure.evidence(),
             RuntimeFailureEvidence::ForeignInputSchema { .. }
         ));
-        assert_pristine(&schema_machine);
+        assert_eq!(observe(&schema_machine), before);
 
         let mut ready = local.spawn(policy());
         let first = local
@@ -1129,6 +1247,7 @@ mod tests {
             .provenance
             .as_ref()
             .map_or(0, ProvenanceView::len);
+        let before = observe(&ready);
         let failure = ready
             .apply(Transaction::initialize(
                 crate::time::Time::from_ticks(5),
@@ -1144,6 +1263,7 @@ mod tests {
             failure.evidence(),
             RuntimeFailureEvidence::AlreadyInitialized
         ));
+        assert_eq!(observe(&ready), before);
         assert_eq!(ready.now(), Some(crate::time::Time::from_ticks(4)));
         assert_eq!(ready.external_level(input), Some(LogicLevel::High));
         assert_eq!(
@@ -1192,6 +1312,7 @@ mod tests {
             let compiled = compiled(10, 30);
             let input = ExternalInputKey::<Level>::from_u128(1);
             let mut machine = compiled.spawn(policy_with(limits));
+            let before = observe(&machine);
             let failure = machine
                 .apply(Transaction::initialize(
                     crate::time::Time::from_ticks(7),
@@ -1214,7 +1335,7 @@ mod tests {
                     consumed: expected_consumed,
                 }
             );
-            assert_pristine(&machine);
+            assert_eq!(observe(&machine), before);
         }
 
         for limits in [[1, 2, 0, 1, 3], [2, 3, 0, 2, 4]] {
