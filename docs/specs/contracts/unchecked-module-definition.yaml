@@ -1,0 +1,202 @@
+schema_version: "0.1"
+id: mossignal.module.unchecked_definition
+title: Unchecked reusable module definition
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 38a1984bc8eeee4307bb97e837692ad39b720c36
+  working_tree: dirty
+
+summary: >-
+  UncheckedModule<D> is the owned, stable-keyed authored representation of one
+  reusable user-defined module. It retains a typed public interface, private
+  module-local primitive structure, metadata, explicit user origin, and
+  malformed claims for later validation without claiming validity, semantic
+  identity, instantiability, or executability.
+
+scope:
+  includes:
+    - stable module-instance and typed module-interface key vocabulary
+    - owned typed public module inputs and outputs
+    - private module-local primitive nodes, ports, connections, and output exports
+    - explicit user-module origin and diagnostic metadata
+    - lossless unchecked construction and inspection of malformed claims
+  excludes:
+    - module validation, ModuleDef, ModuleFingerprint, and semantic identity
+    - typed ModuleBuilder authoring and module instantiation into networks
+    - nested modules, compiled flattening, execution, and runtime state
+    - standard catalogue declarations and standard-module origin
+    - persistence encoding, compatibility, topology patches, and reconfiguration
+
+aliases:
+  - UncheckedModule<D>
+  - user-defined module
+  - module interface
+  - ModuleInstanceKey
+  - ModuleInputKey<S>
+  - ModuleOutputKey<S>
+
+requirements:
+  - id: stable-module-key-vocabulary
+    kind: public_surface
+    statement: >-
+      ModuleInstanceKey, ModuleInputKey<S>, and ModuleOutputKey<S> are distinct
+      owned, copyable stable-key categories. Signal-bearing interface keys
+      preserve Level or Pulse at the type level; every category has deterministic
+      equality, hashing, and canonical ordering, while numeric order carries no
+      semantic meaning and construction requires no global mutable state.
+    sources: [concrete-stable-keys]
+
+  - id: durable-and-local-key-construction
+    kind: public_surface
+    statement: >-
+      Module keys support explicit durable construction as well as deterministic
+      caller-owned local allocation. Independently rebuilt definitions that need
+      continuity must deliberately retain or supply their stable keys rather than
+      relying on unrelated implicit allocation histories.
+    sources: [concrete-key-construction]
+
+  - id: erased-interface-keys-retain-kind
+    kind: public_surface
+    statement: >-
+      Heterogeneous module interfaces use the closed AnyModuleInputKey and
+      AnyModuleOutputKey families. Erasure retains Level versus Pulse, typed keys
+      convert explicitly into erased forms, and a wrong-kind erased-to-typed
+      conversion returns a structured mismatch.
+    sources: [concrete-erased-keys]
+
+  - id: owned-unchecked-module-artifact
+    kind: lifecycle
+    statement: >-
+      UncheckedModule<D> is an owned dynamic module definition that precedes the
+      validated immutable ModuleDef<D> boundary. Possessing or inspecting an
+      unchecked module must not claim that it is valid, instantiable, compilable,
+      or executable.
+    sources: [concrete-reusable-modules]
+
+  - id: typed-interface-and-private-structure
+    kind: semantic
+    statement: >-
+      A reusable module owns typed public inputs and outputs and a private
+      internal authored structure. Each public input provides a same-kind source
+      to the internals, and each public output exports one same-kind internal
+      source; private internals are not externally connectable merely because
+      their stable keys are known.
+    sources: [api-modules, concrete-reusable-modules]
+    basis: derived
+
+  - id: ordinary-stable-keyed-primitive-internals
+    kind: semantic
+    statement: >-
+      User-module internals use the ordinary closed primitive node definitions,
+      typed ports, connections, semantic parameters, and stable-key conventions
+      used by authored networks. A module definition must not introduce callback
+      nodes or a parallel primitive semantic model.
+    sources: [concrete-semantic-universe, concrete-reusable-modules, concrete-dynamic-nodes]
+    basis: derived
+
+  - id: module-local-internal-identity
+    kind: semantic
+    statement: >-
+      Internal node, port, and connection keys are module-local in a reusable
+      definition. ModuleInstanceKey qualification is added only when a later
+      operation instantiates that definition into a network.
+    sources: [persistence-module-artifact, patch-qualified-identity]
+
+  - id: explicit-user-origin
+    kind: semantic
+    statement: >-
+      A caller-authored module retains explicit User origin; origin must not be
+      inferred from its primitive graph or metadata. This unchecked user-module
+      slice neither claims nor fabricates a standard catalogue declaration.
+    sources: [concrete-reusable-modules, standard-module-origin]
+
+  - id: malformed-claims-remain-observable
+    kind: prohibition
+    statement: >-
+      Unchecked module construction must losslessly retain independently supplied
+      interface and internal-graph claims, including duplicate stable keys,
+      dangling references, incompatible kinds, invalid direction, incomplete
+      mappings, and malformed interfaces, rather than overwriting, deduplicating,
+      repairing, or defaulting them before later structured validation.
+    sources: [api-unchecked-network, api-validation, concrete-reusable-modules, testing-invalid-definitions]
+    basis: derived
+
+  - id: metadata-is-not-structural-identity
+    kind: semantic
+    statement: >-
+      Module, interface, and internal-subject diagnostic metadata may remain
+      owned and inspectable, but names and hierarchical diagnostic paths are not
+      structural identity and cannot substitute for stable keys.
+    sources: [api-modules]
+
+recommendations:
+  - id: durable-key-payload
+    statement: >-
+      Module key payloads should remain large enough for caller-generated durable
+      identities, and every stable module key type should provide constructors
+      equivalent to the other stable-key categories.
+    sources: [concrete-stable-keys, concrete-key-construction]
+
+implementation_freedom:
+  - The exact supporting interface-record names, constructor grouping, accessor names, private collection layout, and Rust module placement are unconstrained beyond the represented public UncheckedModule and key families.
+  - The implementation may reuse a private common authored-graph container or compose the existing record types directly, provided the public unchecked module remains owned and no second primitive semantic model appears.
+  - Raw claim order and structural equality for UncheckedModule are not yet semantic fingerprint or persistence promises; choose the simplest lossless deterministic behavior, test it, and record the concrete choice.
+  - The User-origin tag may use the smallest representation needed by this slice; do not add placeholder standard declarations or pull the standard catalogue forward.
+
+open_questions: []
+
+sources:
+  concrete-stable-keys:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part V — Stable identity, 16. Stable keys]
+    reviewed_hash: sha256:d25c413f9849a49c681f30c450c6784e57a59b707bdcfe8d1a465cc58f2a47a8
+  concrete-key-construction:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part V — Stable identity, 17. Key construction]
+    reviewed_hash: sha256:e269915a37a4997e05736343ab96ccd1cd02e79bdc1642a9a7a5578e0419862c
+  concrete-erased-keys:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part V — Stable identity, 18. Erased stable keys]
+    reviewed_hash: sha256:0a0adf585a6bd71ed8c598fd49415df790597a2d0d59444f59f2da80e7166d0d
+  concrete-reusable-modules:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+    reviewed_hash: sha256:de8ed7d677513f9268ea2aa34ab57661a9153405ab31ae41e8e3a95ed5203ca4
+  concrete-semantic-universe:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part I — API design principles, 4. Closed semantic universe]
+    reviewed_hash: sha256:edc507f57965eb85f969119b0d867b0854c0b8c78dcb5e361904a1fa719a5ce0
+  concrete-dynamic-nodes:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
+  api-modules:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part XI — Modules and graph queries, 64. Modules]
+    reviewed_hash: sha256:2709760df44dedd80d1e5ba55da90bb4206d5e2877a6cbc023a114f660582f8b
+  persistence-module-artifact:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VIII — Definition artifacts, 69. Module definition artifact]
+    reviewed_hash: sha256:c76773c900e439ea53c1a98bc90343a3ae096b36aa630f8bf070f2c75714ffca
+  patch-qualified-identity:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part II — Structural correspondence and identity, 12. Module-qualified internal identity]
+    reviewed_hash: sha256:49262636c2e74ccf2cf41f2ba5c50cf3e8e878aa24b1122ecdf075059271e206
+  standard-module-origin:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 13. Standard module origin]
+    reviewed_hash: sha256:960f518230813e942024ca1619d87aa5db962784b27fa14772ad8b93f3810f16
+  api-unchecked-network:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 12. `UncheckedNetwork<D>`]
+    reviewed_hash: sha256:fadbf4674dc9de062d6854ab5b249605bb4a968cb3189cd139570bf10a1713e2
+  api-validation:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 46. Required validation coverage]
+    reviewed_hash: sha256:4b67b4241f37763437a7523a4c99a3c729c9b9c4d72a2824b73e4b88b67cfc38
+  testing-invalid-definitions:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IV — Test data generation and reproducibility, 14. Invalid-network generation]
+    reviewed_hash: sha256:fd3bb46800ced86663aa25465af1ef064a1d6decb768526e9ece1f273a449186
