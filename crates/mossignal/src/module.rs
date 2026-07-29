@@ -261,9 +261,13 @@ pub(crate) fn qualified_nodes<D>(
     ) {
         let mut instances: Vec<_> = instances.iter().collect();
         instances.sort_by_key(|instance| instance.key());
+        let by_key: BTreeMap<_, _> = instances
+            .iter()
+            .map(|instance| (instance.key(), *instance))
+            .collect();
         for instance in instances {
             let mut path = prefix.to_vec();
-            path.push(instance.key());
+            path.extend(instance_path(instance, &by_key));
             result.extend(
                 instance
                     .module()
@@ -294,9 +298,13 @@ pub(crate) fn qualified_connections<D>(
     ) {
         let mut instances: Vec<_> = instances.iter().collect();
         instances.sort_by_key(|instance| instance.key());
+        let by_key: BTreeMap<_, _> = instances
+            .iter()
+            .map(|instance| (instance.key(), *instance))
+            .collect();
         for instance in instances {
             let mut path = prefix.to_vec();
-            path.push(instance.key());
+            path.extend(instance_path(instance, &by_key));
             result.extend(
                 instance
                     .module()
@@ -315,6 +323,26 @@ pub(crate) fn qualified_connections<D>(
     visit(instances, &[], &mut result);
     result.sort();
     result
+}
+
+fn instance_path<D>(
+    instance: &crate::authored::ModuleInstanceDef<D>,
+    by_key: &BTreeMap<ModuleInstanceKey, &crate::authored::ModuleInstanceDef<D>>,
+) -> Vec<ModuleInstanceKey> {
+    // SPEC: docs/specs/contracts/module-instantiation-hierarchy.yaml
+    // "acyclic-retained-hierarchy" — qualified inspection includes explicit parents.
+    let mut reversed = Vec::new();
+    let mut visited = BTreeSet::new();
+    let mut current = Some(instance.key());
+    while let Some(key) = current {
+        if !visited.insert(key) {
+            break;
+        }
+        reversed.push(key);
+        current = by_key.get(&key).and_then(|candidate| candidate.parent());
+    }
+    reversed.reverse();
+    reversed
 }
 
 impl<D> UncheckedModule<D> {

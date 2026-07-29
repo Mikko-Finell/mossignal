@@ -190,11 +190,8 @@ impl<'a, D> NetworkDefinitionGraphView<'a, D> {
 fn unsupported_module_compilation<D>(
     definition: &UncheckedNetwork<D>,
 ) -> Report<CompiledNetwork<D>, D> {
-    let instances = definition
-        .module_instances()
-        .iter()
-        .map(ModuleInstanceDef::key)
-        .collect();
+    let mut instances = Vec::new();
+    collect_instance_keys(definition.module_instances(), &mut instances);
     let problem = Problem::new(
         SubjectRef::Network(definition.key()),
         Vec::new(),
@@ -207,6 +204,18 @@ fn unsupported_module_compilation<D>(
         ),
     };
     Report::new(None, diagnostics)
+}
+
+fn collect_instance_keys<D>(
+    definitions: &[ModuleInstanceDef<D>],
+    instances: &mut Vec<ModuleInstanceKey>,
+) {
+    // SPEC: docs/specs/contracts/module-instantiation-hierarchy.yaml
+    // "temporary-module-compilation-boundary" — nested instances are affected too.
+    for instance in definitions {
+        instances.push(instance.key());
+        collect_instance_keys(instance.module().graph().module_instances(), instances);
+    }
 }
 
 impl ReactionDependencyGraph {

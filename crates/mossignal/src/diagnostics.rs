@@ -1005,6 +1005,33 @@ fn merge_evidence<D: PartialEq>(
             Ok(())
         }
         (
+            ProblemEvidence::ValidationInvalidModuleBinding { sources, .. },
+            ProblemEvidence::ValidationInvalidModuleBinding {
+                sources: incoming, ..
+            },
+        ) => {
+            // SPEC: docs/specs/contracts/module-instantiation-hierarchy.yaml
+            // "complete-dynamic-binding-validation" — retain every independently found source.
+            sources.extend(incoming);
+            sources.sort_by(SubjectRef::cmp_canonical);
+            sources.dedup();
+            Ok(())
+        }
+        (
+            ProblemEvidence::CompilationUnsupportedModuleInstances { instances, .. },
+            ProblemEvidence::CompilationUnsupportedModuleInstances {
+                instances: incoming,
+                ..
+            },
+        ) => {
+            // SPEC: docs/specs/contracts/module-instantiation-hierarchy.yaml
+            // "temporary-module-compilation-boundary" — evidence is the complete key set.
+            instances.extend(incoming);
+            instances.sort();
+            instances.dedup();
+            Ok(())
+        }
+        (
             ProblemEvidence::ValidationInvalidFixedArity { ports, .. },
             ProblemEvidence::ValidationInvalidFixedArity {
                 ports: incoming, ..
