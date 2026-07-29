@@ -1,0 +1,195 @@
+schema_version: "0.1"
+id: mossignal.standard.stateless_expansion
+title: AtMost and AllEqual standard modules
+kind: family
+status: reviewed
+
+source_baseline:
+  commit: 6f84c939b55b12a461c63aa9d174325a24e0641d
+  working_tree: dirty
+
+summary: >-
+  AtMost and AllEqual are stateless variadic Level standard modules with total
+  public laws, declaration-sensitive dependencies, fixed canonical primitive
+  expansions, structured cardinality or consensus inspection, and exhaustive
+  bounded conformance.
+
+scope:
+  includes:
+    - AtMost and AllEqual identity, interface, public law, and dependency signature
+    - canonical expansion cases and stable variadic correspondence
+    - typed construction, static diagnostics, inspection, explanation, and conformance
+  excludes:
+    - Exactly and stateful or temporal standard modules
+    - persistence, replacement, reconfiguration, and migration
+
+known_uncovered:
+  - Persistence validation and compatible replacement across future descriptor versions
+  - Stateless topology-patch behavior for threshold or variadic-interface changes
+
+aliases:
+  - AtMost
+  - mossignal.standard.at_most
+  - AllEqual
+  - mossignal.standard.all_equal
+
+requirements:
+  - id: exact-identities-and-interfaces
+    kind: public_surface
+    statement: >-
+      AtMost is mossignal.standard.at_most at semantic and expansion version 1,
+      with zero or more stable-keyed Level inputs, one fixed result output, and
+      one required u64 threshold parameter with no default. AllEqual is
+      mossignal.standard.all_equal at semantic and expansion version 1, with
+      the same variadic Level interface and result output but no parameters.
+    sources: [parameter-representation, at-most, all-equal]
+
+  - id: shared-total-variadic-boundary
+    kind: semantic
+    statement: >-
+      Both modules accept zero or more stable Level input ports, treat public
+      order as non-semantic, count duplicate upstream sources once per public
+      port, retain no state or pending work, and permit descriptor-defined
+      constant expansions to omit internal incidence without producing generic
+      unused-module-input diagnostics.
+    sources: [shared-variadic]
+
+  - id: at-most-law-and-dependency
+    kind: semantic
+    statement: >-
+      For arity n, High count h, and threshold k, AtMost is High exactly when
+      h is at most k. Every input may affect result when k is less than n; when
+      k is at least n the result is constant High and has no public current
+      dependency.
+    sources: [at-most]
+
+  - id: at-most-canonical-expansion
+    kind: semantic
+    statement: >-
+      AtMost uses Constant High when k is at least n; Not of the sole input for
+      k = 0 and n = 1; Any then Not for k = 0 and n > 1; and AtLeast(k + 1)
+      then Not for 0 < k < n. No behaviorally equivalent graph may replace
+      these canonical cases.
+    sources: [at-most]
+
+  - id: all-equal-law-and-dependency
+    kind: semantic
+    statement: >-
+      AllEqual is High exactly when every public input has the same Level.
+      Arity zero and one are vacuously High with no public current dependency;
+      for arity at least two every input may affect result.
+    sources: [all-equal]
+
+  - id: all-equal-canonical-expansion
+    kind: semantic
+    statement: >-
+      AllEqual uses Constant High for arity at most one. For arity at least two
+      it computes All(inputs), Any(inputs), Not(any), and then Any of the
+      all-High and none-High results. No behaviorally equivalent graph may
+      replace this canonical expansion.
+    sources: [all-equal]
+
+  - id: typed-and-keyed-construction
+    kind: public_surface
+    statement: >-
+      NetworkBuilder and ModuleBuilder expose concise at_most and all_equal
+      constructors and explicit-keyed add_at_most and add_all_equal forms.
+      Concise forms may allocate instance and variadic keys locally; explicit
+      forms retain caller-supplied stable identities and return the ordinary
+      AddedStandardModule result.
+    sources: [concise-constructors, keyed-constructors]
+
+  - id: precise-static-diagnostics
+    kind: system_effect
+    statement: >-
+      Empty and unary declarations report their precise non-blocking arity
+      diagnostics. AtMost with k at least n and positive arity greater than one
+      reports generic constant-result; the more precise empty or unary
+      diagnostic suppresses only that generic condition. Duplicate-source is
+      independent and may coexist with every applicable condition.
+    sources: [module-diagnostics, diagnostic-catalogue]
+
+  - id: structured-inspection-and-explanation
+    kind: public_surface
+    statement: >-
+      AtMost inspection exposes threshold, arity, High and Low counts,
+      remaining allowance or excess, result, and constant classification; its
+      explanation distinguishes allowance, excess contributors, and a threshold
+      covering all valuations. AllEqual inspection exposes arity, High and Low
+      counts, common level when present, result, and constant classification;
+      its explanation distinguishes vacuous, all-Low, all-High, and mixed
+      results and reports both complete level groups for a mixed result.
+    sources: [at-most, all-equal, shared-inspection]
+
+  - id: exhaustive-bounded-conformance
+    kind: verification
+    statement: >-
+      Tests independently compare each public law with its canonical expansion
+      for every Level valuation at arities zero through at least five. AtMost
+      covers thresholds 0, 1, arity minus one where defined, arity, arity plus
+      one, and u64::MAX. Both modules cover stable-key permutations, duplicate
+      sources, deterministic unique roles and keys, dependency equivalence,
+      diagnostics, fingerprints, inspection, hierarchy, and ordinary runtime
+      execution.
+    sources: [conformance-matrix, dual-view, exhaustive-combinational, canonical-verification]
+
+implementation_freedom:
+  - Share descriptor, request-validation, expansion, inspection, or test helpers where that keeps each exact module identity and canonical case table explicit.
+  - Choose compact private result-summary and explanation representations that expose every required structured fact without requiring prose rendering.
+  - Larger-than-bounded arity checks may use the smallest deterministic property strategy supported by the repository.
+
+open_questions: []
+
+sources:
+  parameter-representation:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 14. Parameter representation]
+    reviewed_hash: sha256:5ea4bbd1bc8a006fefe985b45c3c83360ec9ae34378694b18876b5eebad5b3d6
+  shared-variadic:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 35. Shared variadic level rules]
+    reviewed_hash: sha256:0c05ef94f4fd1893a921150118cede7996497d89541d6a32f6671a0aa6883a27
+  at-most:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 37. `AtMost`]
+    reviewed_hash: sha256:cf96539a8236ab3df9f6b22d8043a21678c54f9f7b0fe6c7b46222920414d951
+  all-equal:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 38. `AllEqual`]
+    reviewed_hash: sha256:d5371a129144f53e568f69db2b639eb619ccf07909685c6caefa8b8514e23068
+  shared-inspection:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IV — Shared standard-module semantics, 33. Inspection]
+    reviewed_hash: sha256:6a450284ceec09e8042ea3c006f499745ea4e43147ac4938fa16a4b78f1049e7
+  concise-constructors:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 31. Primitive aliases and standard modules, 31.6 Concise standard-module constructors]
+    reviewed_hash: sha256:6aae69f4417bffeeb5e352cb889037155f54dce0a64bc2a20187677edf2d59f7
+  keyed-constructors:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 31. Primitive aliases and standard modules, 31.7 Explicit keyed standard-module constructors]
+    reviewed_hash: sha256:85def6478d51ab8311ea3afa15cc755499b742eecff5e659daec4e729e6d05da
+  module-diagnostics:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IX — Diagnostics, 58. Non-blocking module diagnostics]
+    reviewed_hash: sha256:5e3ed8df9c68ffd2fc7953eb547c215421f89dcc38cadd026b4146cfa70a81d1
+  diagnostic-catalogue:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 41. Standard modules — non-blocking conditions]
+    reviewed_hash: sha256:9fe8b5a9fdac7c733d1bce32da85e95e5d4ec04d71931a42bd12bac4750b0b42
+  exhaustive-combinational:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 77. Exhaustive combinational verification]
+    reviewed_hash: sha256:1c83bc9da10c5bc110de3b717703ef6a007c6c3b99600c0392b2347dc996682b
+  conformance-matrix:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 75. Required standard-module conformance matrix]
+    reviewed_hash: sha256:867a97ec4e3df02546895d774116cd11ed2ee7514d70c88396ef7bb5c83e814f
+  dual-view:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 76. Dual-view equivalence]
+    reviewed_hash: sha256:36ec30fd29e229fb2b56bcd748d86590186a9c2fb9dd4551a327f189d6b099f9
+  canonical-verification:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 79. Canonical expansion verification]
+    reviewed_hash: sha256:35717cd93b493258b6d51bd8d6e8b897f52e6738bde601d82c2ad2b0785528e7
