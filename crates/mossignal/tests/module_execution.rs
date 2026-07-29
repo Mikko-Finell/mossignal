@@ -105,6 +105,10 @@ fn every_level_primitive_executes_inside_one_module() {
         .and_then(mossignal::InputSnapshotBuilder::finish)
         .unwrap();
     let mut machine = compiled.spawn(policy(10_000));
+    assert!(matches!(
+        machine.inspect_module(instance),
+        Err(mossignal::ModuleInspectionFailure::NotInitialized)
+    ));
     machine
         .apply(Transaction::initialize(
             Time::from_ticks(0),
@@ -301,6 +305,17 @@ fn nested_instances_keep_state_pending_work_and_provenance_independent() {
     let first = machine.inspect_module(first_instance).unwrap();
     let second = machine.inspect_module(second_instance).unwrap();
     assert_eq!(first.modules().len(), 1);
+    assert_eq!(first.inputs()[0].pulse(), Some(PulseCount::ONE));
+    assert_eq!(second.inputs()[0].pulse(), Some(PulseCount::ZERO));
+    assert_eq!(
+        first
+            .outputs()
+            .iter()
+            .find(|output| output.key() == outer_delay.into())
+            .unwrap()
+            .pulse(),
+        Some(PulseCount::ZERO)
+    );
     let first_toggle_node = first
         .nodes()
         .iter()
@@ -332,6 +347,19 @@ fn nested_instances_keep_state_pending_work_and_provenance_independent() {
         .find(|node| node.node().node() == leaf.delay_node)
         .unwrap();
     assert_eq!(first_delay_node.pending().len(), 1);
+    assert_eq!(first_delay_node.pulse(), Some(PulseCount::ZERO));
+    let CauseInspection::Derived {
+        subject: ProvenanceSubject::QualifiedNode(node),
+        ..
+    } = initialized
+        .provenance()
+        .inspect(first_delay_node.cause().unwrap())
+        .unwrap()
+    else {
+        panic!("module node inspection must retain qualified causal support")
+    };
+    assert_eq!(node.instances(), [first_instance, nested]);
+    assert_eq!(node.node(), leaf.delay_node);
     assert!(second_delay_node.pending().is_empty());
     let pending_cause = first_delay_node.pending()[0].cause();
     let CauseInspection::PendingPulseDelay { owner, .. } =
@@ -439,14 +467,10 @@ fn module_delay_time_overflow_reports_qualified_owner_and_preserves_awaiting_sta
         machine.next_deadline(),
         Err(mossignal::ScheduleFailure::NotInitialized)
     );
-    assert!(
-        machine
-            .inspect_module(instance)
-            .unwrap()
-            .nodes()
-            .iter()
-            .all(|node| node.pending().is_empty())
-    );
+    assert!(matches!(
+        machine.inspect_module(instance),
+        Err(mossignal::ModuleInspectionFailure::NotInitialized)
+    ));
 }
 
 #[test]
@@ -515,16 +539,10 @@ fn module_merge_overflow_reports_qualified_owner_and_is_atomic() {
         } if node.instances() == [instance] && node.node() == merge_node
     ));
     assert!(!machine.is_initialized());
-    assert!(
-        machine
-            .inspect_module(instance)
-            .unwrap()
-            .nodes()
-            .iter()
-            .all(|node| {
-                node.level().is_none() && node.toggle_state().is_none() && node.pending().is_empty()
-            })
-    );
+    assert!(matches!(
+        machine.inspect_module(instance),
+        Err(mossignal::ModuleInspectionFailure::NotInitialized)
+    ));
 
     let retry = compiled
         .input_snapshot()

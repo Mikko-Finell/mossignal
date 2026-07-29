@@ -229,6 +229,7 @@ pub enum PulseDelayInspectionFailure {
 pub struct ModuleInputInspection {
     key: AnyModuleInputKey,
     level: Option<LogicLevel>,
+    pulse: Option<PulseCount>,
 }
 
 impl ModuleInputInspection {
@@ -242,6 +243,12 @@ impl ModuleInputInspection {
     pub const fn level(&self) -> Option<LogicLevel> {
         self.level
     }
+
+    /// Returns the retained current-reaction Pulse count, or `None` for Level ports.
+    #[must_use]
+    pub const fn pulse(&self) -> Option<PulseCount> {
+        self.pulse
+    }
 }
 
 /// One public module output and its retained committed Level value, when applicable.
@@ -249,6 +256,7 @@ impl ModuleInputInspection {
 pub struct ModuleOutputInspection {
     key: AnyModuleOutputKey,
     level: Option<LogicLevel>,
+    pulse: Option<PulseCount>,
 }
 
 impl ModuleOutputInspection {
@@ -261,6 +269,12 @@ impl ModuleOutputInspection {
     #[must_use]
     pub const fn level(&self) -> Option<LogicLevel> {
         self.level
+    }
+
+    /// Returns the retained current-reaction Pulse count, or `None` for Level ports.
+    #[must_use]
+    pub const fn pulse(&self) -> Option<PulseCount> {
+        self.pulse
     }
 }
 
@@ -301,6 +315,8 @@ pub struct ModuleNodeInspection<D> {
     node: QualifiedNodeRef,
     kind: NodeKind<D>,
     level: Option<LogicLevel>,
+    pulse: Option<PulseCount>,
+    cause: Option<CauseRef>,
     toggle_state: Option<LogicLevel>,
     toggle_inversion: Option<CauseRef>,
     pending: Vec<ModulePendingPulseDelayInspection<D>>,
@@ -318,6 +334,16 @@ impl<D> ModuleNodeInspection<D> {
     #[must_use]
     pub const fn level(&self) -> Option<LogicLevel> {
         self.level
+    }
+    /// Returns the retained current-reaction Pulse output, or `None` for Level nodes.
+    #[must_use]
+    pub const fn pulse(&self) -> Option<PulseCount> {
+        self.pulse
+    }
+    /// Returns the current causal support for this primitive occurrence.
+    #[must_use]
+    pub const fn cause(&self) -> Option<CauseRef> {
+        self.cause
     }
     #[must_use]
     pub const fn toggle_state(&self) -> Option<LogicLevel> {
@@ -390,22 +416,37 @@ impl<D> ModuleInspection<D> {
     }
 }
 
-/// Failure to find a retained qualified module instance.
+/// Failure to inspect one retained qualified module instance.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModuleInspectionFailure {
-    module: QualifiedModuleRef,
+pub enum ModuleInspectionFailure {
+    /// The requested qualified module is absent from the compiled topology.
+    UnknownModule(QualifiedModuleRef),
+    /// Current module runtime facts are unavailable before initialization.
+    NotInitialized,
 }
 
 impl ModuleInspectionFailure {
+    /// Returns the absent module identity for an unknown-module failure.
     #[must_use]
-    pub const fn module(&self) -> &QualifiedModuleRef {
-        &self.module
+    pub const fn module(&self) -> Option<&QualifiedModuleRef> {
+        match self {
+            Self::UnknownModule(module) => Some(module),
+            Self::NotInitialized => None,
+        }
     }
 }
 
 impl fmt::Display for ModuleInspectionFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("the qualified module is absent from the compiled topology")
+        match self {
+            Self::UnknownModule(_) => {
+                formatter.write_str("the qualified module is absent from the compiled topology")
+            }
+            Self::NotInitialized => {
+                formatter.write_str("module runtime inspection requires an initialized machine")
+            }
+        }
     }
 }
 
@@ -480,6 +521,8 @@ pub(crate) struct MachineStore<D> {
     pub(crate) external_levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     pub(crate) settled_levels: Vec<LogicLevel>,
     pub(crate) operation_levels: Vec<Option<LogicLevel>>,
+    pub(crate) operation_pulses: Vec<Option<PulseCount>>,
+    pub(crate) operation_causes: Vec<CauseRef>,
     pub(crate) output_baselines: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     pub(crate) input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
     pub(crate) output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
@@ -498,6 +541,8 @@ impl<D> Clone for MachineStore<D> {
             external_levels: self.external_levels.clone(),
             settled_levels: self.settled_levels.clone(),
             operation_levels: self.operation_levels.clone(),
+            operation_pulses: self.operation_pulses.clone(),
+            operation_causes: self.operation_causes.clone(),
             output_baselines: self.output_baselines.clone(),
             input_causes: self.input_causes.clone(),
             output_causes: self.output_causes.clone(),
@@ -622,6 +667,8 @@ impl<D> Machine<D> {
                 external_levels: BTreeMap::new(),
                 settled_levels: Vec::new(),
                 operation_levels: Vec::new(),
+                operation_pulses: Vec::new(),
+                operation_causes: Vec::new(),
                 output_baselines: BTreeMap::new(),
                 input_causes: BTreeMap::new(),
                 output_causes: BTreeMap::new(),
@@ -774,14 +821,20 @@ impl<D> Machine<D> {
         module: QualifiedModuleRef,
     ) -> Result<ModuleInspection<D>, ModuleInspectionFailure> {
         let Some(definition) = self.compiled.module(&module) else {
-            return Err(ModuleInspectionFailure { module });
+            return Err(ModuleInspectionFailure::UnknownModule(module));
         };
+        if !self.is_initialized() {
+            return Err(ModuleInspectionFailure::NotInitialized);
+        }
         let level_at = |operation: Option<usize>| {
-            if !self.is_initialized() {
-                return None;
-            }
             operation
                 .and_then(|index| self.store.operation_levels.get(index))
+                .copied()
+                .flatten()
+        };
+        let pulse_at = |operation: Option<usize>| {
+            operation
+                .and_then(|index| self.store.operation_pulses.get(index))
                 .copied()
                 .flatten()
         };
@@ -790,6 +843,7 @@ impl<D> Machine<D> {
             .map(|input| ModuleInputInspection {
                 key: input.key(),
                 level: level_at(self.compiled.module_input_operation(&module, input.key())),
+                pulse: pulse_at(self.compiled.module_input_operation(&module, input.key())),
             })
             .collect();
         let outputs = definition
@@ -797,6 +851,7 @@ impl<D> Machine<D> {
             .map(|output| ModuleOutputInspection {
                 key: output.key(),
                 level: level_at(self.compiled.module_output_operation(&module, output.key())),
+                pulse: pulse_at(self.compiled.module_output_operation(&module, output.key())),
             })
             .collect();
         let mut nodes = Vec::new();
@@ -842,6 +897,12 @@ impl<D> Machine<D> {
                 node: qualified.clone(),
                 kind,
                 level: level_at(self.compiled.node_operation(flat)),
+                pulse: pulse_at(self.compiled.node_operation(flat)),
+                cause: self
+                    .compiled
+                    .node_operation(flat)
+                    .and_then(|index| self.store.operation_causes.get(index))
+                    .copied(),
                 toggle_state,
                 toggle_inversion,
                 pending,

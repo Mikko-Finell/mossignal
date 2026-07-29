@@ -365,6 +365,7 @@ pub struct ProvenanceView<D> {
 
 struct ProvenanceBuild<D> {
     provenance: ProvenanceView<D>,
+    operation_causes: Vec<CauseRef>,
     input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
     output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     pulse_output_causes: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
@@ -687,6 +688,7 @@ impl<D> Machine<D> {
             evaluate_reaction::<D>(&self.compiled, &levels, &pulses, &self.store.toggle_states)?;
         let ProvenanceBuild {
             mut provenance,
+            operation_causes,
             input_causes,
             output_causes,
             pulse_output_causes,
@@ -755,6 +757,7 @@ impl<D> Machine<D> {
                 input_causes,
                 output_causes,
                 provenance,
+                operation_causes,
                 toggle_inversion_causes,
                 pending_pulse_delays,
                 next_pending_event_serial,
@@ -981,6 +984,7 @@ impl<D> Machine<D> {
                 input_causes: built.input_causes,
                 output_causes: built.output_causes,
                 provenance: built.provenance,
+                operation_causes: built.operation_causes,
                 toggle_inversion_causes: built.toggle_inversion_causes,
                 pending_pulse_delays,
                 next_pending_event_serial,
@@ -1278,6 +1282,7 @@ struct PublishedCandidate<D> {
     input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
     output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     provenance: ProvenanceView<D>,
+    operation_causes: Vec<CauseRef>,
     toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
     pending_pulse_delays: BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
     next_pending_event_serial: u64,
@@ -1291,6 +1296,7 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
         input_causes,
         output_causes,
         provenance,
+        operation_causes,
         toggle_inversion_causes,
         pending_pulse_delays,
         next_pending_event_serial,
@@ -1302,6 +1308,8 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     candidate.external_levels = levels;
     candidate.settled_levels = evaluation.values;
     candidate.operation_levels = evaluation.operation_levels;
+    candidate.operation_pulses = evaluation.operation_pulses;
+    candidate.operation_causes = operation_causes;
     candidate.output_baselines = evaluation.external_outputs;
     candidate.input_causes = input_causes;
     candidate.output_causes = output_causes;
@@ -1443,6 +1451,7 @@ fn build_initialization_provenance<D>(
             scope,
             records: Arc::new(records),
         },
+        operation_causes: evaluation_causes.operation_causes,
         input_causes,
         output_causes: evaluation_causes.level_outputs,
         pulse_output_causes: evaluation_causes.pulse_outputs,
@@ -1536,6 +1545,7 @@ fn build_ready_provenance<D>(
             scope,
             records: Arc::new(records),
         },
+        operation_causes: evaluation_causes.operation_causes,
         input_causes,
         output_causes: evaluation_causes.level_outputs,
         pulse_output_causes: evaluation_causes.pulse_outputs,
@@ -1545,6 +1555,7 @@ fn build_ready_provenance<D>(
 }
 
 struct EvaluationCauseMaps {
+    operation_causes: Vec<CauseRef>,
     level_outputs: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
     toggle_inversions: BTreeMap<NodeKey, CauseRef>,
@@ -1759,6 +1770,7 @@ fn append_evaluation_provenance<D>(
         pulse_delay_schedules.insert(proposal.node, reference);
     }
     EvaluationCauseMaps {
+        operation_causes,
         level_outputs: output_causes,
         pulse_outputs: pulse_output_causes,
         toggle_inversions: toggle_inversion_causes,

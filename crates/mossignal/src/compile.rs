@@ -202,6 +202,7 @@ enum OperationDescriptor {
 pub(crate) struct FullEvaluation {
     pub(crate) values: Vec<LogicLevel>,
     pub(crate) operation_levels: Vec<Option<LogicLevel>>,
+    pub(crate) operation_pulses: Vec<Option<PulseCount>>,
     pub(crate) causes: Vec<EvaluationCause>,
     pub(crate) external_outputs: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     pub(crate) pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
@@ -978,6 +979,13 @@ impl<D> CompiledInner<D> {
                     EvaluationValue::Pulse(_) => None,
                 })
                 .collect(),
+            operation_pulses: complete_values
+                .iter()
+                .map(|value| match value {
+                    EvaluationValue::Pulse(value) => Some(*value),
+                    EvaluationValue::Level(_) => None,
+                })
+                .collect(),
             causes,
             external_outputs,
             pulse_outputs,
@@ -1451,9 +1459,7 @@ fn reaction_source(source: crate::key::AnySignalSourceKey) -> ReactionVertex {
         | crate::key::AnySignalSourceKey::Pulse(crate::key::SignalSourceKey::ModuleOutput {
             ..
         }) => {
-            panic!(
-                "module-containing validated networks must stop at the staged compilation boundary"
-            )
+            panic!("executable module outputs must resolve before descriptor construction")
         }
     }
 }
