@@ -18,7 +18,7 @@ mod transaction;
 mod validation;
 
 pub use authored::{PulseDelayConfig, ToggleConfig};
-pub use builder::{ModuleBuilder, NetworkBuilder, Signal};
+pub use builder::{AddedNode, AuthoringFailure, ModuleBuilder, NetworkBuilder, Signal};
 pub use compile::CompiledNetwork;
 pub use identity::{InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint, TimeDomainId};
 pub use input::{

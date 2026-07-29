@@ -38,7 +38,8 @@ impl VariadicNodeKind {
     }
 }
 
-/// A structured failure detected while authoring through [`NetworkBuilder`].
+/// A structured failure detected while authoring through [`NetworkBuilder`] or
+/// [`ModuleBuilder`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthoringFailure {
@@ -1450,6 +1451,7 @@ impl<D> ModuleBuilder<D> {
         value: LogicLevel,
         meta: DiagnosticMeta,
     ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.require_unused_node_key(key)?;
         self.graph.add_constant(key, value, meta)
     }
 
@@ -1479,6 +1481,7 @@ impl<D> ModuleBuilder<D> {
         meta: DiagnosticMeta,
     ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
         self.graph.require_local(input)?;
+        self.require_unused_node_key(key)?;
         self.graph.add_not(key, input, meta)
     }
 
@@ -1518,6 +1521,7 @@ impl<D> ModuleBuilder<D> {
     {
         let inputs = inputs.into_iter().collect::<Vec<_>>();
         self.graph.require_all_local(&inputs)?;
+        self.require_unused_node_key(key)?;
         self.graph.add_all(key, inputs, meta)
     }
 
@@ -1561,6 +1565,7 @@ impl<D> ModuleBuilder<D> {
     {
         let inputs = inputs.into_iter().collect::<Vec<_>>();
         self.graph.require_all_local(&inputs)?;
+        self.require_unused_node_key(key)?;
         self.graph.add_any(key, inputs, meta)
     }
 
@@ -1604,6 +1609,7 @@ impl<D> ModuleBuilder<D> {
     {
         let inputs = inputs.into_iter().collect::<Vec<_>>();
         self.graph.require_all_local(&inputs)?;
+        self.require_unused_node_key(key)?;
         self.graph.add_parity(key, inputs, meta)
     }
 
@@ -1652,6 +1658,7 @@ impl<D> ModuleBuilder<D> {
     {
         let inputs = inputs.into_iter().collect::<Vec<_>>();
         self.graph.require_all_local(&inputs)?;
+        self.require_unused_node_key(key)?;
         self.graph.add_at_least(key, threshold, inputs, meta)
     }
 
@@ -1698,6 +1705,7 @@ impl<D> ModuleBuilder<D> {
     ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
         self.graph
             .require_all_local(&[selector, when_low, when_high])?;
+        self.require_unused_node_key(key)?;
         self.graph
             .add_select(key, selector, when_low, when_high, meta)
     }
@@ -1753,6 +1761,7 @@ impl<D> ModuleBuilder<D> {
     {
         let inputs = inputs.into_iter().collect::<Vec<_>>();
         self.graph.require_all_local(&inputs)?;
+        self.require_unused_node_key(key)?;
         self.graph.add_merge(key, inputs, meta)
     }
 
@@ -1793,6 +1802,7 @@ impl<D> ModuleBuilder<D> {
         meta: DiagnosticMeta,
     ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
         self.graph.require_local(input)?;
+        self.require_unused_node_key(key)?;
         self.graph.add_toggle(key, input, config, meta)
     }
 
@@ -1830,6 +1840,7 @@ impl<D> ModuleBuilder<D> {
         meta: DiagnosticMeta,
     ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
         self.graph.require_local(input)?;
+        self.require_unused_node_key(key)?;
         self.graph.add_pulse_delay(key, input, config, meta)
     }
 
@@ -1894,6 +1905,14 @@ impl<D> ModuleBuilder<D> {
             if !self.level_input_keys.contains(&key) {
                 return key;
             }
+        }
+    }
+
+    fn require_unused_node_key(&self, key: NodeKey) -> Result<(), AuthoringFailure> {
+        if self.graph.node_keys.contains(&key) {
+            Err(AuthoringFailure::DuplicateNodeKey(key))
+        } else {
+            Ok(())
         }
     }
 
@@ -2977,6 +2996,55 @@ mod tests {
         assert_eq!(typed.into_unchecked(), dynamic);
     }
 
+    #[test]
+    fn typed_empty_and_pulse_only_modules_match_dynamic_definitions() {
+        assert_eq!(
+            ModuleBuilder::<()>::new().into_unchecked(),
+            UncheckedModule::new_user(
+                DiagnosticMeta::default(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        );
+
+        let input = ModuleInputKey::<Pulse>::from_u128(20);
+        let node = NodeKey::from_u128(21);
+        let node_input = InPortKey::<Pulse>::from_u128(22);
+        let node_output = OutPortKey::<Pulse>::from_u128(23);
+        let output = ModuleOutputKey::<Pulse>::from_u128(24);
+        let mut typed = ModuleBuilder::<()>::with_meta(meta("pulse module"));
+        let source = typed.add_pulse_input(input, meta("input")).unwrap();
+        let merged = typed
+            .add_merge_with_ports(node, node_output, [(node_input, source)], meta("merge"))
+            .unwrap()
+            .into_outputs();
+        typed
+            .add_pulse_output(output, merged, meta("output"))
+            .unwrap();
+
+        let dynamic = UncheckedModule::new_user(
+            meta("pulse module"),
+            vec![ModuleInputDef::new(input.into(), meta("input"))],
+            vec![ModuleOutputDef::new(output.into(), meta("output"))],
+            vec![
+                ModuleInterfaceMapping::input(input.into(), node_input.into()),
+                ModuleInterfaceMapping::output(output.into(), node_output.into()),
+            ],
+            vec![NodeDef::new(
+                node,
+                NodeKind::merge(),
+                NodePorts::new(vec![node_input.into()], vec![node_output.into()]),
+                meta("merge"),
+            )],
+            Vec::new(),
+        );
+
+        assert_eq!(typed.into_unchecked(), dynamic);
+    }
+
     fn representative_typed_module() -> ModuleBuilder<()> {
         let mut module = ModuleBuilder::with_meta(meta("representative"));
         let (_, first) = module.level_input("first");
@@ -3069,7 +3137,9 @@ mod tests {
     #[test]
     fn module_interface_duplicates_are_structured_and_non_mutating() {
         let input = ModuleInputKey::<Level>::from_u128(1);
+        let pulse_input = ModuleInputKey::<Pulse>::from_u128(1);
         let output = ModuleOutputKey::<Level>::from_u128(2);
+        let pulse_output = ModuleOutputKey::<Pulse>::from_u128(2);
         let mut module = ModuleBuilder::<()>::new();
         let source = module
             .add_level_input(input, DiagnosticMeta::default())
@@ -3077,6 +3147,14 @@ mod tests {
         assert!(matches!(
             module.add_level_input(input, meta("duplicate")),
             Err(AuthoringFailure::DuplicateModuleInputKey(actual)) if actual == input
+        ));
+        let pulse_source = module
+            .add_pulse_input(pulse_input, DiagnosticMeta::default())
+            .unwrap();
+        assert!(matches!(
+            module.add_pulse_input(pulse_input, meta("duplicate")),
+            Err(AuthoringFailure::DuplicatePulseModuleInputKey(actual))
+                if actual == pulse_input
         ));
         let constant = module.constant(LogicLevel::Low);
         module
@@ -3086,15 +3164,144 @@ mod tests {
             module.add_level_output(output, source, meta("duplicate")),
             Err(AuthoringFailure::DuplicateModuleOutputKey(actual)) if actual == output
         ));
+        let merged = module.merge([pulse_source]).unwrap();
+        module
+            .add_pulse_output(pulse_output, merged, DiagnosticMeta::default())
+            .unwrap();
+        assert!(matches!(
+            module.add_pulse_output(pulse_output, pulse_source, meta("duplicate")),
+            Err(AuthoringFailure::DuplicatePulseModuleOutputKey(actual))
+                if actual == pulse_output
+        ));
         let lowered = module.into_unchecked();
-        assert_eq!(lowered.inputs().len(), 1);
-        assert_eq!(lowered.outputs().len(), 1);
-        assert_eq!(lowered.mappings().len(), 1);
+        assert_eq!(lowered.inputs().len(), 2);
+        assert_eq!(lowered.outputs().len(), 2);
+        assert_eq!(lowered.mappings().len(), 3);
+    }
+
+    #[test]
+    fn module_explicit_graph_key_duplicates_are_structured_and_non_mutating() {
+        let mut module = ModuleBuilder::<()>::new();
+        let level = module.level_input("level").1;
+        let pulse = module.pulse_input("pulse").1;
+        let level_node = NodeKey::from_u128(10);
+        let level_input = InPortKey::<Level>::from_u128(11);
+        let level_output = OutPortKey::<Level>::from_u128(12);
+        module
+            .add_not_with_ports(
+                level_node,
+                level_input,
+                level_output,
+                level,
+                DiagnosticMeta::default(),
+            )
+            .unwrap();
+        assert!(matches!(
+            module.add_not_with_ports(
+                level_node,
+                InPortKey::from_u128(13),
+                OutPortKey::from_u128(14),
+                level,
+                DiagnosticMeta::default(),
+            ),
+            Err(AuthoringFailure::DuplicateNodeKey(actual)) if actual == level_node
+        ));
+        assert!(matches!(
+            module.add_not_with_ports(
+                NodeKey::from_u128(15),
+                level_input,
+                OutPortKey::from_u128(16),
+                level,
+                DiagnosticMeta::default(),
+            ),
+            Err(AuthoringFailure::DuplicateInPortKey(actual)) if actual == level_input
+        ));
+        assert!(matches!(
+            module.add_not_with_ports(
+                NodeKey::from_u128(17),
+                InPortKey::from_u128(18),
+                level_output,
+                level,
+                DiagnosticMeta::default(),
+            ),
+            Err(AuthoringFailure::DuplicateOutPortKey(actual)) if actual == level_output
+        ));
+
+        let pulse_node = NodeKey::from_u128(20);
+        let pulse_input = InPortKey::<Pulse>::from_u128(21);
+        let pulse_output = OutPortKey::<Pulse>::from_u128(22);
+        module
+            .add_merge_with_ports(
+                pulse_node,
+                pulse_output,
+                [(pulse_input, pulse)],
+                DiagnosticMeta::default(),
+            )
+            .unwrap();
+        assert!(matches!(
+            module.add_merge_with_ports(
+                NodeKey::from_u128(23),
+                OutPortKey::from_u128(24),
+                [(pulse_input, pulse)],
+                DiagnosticMeta::default(),
+            ),
+            Err(AuthoringFailure::DuplicatePulseInPortKey(actual)) if actual == pulse_input
+        ));
+        assert!(matches!(
+            module.add_merge_with_ports(
+                NodeKey::from_u128(25),
+                pulse_output,
+                [(InPortKey::from_u128(26), pulse)],
+                DiagnosticMeta::default(),
+            ),
+            Err(AuthoringFailure::DuplicatePulseOutPortKey(actual)) if actual == pulse_output
+        ));
+
+        let lowered = module.into_unchecked();
+        assert_eq!(lowered.nodes().len(), 2);
+        assert_eq!(lowered.mappings().len(), 2);
+        assert!(lowered.connections().is_empty());
+    }
+
+    #[test]
+    fn duplicate_explicit_node_rejection_preserves_module_allocation_state() {
+        fn build(attempt_duplicate: bool) -> UncheckedModule<()> {
+            let mut module = ModuleBuilder::new();
+            let explicit = NodeKey::from_u128(50);
+            module
+                .add_constant(explicit, LogicLevel::Low, DiagnosticMeta::default())
+                .unwrap();
+            if attempt_duplicate {
+                assert!(matches!(
+                    module.add_constant(
+                        explicit,
+                        LogicLevel::High,
+                        DiagnosticMeta::default(),
+                    ),
+                    Err(AuthoringFailure::DuplicateNodeKey(actual)) if actual == explicit
+                ));
+            }
+            module.constant(LogicLevel::High);
+            module.into_unchecked()
+        }
+
+        assert_eq!(build(true), build(false));
     }
 
     fn exercise_foreign_level_calls(receiver: &mut ModuleBuilder<()>, foreign: Signal<Level>) {
+        let node = NodeKey::from_u128(100);
+        let input = InPortKey::from_u128(101);
+        let output = OutPortKey::from_u128(102);
         assert!(matches!(
             receiver.not(foreign),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_not(node, foreign, DiagnosticMeta::default()),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_not_with_ports(node, input, output, foreign, DiagnosticMeta::default(),),
             Err(AuthoringFailure::ForeignSignal)
         ));
         assert!(matches!(
@@ -3102,7 +3309,33 @@ mod tests {
             Err(AuthoringFailure::ForeignSignal)
         ));
         assert!(matches!(
+            receiver.add_all(node, [foreign], DiagnosticMeta::default()),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_all_with_ports(
+                node,
+                output,
+                [(input, foreign)],
+                DiagnosticMeta::default(),
+            ),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
             receiver.any([foreign]),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_any(node, [foreign], DiagnosticMeta::default()),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_any_with_ports(
+                node,
+                output,
+                [(input, foreign)],
+                DiagnosticMeta::default(),
+            ),
             Err(AuthoringFailure::ForeignSignal)
         ));
         assert!(matches!(
@@ -3110,26 +3343,115 @@ mod tests {
             Err(AuthoringFailure::ForeignSignal)
         ));
         assert!(matches!(
+            receiver.add_parity(node, [foreign], DiagnosticMeta::default()),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_parity_with_ports(
+                node,
+                output,
+                [(input, foreign)],
+                DiagnosticMeta::default(),
+            ),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
             receiver.at_least(1, [foreign]),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_at_least(node, 1, [foreign], DiagnosticMeta::default()),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_at_least_with_ports(
+                node,
+                output,
+                1,
+                [(input, foreign)],
+                DiagnosticMeta::default(),
+            ),
             Err(AuthoringFailure::ForeignSignal)
         ));
         assert!(matches!(
             receiver.select(foreign, foreign, foreign),
             Err(AuthoringFailure::ForeignSignal)
         ));
+        assert!(matches!(
+            receiver.add_select(node, foreign, foreign, foreign, DiagnosticMeta::default(),),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_select_with_ports(
+                node,
+                input,
+                InPortKey::from_u128(103),
+                InPortKey::from_u128(104),
+                output,
+                foreign,
+                foreign,
+                foreign,
+                DiagnosticMeta::default(),
+            ),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
         assert_eq!(
             receiver.level_output("foreign", foreign),
+            Err(AuthoringFailure::ForeignSignal)
+        );
+        assert_eq!(
+            receiver.add_level_output(
+                ModuleOutputKey::from_u128(105),
+                foreign,
+                DiagnosticMeta::default(),
+            ),
             Err(AuthoringFailure::ForeignSignal)
         );
     }
 
     fn exercise_foreign_pulse_calls(receiver: &mut ModuleBuilder<()>, foreign: Signal<Pulse>) {
+        let node = NodeKey::from_u128(200);
+        let input = InPortKey::from_u128(201);
+        let output = OutPortKey::from_u128(202);
         assert!(matches!(
             receiver.merge([foreign]),
             Err(AuthoringFailure::ForeignSignal)
         ));
         assert!(matches!(
+            receiver.add_merge(node, [foreign], DiagnosticMeta::default()),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_merge_with_ports(
+                node,
+                output,
+                [(input, foreign)],
+                DiagnosticMeta::default(),
+            ),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
             receiver.toggle(foreign, ToggleConfig::new(LogicLevel::Low)),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_toggle(
+                node,
+                foreign,
+                ToggleConfig::new(LogicLevel::Low),
+                DiagnosticMeta::default(),
+            ),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_toggle_with_ports(
+                node,
+                input,
+                OutPortKey::from_u128(203),
+                foreign,
+                ToggleConfig::new(LogicLevel::Low),
+                DiagnosticMeta::default(),
+            ),
             Err(AuthoringFailure::ForeignSignal)
         ));
         let delay = crate::time::NonZeroSpan::from_ticks(1).unwrap();
@@ -3137,8 +3459,36 @@ mod tests {
             receiver.pulse_delay(foreign, PulseDelayConfig::new(delay)),
             Err(AuthoringFailure::ForeignSignal)
         ));
+        assert!(matches!(
+            receiver.add_pulse_delay(
+                node,
+                foreign,
+                PulseDelayConfig::new(delay),
+                DiagnosticMeta::default(),
+            ),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.add_pulse_delay_with_ports(
+                node,
+                input,
+                output,
+                foreign,
+                PulseDelayConfig::new(delay),
+                DiagnosticMeta::default(),
+            ),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
         assert_eq!(
             receiver.pulse_output("foreign", foreign),
+            Err(AuthoringFailure::ForeignSignal)
+        );
+        assert_eq!(
+            receiver.add_pulse_output(
+                ModuleOutputKey::from_u128(204),
+                foreign,
+                DiagnosticMeta::default(),
+            ),
             Err(AuthoringFailure::ForeignSignal)
         );
     }
