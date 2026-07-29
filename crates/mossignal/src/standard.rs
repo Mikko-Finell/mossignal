@@ -529,6 +529,7 @@ impl<D> StandardModuleDeclaration<D> {
             bytes.extend_from_slice(&input.as_u128().to_be_bytes());
         }
         bytes.extend_from_slice(&self.expansion_fingerprint.as_bytes());
+        push_internal_roles(&mut bytes, &self.internal_roles);
         bytes
     }
 }
@@ -959,6 +960,7 @@ impl<D> StandardCatalogue<D> {
             &request.module_ref,
             threshold,
             &inputs,
+            &roles,
         );
         let declaration = StandardModuleDeclaration {
             module_ref: request.module_ref.clone(),
@@ -979,12 +981,12 @@ impl<D> StandardCatalogue<D> {
 /// Returns the fixed public result key for `Exactly`.
 #[must_use]
 pub fn exactly_result_key() -> ModuleOutputKey<Level> {
-    ModuleOutputKey::from_u128(derive_key(
+    ModuleOutputKey::from_u128(derive_public_key(
         PUBLIC_KEY_DOMAIN,
-        &StandardModuleRef::exactly(),
+        StandardModuleRef::exactly().id(),
         "output",
+        "level",
         "result",
-        None,
     ))
 }
 
@@ -1074,10 +1076,11 @@ impl<D> Expansion<D> {
     }
 
     fn key(&self, category: &str, role: &str, qualifier: Option<u128>) -> u128 {
-        derive_key(
+        derive_internal_key(
             INTERNAL_KEY_DOMAIN,
-            &self.module_ref,
+            self.module_ref.id(),
             category,
+            "level",
             role,
             qualifier,
         )
@@ -1276,10 +1279,11 @@ fn exactly_expansion<D>(
         expansion.variadic("combine", NodeKind::all(), &[lower, not_upper])
     };
     let output = exactly_result_key();
+    let export_key = expansion.key("export", "result", Some(result.qualifier()));
     expansion.roles.push(StandardInternalRole {
         category: StandardInternalCategory::Export,
         role: "result".to_owned(),
-        key: output.as_u128(),
+        key: export_key,
         public_input: result.public_key(),
     });
     expansion.mappings.push(ModuleInterfaceMapping::output(
@@ -1321,6 +1325,7 @@ fn expansion_fingerprint<D>(
     module_ref: &StandardModuleRef,
     threshold: u64,
     inputs: &[ModuleInputKey<Level>],
+    roles: &[StandardInternalRole],
 ) -> StandardModuleExpansionFingerprint {
     let mut bytes = Vec::new();
     push_text(&mut bytes, EXPANSION_FINGERPRINT_DOMAIN);
@@ -1331,27 +1336,71 @@ fn expansion_fingerprint<D>(
     for input in inputs {
         bytes.extend_from_slice(&input.as_u128().to_be_bytes());
     }
+    push_internal_roles(&mut bytes, roles);
     bytes.extend_from_slice(&crate::identity::module_canonical_bytes(module));
     StandardModuleExpansionFingerprint::from_bytes(*blake3::hash(&bytes).as_bytes())
 }
 
-fn derive_key(
+fn push_internal_roles(bytes: &mut Vec<u8>, roles: &[StandardInternalRole]) {
+    bytes.extend_from_slice(&(roles.len() as u64).to_be_bytes());
+    for role in roles {
+        bytes.push(match role.category {
+            StandardInternalCategory::Node => 0,
+            StandardInternalCategory::InputPort => 1,
+            StandardInternalCategory::OutputPort => 2,
+            StandardInternalCategory::Connection => 3,
+            StandardInternalCategory::Export => 4,
+        });
+        push_text(bytes, &role.role);
+        bytes.extend_from_slice(&role.key.to_be_bytes());
+        match role.public_input {
+            Some(input) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&input.as_u128().to_be_bytes());
+            }
+            None => bytes.push(0),
+        }
+    }
+}
+
+fn derive_public_key(
     domain: &str,
-    module_ref: &StandardModuleRef,
+    module_id: &StandardModuleId,
+    direction: &str,
+    signal_kind: &str,
+    role: &str,
+) -> u128 {
+    let mut bytes = Vec::new();
+    push_text(&mut bytes, domain);
+    push_text(&mut bytes, module_id.as_str());
+    push_text(&mut bytes, direction);
+    push_text(&mut bytes, signal_kind);
+    push_text(&mut bytes, role);
+    truncated_key(&bytes)
+}
+
+fn derive_internal_key(
+    domain: &str,
+    module_id: &StandardModuleId,
     category: &str,
+    signal_kind: &str,
     role: &str,
     qualifier: Option<u128>,
 ) -> u128 {
     let mut bytes = Vec::new();
     push_text(&mut bytes, domain);
-    push_text(&mut bytes, module_ref.id.as_str());
-    bytes.extend_from_slice(&module_ref.expansion_version.get().to_be_bytes());
+    push_text(&mut bytes, module_id.as_str());
     push_text(&mut bytes, category);
+    push_text(&mut bytes, signal_kind);
     push_text(&mut bytes, role);
     if let Some(qualifier) = qualifier {
         bytes.extend_from_slice(&qualifier.to_be_bytes());
     }
-    let digest = blake3::hash(&bytes);
+    truncated_key(&bytes)
+}
+
+fn truncated_key(bytes: &[u8]) -> u128 {
+    let digest = blake3::hash(bytes);
     let mut key = [0; 16];
     key.copy_from_slice(&digest.as_bytes()[..16]);
     u128::from_be_bytes(key)
@@ -1514,4 +1563,38 @@ pub enum ExactlyExplanation {
         threshold: u64,
         arity: usize,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_module_fingerprint_is_sensitive_to_internal_roles() {
+        let input = ModuleInputKey::<Level>::from_u128(1);
+        let request = StandardModuleRequest::new(StandardModuleRef::exactly())
+            .with_parameter(
+                StandardParameterKey::threshold(),
+                StandardParameterValue::U64(1),
+            )
+            .with_variadic_input(input.into());
+        let module = StandardCatalogue::<()>::current()
+            .build(request)
+            .require_artifact()
+            .unwrap();
+        let mut declaration = module.standard_declaration().unwrap().clone();
+        let original_expansion = declaration.expansion_fingerprint;
+        declaration.internal_roles[0].role.push_str(".changed");
+        let changed_expansion = expansion_fingerprint(
+            module.definition(),
+            &declaration.module_ref,
+            1,
+            &[input],
+            &declaration.internal_roles,
+        );
+        let changed = module.clone().with_standard_origin(declaration);
+
+        assert_ne!(original_expansion, changed_expansion);
+        assert_ne!(module.fingerprint(), changed.fingerprint());
+    }
 }

@@ -449,4 +449,16 @@ fn duplicate_sources_warn_and_exactly_nests_inside_user_modules() {
 #[test]
 fn exactly_result_key_is_fixed_for_the_descriptor() {
     assert_eq!(exactly_result_key(), exactly_result_key());
+
+    let module = StandardCatalogue::<()>::current()
+        .build(exactly_request(1, [ModuleInputKey::<Level>::from_u128(1)]))
+        .require_artifact()
+        .unwrap();
+    let export = module
+        .standard_declaration()
+        .unwrap()
+        .internal_roles()
+        .find(|role| role.category() == mossignal::StandardInternalCategory::Export)
+        .unwrap();
+    assert_ne!(export.key(), exactly_result_key().as_u128());
 }
