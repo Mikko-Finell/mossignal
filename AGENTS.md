@@ -1,5 +1,13 @@
 # AGENTS.md
 
+The active roadmap document is:
+`docs/premium_continuation_roadmap.md`
+
+Use that text when the user asks for something to be done with regards to
+roadmap items or planning. If you have just implemented a bead that referenced
+a roadmap item, mark that items heading as `## <number>. [DONE] <title>` in the
+roadmap document.
+
 ## Authority
 
 Normative mossignal specifications live under `docs/specs/`. Other material

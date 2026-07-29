@@ -45,6 +45,12 @@ coverage a task blocker.
 
 Derive the bead from the contracts and include only what the implementation task needs:
 
+When a bead derives from a roadmap, identify the roadmap document, item number,
+and item title in the bead. Treat this as task provenance and sequencing context,
+not product authority. At the same time, mark that item `[IN PROGRESS]` in the
+roadmap document by changing its heading from `## <number>. <title>` to
+`## <number>. [IN PROGRESS] <title>`.
+
 - objective;
 - contract basis;
 - included scope;
