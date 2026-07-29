@@ -1,0 +1,188 @@
+schema_version: "0.1"
+id: mossignal.module.validated_user_definition
+title: Validated reusable user-module definition
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 9704d2e34aaafb52d75cbcdf167aa5304071a99e
+  working_tree: dirty
+
+summary: >-
+  ModuleDef<D> is the immutable reusable user-module artifact produced only
+  after complete interface, internal-graph, and current-reaction validation. It
+  retains explicit User origin and an inspectable typed interface while keeping
+  module-local internals encapsulated from external authoring access.
+
+scope:
+  includes:
+    - validation of unchecked user-module interface claims and primitive internals
+    - current-reaction dependency and cycle validation inside one reusable module
+    - immutable ModuleDef ownership, User origin, and read-only definition inspection
+    - private-internal encapsulation and blocking validation reports
+  excludes:
+    - typed ModuleBuilder authoring and module instantiation
+    - nested modules and hierarchy validation
+    - standard module declarations, origin, and canonical expansion checks
+    - network compilation, execution, persistence envelopes, and reconfiguration
+
+known_uncovered:
+  - Module-specific diagnostic condition discriminators and evidence-merge laws beyond the catalogue's general typed-evidence requirements
+  - Non-blocking module quality findings such as unused inputs and empty modules
+
+aliases:
+  - ModuleDef<D>
+  - validated module
+  - module validation
+  - reusable user module
+
+requirements:
+  - id: one-way-module-validation
+    kind: lifecycle
+    statement: >-
+      UncheckedModule<D> provides consuming and borrowed validation into
+      Report<ModuleDef<D>, D>. ModuleDef is constructible only after every
+      applicable static structural and semantic requirement succeeds; malformed
+      caller-controlled input must return structured diagnostics without panic,
+      and any blocking Error finding leaves the report artifact absent.
+    sources: [concrete-modules, api-reports, testing-validation, testing-reports]
+
+  - id: complete-interface-conformance
+    kind: semantic
+    statement: >-
+      Validation must establish unique typed public input and output identities,
+      declared-key existence for every interface mapping, valid private endpoint
+      direction and existence, and same-kind interface incidence. Every public
+      output exports exactly one internal source. Public inputs may fan out to
+      several private inputs and may be unused, but an internal input still obeys
+      its ordinary driver policy across internal connections and public-input
+      mappings.
+    sources: [api-modules, api-validation, concrete-modules, catalogue-validation]
+    basis: derived
+
+  - id: ordinary-internal-validation
+    kind: semantic
+    statement: >-
+      User-module internals must satisfy the same stable-key uniqueness, primitive
+      node shape, typed port, connection direction, signal-kind, driver, arity,
+      semantic-parameter, initial-state, and dependency-signature requirements as
+      ordinary authored primitive structure. Validation must not repair, default,
+      deduplicate, or reinterpret malformed unchecked claims.
+    sources: [runtime-validated, api-validation, concrete-modules]
+
+  - id: internal-current-reaction-acyclicity
+    kind: semantic
+    statement: >-
+      Validation derives the complete current-reaction dependency relation for
+      the module's primitive internals, treating public inputs as typed root facts
+      and public outputs as observations of their mapped internal sources. The
+      resulting graph must be acyclic; every cyclic SCC, including a self-loop,
+      blocks ModuleDef construction rather than being resolved by fixed-point
+      iteration or traversal order.
+    sources: [api-causality, api-modules, testing-cycles]
+    basis: derived
+
+  - id: immutable-user-module-artifact
+    kind: lifecycle
+    statement: >-
+      A successful ModuleDef<D> is an owned immutable reusable definition with
+      explicit User origin, its computed ModuleFingerprint, its complete typed
+      public interface, and its validated module-local primitive graph. It owns
+      no runtime state and does not by itself claim network instantiation or
+      executability.
+    sources: [api-modules, concrete-modules]
+
+  - id: encapsulated-private-internals
+    kind: prohibition
+    statement: >-
+      Module-local nodes, ports, and connections remain private authoring
+      subjects: knowing their stable keys does not make them directly connectable
+      from outside the module. Read-only inspection and diagnostics may expose
+      those subjects without weakening the encapsulation boundary.
+    sources: [api-modules, concrete-graph-views]
+
+  - id: deterministic-definition-inspection
+    kind: public_surface
+    statement: >-
+      ModuleDef must provide read-only access to its fingerprint, origin, typed
+      public inputs and outputs, and immutable definition graph. Equivalent valid
+      stable-keyed modules built from different unchecked claim insertion orders
+      must present equivalent interface and graph content independent of dense or
+      private storage identity.
+    sources: [concrete-modules, concrete-graph-views, testing-determinism]
+
+  - id: stable-structured-module-diagnostics
+    kind: system_effect
+    statement: >-
+      Module validation uses the common deterministic Report and Problem model,
+      the catalogue's validation codes, stable module-interface or internal
+      subjects where available, and complete typed evidence. Independent findings
+      are collected where safe, rendered prose is non-authoritative, and
+      ambiguous corrections do not produce speculative suggestions.
+    sources: [api-reports, catalogue-subjects, concrete-subjects, catalogue-validation, testing-validation, testing-reports]
+
+implementation_freedom:
+  - The private validation passes, candidate types, maps, SCC representation, and module storage layout are unconstrained when observable validation and inspection remain deterministic.
+  - The implementation may normalize validated collections or retain raw storage behind canonical iterators; choose the simplest deterministic option, test insertion-order equivalence, and record the choice.
+  - Until catalogue law fixes module-specific condition discriminators and merge rules, use the smallest deterministic private projection that preserves all semantic facts required by the selected code and evidence family; do not expose it as a compatibility promise.
+  - The User-only representation of ModuleOrigin<D> may use the smallest forward-extensible shape that does not fabricate a standard declaration.
+
+open_questions: []
+
+sources:
+  api-causality:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 8. Current-reaction causality and cycles]
+    reviewed_hash: sha256:2e50e375a8b29141d0adc2a9515570c1109c82a274fbcd7d38efefd9094f6b8c
+  api-reports:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 45. Reports]
+    reviewed_hash: sha256:20197431f1ff31d0d39de2a9463f1688aea0f9e0f56323267fac4ef5177684e6
+  api-validation:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 46. Required validation coverage]
+    reviewed_hash: sha256:4b67b4241f37763437a7523a4c99a3c729c9b9c4d72a2824b73e4b88b67cfc38
+  api-modules:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part XI — Modules and graph queries, 64. Modules]
+    reviewed_hash: sha256:2709760df44dedd80d1e5ba55da90bb4206d5e2877a6cbc023a114f660582f8b
+  runtime-validated:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 3. Lifecycle, 3.2 Validated definitions]
+    reviewed_hash: sha256:bce0327b9e96a9bedb087bd44732edea91a77a9153e182800d37315172497da1
+  concrete-modules:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+    reviewed_hash: sha256:de8ed7d677513f9268ea2aa34ab57661a9153405ab31ae41e8e3a95ed5203ca4
+  concrete-graph-views:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXI — Graph access, 79. Graph views]
+    reviewed_hash: sha256:597997793197e5c8a9b874b59697dcd5f4db3911f786b77c663a8f4ee14a26f1
+  catalogue-subjects:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 11. Subjects]
+    reviewed_hash: sha256:9f8e9fc8d81edf929d398a0833aa1562a7416cda0745d7c9888b275c5fa58702
+  concrete-subjects:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part V — Stable identity, 19. Subject references]
+    reviewed_hash: sha256:134b64a99e20fe99cfa82f3f20e99defecd542b98d932e35d5b21f106025dab7
+  catalogue-validation:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions]
+    reviewed_hash: sha256:6c2eeae3d44af53103f991f364f2d321a9fe195f03b8924e8f902fb5e3dfef40
+  testing-validation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 18. Validation soundness]
+    reviewed_hash: sha256:7e7bd7cced7e93356936c7bf1017af878f79a818d1532f705d40609f2d9e9ee5
+  testing-cycles:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 20. Reaction-cycle verification]
+    reviewed_hash: sha256:7ed65b9139b73dc81b0d4125ade9829700a70bd0577e383e0797f2e02f451d6e
+  testing-determinism:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72
+  testing-reports:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIII — Diagnostic verification, 77. Validation report behavior]
+    reviewed_hash: sha256:de1999b5d46991c155959b33065654f33ff32b66bc431a4d24ab0165f5a97b9b

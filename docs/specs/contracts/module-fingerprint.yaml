@@ -1,0 +1,149 @@
+schema_version: "0.1"
+id: mossignal.identity.module_fingerprint
+title: Reusable module semantic fingerprint
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 9704d2e34aaafb52d75cbcdf167aa5304071a99e
+  working_tree: dirty
+
+summary: >-
+  ModuleFingerprint is the opaque domain-separated identity of one validated
+  reusable module's semantic public interface, explicit origin, and module-local
+  primitive structure. It is stable across authored insertion order and private
+  representation while excluding instance placement and presentation metadata.
+
+scope:
+  includes:
+    - ModuleFingerprint public value and digest construction
+    - semantic inclusion, exclusion, sensitivity, and ordering rules for user modules
+    - successful ModuleDef ownership and deterministic verification
+  excludes:
+    - standard-module declaration and canonical expansion identity
+    - module-instance placement, bindings, and containing-network identity
+    - complete module-definition artifact encoding and integrity digests
+    - compatibility migration and reconfiguration
+
+known_uncovered:
+  - The exact canonical field schema for the version-1 user-module semantic payload is not yet frozen by the persistence specification
+
+aliases:
+  - ModuleFingerprint
+  - semantic module identity
+  - reusable module fingerprint
+
+requirements:
+  - id: distinct-opaque-module-identity
+    kind: public_surface
+    statement: >-
+      ModuleFingerprint is a public opaque fixed 32-byte value distinct and
+      non-interchangeable from NetworkFingerprint, module-instance keys,
+      revisions, state digests, and persisted-artifact integrity digests.
+    sources: [fixed-fingerprints, concrete-modules]
+
+  - id: domain-separated-digest
+    kind: semantic
+    statement: >-
+      DigestSuiteVersion 1 computes ModuleFingerprint with unkeyed BLAKE3-256
+      over a canonical record containing domain label
+      mossignal/module_fingerprint/v1, domain version 1, and the selected
+      version-1 canonical semantic module payload. No other digest type may
+      reuse that domain label.
+    sources: [digest-suite, domain-separation, digest-versions, module-fingerprint]
+
+  - id: complete-user-module-projection
+    kind: semantic
+    statement: >-
+      The semantic payload for a user module includes explicit User origin, the
+      complete typed public input and output interface with stable keys, every
+      output's source incidence, and the complete module-local primitive semantic
+      graph: stable node, typed port, and connection identities; endpoint
+      incidence; node kinds; semantic port roles; semantic parameters; declared
+      initial state; and state or temporal schemas where applicable.
+    sources: [api-modules, concrete-modules, module-fingerprint]
+    basis: derived
+
+  - id: representation-and-instance-exclusions
+    kind: prohibition
+    statement: >-
+      Module identity excludes caller insertion order, dense indices, memory
+      layout, caches, diagnostic names, descriptions, paths, diagnostic origin
+      metadata, presentation tags and extensions, module-instance placement,
+      instance metadata, network bindings, and containing-network identity.
+    sources: [api-modules, module-fingerprint, metadata, canonical-ordering]
+
+  - id: deterministic-and-sensitive-identity
+    kind: semantic
+    statement: >-
+      Semantically equal stable-keyed user modules produce equal fingerprints
+      regardless of construction order or private representation. Changing a
+      public interface key or kind, output-source incidence, internal stable
+      identity, primitive kind, semantic role, parameter, initial state, state
+      schema, temporal schema, or internal connection incidence changes the
+      canonical semantic projection.
+    sources: [api-modules, concrete-modules, module-fingerprint, testing-determinism]
+    basis: derived
+
+  - id: validated-module-owner
+    kind: lifecycle
+    statement: >-
+      Successful validation computes and stores ModuleFingerprint as intrinsic
+      identity of ModuleDef<D>. A blocking-invalid unchecked module cannot
+      produce ModuleDef<D>; any private candidate identity used to order or
+      scope diagnostics does not establish a validated artifact.
+    sources: [concrete-modules, testing-validation]
+    basis: derived
+
+implementation_freedom:
+  - Because the exact version-1 module payload record is not yet frozen, implementation may choose the smallest deterministic canonical field schema consistent with every inclusion, exclusion, ordering, and domain rule above; record the exact bytes in golden tests for concrete review.
+  - Reuse of the existing canonical-value encoder and primitive semantic projections is permitted and preferred over a second encoding model; complete artifact envelopes and decoding remain outside this subject.
+  - Private projection types, encoder decomposition, caching, and module placement are unconstrained when the canonical bytes and public opaque value agree.
+
+open_questions: []
+
+sources:
+  fixed-fingerprints:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 40. Fixed digests and fingerprints]
+    reviewed_hash: sha256:d6664f3186f8f4e1965879bc8eed5b5963d6c638519cc204b15580c6266c3ba6
+  canonical-ordering:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]
+    reviewed_hash: sha256:5f6570e0c89a0135fe906534620d35ac9d378d28b9866a9e287cd2eeb96fdea1
+  digest-suite:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 51. Initial digest suite]
+    reviewed_hash: sha256:1469a69036c9809310b8bd1db66a86095160b2bf0b5b6e2b1bc532c04839e477
+  domain-separation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 52. Domain separation]
+    reviewed_hash: sha256:493e3715f1e5f7b4d7b29e0722a638caf6ec000d698320f6c8db93d9cd3a578d
+  digest-versions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 53. Digest version inputs]
+    reviewed_hash: sha256:39b98aacf5b1e57ba016ed8f9efaac0ce98fdad35878cef7f8d4d7733b017c39
+  module-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 55. Module fingerprint]
+    reviewed_hash: sha256:6b41a847681a35c84fbb36310dd608fd9d5342f48c02e14ee1681f01ec0380d0
+  metadata:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VIII — Definition artifacts, 72. Metadata]
+    reviewed_hash: sha256:8ce06c9250e1d87d9a9daaced33afadbe2743096061348f25eb53daeaccf7b31
+  api-modules:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part XI — Modules and graph queries, 64. Modules]
+    reviewed_hash: sha256:2709760df44dedd80d1e5ba55da90bb4206d5e2877a6cbc023a114f660582f8b
+  concrete-modules:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+    reviewed_hash: sha256:de8ed7d677513f9268ea2aa34ab57661a9153405ab31ae41e8e3a95ed5203ca4
+  testing-validation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 18. Validation soundness]
+    reviewed_hash: sha256:7e7bd7cced7e93356936c7bf1017af878f79a818d1532f705d40609f2d9e9ee5
+  testing-determinism:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72
