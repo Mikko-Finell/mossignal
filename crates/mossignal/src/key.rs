@@ -282,6 +282,13 @@ pub enum SignalSourceKey<S: SignalType> {
     ExternalInput(ExternalInputKey<S>),
     /// A signal produced by a typed node output port.
     NodeOutput(OutPortKey<S>),
+    /// A signal exported by one exact output of one module instance.
+    ModuleOutput {
+        /// The stable module-instance identity.
+        instance: ModuleInstanceKey,
+        /// The stable typed public-output identity within the module.
+        output: ModuleOutputKey<S>,
+    },
 }
 
 impl<S: SignalType> Clone for SignalSourceKey<S> {
@@ -297,6 +304,16 @@ impl<S: SignalType> PartialEq for SignalSourceKey<S> {
         match (self, other) {
             (Self::ExternalInput(left), Self::ExternalInput(right)) => left == right,
             (Self::NodeOutput(left), Self::NodeOutput(right)) => left == right,
+            (
+                Self::ModuleOutput {
+                    instance: left_instance,
+                    output: left_output,
+                },
+                Self::ModuleOutput {
+                    instance: right_instance,
+                    output: right_output,
+                },
+            ) => left_instance == right_instance && left_output == right_output,
             _ => false,
         }
     }
@@ -314,9 +331,21 @@ impl<S: SignalType> Ord for SignalSourceKey<S> {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Self::ExternalInput(left), Self::ExternalInput(right)) => left.cmp(right),
-            (Self::ExternalInput(_), Self::NodeOutput(_)) => Ordering::Less,
-            (Self::NodeOutput(_), Self::ExternalInput(_)) => Ordering::Greater,
+            (Self::ExternalInput(_), _) => Ordering::Less,
+            (_, Self::ExternalInput(_)) => Ordering::Greater,
             (Self::NodeOutput(left), Self::NodeOutput(right)) => left.cmp(right),
+            (Self::NodeOutput(_), Self::ModuleOutput { .. }) => Ordering::Less,
+            (Self::ModuleOutput { .. }, Self::NodeOutput(_)) => Ordering::Greater,
+            (
+                Self::ModuleOutput {
+                    instance: left_instance,
+                    output: left_output,
+                },
+                Self::ModuleOutput {
+                    instance: right_instance,
+                    output: right_output,
+                },
+            ) => (left_instance, left_output).cmp(&(right_instance, right_output)),
         }
     }
 }
@@ -334,6 +363,11 @@ impl<S: SignalType> Hash for SignalSourceKey<S> {
                 state.write_u8(SOURCE_NODE_OUTPUT);
                 state.write_u128(key.value);
             }
+            Self::ModuleOutput { instance, output } => {
+                state.write_u8(2);
+                state.write_u128(instance.as_u128());
+                state.write_u128(output.value);
+            }
         }
     }
 }
@@ -348,6 +382,11 @@ impl<S: SignalType> fmt::Debug for SignalSourceKey<S> {
             Self::NodeOutput(key) => formatter
                 .debug_tuple("SignalSourceKey::NodeOutput")
                 .field(key)
+                .finish(),
+            Self::ModuleOutput { instance, output } => formatter
+                .debug_struct("SignalSourceKey::ModuleOutput")
+                .field("instance", instance)
+                .field("output", output)
                 .finish(),
         }
     }
@@ -570,6 +609,11 @@ fn hash_erased_source<S: SignalType, H: Hasher>(
         SignalSourceKey::NodeOutput(key) => {
             state.write_u8(SOURCE_NODE_OUTPUT);
             state.write_u128(key.value);
+        }
+        SignalSourceKey::ModuleOutput { instance, output } => {
+            state.write_u8(2);
+            state.write_u128(instance.as_u128());
+            state.write_u128(output.value);
         }
     }
 }

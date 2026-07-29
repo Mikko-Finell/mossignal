@@ -205,7 +205,7 @@ modules into larger definitions.
 
 ---
 
-## 35. [IN PROGRESS] Exact module instantiation and retained hierarchy
+## 35. [DONE] Exact module instantiation and retained hierarchy
 
 Allow validated modules to be instantiated through `NetworkBuilder` and
 `ModuleBuilder`:

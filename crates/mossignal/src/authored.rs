@@ -7,7 +7,7 @@ use crate::identity::TimeDomainId;
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
     AnyOutPortKey, AnySignalSourceKey, ConnectionKey, ExternalInputKey, ExternalOutputKey,
-    InPortKey, NetworkKey, NodeKey, OutPortKey,
+    InPortKey, ModuleInstanceKey, NetworkKey, NodeKey, OutPortKey,
 };
 use crate::metadata::DiagnosticMeta;
 use crate::signal::{Level, LogicLevel, Pulse, SignalKind};
@@ -29,6 +29,7 @@ pub struct UncheckedNetwork<D> {
     external_inputs: Vec<ExternalInputDef>,
     external_outputs: Vec<ExternalOutputDef>,
     connections: Vec<ConnectionDef>,
+    module_instances: Vec<ModuleInstanceDef<D>>,
 }
 
 impl<D> UncheckedNetwork<D> {
@@ -43,6 +44,31 @@ impl<D> UncheckedNetwork<D> {
         external_outputs: Vec<ExternalOutputDef>,
         connections: Vec<ConnectionDef>,
     ) -> Self {
+        Self::new_with_instances(
+            key,
+            time_domain_id,
+            meta,
+            nodes,
+            external_inputs,
+            external_outputs,
+            connections,
+            Vec::new(),
+        )
+    }
+
+    /// Creates an unchecked definition including lossless module-instance claims.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_instances(
+        key: NetworkKey,
+        time_domain_id: TimeDomainId,
+        meta: DiagnosticMeta,
+        nodes: Vec<NodeDef<D>>,
+        external_inputs: Vec<ExternalInputDef>,
+        external_outputs: Vec<ExternalOutputDef>,
+        connections: Vec<ConnectionDef>,
+        module_instances: Vec<ModuleInstanceDef<D>>,
+    ) -> Self {
         // SPEC: docs/specs/contracts/authored-network-definition.yaml "malformed-claims-retained"
         // Claim vectors must remain lossless so duplicate and malformed input reaches validation.
         Self {
@@ -53,6 +79,7 @@ impl<D> UncheckedNetwork<D> {
             external_inputs,
             external_outputs,
             connections,
+            module_instances,
         }
     }
 
@@ -96,6 +123,12 @@ impl<D> UncheckedNetwork<D> {
     #[must_use]
     pub fn connections(&self) -> &[ConnectionDef] {
         &self.connections
+    }
+
+    /// Returns every module-instance claim, including duplicates and malformed bindings.
+    #[must_use]
+    pub fn module_instances(&self) -> &[ModuleInstanceDef<D>] {
+        &self.module_instances
     }
 }
 
@@ -187,6 +220,140 @@ pub enum ModuleInterfaceMapping {
     },
 }
 
+/// One owned unchecked module-input binding claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModuleBinding {
+    input: AnyModuleInputKey,
+    source: ConnectionEndpoint,
+}
+
+impl ModuleBinding {
+    /// Creates a binding claim without checking membership, direction, or kind.
+    #[must_use]
+    pub const fn new(input: AnyModuleInputKey, source: ConnectionEndpoint) -> Self {
+        Self { input, source }
+    }
+
+    /// Returns the claimed public module-input identity.
+    #[must_use]
+    pub const fn input(&self) -> AnyModuleInputKey {
+        self.input
+    }
+
+    /// Returns the claimed stable source endpoint.
+    #[must_use]
+    pub const fn source(&self) -> ConnectionEndpoint {
+        self.source
+    }
+}
+
+/// An owned lossless collection of module-input binding claims.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModuleBindingSet {
+    bindings: Vec<ModuleBinding>,
+}
+
+impl ModuleBindingSet {
+    /// Retains the supplied binding claims in caller order.
+    #[must_use]
+    pub const fn new(bindings: Vec<ModuleBinding>) -> Self {
+        Self { bindings }
+    }
+
+    /// Returns every binding claim, including duplicates and malformed claims.
+    #[must_use]
+    pub fn bindings(&self) -> &[ModuleBinding] {
+        &self.bindings
+    }
+}
+
+/// One owned unchecked module-instance claim.
+pub struct ModuleInstanceDef<D> {
+    key: ModuleInstanceKey,
+    module: crate::module::ModuleDef<D>,
+    bindings: ModuleBindingSet,
+    parent: Option<ModuleInstanceKey>,
+    meta: DiagnosticMeta,
+}
+
+impl<D> ModuleInstanceDef<D> {
+    /// Creates an instance claim without validating bindings or containment.
+    #[must_use]
+    pub fn new(
+        key: ModuleInstanceKey,
+        module: crate::module::ModuleDef<D>,
+        bindings: ModuleBindingSet,
+        parent: Option<ModuleInstanceKey>,
+        meta: DiagnosticMeta,
+    ) -> Self {
+        Self {
+            key,
+            module,
+            bindings,
+            parent,
+            meta,
+        }
+    }
+
+    #[must_use]
+    pub const fn key(&self) -> ModuleInstanceKey {
+        self.key
+    }
+    #[must_use]
+    pub const fn module(&self) -> &crate::module::ModuleDef<D> {
+        &self.module
+    }
+    #[must_use]
+    pub const fn bindings(&self) -> &ModuleBindingSet {
+        &self.bindings
+    }
+    #[must_use]
+    pub const fn parent(&self) -> Option<ModuleInstanceKey> {
+        self.parent
+    }
+    #[must_use]
+    pub const fn meta(&self) -> &DiagnosticMeta {
+        &self.meta
+    }
+}
+
+impl<D> Clone for ModuleInstanceDef<D> {
+    fn clone(&self) -> Self {
+        Self::new(
+            self.key,
+            self.module.clone(),
+            self.bindings.clone(),
+            self.parent,
+            self.meta.clone(),
+        )
+    }
+}
+
+impl<D> PartialEq for ModuleInstanceDef<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.module.fingerprint() == other.module.fingerprint()
+            && self.bindings == other.bindings
+            && self.parent == other.parent
+            && self.meta == other.meta
+    }
+}
+
+impl<D> Eq for ModuleInstanceDef<D> {}
+
+impl<D> fmt::Debug for ModuleInstanceDef<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ModuleInstanceDef")
+            .field("key", &self.key)
+            .field("module", &self.module)
+            .field("bindings", &self.bindings)
+            .field("parent", &self.parent)
+            .field("meta", &self.meta)
+            .finish()
+    }
+}
+
 impl ModuleInterfaceMapping {
     /// Creates an unchecked public-input-to-private-endpoint mapping claim.
     #[must_use]
@@ -214,6 +381,7 @@ pub struct UncheckedModule<D> {
     mappings: Vec<ModuleInterfaceMapping>,
     nodes: Vec<NodeDef<D>>,
     connections: Vec<ConnectionDef>,
+    module_instances: Vec<ModuleInstanceDef<D>>,
 }
 
 impl<D> UncheckedModule<D> {
@@ -227,6 +395,28 @@ impl<D> UncheckedModule<D> {
         nodes: Vec<NodeDef<D>>,
         connections: Vec<ConnectionDef>,
     ) -> Self {
+        Self::new_user_with_instances(
+            meta,
+            inputs,
+            outputs,
+            mappings,
+            nodes,
+            connections,
+            Vec::new(),
+        )
+    }
+
+    /// Creates an unchecked user module including nested module-instance claims.
+    #[must_use]
+    pub fn new_user_with_instances(
+        meta: DiagnosticMeta,
+        inputs: Vec<ModuleInputDef>,
+        outputs: Vec<ModuleOutputDef>,
+        mappings: Vec<ModuleInterfaceMapping>,
+        nodes: Vec<NodeDef<D>>,
+        connections: Vec<ConnectionDef>,
+        module_instances: Vec<ModuleInstanceDef<D>>,
+    ) -> Self {
         // SPEC: docs/specs/contracts/unchecked-module-definition.yaml
         // "malformed-claims-remain-observable"
         // Separate raw vectors preserve duplicates, omissions, wrong kinds, and wrong directions.
@@ -238,6 +428,7 @@ impl<D> UncheckedModule<D> {
             mappings,
             nodes,
             connections,
+            module_instances,
         }
     }
 
@@ -282,6 +473,12 @@ impl<D> UncheckedModule<D> {
     pub fn connections(&self) -> &[ConnectionDef] {
         &self.connections
     }
+
+    /// Returns every nested module-instance claim in caller order.
+    #[must_use]
+    pub fn module_instances(&self) -> &[ModuleInstanceDef<D>] {
+        &self.module_instances
+    }
 }
 
 impl<D> Clone for UncheckedModule<D> {
@@ -294,6 +491,7 @@ impl<D> Clone for UncheckedModule<D> {
             mappings: self.mappings.clone(),
             nodes: self.nodes.clone(),
             connections: self.connections.clone(),
+            module_instances: self.module_instances.clone(),
         }
     }
 }
@@ -307,6 +505,7 @@ impl<D> PartialEq for UncheckedModule<D> {
             && self.mappings == other.mappings
             && self.nodes == other.nodes
             && self.connections == other.connections
+            && self.module_instances == other.module_instances
     }
 }
 
@@ -323,6 +522,7 @@ impl<D> fmt::Debug for UncheckedModule<D> {
             .field("mappings", &self.mappings)
             .field("nodes", &self.nodes)
             .field("connections", &self.connections)
+            .field("module_instances", &self.module_instances)
             .finish()
     }
 }
@@ -768,6 +968,13 @@ pub enum ConnectionEndpoint {
     NodeInput(AnyInPortKey),
     /// A node output port.
     NodeOutput(AnyOutPortKey),
+    /// A public input of the reusable module currently being authored.
+    ModuleInput(AnyModuleInputKey),
+    /// One exact public output of one contained module instance.
+    ModuleOutput {
+        instance: ModuleInstanceKey,
+        output: AnyModuleOutputKey,
+    },
     /// An external network output.
     ExternalOutput(AnyExternalOutputKey),
 }
@@ -791,6 +998,18 @@ impl ConnectionEndpoint {
         Self::NodeOutput(key)
     }
 
+    /// Creates a containing-module public-input source claim.
+    #[must_use]
+    pub const fn module_input(key: AnyModuleInputKey) -> Self {
+        Self::ModuleInput(key)
+    }
+
+    /// Creates an exact contained module-output source claim.
+    #[must_use]
+    pub const fn module_output(instance: ModuleInstanceKey, output: AnyModuleOutputKey) -> Self {
+        Self::ModuleOutput { instance, output }
+    }
+
     /// Creates an external-output endpoint claim.
     #[must_use]
     pub const fn external_output(key: AnyExternalOutputKey) -> Self {
@@ -804,6 +1023,8 @@ impl ConnectionEndpoint {
             Self::ExternalInput(key) => key.kind(),
             Self::NodeInput(key) => key.kind(),
             Self::NodeOutput(key) => key.kind(),
+            Self::ModuleInput(key) => key.kind(),
+            Self::ModuleOutput { output, .. } => output.kind(),
             Self::ExternalOutput(key) => key.kind(),
         }
     }

@@ -1,15 +1,17 @@
 //! Typed authoring for the restricted Level and Pulse network foundation.
 
 use crate::authored::{
-    ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, ModuleInputDef,
-    ModuleInterfaceMapping, ModuleOutputDef, NodeDef, NodeKind, NodePorts, PulseDelayConfig,
-    ToggleConfig, UncheckedModule, UncheckedNetwork,
+    ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, ModuleBinding,
+    ModuleBindingSet, ModuleInputDef, ModuleInstanceDef, ModuleInterfaceMapping, ModuleOutputDef,
+    NodeDef, NodeKind, NodePorts, PulseDelayConfig, ToggleConfig, UncheckedModule,
+    UncheckedNetwork,
 };
 use crate::diagnostics::Report;
 use crate::identity::TimeDomainId;
 use crate::key::{
-    AnyExternalInputKey, ExternalInputKey, ExternalOutputKey, InPortKey, KeyAllocator,
-    ModuleInputKey, ModuleOutputKey, NetworkKey, NodeKey, OutPortKey, SignalSourceKey,
+    AnyExternalInputKey, AnyModuleInputKey, AnyModuleOutputKey, ExternalInputKey,
+    ExternalOutputKey, InPortKey, KeyAllocator, ModuleInputKey, ModuleInstanceKey, ModuleOutputKey,
+    NetworkKey, NodeKey, OutPortKey, SignalSourceKey,
 };
 use crate::metadata::DiagnosticMeta;
 use crate::signal::{Level, LogicLevel, Pulse, SignalType};
@@ -71,6 +73,18 @@ pub enum AuthoringFailure {
     DuplicatePulseInPortKey(InPortKey<Pulse>),
     /// An explicit pulse output-port key is already present in this builder.
     DuplicatePulseOutPortKey(OutPortKey<Pulse>),
+    /// An explicit module-instance key is already present in this builder.
+    DuplicateModuleInstanceKey(ModuleInstanceKey),
+    /// A binding names no public input of the selected module.
+    UnknownModuleInput(AnyModuleInputKey),
+    /// A public module input was bound more than once.
+    DuplicateModuleBinding(AnyModuleInputKey),
+    /// Module-instance completion is missing one required public input.
+    MissingModuleBinding(AnyModuleInputKey),
+    /// An output request names no same-kind public output of the instance.
+    UnknownModuleOutput(AnyModuleOutputKey),
+    /// A requested containment parent is not present in the owning builder.
+    UnknownModuleParent(ModuleInstanceKey),
 }
 
 /// A typed, builder-scoped reference to one authored signal source.
@@ -104,6 +118,165 @@ impl<S: SignalType> Signal<S> {
 pub struct AddedNode<O> {
     key: NodeKey,
     outputs: O,
+}
+
+/// Builder-scoped outputs of one successfully added module instance.
+#[derive(Debug, Clone)]
+pub struct AddedModuleInstance {
+    builder_id: u64,
+    key: ModuleInstanceKey,
+    level_outputs: BTreeSet<ModuleOutputKey<Level>>,
+    pulse_outputs: BTreeSet<ModuleOutputKey<Pulse>>,
+}
+
+impl AddedModuleInstance {
+    /// Returns the exact stable instance identity.
+    #[must_use]
+    pub const fn key(&self) -> ModuleInstanceKey {
+        self.key
+    }
+
+    /// Returns the exact typed signal exported by one level output.
+    pub fn level_output(
+        &self,
+        output: ModuleOutputKey<Level>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        if !self.level_outputs.contains(&output) {
+            return Err(AuthoringFailure::UnknownModuleOutput(output.into()));
+        }
+        Ok(Signal {
+            builder_id: self.builder_id,
+            source: SignalSourceKey::ModuleOutput {
+                instance: self.key,
+                output,
+            },
+        })
+    }
+
+    /// Returns the exact typed signal exported by one pulse output.
+    pub fn pulse_output(
+        &self,
+        output: ModuleOutputKey<Pulse>,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        if !self.pulse_outputs.contains(&output) {
+            return Err(AuthoringFailure::UnknownModuleOutput(output.into()));
+        }
+        Ok(Signal {
+            builder_id: self.builder_id,
+            source: SignalSourceKey::ModuleOutput {
+                instance: self.key,
+                output,
+            },
+        })
+    }
+}
+
+/// A transactional typed module-instantiation authoring operation.
+pub struct ModuleInstanceBuilder<'a, D> {
+    owner: &'a mut NetworkBuilder<D>,
+    module: ModuleDef<D>,
+    key: ModuleInstanceKey,
+    meta: DiagnosticMeta,
+    parent: Option<ModuleInstanceKey>,
+    required_inputs: BTreeSet<AnyModuleInputKey>,
+    bound_inputs: BTreeSet<AnyModuleInputKey>,
+    bindings: Vec<ModuleBinding>,
+}
+
+impl<'a, D> ModuleInstanceBuilder<'a, D> {
+    /// Binds one exact level input to a same-kind local source.
+    pub fn bind_level(
+        mut self,
+        input: ModuleInputKey<Level>,
+        source: Signal<Level>,
+    ) -> Result<Self, AuthoringFailure> {
+        self.bind(
+            input.into(),
+            source_endpoint(source.source),
+            source.builder_id,
+        )?;
+        Ok(self)
+    }
+
+    /// Binds one exact pulse input to a same-kind local source.
+    pub fn bind_pulse(
+        mut self,
+        input: ModuleInputKey<Pulse>,
+        source: Signal<Pulse>,
+    ) -> Result<Self, AuthoringFailure> {
+        self.bind(
+            input.into(),
+            source_endpoint_pulse(source.source),
+            source.builder_id,
+        )?;
+        Ok(self)
+    }
+
+    /// Places the instance beneath an already-authored instance in this definition.
+    pub fn parent(mut self, parent: ModuleInstanceKey) -> Result<Self, AuthoringFailure> {
+        if !self.owner.module_instance_keys.contains(&parent) {
+            return Err(AuthoringFailure::UnknownModuleParent(parent));
+        }
+        self.parent = Some(parent);
+        Ok(self)
+    }
+
+    fn bind(
+        &mut self,
+        input: AnyModuleInputKey,
+        source: ConnectionEndpoint,
+        builder_id: u64,
+    ) -> Result<(), AuthoringFailure> {
+        if builder_id != self.owner.builder_id {
+            return Err(AuthoringFailure::ForeignSignal);
+        }
+        if !self.required_inputs.contains(&input) {
+            return Err(AuthoringFailure::UnknownModuleInput(input));
+        }
+        if !self.bound_inputs.insert(input) {
+            return Err(AuthoringFailure::DuplicateModuleBinding(input));
+        }
+        self.bindings.push(ModuleBinding::new(input, source));
+        Ok(())
+    }
+
+    /// Commits the complete instance and returns exact typed output access.
+    pub fn finish(self) -> Result<AddedModuleInstance, AuthoringFailure> {
+        if let Some(missing) = self
+            .required_inputs
+            .iter()
+            .find(|input| !self.bound_inputs.contains(input))
+        {
+            return Err(AuthoringFailure::MissingModuleBinding(*missing));
+        }
+        let mut level_outputs = BTreeSet::new();
+        let mut pulse_outputs = BTreeSet::new();
+        for output in self.module.outputs() {
+            match output.key() {
+                AnyModuleOutputKey::Level(key) => {
+                    level_outputs.insert(key);
+                }
+                AnyModuleOutputKey::Pulse(key) => {
+                    pulse_outputs.insert(key);
+                }
+            }
+        }
+        let added = AddedModuleInstance {
+            builder_id: self.owner.builder_id,
+            key: self.key,
+            level_outputs,
+            pulse_outputs,
+        };
+        self.owner.module_instances.push(ModuleInstanceDef::new(
+            self.key,
+            self.module,
+            ModuleBindingSet::new(self.bindings),
+            self.parent,
+            self.meta,
+        ));
+        self.owner.module_instance_keys.insert(self.key);
+        Ok(added)
+    }
 }
 
 impl<O> AddedNode<O> {
@@ -143,6 +316,8 @@ pub struct NetworkBuilder<D> {
     external_inputs: Vec<ExternalInputDef>,
     external_outputs: Vec<ExternalOutputDef>,
     connections: Vec<ConnectionDef>,
+    module_instances: Vec<ModuleInstanceDef<D>>,
+    module_instance_keys: BTreeSet<ModuleInstanceKey>,
     node_keys: BTreeSet<NodeKey>,
     input_keys: BTreeSet<ExternalInputKey<Level>>,
     output_keys: BTreeSet<ExternalOutputKey<Level>>,
@@ -188,6 +363,8 @@ impl<D> NetworkBuilder<D> {
             external_inputs: Vec::new(),
             external_outputs: Vec::new(),
             connections: Vec::new(),
+            module_instances: Vec::new(),
+            module_instance_keys: BTreeSet::new(),
             node_keys: BTreeSet::new(),
             input_keys: BTreeSet::new(),
             output_keys: BTreeSet::new(),
@@ -210,6 +387,28 @@ impl<D> NetworkBuilder<D> {
     #[must_use]
     pub const fn time_domain_id(&self) -> TimeDomainId {
         self.time_domain_id
+    }
+
+    /// Begins an atomic typed instantiation of one validated reusable module.
+    pub fn instantiate<'a>(
+        &'a mut self,
+        module: &ModuleDef<D>,
+        key: ModuleInstanceKey,
+        meta: DiagnosticMeta,
+    ) -> Result<ModuleInstanceBuilder<'a, D>, AuthoringFailure> {
+        if self.module_instance_keys.contains(&key) {
+            return Err(AuthoringFailure::DuplicateModuleInstanceKey(key));
+        }
+        Ok(ModuleInstanceBuilder {
+            owner: self,
+            module: module.clone(),
+            key,
+            meta,
+            parent: None,
+            required_inputs: module.inputs().map(|input| input.key()).collect(),
+            bound_inputs: BTreeSet::new(),
+            bindings: Vec::new(),
+        })
     }
 
     /// Adds a convenience level input with locally allocated stable identity.
@@ -884,7 +1083,7 @@ impl<D> NetworkBuilder<D> {
     /// Consumes the builder into the canonical dynamic authored definition.
     #[must_use]
     pub fn into_unchecked(self) -> UncheckedNetwork<D> {
-        UncheckedNetwork::new(
+        UncheckedNetwork::new_with_instances(
             self.key,
             self.time_domain_id,
             self.meta,
@@ -892,6 +1091,7 @@ impl<D> NetworkBuilder<D> {
             self.external_inputs,
             self.external_outputs,
             self.connections,
+            self.module_instances,
         )
     }
 
@@ -1309,6 +1509,16 @@ impl<D> ModuleBuilder<D> {
             level_output_keys: BTreeSet::new(),
             pulse_output_keys: BTreeSet::new(),
         }
+    }
+
+    /// Begins typed instantiation inside this reusable module definition.
+    pub fn instantiate<'a>(
+        &'a mut self,
+        module: &ModuleDef<D>,
+        key: ModuleInstanceKey,
+        meta: DiagnosticMeta,
+    ) -> Result<ModuleInstanceBuilder<'a, D>, AuthoringFailure> {
+        self.graph.instantiate(module, key, meta)
     }
 
     /// Adds a convenience level input with locally allocated stable identity.
@@ -1871,7 +2081,10 @@ impl<D> ModuleBuilder<D> {
             ..
         } = self;
         let NetworkBuilder {
-            nodes, connections, ..
+            nodes,
+            connections,
+            mut module_instances,
+            ..
         } = graph;
         let mut mappings = Vec::new();
         let mut internal_connections = Vec::with_capacity(connections.len());
@@ -1887,7 +2100,38 @@ impl<D> ModuleBuilder<D> {
             }
         }
         mappings.extend(output_mappings);
-        UncheckedModule::new_user(meta, inputs, outputs, mappings, nodes, internal_connections)
+        for instance in &mut module_instances {
+            let bindings = instance
+                .bindings()
+                .bindings()
+                .iter()
+                .map(|binding| {
+                    let source = match binding.source() {
+                        ConnectionEndpoint::ExternalInput(key) => {
+                            ConnectionEndpoint::module_input(module_input_from_surrogate(key))
+                        }
+                        source => source,
+                    };
+                    ModuleBinding::new(binding.input(), source)
+                })
+                .collect();
+            *instance = ModuleInstanceDef::new(
+                instance.key(),
+                instance.module().clone(),
+                ModuleBindingSet::new(bindings),
+                instance.parent(),
+                instance.meta().clone(),
+            );
+        }
+        UncheckedModule::new_user_with_instances(
+            meta,
+            inputs,
+            outputs,
+            mappings,
+            nodes,
+            internal_connections,
+            module_instances,
+        )
     }
 
     /// Consumes, lowers, and validates the authored user module.
@@ -1968,6 +2212,9 @@ fn source_endpoint(source: SignalSourceKey<Level>) -> ConnectionEndpoint {
     match source {
         SignalSourceKey::ExternalInput(key) => ConnectionEndpoint::external_input(key.into()),
         SignalSourceKey::NodeOutput(key) => ConnectionEndpoint::node_output(key.into()),
+        SignalSourceKey::ModuleOutput { instance, output } => {
+            ConnectionEndpoint::module_output(instance, output.into())
+        }
     }
 }
 
@@ -1975,6 +2222,9 @@ fn source_endpoint_pulse(source: SignalSourceKey<Pulse>) -> ConnectionEndpoint {
     match source {
         SignalSourceKey::ExternalInput(key) => ConnectionEndpoint::external_input(key.into()),
         SignalSourceKey::NodeOutput(key) => ConnectionEndpoint::node_output(key.into()),
+        SignalSourceKey::ModuleOutput { instance, output } => {
+            ConnectionEndpoint::module_output(instance, output.into())
+        }
     }
 }
 

@@ -1,8 +1,8 @@
 //! Stable time-domain and semantic fingerprint identities.
 
 use crate::authored::{
-    ConnectionDef, ConnectionEndpoint, InputPortRole, ModuleInputDef, ModuleInterfaceMapping,
-    ModuleOutputDef, NodeDef, NodeKind, UncheckedModule, UncheckedNetwork,
+    ConnectionDef, ConnectionEndpoint, InputPortRole, ModuleInputDef, ModuleInstanceDef,
+    ModuleInterfaceMapping, ModuleOutputDef, NodeDef, NodeKind, UncheckedModule, UncheckedNetwork,
 };
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
@@ -119,7 +119,11 @@ fn module_digest_input<D>(module: &UncheckedModule<D>) -> Vec<u8> {
 fn module_payload<D>(writer: &mut Cbor, module: &UncheckedModule<D>) {
     // SPEC: docs/specs/contracts/module-fingerprint.yaml "complete-user-module-projection"
     // Metadata and caller insertion order are deliberately absent.
-    writer.record_start(7);
+    writer.record_start(if module.module_instances().is_empty() {
+        7
+    } else {
+        8
+    });
     writer.field("connections", |writer| {
         module_connections(writer, module.connections())
     });
@@ -127,6 +131,11 @@ fn module_payload<D>(writer: &mut Cbor, module: &UncheckedModule<D>) {
     writer.field("mappings", |writer| {
         module_mappings(writer, module.mappings())
     });
+    if !module.module_instances().is_empty() {
+        writer.field("module_instances", |writer| {
+            module_instances(writer, module.module_instances())
+        });
+    }
     writer.field("nodes", |writer| module_nodes(writer, module.nodes()));
     writer.field("origin", |writer| writer.variant_null("user"));
     writer.field("outputs", |writer| module_outputs(writer, module.outputs()));
@@ -178,14 +187,19 @@ fn module_mappings(writer: &mut Cbor, mappings: &[ModuleInterfaceMapping]) {
                 });
             }
             ModuleInterfaceMapping::Output { output, source } => {
-                let ConnectionEndpoint::NodeOutput(source) = source else {
-                    panic!("validated module output mapping must source a node output");
-                };
                 writer.variant_start("output");
                 writer.record_start(3);
                 writer.field("output", |writer| writer.key(module_output_key(output)));
                 writer.field("signal_kind", |writer| signal_kind(writer, output.kind()));
-                writer.field("source", |writer| writer.key(out_port_key(source)));
+                writer.field("source", |writer| match source {
+                    ConnectionEndpoint::NodeOutput(source) => writer.key(out_port_key(source)),
+                    ConnectionEndpoint::ModuleOutput { instance, output } => {
+                        source_module_output(writer, instance, output)
+                    }
+                    _ => panic!(
+                        "validated module output mapping must source a node or module output"
+                    ),
+                });
             }
         }
     }
@@ -322,27 +336,31 @@ fn port_role(input: bool, role: InputPortRole) -> &'static str {
     }
 }
 
-fn module_mapping_order(mapping: &ModuleInterfaceMapping) -> (u8, u8, u128, u8, u128) {
+fn module_mapping_order(mapping: &ModuleInterfaceMapping) -> (u8, u8, u128, u8, u128, u128) {
     match *mapping {
         ModuleInterfaceMapping::Input { input, target } => {
-            let (target_tag, target_key) = endpoint_order(target);
+            let (target_tag, target_key, target_subkey) = endpoint_order(target);
             let (kind, key) = module_input_order(input);
-            (0, kind, key, target_tag, target_key)
+            (0, kind, key, target_tag, target_key, target_subkey)
         }
         ModuleInterfaceMapping::Output { output, source } => {
-            let (source_tag, source_key) = endpoint_order(source);
+            let (source_tag, source_key, source_subkey) = endpoint_order(source);
             let (kind, key) = module_output_order(output);
-            (1, kind, key, source_tag, source_key)
+            (1, kind, key, source_tag, source_key, source_subkey)
         }
     }
 }
 
-fn endpoint_order(endpoint: ConnectionEndpoint) -> (u8, u128) {
+fn endpoint_order(endpoint: ConnectionEndpoint) -> (u8, u128, u128) {
     match endpoint {
-        ConnectionEndpoint::ExternalInput(key) => (0, external_input_key(key)),
-        ConnectionEndpoint::NodeInput(key) => (1, in_port_key(key)),
-        ConnectionEndpoint::NodeOutput(key) => (2, out_port_key(key)),
-        ConnectionEndpoint::ExternalOutput(key) => (3, external_output_key(key)),
+        ConnectionEndpoint::ExternalInput(key) => (0, external_input_key(key), 0),
+        ConnectionEndpoint::NodeInput(key) => (1, in_port_key(key), 0),
+        ConnectionEndpoint::NodeOutput(key) => (2, out_port_key(key), 0),
+        ConnectionEndpoint::ModuleInput(key) => (3, module_input_key(key), 0),
+        ConnectionEndpoint::ModuleOutput { instance, output } => {
+            (4, instance.as_u128(), module_output_key(output))
+        }
+        ConnectionEndpoint::ExternalOutput(key) => (5, external_output_key(key), 0),
     }
 }
 
@@ -408,7 +426,11 @@ fn input_schema_digest_input<D>(network: &UncheckedNetwork<D>) -> Vec<u8> {
 fn network_payload<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
     // SPEC: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md §54.2 "Restricted network-fingerprint projection version 1"
     // This exact record omits validation and private compilation data.
-    writer.record_start(9);
+    writer.record_start(if network.module_instances().is_empty() {
+        9
+    } else {
+        10
+    });
     writer.field("built_in_node_semantics_version", |writer| writer.uint(1));
     writer.field("connections", |writer| {
         let mut connections: Vec<_> = network.connections().iter().collect();
@@ -427,11 +449,56 @@ fn network_payload<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
         external_outputs(writer, network)
     });
     writer.field("network_key", |writer| writer.key(network.key().as_u128()));
+    if !network.module_instances().is_empty() {
+        writer.field("module_instances", |writer| {
+            module_instances(writer, network.module_instances())
+        });
+    }
     writer.field("nodes", |writer| nodes(writer, network));
     writer.field("ports", |writer| ports(writer, network));
     writer.field("time_domain_id", |writer| {
         writer.bytes(&network.time_domain_id().to_be_bytes())
     });
+}
+
+fn module_instances<D>(writer: &mut Cbor, instances: &[ModuleInstanceDef<D>]) {
+    let mut instances: Vec<_> = instances.iter().collect();
+    instances.sort_by_key(|instance| instance.key());
+    writer.array_start(instances.len());
+    for instance in instances {
+        writer.record_start(4);
+        writer.field("bindings", |writer| {
+            let mut bindings: Vec<_> = instance.bindings().bindings().iter().collect();
+            bindings.sort_by_key(|binding| {
+                (
+                    module_input_order(binding.input()),
+                    endpoint_order(binding.source()),
+                )
+            });
+            writer.array_start(bindings.len());
+            for binding in bindings {
+                writer.record_start(2);
+                writer.field("input", |writer| {
+                    writer.record_start(2);
+                    writer.field("key", |writer| {
+                        writer.key(module_input_key(binding.input()))
+                    });
+                    writer.field("signal_kind", |writer| {
+                        signal_kind(writer, binding.input().kind())
+                    });
+                });
+                writer.field("source", |writer| source(writer, binding.source()));
+            }
+        });
+        writer.field("key", |writer| writer.key(instance.key().as_u128()));
+        writer.field("module_fingerprint", |writer| {
+            writer.bytes(&instance.module().fingerprint().as_bytes())
+        });
+        writer.field("parent", |writer| match instance.parent() {
+            Some(parent) => writer.key(parent.as_u128()),
+            None => writer.null(),
+        });
+    }
 }
 
 fn input_schema_payload<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
@@ -589,6 +656,10 @@ fn source(writer: &mut Cbor, endpoint: ConnectionEndpoint) {
     match endpoint {
         ConnectionEndpoint::ExternalInput(key) => source_external_input(writer, key),
         ConnectionEndpoint::NodeOutput(key) => source_out_port(writer, key),
+        ConnectionEndpoint::ModuleInput(key) => source_module_input(writer, key),
+        ConnectionEndpoint::ModuleOutput { instance, output } => {
+            source_module_output(writer, instance, output)
+        }
         ConnectionEndpoint::NodeInput(_) | ConnectionEndpoint::ExternalOutput(_) => {
             panic!(
                 "validated restricted connection source must be an external input or output port"
@@ -611,7 +682,32 @@ fn source_from_signal(writer: &mut Cbor, source: AnySignalSourceKey) {
         AnySignalSourceKey::Pulse(SignalSourceKey::NodeOutput(key)) => {
             source_out_port(writer, key.into())
         }
+        AnySignalSourceKey::Level(SignalSourceKey::ModuleOutput { instance, output }) => {
+            source_module_output(writer, instance, output.into())
+        }
+        AnySignalSourceKey::Pulse(SignalSourceKey::ModuleOutput { instance, output }) => {
+            source_module_output(writer, instance, output.into())
+        }
     }
+}
+
+fn source_module_input(writer: &mut Cbor, key: AnyModuleInputKey) {
+    writer.variant_start("module_input");
+    writer.record_start(2);
+    writer.field("key", |writer| writer.key(module_input_key(key)));
+    writer.field("signal_kind", |writer| signal_kind(writer, key.kind()));
+}
+
+fn source_module_output(
+    writer: &mut Cbor,
+    instance: crate::key::ModuleInstanceKey,
+    output: AnyModuleOutputKey,
+) {
+    writer.variant_start("module_output");
+    writer.record_start(3);
+    writer.field("instance", |writer| writer.key(instance.as_u128()));
+    writer.field("key", |writer| writer.key(module_output_key(output)));
+    writer.field("signal_kind", |writer| signal_kind(writer, output.kind()));
 }
 
 fn source_external_input(writer: &mut Cbor, key: AnyExternalInputKey) {

@@ -8,7 +8,10 @@ use crate::diagnostics::{
     Diagnostic, DiagnosticSet, DuplicateClaim, Problem, ProblemEvidence, Report, SubjectRef,
 };
 use crate::identity::{ModuleFingerprint, TimeDomainId, module_fingerprint};
-use crate::key::{AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey, AnyOutPortKey, NetworkKey};
+use crate::key::{
+    AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey, AnyOutPortKey, ConnectionKey,
+    ModuleInstanceKey, NetworkKey, NodeKey,
+};
 use crate::metadata::DiagnosticMeta;
 use crate::signal::SignalKind;
 use crate::validation::{ReactionDependencyGraph, cycle_step, reaction_member};
@@ -124,6 +127,10 @@ impl<D> ModuleDef<D> {
             definition: &self.data.definition,
         }
     }
+
+    pub(crate) fn definition(&self) -> &UncheckedModule<D> {
+        &self.data.definition
+    }
 }
 
 /// Canonical iterator over public module-input definitions.
@@ -170,6 +177,42 @@ pub struct DefinitionGraphView<'a, D> {
     definition: &'a UncheckedModule<D>,
 }
 
+/// A stable node identity qualified by its complete module-instance path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QualifiedNodeRef {
+    instances: Vec<ModuleInstanceKey>,
+    node: NodeKey,
+}
+
+impl QualifiedNodeRef {
+    #[must_use]
+    pub fn instances(&self) -> &[ModuleInstanceKey] {
+        &self.instances
+    }
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+}
+
+/// A stable connection identity qualified by its complete module-instance path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QualifiedConnectionRef {
+    instances: Vec<ModuleInstanceKey>,
+    connection: ConnectionKey,
+}
+
+impl QualifiedConnectionRef {
+    #[must_use]
+    pub fn instances(&self) -> &[ModuleInstanceKey] {
+        &self.instances
+    }
+    #[must_use]
+    pub const fn connection(&self) -> ConnectionKey {
+        self.connection
+    }
+}
+
 impl<'a, D> DefinitionGraphView<'a, D> {
     /// Returns module-local primitive nodes in canonical stable-key order.
     #[must_use]
@@ -188,6 +231,90 @@ impl<'a, D> DefinitionGraphView<'a, D> {
     pub fn mappings(self) -> &'a [ModuleInterfaceMapping] {
         self.definition.mappings()
     }
+
+    /// Returns retained nested module instances in canonical stable-key order.
+    #[must_use]
+    pub fn module_instances(self) -> &'a [crate::authored::ModuleInstanceDef<D>] {
+        self.definition.module_instances()
+    }
+
+    /// Projects all nested private nodes through stable instance-qualified identity.
+    #[must_use]
+    pub fn qualified_nodes(self) -> Vec<QualifiedNodeRef> {
+        qualified_nodes(self.definition.module_instances())
+    }
+
+    /// Projects all nested private connections through stable instance-qualified identity.
+    #[must_use]
+    pub fn qualified_connections(self) -> Vec<QualifiedConnectionRef> {
+        qualified_connections(self.definition.module_instances())
+    }
+}
+
+pub(crate) fn qualified_nodes<D>(
+    instances: &[crate::authored::ModuleInstanceDef<D>],
+) -> Vec<QualifiedNodeRef> {
+    fn visit<D>(
+        instances: &[crate::authored::ModuleInstanceDef<D>],
+        prefix: &[ModuleInstanceKey],
+        result: &mut Vec<QualifiedNodeRef>,
+    ) {
+        let mut instances: Vec<_> = instances.iter().collect();
+        instances.sort_by_key(|instance| instance.key());
+        for instance in instances {
+            let mut path = prefix.to_vec();
+            path.push(instance.key());
+            result.extend(
+                instance
+                    .module()
+                    .graph()
+                    .nodes()
+                    .iter()
+                    .map(|node| QualifiedNodeRef {
+                        instances: path.clone(),
+                        node: node.key(),
+                    }),
+            );
+            visit(instance.module().graph().module_instances(), &path, result);
+        }
+    }
+    let mut result = Vec::new();
+    visit(instances, &[], &mut result);
+    result.sort();
+    result
+}
+
+pub(crate) fn qualified_connections<D>(
+    instances: &[crate::authored::ModuleInstanceDef<D>],
+) -> Vec<QualifiedConnectionRef> {
+    fn visit<D>(
+        instances: &[crate::authored::ModuleInstanceDef<D>],
+        prefix: &[ModuleInstanceKey],
+        result: &mut Vec<QualifiedConnectionRef>,
+    ) {
+        let mut instances: Vec<_> = instances.iter().collect();
+        instances.sort_by_key(|instance| instance.key());
+        for instance in instances {
+            let mut path = prefix.to_vec();
+            path.push(instance.key());
+            result.extend(
+                instance
+                    .module()
+                    .graph()
+                    .connections()
+                    .iter()
+                    .map(|connection| QualifiedConnectionRef {
+                        instances: path.clone(),
+                        connection: connection.key(),
+                    }),
+            );
+            visit(instance.module().graph().module_instances(), &path, result);
+        }
+    }
+    let mut result = Vec::new();
+    visit(instances, &[], &mut result);
+    result.sort();
+    result
 }
 
 impl<D> UncheckedModule<D> {
@@ -325,33 +452,55 @@ fn validate_module<D: PartialEq>(module: &UncheckedModule<D>) -> Report<ModuleDe
                         ProblemEvidence::missing_endpoint(primary, output.kind()),
                     );
                 }
-                let ConnectionEndpoint::NodeOutput(source_key) = source else {
+                if !matches!(
+                    source,
+                    ConnectionEndpoint::NodeOutput(_) | ConnectionEndpoint::ModuleOutput { .. }
+                ) {
                     add(
                         &mut diagnostics,
                         primary,
                         ProblemEvidence::invalid_direction(endpoint_subject(source), primary),
                     );
                     continue;
+                }
+                let source_exists = match source {
+                    ConnectionEndpoint::NodeOutput(source_key) => out_ports.contains(&source_key),
+                    ConnectionEndpoint::ModuleOutput { instance, output } => module
+                        .module_instances()
+                        .iter()
+                        .find(|candidate| candidate.key() == instance)
+                        .is_some_and(|candidate| {
+                            candidate
+                                .module()
+                                .outputs()
+                                .any(|found| found.key() == output)
+                        }),
+                    _ => false,
                 };
-                if !out_ports.contains(&source_key) {
-                    add(
-                        &mut diagnostics,
-                        primary,
-                        ProblemEvidence::missing_port(
-                            SubjectRef::OutPort(source_key),
-                            source_key.kind(),
+                if !source_exists {
+                    let evidence = match source {
+                        ConnectionEndpoint::NodeOutput(source_key) => {
+                            ProblemEvidence::missing_port(
+                                SubjectRef::OutPort(source_key),
+                                source_key.kind(),
+                            )
+                        }
+                        _ => ProblemEvidence::missing_endpoint(
+                            endpoint_subject(source),
+                            source.kind(),
                         ),
-                    );
+                    };
+                    add(&mut diagnostics, primary, evidence);
                     continue;
                 }
-                if output.kind() != source_key.kind() {
+                if output.kind() != source.kind() {
                     add(
                         &mut diagnostics,
                         primary,
                         ProblemEvidence::signal_kind_mismatch(
-                            SubjectRef::OutPort(source_key),
+                            endpoint_subject(source),
                             primary,
-                            source_key.kind(),
+                            source.kind(),
                             output.kind(),
                         ),
                     );
@@ -399,7 +548,7 @@ fn validate_module<D: PartialEq>(module: &UncheckedModule<D>) -> Report<ModuleDe
         }
     }
 
-    let structural_definition = UncheckedNetwork::new(
+    let structural_definition = UncheckedNetwork::new_with_instances(
         NetworkKey::from_u128(0),
         TimeDomainId::from_u128(0),
         DiagnosticMeta::default(),
@@ -407,9 +556,11 @@ fn validate_module<D: PartialEq>(module: &UncheckedModule<D>) -> Report<ModuleDe
         Vec::new(),
         Vec::new(),
         module.connections().to_vec(),
+        module.module_instances().to_vec(),
     );
+    let module_input_keys = inputs.keys().copied().collect();
     let (_, structural_diagnostics) = structural_definition
-        .validate_structural_for_module(&boundary_drivers)
+        .validate_structural_for_module(&boundary_drivers, &module_input_keys)
         .into_parts();
     for diagnostic in structural_diagnostics {
         diagnostics.insert(diagnostic);
@@ -469,18 +620,35 @@ fn normalized<D>(module: &UncheckedModule<D>) -> UncheckedModule<D> {
     let mut mappings = module.mappings().to_vec();
     let mut nodes: Vec<_> = module.nodes().iter().map(normalized_node).collect();
     let mut connections = module.connections().to_vec();
+    let mut module_instances = module.module_instances().to_vec();
     inputs.sort_by_key(|input| input.key());
     outputs.sort_by_key(|output| output.key());
     mappings.sort_by_key(mapping_order);
     nodes.sort_by_key(|node| node.key());
     connections.sort_by_key(|connection| connection.key());
-    UncheckedModule::new_user(
+    module_instances.sort_by_key(|instance| instance.key());
+    module_instances = module_instances
+        .into_iter()
+        .map(|instance| {
+            let mut bindings = instance.bindings().bindings().to_vec();
+            bindings.sort_by_key(|binding| (binding.input(), endpoint_order(binding.source())));
+            crate::authored::ModuleInstanceDef::new(
+                instance.key(),
+                instance.module().clone(),
+                crate::authored::ModuleBindingSet::new(bindings),
+                instance.parent(),
+                instance.meta().clone(),
+            )
+        })
+        .collect();
+    UncheckedModule::new_user_with_instances(
         module.meta().clone(),
         inputs,
         outputs,
         mappings,
         nodes,
         connections,
+        module_instances,
     )
 }
 
@@ -504,10 +672,12 @@ fn normalized_node<D>(node: &NodeDef<D>) -> NodeDef<D> {
     )
 }
 
-fn mapping_order(mapping: &ModuleInterfaceMapping) -> (u8, SignalKind, u128, u8, SignalKind, u128) {
+fn mapping_order(
+    mapping: &ModuleInterfaceMapping,
+) -> (u8, SignalKind, u128, u8, SignalKind, u128, u128) {
     match *mapping {
         ModuleInterfaceMapping::Input { input, target } => {
-            let (target_tag, target_kind, target_key) = endpoint_order(target);
+            let (target_tag, target_kind, target_key, target_subkey) = endpoint_order(target);
             (
                 0,
                 input.kind(),
@@ -515,10 +685,11 @@ fn mapping_order(mapping: &ModuleInterfaceMapping) -> (u8, SignalKind, u128, u8,
                 target_tag,
                 target_kind,
                 target_key,
+                target_subkey,
             )
         }
         ModuleInterfaceMapping::Output { output, source } => {
-            let (source_tag, source_kind, source_key) = endpoint_order(source);
+            let (source_tag, source_kind, source_key, source_subkey) = endpoint_order(source);
             (
                 1,
                 output.kind(),
@@ -526,17 +697,25 @@ fn mapping_order(mapping: &ModuleInterfaceMapping) -> (u8, SignalKind, u128, u8,
                 source_tag,
                 source_kind,
                 source_key,
+                source_subkey,
             )
         }
     }
 }
 
-fn endpoint_order(endpoint: ConnectionEndpoint) -> (u8, SignalKind, u128) {
+fn endpoint_order(endpoint: ConnectionEndpoint) -> (u8, SignalKind, u128, u128) {
     match endpoint {
-        ConnectionEndpoint::ExternalInput(key) => (0, key.kind(), erased_key(key)),
-        ConnectionEndpoint::NodeInput(key) => (1, key.kind(), in_port_key(key)),
-        ConnectionEndpoint::NodeOutput(key) => (2, key.kind(), out_port_key(key)),
-        ConnectionEndpoint::ExternalOutput(key) => (3, key.kind(), erased_key(key)),
+        ConnectionEndpoint::ExternalInput(key) => (0, key.kind(), erased_key(key), 0),
+        ConnectionEndpoint::NodeInput(key) => (1, key.kind(), in_port_key(key), 0),
+        ConnectionEndpoint::NodeOutput(key) => (2, key.kind(), out_port_key(key), 0),
+        ConnectionEndpoint::ModuleInput(key) => (3, key.kind(), module_input_key(key), 0),
+        ConnectionEndpoint::ModuleOutput { instance, output } => (
+            4,
+            output.kind(),
+            instance.as_u128(),
+            module_output_key(output),
+        ),
+        ConnectionEndpoint::ExternalOutput(key) => (5, key.kind(), erased_key(key), 0),
     }
 }
 
@@ -545,6 +724,10 @@ fn endpoint_subject(endpoint: ConnectionEndpoint) -> SubjectRef {
         ConnectionEndpoint::ExternalInput(key) => SubjectRef::ExternalInput(key),
         ConnectionEndpoint::NodeInput(key) => SubjectRef::InPort(key),
         ConnectionEndpoint::NodeOutput(key) => SubjectRef::OutPort(key),
+        ConnectionEndpoint::ModuleInput(key) => SubjectRef::ModuleInput(key),
+        ConnectionEndpoint::ModuleOutput { instance, output } => {
+            SubjectRef::ModuleInstanceOutput(instance, output)
+        }
         ConnectionEndpoint::ExternalOutput(key) => SubjectRef::ExternalOutput(key),
     }
 }

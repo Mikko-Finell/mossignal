@@ -7,7 +7,7 @@ use crate::authored::InputPortRole;
 use crate::identity::ModuleFingerprint;
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
-    AnyOutPortKey, ConnectionKey, NetworkKey, NodeKey,
+    AnyOutPortKey, ConnectionKey, ModuleInstanceKey, NetworkKey, NodeKey,
 };
 use crate::metadata::OriginRef;
 use crate::signal::{LogicLevel, SignalKind};
@@ -26,6 +26,12 @@ pub enum SubjectRef {
     ModuleInput(AnyModuleInputKey),
     /// A typed public module output.
     ModuleOutput(AnyModuleOutputKey),
+    /// One stable module instance.
+    ModuleInstance(ModuleInstanceKey),
+    /// One exact public input of one module instance.
+    ModuleInstanceInput(ModuleInstanceKey, AnyModuleInputKey),
+    /// One exact public output of one module instance.
+    ModuleInstanceOutput(ModuleInstanceKey, AnyModuleOutputKey),
     /// An authored node.
     Node(NodeKey),
     /// An authored node input port.
@@ -76,12 +82,19 @@ impl SubjectRef {
             }
             Self::ModuleInput(key) => (5, SubjectPayload::ModuleInput(*key)),
             Self::ModuleOutput(key) => (6, SubjectPayload::ModuleOutput(*key)),
-            Self::Node(key) => (7, SubjectPayload::Direct(key.as_u128())),
-            Self::InPort(key) => (8, SubjectPayload::InPort(*key)),
-            Self::OutPort(key) => (9, SubjectPayload::OutPort(*key)),
-            Self::Connection(key) => (10, SubjectPayload::Direct(key.as_u128())),
-            Self::ExternalInput(key) => (11, SubjectPayload::ExternalInput(*key)),
-            Self::ExternalOutput(key) => (12, SubjectPayload::ExternalOutput(*key)),
+            Self::ModuleInstance(key) => (7, SubjectPayload::Direct(key.as_u128())),
+            Self::ModuleInstanceInput(instance, key) => {
+                (8, SubjectPayload::InstanceInput(*instance, *key))
+            }
+            Self::ModuleInstanceOutput(instance, key) => {
+                (9, SubjectPayload::InstanceOutput(*instance, *key))
+            }
+            Self::Node(key) => (10, SubjectPayload::Direct(key.as_u128())),
+            Self::InPort(key) => (11, SubjectPayload::InPort(*key)),
+            Self::OutPort(key) => (12, SubjectPayload::OutPort(*key)),
+            Self::Connection(key) => (13, SubjectPayload::Direct(key.as_u128())),
+            Self::ExternalInput(key) => (14, SubjectPayload::ExternalInput(*key)),
+            Self::ExternalOutput(key) => (15, SubjectPayload::ExternalOutput(*key)),
         }
     }
 
@@ -96,6 +109,8 @@ enum SubjectPayload {
     Fingerprint([u8; 32]),
     ModuleInput(AnyModuleInputKey),
     ModuleOutput(AnyModuleOutputKey),
+    InstanceInput(ModuleInstanceKey, AnyModuleInputKey),
+    InstanceOutput(ModuleInstanceKey, AnyModuleOutputKey),
     InPort(AnyInPortKey),
     OutPort(AnyOutPortKey),
     ExternalInput(AnyExternalInputKey),
@@ -160,6 +175,10 @@ pub enum DiagnosticCode {
     ValidationUnaryDegenerateNode,
     ValidationConstantResultNode,
     ValidationCurrentReactionCycle,
+    ValidationInvalidModuleBinding,
+    ValidationMalformedHierarchy,
+    ValidationHierarchyCycle,
+    CompilationUnsupportedModuleInstances,
     InternalDiagnosticEvidenceConflict,
 }
 
@@ -255,6 +274,13 @@ pub enum DuplicateClaim {
     },
     ModuleOutput {
         key: AnyModuleOutputKey,
+        origin: Option<OriginRef>,
+    },
+    ModuleInstance {
+        key: ModuleInstanceKey,
+        module: ModuleFingerprint,
+        parent: Option<ModuleInstanceKey>,
+        bindings: Vec<(AnyModuleInputKey, SubjectRef)>,
         origin: Option<OriginRef>,
     },
 }
@@ -353,6 +379,25 @@ pub enum ProblemEvidence<D> {
     ValidationCurrentReactionCycle {
         members: Vec<ReactionMemberRef>,
         witness: Vec<CurrentReactionCycleStep>,
+        marker: PhantomData<fn() -> D>,
+    },
+    ValidationInvalidModuleBinding {
+        instance: ModuleInstanceKey,
+        input: AnyModuleInputKey,
+        sources: Vec<SubjectRef>,
+        marker: PhantomData<fn() -> D>,
+    },
+    ValidationMalformedHierarchy {
+        instance: ModuleInstanceKey,
+        parent: ModuleInstanceKey,
+        marker: PhantomData<fn() -> D>,
+    },
+    ValidationHierarchyCycle {
+        instances: Vec<ModuleInstanceKey>,
+        marker: PhantomData<fn() -> D>,
+    },
+    CompilationUnsupportedModuleInstances {
+        instances: Vec<ModuleInstanceKey>,
         marker: PhantomData<fn() -> D>,
     },
     InternalDiagnosticEvidenceConflict {
@@ -516,6 +561,49 @@ impl<D> ProblemEvidence<D> {
         }
     }
 
+    /// Evidence for a missing, duplicate, unknown, wrong-kind, or invalid module binding.
+    #[must_use]
+    pub fn invalid_module_binding(
+        instance: ModuleInstanceKey,
+        input: AnyModuleInputKey,
+        sources: Vec<SubjectRef>,
+    ) -> Self {
+        Self::ValidationInvalidModuleBinding {
+            instance,
+            input,
+            sources,
+            marker: PhantomData,
+        }
+    }
+
+    /// Evidence for one missing module-instance parent.
+    #[must_use]
+    pub fn malformed_hierarchy(instance: ModuleInstanceKey, parent: ModuleInstanceKey) -> Self {
+        Self::ValidationMalformedHierarchy {
+            instance,
+            parent,
+            marker: PhantomData,
+        }
+    }
+
+    /// Evidence for one cyclic module-containment component.
+    #[must_use]
+    pub fn hierarchy_cycle(instances: Vec<ModuleInstanceKey>) -> Self {
+        Self::ValidationHierarchyCycle {
+            instances,
+            marker: PhantomData,
+        }
+    }
+
+    /// Evidence for the temporary module-aware compilation capability boundary.
+    #[must_use]
+    pub fn unsupported_module_instances(instances: Vec<ModuleInstanceKey>) -> Self {
+        Self::CompilationUnsupportedModuleInstances {
+            instances,
+            marker: PhantomData,
+        }
+    }
+
     fn canonicalize(&mut self) {
         let canonicalize = |subjects: &mut Vec<SubjectRef>| {
             subjects.sort_by(SubjectRef::cmp_canonical);
@@ -534,6 +622,12 @@ impl<D> ProblemEvidence<D> {
             Self::ValidationCurrentReactionCycle { members, .. } => {
                 members.sort();
                 members.dedup();
+            }
+            Self::ValidationInvalidModuleBinding { sources, .. } => canonicalize(sources),
+            Self::ValidationHierarchyCycle { instances, .. }
+            | Self::CompilationUnsupportedModuleInstances { instances, .. } => {
+                instances.sort();
+                instances.dedup();
             }
             _ => {}
         }
@@ -589,6 +683,10 @@ opening_diagnostic_registry! {
     ValidationUnaryDegenerateNode, Self::ValidationUnaryDegenerateNode { .. }, "validation.unary_degenerate_node", Warning, Advisory, true;
     ValidationConstantResultNode, Self::ValidationConstantResultNode { .. }, "validation.constant_result_node", Warning, Advisory, true;
     ValidationCurrentReactionCycle, Self::ValidationCurrentReactionCycle { .. }, "validation.current_reaction_cycle", Error, CallerInput, true;
+    ValidationInvalidModuleBinding, Self::ValidationInvalidModuleBinding { .. }, "validation.invalid_module_binding", Error, CallerInput, true;
+    ValidationMalformedHierarchy, Self::ValidationMalformedHierarchy { .. }, "validation.malformed_hierarchy", Error, CallerInput, true;
+    ValidationHierarchyCycle, Self::ValidationHierarchyCycle { .. }, "validation.hierarchy_cycle", Error, CallerInput, true;
+    CompilationUnsupportedModuleInstances, Self::CompilationUnsupportedModuleInstances { .. }, "compilation.unsupported_module_instances", Error, UnsupportedFeature, true;
     InternalDiagnosticEvidenceConflict, Self::InternalDiagnosticEvidenceConflict { .. }, "internal.diagnostic_evidence_conflict", Error, LibraryDefect, false;
 }
 
@@ -703,6 +801,13 @@ impl<D> DiagnosticSet<D> {
             internal_defects: Vec::new(),
         }
     }
+
+    pub(crate) fn from_diagnostic(diagnostic: Diagnostic<D>) -> Self {
+        Self {
+            findings: vec![diagnostic],
+            internal_defects: Vec::new(),
+        }
+    }
     #[must_use]
     pub fn len(&self) -> usize {
         self.findings.len()
@@ -806,6 +911,7 @@ enum ConditionDiscriminator {
     Empty,
     Internal(DiagnosticCode, SubjectRef),
     Cycle(Vec<ReactionMemberRef>),
+    Instances(Vec<ModuleInstanceKey>),
 }
 
 fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscriminator {
@@ -858,6 +964,21 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         }
         ProblemEvidence::ValidationCurrentReactionCycle { members, .. } => {
             ConditionDiscriminator::Cycle(members.clone())
+        }
+        ProblemEvidence::ValidationInvalidModuleBinding {
+            instance, input, ..
+        } => ConditionDiscriminator::Subject(SubjectRef::ModuleInstanceInput(*instance, *input)),
+        ProblemEvidence::ValidationMalformedHierarchy {
+            instance, parent, ..
+        } => ConditionDiscriminator::Subjects(
+            SubjectRef::ModuleInstance(*instance),
+            SubjectRef::ModuleInstance(*parent),
+        ),
+        ProblemEvidence::ValidationHierarchyCycle { instances, .. } => {
+            ConditionDiscriminator::Instances(instances.clone())
+        }
+        ProblemEvidence::CompilationUnsupportedModuleInstances { .. } => {
+            ConditionDiscriminator::Empty
         }
         ProblemEvidence::InternalDiagnosticEvidenceConflict {
             conflicting_code,
@@ -936,6 +1057,7 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
             ConditionDiscriminator::Empty => 8,
             ConditionDiscriminator::Internal(_, _) => 9,
             ConditionDiscriminator::Cycle(_) => 10,
+            ConditionDiscriminator::Instances(_) => 11,
         }
     }
     tag(&left)
@@ -988,6 +1110,9 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
                 .cmp(&right_code)
                 .then_with(|| left_subject.cmp_canonical(&right_subject)),
             (ConditionDiscriminator::Cycle(left), ConditionDiscriminator::Cycle(right)) => {
+                left.cmp(&right)
+            }
+            (ConditionDiscriminator::Instances(left), ConditionDiscriminator::Instances(right)) => {
                 left.cmp(&right)
             }
             _ => Ordering::Equal,

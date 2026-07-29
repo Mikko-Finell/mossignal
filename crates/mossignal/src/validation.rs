@@ -3,8 +3,8 @@
 #![allow(dead_code)] // Consumed by the following private validation phase.
 
 use crate::authored::{
-    ConnectionEndpoint, InputPortRole, ModuleInterfaceMapping, NodeKind, UncheckedModule,
-    UncheckedNetwork,
+    ConnectionEndpoint, InputPortRole, ModuleInstanceDef, ModuleInterfaceMapping, NodeDef,
+    NodeKind, UncheckedModule, UncheckedNetwork,
 };
 use crate::compile::CompiledNetwork;
 use crate::diagnostics::{
@@ -14,7 +14,7 @@ use crate::diagnostics::{
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId, fingerprints};
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
-    AnyOutPortKey, AnySignalSourceKey, ConnectionKey, NodeKey, SignalSourceKey,
+    AnyOutPortKey, AnySignalSourceKey, ConnectionKey, ModuleInstanceKey, NodeKey, SignalSourceKey,
 };
 use crate::signal::{LogicLevel, SignalKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -49,6 +49,8 @@ pub(crate) enum ReactionVertex {
     NodeOperation(NodeKey),
     NodeOutput(AnyOutPortKey),
     ModuleOutput(AnyModuleOutputKey),
+    InstanceInput(ModuleInstanceKey, AnyModuleInputKey),
+    InstanceOutput(ModuleInstanceKey, AnyModuleOutputKey),
     ExternalOutput(AnyExternalOutputKey),
 }
 
@@ -59,6 +61,8 @@ pub(crate) enum ReactionDependencySubject {
     ModuleInput(AnyModuleInputKey),
     Node(NodeKey),
     ModuleOutput(AnyModuleOutputKey),
+    InstanceBinding(ModuleInstanceKey, AnyModuleInputKey),
+    InstanceProjection(ModuleInstanceKey),
     ExternalOutput(AnyExternalOutputKey),
 }
 
@@ -112,15 +116,29 @@ impl<D> ValidatedNetwork<D> {
         self.input_schema_fingerprint
     }
 
+    /// Borrows the canonical validated authored graph, including retained hierarchy.
+    #[must_use]
+    pub const fn graph(&self) -> NetworkDefinitionGraphView<'_, D> {
+        NetworkDefinitionGraphView {
+            definition: &self.definition,
+        }
+    }
+
     /// Compiles this validated definition into immutable execution topology.
     #[must_use]
     pub fn compile(self) -> Report<CompiledNetwork<D>, D> {
+        if !self.definition.module_instances().is_empty() {
+            return unsupported_module_compilation(&self.definition);
+        }
         CompiledNetwork::from_validated(&self)
     }
 
     /// Compiles a shared validated definition without consuming it.
     #[must_use]
     pub fn compile_ref(&self) -> Report<CompiledNetwork<D>, D> {
+        if !self.definition.module_instances().is_empty() {
+            return unsupported_module_compilation(&self.definition);
+        }
         CompiledNetwork::from_validated(self)
     }
 
@@ -138,6 +156,57 @@ impl<D> ValidatedNetwork<D> {
         }
         .reaction_dependencies()
     }
+}
+
+/// Immutable read-only view of a validated network definition and retained hierarchy.
+#[derive(Clone, Copy)]
+pub struct NetworkDefinitionGraphView<'a, D> {
+    definition: &'a UncheckedNetwork<D>,
+}
+
+impl<'a, D> NetworkDefinitionGraphView<'a, D> {
+    #[must_use]
+    pub fn nodes(self) -> &'a [NodeDef<D>] {
+        self.definition.nodes()
+    }
+    #[must_use]
+    pub fn connections(self) -> &'a [crate::authored::ConnectionDef] {
+        self.definition.connections()
+    }
+    #[must_use]
+    pub fn module_instances(self) -> &'a [ModuleInstanceDef<D>] {
+        self.definition.module_instances()
+    }
+    #[must_use]
+    pub fn qualified_nodes(self) -> Vec<crate::module::QualifiedNodeRef> {
+        crate::module::qualified_nodes(self.definition.module_instances())
+    }
+    #[must_use]
+    pub fn qualified_connections(self) -> Vec<crate::module::QualifiedConnectionRef> {
+        crate::module::qualified_connections(self.definition.module_instances())
+    }
+}
+
+fn unsupported_module_compilation<D>(
+    definition: &UncheckedNetwork<D>,
+) -> Report<CompiledNetwork<D>, D> {
+    let instances = definition
+        .module_instances()
+        .iter()
+        .map(ModuleInstanceDef::key)
+        .collect();
+    let problem = Problem::new(
+        SubjectRef::Network(definition.key()),
+        Vec::new(),
+        ProblemEvidence::unsupported_module_instances(instances),
+    );
+    let diagnostics = match Diagnostic::new(problem) {
+        Ok(diagnostic) => DiagnosticSet::from_diagnostic(diagnostic),
+        Err(_) => panic!(
+            "compilation.unsupported_module_instances must remain a report-deliverable catalogue condition"
+        ),
+    };
+    Report::new(None, diagnostics)
 }
 
 impl ReactionDependencyGraph {
@@ -194,6 +263,8 @@ impl ReactionDependencyGraph {
                 subject: ReactionDependencySubject::Connection(connection.key()),
             });
         }
+
+        add_instance_dependencies(network.module_instances(), &mut vertices, &mut dependencies);
 
         for output in network.external_outputs() {
             let source = reaction_source_from_signal(output.source());
@@ -281,10 +352,9 @@ impl ReactionDependencyGraph {
                     });
                 }
                 ModuleInterfaceMapping::Output { output, source } => {
-                    let ConnectionEndpoint::NodeOutput(source) = source else {
+                    let Some(source) = reaction_source(source) else {
                         continue;
                     };
-                    let source = ReactionVertex::NodeOutput(source);
                     let observed = ReactionVertex::ModuleOutput(output);
                     vertices.insert(observed);
                     dependencies.insert(ReactionDependency {
@@ -295,6 +365,7 @@ impl ReactionDependencyGraph {
                 }
             }
         }
+        add_instance_dependencies(module.module_instances(), &mut vertices, &mut dependencies);
         for edge in &dependencies {
             vertices.insert(edge.from);
             vertices.insert(edge.to);
@@ -424,6 +495,73 @@ impl ReactionDependencyGraph {
     }
 }
 
+fn add_instance_dependencies<D>(
+    instances: &[ModuleInstanceDef<D>],
+    vertices: &mut BTreeSet<ReactionVertex>,
+    dependencies: &mut BTreeSet<ReactionDependency>,
+) {
+    for instance in instances {
+        for input in instance.module().inputs() {
+            vertices.insert(ReactionVertex::InstanceInput(instance.key(), input.key()));
+        }
+        for output in instance.module().outputs() {
+            vertices.insert(ReactionVertex::InstanceOutput(instance.key(), output.key()));
+        }
+        for binding in instance.bindings().bindings() {
+            let Some(source) = reaction_source(binding.source()) else {
+                continue;
+            };
+            dependencies.insert(ReactionDependency {
+                from: source,
+                to: ReactionVertex::InstanceInput(instance.key(), binding.input()),
+                subject: ReactionDependencySubject::InstanceBinding(
+                    instance.key(),
+                    binding.input(),
+                ),
+            });
+        }
+        for (input, output) in public_module_dependencies(instance.module()) {
+            dependencies.insert(ReactionDependency {
+                from: ReactionVertex::InstanceInput(instance.key(), input),
+                to: ReactionVertex::InstanceOutput(instance.key(), output),
+                subject: ReactionDependencySubject::InstanceProjection(instance.key()),
+            });
+        }
+    }
+    for edge in dependencies.iter() {
+        vertices.insert(edge.from);
+        vertices.insert(edge.to);
+    }
+}
+
+fn public_module_dependencies<D>(
+    module: &crate::module::ModuleDef<D>,
+) -> BTreeSet<(AnyModuleInputKey, AnyModuleOutputKey)> {
+    let graph = ReactionDependencyGraph::from_module(module.definition());
+    let mut outgoing: BTreeMap<ReactionVertex, Vec<ReactionVertex>> = BTreeMap::new();
+    for edge in graph.dependencies() {
+        outgoing.entry(edge.from).or_default().push(edge.to);
+    }
+    let mut result = BTreeSet::new();
+    for input in module.inputs() {
+        let start = ReactionVertex::ModuleInput(input.key());
+        let mut pending = vec![start];
+        let mut visited = BTreeSet::new();
+        while let Some(vertex) = pending.pop() {
+            if !visited.insert(vertex) {
+                continue;
+            }
+            if let ReactionVertex::ModuleOutput(output) = vertex {
+                result.insert((input.key(), output));
+            }
+            if let Some(next) = outgoing.get(&vertex) {
+                pending.extend(next.iter().copied());
+            }
+        }
+    }
+    result
+}
+
 fn dfs_finish(
     vertex: ReactionVertex,
     graph: &BTreeMap<ReactionVertex, Vec<ReactionVertex>>,
@@ -525,6 +663,14 @@ pub(crate) fn reaction_member(vertex: ReactionVertex) -> ReactionMemberRef {
             subject: SubjectRef::ModuleOutput(key),
             role: ReactionRole::ModuleOutput,
         },
+        ReactionVertex::InstanceInput(instance, key) => ReactionMemberRef {
+            subject: SubjectRef::ModuleInstanceInput(instance, key),
+            role: ReactionRole::ModuleInput,
+        },
+        ReactionVertex::InstanceOutput(instance, key) => ReactionMemberRef {
+            subject: SubjectRef::ModuleInstanceOutput(instance, key),
+            role: ReactionRole::ModuleOutput,
+        },
         ReactionVertex::ExternalOutput(key) => ReactionMemberRef {
             subject: SubjectRef::ExternalOutput(key),
             role: ReactionRole::ExternalOutput,
@@ -540,6 +686,12 @@ pub(crate) fn cycle_step(edge: ReactionDependency) -> CurrentReactionCycleStep {
             ReactionDependencySubject::ModuleInput(key) => SubjectRef::ModuleInput(key),
             ReactionDependencySubject::Node(key) => SubjectRef::Node(key),
             ReactionDependencySubject::ModuleOutput(key) => SubjectRef::ModuleOutput(key),
+            ReactionDependencySubject::InstanceBinding(instance, key) => {
+                SubjectRef::ModuleInstanceInput(instance, key)
+            }
+            ReactionDependencySubject::InstanceProjection(instance) => {
+                SubjectRef::ModuleInstance(instance)
+            }
             ReactionDependencySubject::ExternalOutput(key) => SubjectRef::ExternalOutput(key),
         },
         target: reaction_member(edge.to),
@@ -580,10 +732,11 @@ impl<D> UncheckedNetwork<D> {
             return Report::new(None, diagnostics);
         }
         let order = graph.topological_order();
-        let (fingerprint, input_schema_fingerprint) = fingerprints(&self);
+        let definition = normalized_network(&self);
+        let (fingerprint, input_schema_fingerprint) = fingerprints(&definition);
         Report::new(
             Some(ValidatedNetwork {
-                definition: self,
+                definition,
                 topological_order: order,
                 fingerprint,
                 input_schema_fingerprint,
@@ -603,12 +756,50 @@ impl<D> UncheckedNetwork<D> {
     pub(crate) fn validate_structural_for_module(
         &self,
         boundary_drivers: &BTreeSet<AnyInPortKey>,
+        module_inputs: &BTreeSet<AnyModuleInputKey>,
     ) -> Report<StructuralCandidate<'_, D>, D>
     where
         D: PartialEq,
     {
-        StructuralValidator::for_module(self, boundary_drivers).run()
+        StructuralValidator::for_module(self, boundary_drivers, module_inputs).run()
     }
+}
+
+fn normalized_network<D>(network: &UncheckedNetwork<D>) -> UncheckedNetwork<D> {
+    let mut nodes = network.nodes().to_vec();
+    let mut external_inputs = network.external_inputs().to_vec();
+    let mut external_outputs = network.external_outputs().to_vec();
+    let mut connections = network.connections().to_vec();
+    let mut module_instances = network.module_instances().to_vec();
+    nodes.sort_by_key(NodeDef::key);
+    external_inputs.sort_by_key(|input| input.key());
+    external_outputs.sort_by_key(|output| output.key());
+    connections.sort_by_key(|connection| connection.key());
+    module_instances.sort_by_key(ModuleInstanceDef::key);
+    module_instances = module_instances
+        .into_iter()
+        .map(|instance| {
+            let mut bindings = instance.bindings().bindings().to_vec();
+            bindings.sort_by_key(|binding| (binding.input(), endpoint_subject(binding.source())));
+            ModuleInstanceDef::new(
+                instance.key(),
+                instance.module().clone(),
+                crate::authored::ModuleBindingSet::new(bindings),
+                instance.parent(),
+                instance.meta().clone(),
+            )
+        })
+        .collect();
+    UncheckedNetwork::new_with_instances(
+        network.key(),
+        network.time_domain_id(),
+        network.meta().clone(),
+        nodes,
+        external_inputs,
+        external_outputs,
+        connections,
+        module_instances,
+    )
 }
 
 struct StructuralValidator<'a, D> {
@@ -619,6 +810,8 @@ struct StructuralValidator<'a, D> {
     outputs: BTreeSet<AnyOutPortKey>,
     external_inputs: BTreeSet<AnyExternalInputKey>,
     external_outputs: BTreeSet<AnyExternalOutputKey>,
+    module_inputs: BTreeSet<AnyModuleInputKey>,
+    module_instances: BTreeMap<ModuleInstanceKey, &'a ModuleInstanceDef<D>>,
     boundary_drivers: BTreeSet<AnyInPortKey>,
     use_network_duplicate_subject: bool,
 }
@@ -633,6 +826,8 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
             outputs: BTreeSet::new(),
             external_inputs: BTreeSet::new(),
             external_outputs: BTreeSet::new(),
+            module_inputs: BTreeSet::new(),
+            module_instances: BTreeMap::new(),
             boundary_drivers: BTreeSet::new(),
             use_network_duplicate_subject: true,
         }
@@ -641,9 +836,11 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
     fn for_module(
         network: &'a UncheckedNetwork<D>,
         boundary_drivers: &BTreeSet<AnyInPortKey>,
+        module_inputs: &BTreeSet<AnyModuleInputKey>,
     ) -> Self {
         let mut validator = Self::new(network);
         validator.boundary_drivers = boundary_drivers.clone();
+        validator.module_inputs = module_inputs.clone();
         validator.use_network_duplicate_subject = false;
         validator
     }
@@ -651,6 +848,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
     fn run(mut self) -> Report<StructuralCandidate<'a, D>, D> {
         self.collect_keys_and_duplicates();
         self.validate_node_shapes();
+        self.validate_module_instances();
         self.validate_connections();
         self.validate_external_outputs();
         Report::new(
@@ -674,6 +872,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
         let mut connections = BTreeMap::new();
         let mut external_inputs = BTreeMap::new();
         let mut external_outputs = BTreeMap::new();
+        let mut module_instances = BTreeMap::new();
         for node in self.network.nodes() {
             nodes
                 .entry(node.key())
@@ -755,6 +954,26 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 });
             self.external_outputs.insert(endpoint.key());
         }
+        for instance in self.network.module_instances() {
+            module_instances
+                .entry(instance.key())
+                .or_insert_with(Vec::new)
+                .push(DuplicateClaim::ModuleInstance {
+                    key: instance.key(),
+                    module: instance.module().fingerprint(),
+                    parent: instance.parent(),
+                    bindings: instance
+                        .bindings()
+                        .bindings()
+                        .iter()
+                        .map(|binding| (binding.input(), endpoint_subject(binding.source())))
+                        .collect(),
+                    origin: instance.meta().origin.clone(),
+                });
+            self.module_instances
+                .entry(instance.key())
+                .or_insert(instance);
+        }
         for claims in nodes.values().filter(|claims| claims.len() > 1) {
             self.duplicate(claims);
         }
@@ -771,6 +990,9 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
             self.duplicate(claims);
         }
         for claims in external_outputs.values().filter(|claims| claims.len() > 1) {
+            self.duplicate(claims);
+        }
+        for claims in module_instances.values().filter(|claims| claims.len() > 1) {
             self.duplicate(claims);
         }
     }
@@ -966,6 +1188,105 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
         }
     }
 
+    fn validate_module_instances(&mut self) {
+        for instance in self.network.module_instances() {
+            let required: BTreeSet<_> = instance
+                .module()
+                .inputs()
+                .map(|input| input.key())
+                .collect();
+            let mut claims: BTreeMap<AnyModuleInputKey, Vec<SubjectRef>> = BTreeMap::new();
+            for binding in instance.bindings().bindings() {
+                let primary = SubjectRef::ModuleInstanceInput(instance.key(), binding.input());
+                let source_subject = endpoint_subject(binding.source());
+                claims
+                    .entry(binding.input())
+                    .or_default()
+                    .push(source_subject);
+                let valid_source = self.instance_source_exists(binding.source());
+                if !required.contains(&binding.input())
+                    || !is_source(binding.source())
+                    || binding.input().kind() != binding.source().kind()
+                    || !valid_source
+                {
+                    self.add(
+                        primary,
+                        ProblemEvidence::invalid_module_binding(
+                            instance.key(),
+                            binding.input(),
+                            vec![source_subject],
+                        ),
+                    );
+                }
+            }
+            for input in required {
+                let sources = claims.get(&input).cloned().unwrap_or_default();
+                if sources.len() != 1 {
+                    self.add(
+                        SubjectRef::ModuleInstanceInput(instance.key(), input),
+                        ProblemEvidence::invalid_module_binding(instance.key(), input, sources),
+                    );
+                }
+            }
+            if let Some(parent) = instance.parent()
+                && !self.module_instances.contains_key(&parent)
+            {
+                self.add(
+                    SubjectRef::ModuleInstance(instance.key()),
+                    ProblemEvidence::malformed_hierarchy(instance.key(), parent),
+                );
+            }
+        }
+
+        let parents: BTreeMap<_, _> = self
+            .network
+            .module_instances()
+            .iter()
+            .filter_map(|instance| instance.parent().map(|parent| (instance.key(), parent)))
+            .collect();
+        let mut emitted = BTreeSet::new();
+        for start in parents.keys().copied() {
+            let mut path = Vec::new();
+            let mut positions = BTreeMap::new();
+            let mut current = start;
+            while let Some(parent) = parents.get(&current).copied() {
+                if let Some(position) = positions.get(&current).copied() {
+                    let mut cycle = path[position..].to_vec();
+                    cycle.sort();
+                    cycle.dedup();
+                    if emitted.insert(cycle.clone()) {
+                        self.add(
+                            SubjectRef::ModuleInstance(cycle[0]),
+                            ProblemEvidence::hierarchy_cycle(cycle),
+                        );
+                    }
+                    break;
+                }
+                positions.insert(current, path.len());
+                path.push(current);
+                current = parent;
+            }
+        }
+    }
+
+    fn instance_source_exists(&self, source: ConnectionEndpoint) -> bool {
+        match source {
+            ConnectionEndpoint::ExternalInput(key) => self.external_inputs.contains(&key),
+            ConnectionEndpoint::NodeOutput(key) => self.outputs.contains(&key),
+            ConnectionEndpoint::ModuleInput(key) => self.module_inputs.contains(&key),
+            ConnectionEndpoint::ModuleOutput { instance, output } => self
+                .module_instances
+                .get(&instance)
+                .is_some_and(|definition| {
+                    definition
+                        .module()
+                        .outputs()
+                        .any(|candidate| candidate.key() == output)
+                }),
+            ConnectionEndpoint::NodeInput(_) | ConnectionEndpoint::ExternalOutput(_) => false,
+        }
+    }
+
     fn validate_connections(&mut self) {
         let mut drivers: BTreeMap<AnyInPortKey, Vec<SubjectRef>> = BTreeMap::new();
         let mut variadic_inputs = BTreeMap::new();
@@ -1103,6 +1424,25 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 );
                 false
             }
+            ConnectionEndpoint::ModuleInput(key) if !self.module_inputs.contains(&key) => {
+                self.add(
+                    SubjectRef::ModuleInput(key),
+                    ProblemEvidence::missing_endpoint(SubjectRef::ModuleInput(key), key.kind()),
+                );
+                false
+            }
+            ConnectionEndpoint::ModuleOutput { instance, output }
+                if !self.instance_source_exists(endpoint) =>
+            {
+                self.add(
+                    SubjectRef::ModuleInstance(instance),
+                    ProblemEvidence::missing_endpoint(
+                        SubjectRef::ModuleInstanceOutput(instance, output),
+                        output.kind(),
+                    ),
+                );
+                false
+            }
             _ => true,
         }
     }
@@ -1165,6 +1505,38 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         ),
                     )
                 }
+                AnySignalSourceKey::Level(SignalSourceKey::ModuleOutput {
+                    instance,
+                    output: module_output,
+                }) if !self.instance_source_exists(ConnectionEndpoint::module_output(
+                    instance,
+                    module_output.into(),
+                )) =>
+                {
+                    self.add(
+                        SubjectRef::ExternalOutput(output.key()),
+                        ProblemEvidence::missing_endpoint(
+                            SubjectRef::ModuleInstanceOutput(instance, module_output.into()),
+                            SignalKind::Level,
+                        ),
+                    )
+                }
+                AnySignalSourceKey::Pulse(SignalSourceKey::ModuleOutput {
+                    instance,
+                    output: module_output,
+                }) if !self.instance_source_exists(ConnectionEndpoint::module_output(
+                    instance,
+                    module_output.into(),
+                )) =>
+                {
+                    self.add(
+                        SubjectRef::ExternalOutput(output.key()),
+                        ProblemEvidence::missing_endpoint(
+                            SubjectRef::ModuleInstanceOutput(instance, module_output.into()),
+                            SignalKind::Pulse,
+                        ),
+                    )
+                }
                 _ => {}
             }
         }
@@ -1174,7 +1546,10 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
 fn is_source(endpoint: ConnectionEndpoint) -> bool {
     matches!(
         endpoint,
-        ConnectionEndpoint::ExternalInput(_) | ConnectionEndpoint::NodeOutput(_)
+        ConnectionEndpoint::ExternalInput(_)
+            | ConnectionEndpoint::NodeOutput(_)
+            | ConnectionEndpoint::ModuleInput(_)
+            | ConnectionEndpoint::ModuleOutput { .. }
     )
 }
 
@@ -1186,6 +1561,10 @@ fn reaction_source(endpoint: ConnectionEndpoint) -> Option<ReactionVertex> {
     match endpoint {
         ConnectionEndpoint::ExternalInput(key) => Some(ReactionVertex::ExternalInput(key)),
         ConnectionEndpoint::NodeOutput(key) => Some(ReactionVertex::NodeOutput(key)),
+        ConnectionEndpoint::ModuleInput(key) => Some(ReactionVertex::ModuleInput(key)),
+        ConnectionEndpoint::ModuleOutput { instance, output } => {
+            Some(ReactionVertex::InstanceOutput(instance, output))
+        }
         ConnectionEndpoint::NodeInput(_) | ConnectionEndpoint::ExternalOutput(_) => None,
     }
 }
@@ -1204,6 +1583,12 @@ fn reaction_source_from_signal(source: AnySignalSourceKey) -> ReactionVertex {
         AnySignalSourceKey::Pulse(SignalSourceKey::NodeOutput(key)) => {
             ReactionVertex::NodeOutput(key.into())
         }
+        AnySignalSourceKey::Level(SignalSourceKey::ModuleOutput { instance, output }) => {
+            ReactionVertex::InstanceOutput(instance, output.into())
+        }
+        AnySignalSourceKey::Pulse(SignalSourceKey::ModuleOutput { instance, output }) => {
+            ReactionVertex::InstanceOutput(instance, output.into())
+        }
     }
 }
 
@@ -1212,6 +1597,10 @@ fn endpoint_subject(endpoint: ConnectionEndpoint) -> SubjectRef {
         ConnectionEndpoint::ExternalInput(key) => SubjectRef::ExternalInput(key),
         ConnectionEndpoint::NodeInput(key) => SubjectRef::InPort(key),
         ConnectionEndpoint::NodeOutput(key) => SubjectRef::OutPort(key),
+        ConnectionEndpoint::ModuleInput(key) => SubjectRef::ModuleInput(key),
+        ConnectionEndpoint::ModuleOutput { instance, output } => {
+            SubjectRef::ModuleInstanceOutput(instance, output)
+        }
         ConnectionEndpoint::ExternalOutput(key) => SubjectRef::ExternalOutput(key),
     }
 }
@@ -1230,6 +1619,12 @@ fn signal_source_subject(source: AnySignalSourceKey) -> SubjectRef {
         AnySignalSourceKey::Pulse(SignalSourceKey::NodeOutput(key)) => {
             SubjectRef::OutPort(key.into())
         }
+        AnySignalSourceKey::Level(SignalSourceKey::ModuleOutput { instance, output }) => {
+            SubjectRef::ModuleInstanceOutput(instance, output.into())
+        }
+        AnySignalSourceKey::Pulse(SignalSourceKey::ModuleOutput { instance, output }) => {
+            SubjectRef::ModuleInstanceOutput(instance, output.into())
+        }
     }
 }
 
@@ -1247,7 +1642,17 @@ fn endpoint_signal_source(endpoint: ConnectionEndpoint) -> Option<AnySignalSourc
         ConnectionEndpoint::NodeOutput(AnyOutPortKey::Pulse(key)) => {
             Some(SignalSourceKey::NodeOutput(key).into())
         }
-        ConnectionEndpoint::NodeInput(_) | ConnectionEndpoint::ExternalOutput(_) => None,
+        ConnectionEndpoint::ModuleOutput {
+            instance,
+            output: AnyModuleOutputKey::Level(output),
+        } => Some(SignalSourceKey::ModuleOutput { instance, output }.into()),
+        ConnectionEndpoint::ModuleOutput {
+            instance,
+            output: AnyModuleOutputKey::Pulse(output),
+        } => Some(SignalSourceKey::ModuleOutput { instance, output }.into()),
+        ConnectionEndpoint::NodeInput(_)
+        | ConnectionEndpoint::ModuleInput(_)
+        | ConnectionEndpoint::ExternalOutput(_) => None,
     }
 }
 
@@ -1261,6 +1666,7 @@ fn duplicate_claim_subject(claim: &DuplicateClaim) -> SubjectRef {
         DuplicateClaim::ExternalOutput { key, .. } => SubjectRef::ExternalOutput(*key),
         DuplicateClaim::ModuleInput { key, .. } => SubjectRef::ModuleInput(*key),
         DuplicateClaim::ModuleOutput { key, .. } => SubjectRef::ModuleOutput(*key),
+        DuplicateClaim::ModuleInstance { key, .. } => SubjectRef::ModuleInstance(*key),
     }
 }
 

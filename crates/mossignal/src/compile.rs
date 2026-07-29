@@ -1223,7 +1223,10 @@ fn operation_descriptor(
         ReactionVertex::ExternalOutput(key) => {
             OperationDescriptor::ExternalOutput(external_outputs[&key])
         }
-        ReactionVertex::ModuleInput(_) | ReactionVertex::ModuleOutput(_) => {
+        ReactionVertex::ModuleInput(_)
+        | ReactionVertex::ModuleOutput(_)
+        | ReactionVertex::InstanceInput(_, _)
+        | ReactionVertex::InstanceOutput(_, _) => {
             panic!("network compilation must not receive module-boundary reaction vertices")
         }
     }
@@ -1233,7 +1236,10 @@ fn connection_source(endpoint: ConnectionEndpoint) -> ReactionVertex {
     match endpoint {
         ConnectionEndpoint::ExternalInput(key) => ReactionVertex::ExternalInput(key),
         ConnectionEndpoint::NodeOutput(key) => ReactionVertex::NodeOutput(key),
-        ConnectionEndpoint::NodeInput(_) | ConnectionEndpoint::ExternalOutput(_) => {
+        ConnectionEndpoint::NodeInput(_)
+        | ConnectionEndpoint::ModuleInput(_)
+        | ConnectionEndpoint::ModuleOutput { .. }
+        | ConnectionEndpoint::ExternalOutput(_) => {
             panic!("validated connection source must be a reaction source")
         }
     }
@@ -1252,6 +1258,16 @@ fn reaction_source(source: crate::key::AnySignalSourceKey) -> ReactionVertex {
         }
         crate::key::AnySignalSourceKey::Pulse(crate::key::SignalSourceKey::NodeOutput(key)) => {
             ReactionVertex::NodeOutput(key.into())
+        }
+        crate::key::AnySignalSourceKey::Level(crate::key::SignalSourceKey::ModuleOutput {
+            ..
+        })
+        | crate::key::AnySignalSourceKey::Pulse(crate::key::SignalSourceKey::ModuleOutput {
+            ..
+        }) => {
+            panic!(
+                "module-containing validated networks must stop at the staged compilation boundary"
+            )
         }
     }
 }
