@@ -178,7 +178,6 @@ pub enum DiagnosticCode {
     ValidationInvalidModuleBinding,
     ValidationMalformedHierarchy,
     ValidationHierarchyCycle,
-    CompilationUnsupportedModuleInstances,
     InternalDiagnosticEvidenceConflict,
 }
 
@@ -396,10 +395,6 @@ pub enum ProblemEvidence<D> {
         instances: Vec<ModuleInstanceKey>,
         marker: PhantomData<fn() -> D>,
     },
-    CompilationUnsupportedModuleInstances {
-        instances: Vec<ModuleInstanceKey>,
-        marker: PhantomData<fn() -> D>,
-    },
     InternalDiagnosticEvidenceConflict {
         conflicting_code: DiagnosticCode,
         conflicting_primary: SubjectRef,
@@ -595,15 +590,6 @@ impl<D> ProblemEvidence<D> {
         }
     }
 
-    /// Evidence for the temporary module-aware compilation capability boundary.
-    #[must_use]
-    pub fn unsupported_module_instances(instances: Vec<ModuleInstanceKey>) -> Self {
-        Self::CompilationUnsupportedModuleInstances {
-            instances,
-            marker: PhantomData,
-        }
-    }
-
     fn canonicalize(&mut self) {
         let canonicalize = |subjects: &mut Vec<SubjectRef>| {
             subjects.sort_by(SubjectRef::cmp_canonical);
@@ -624,8 +610,7 @@ impl<D> ProblemEvidence<D> {
                 members.dedup();
             }
             Self::ValidationInvalidModuleBinding { sources, .. } => canonicalize(sources),
-            Self::ValidationHierarchyCycle { instances, .. }
-            | Self::CompilationUnsupportedModuleInstances { instances, .. } => {
+            Self::ValidationHierarchyCycle { instances, .. } => {
                 instances.sort();
                 instances.dedup();
             }
@@ -686,7 +671,6 @@ opening_diagnostic_registry! {
     ValidationInvalidModuleBinding, Self::ValidationInvalidModuleBinding { .. }, "validation.invalid_module_binding", Error, CallerInput, true;
     ValidationMalformedHierarchy, Self::ValidationMalformedHierarchy { .. }, "validation.malformed_hierarchy", Error, CallerInput, true;
     ValidationHierarchyCycle, Self::ValidationHierarchyCycle { .. }, "validation.hierarchy_cycle", Error, CallerInput, true;
-    CompilationUnsupportedModuleInstances, Self::CompilationUnsupportedModuleInstances { .. }, "compilation.unsupported_module_instances", Error, UnsupportedFeature, true;
     InternalDiagnosticEvidenceConflict, Self::InternalDiagnosticEvidenceConflict { .. }, "internal.diagnostic_evidence_conflict", Error, LibraryDefect, false;
 }
 
@@ -802,12 +786,6 @@ impl<D> DiagnosticSet<D> {
         }
     }
 
-    pub(crate) fn from_diagnostic(diagnostic: Diagnostic<D>) -> Self {
-        Self {
-            findings: vec![diagnostic],
-            internal_defects: Vec::new(),
-        }
-    }
     #[must_use]
     pub fn len(&self) -> usize {
         self.findings.len()
@@ -977,9 +955,6 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         ProblemEvidence::ValidationHierarchyCycle { instances, .. } => {
             ConditionDiscriminator::Instances(instances.clone())
         }
-        ProblemEvidence::CompilationUnsupportedModuleInstances { .. } => {
-            ConditionDiscriminator::Empty
-        }
         ProblemEvidence::InternalDiagnosticEvidenceConflict {
             conflicting_code,
             conflicting_primary,
@@ -1015,20 +990,6 @@ fn merge_evidence<D: PartialEq>(
             sources.extend(incoming);
             sources.sort_by(SubjectRef::cmp_canonical);
             sources.dedup();
-            Ok(())
-        }
-        (
-            ProblemEvidence::CompilationUnsupportedModuleInstances { instances, .. },
-            ProblemEvidence::CompilationUnsupportedModuleInstances {
-                instances: incoming,
-                ..
-            },
-        ) => {
-            // SPEC: docs/specs/contracts/module-instantiation-hierarchy.yaml
-            // "temporary-module-compilation-boundary" — evidence is the complete key set.
-            instances.extend(incoming);
-            instances.sort();
-            instances.dedup();
             Ok(())
         }
         (

@@ -6,8 +6,9 @@ use mossignal::metadata::DiagnosticMeta;
 use mossignal::signal::{Level, LogicLevel, Pulse, PulseCount, SignalKind};
 use mossignal::time::Time;
 use mossignal::{
-    CauseInspection, InputBuildFailure, NetworkBuilder, OutputEvent, ProvenanceSubject,
-    RuntimeFailureEvidence, RuntimePolicy, TimeDomainId, Transaction,
+    CauseInspection, InputBuildFailure, NetworkBuilder, NodeSubject, OutputEvent,
+    ProvenanceSubject, PulsePortSubject, RuntimeFailureEvidence, RuntimePolicy, TimeDomainId,
+    Transaction,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -174,12 +175,12 @@ fn merge_sums_stable_ports_preserves_duplicate_multiplicity_and_fans_out() {
     assert_eq!(
         contributions
             .iter()
-            .map(|contribution| (contribution.port(), contribution.count()))
+            .map(|contribution| (contribution.port().clone(), contribution.count()))
             .collect::<Vec<_>>(),
         vec![
-            (ports[0], PulseCount::new(2)),
-            (ports[1], PulseCount::new(3)),
-            (ports[2], PulseCount::new(2)),
+            (PulsePortSubject::Port(ports[0]), PulseCount::new(2)),
+            (PulsePortSubject::Port(ports[1]), PulseCount::new(3)),
+            (PulsePortSubject::Port(ports[2]), PulseCount::new(2)),
         ]
     );
     assert_eq!(
@@ -273,7 +274,9 @@ fn merge_overflow_rejects_the_transaction_atomically() {
         .expect_err("overflow must reject the transaction");
     assert_eq!(
         failure.evidence(),
-        &RuntimeFailureEvidence::PulseCountOverflow { node }
+        &RuntimeFailureEvidence::PulseCountOverflow {
+            node: NodeSubject::Node(node),
+        }
     );
     assert_eq!(machine.status(), before_status);
     assert_eq!(machine.revision(), before_revision);

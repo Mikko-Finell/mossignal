@@ -1,19 +1,30 @@
 //! Immutable dense execution topology for validated restricted networks.
 
-use crate::authored::{ConnectionEndpoint, InputPortRole, NodeKind, UncheckedNetwork};
+use crate::authored::{
+    ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, InputPortRole,
+    ModuleInstanceDef, ModuleInterfaceMapping, NodeDef, NodeKind, NodePorts, UncheckedNetwork,
+};
 use crate::diagnostics::{DiagnosticSet, Report};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
 use crate::input::{InputDeltaBuilder, InputSnapshotBuilder};
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, ConnectionKey,
-    ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey,
+    ExternalInputKey, ExternalOutputKey, InPortKey, ModuleInstanceKey, NetworkKey, NodeKey,
+    OutPortKey,
 };
 use crate::machine::Machine;
+use crate::module::{
+    ModuleDef, NodeSubject, PulsePortSubject, QualifiedConnectionRef, QualifiedInPortRef,
+    QualifiedModuleRef, QualifiedNodeRef,
+};
 use crate::policy::RuntimePolicy;
 use crate::signal::{Level, LogicLevel, Pulse, PulseCount, SignalKind};
 use crate::time::NonZeroSpan;
-use crate::validation::{ReactionDependencyGraph, ReactionVertex, ValidatedNetwork};
-use std::collections::BTreeMap;
+use crate::validation::{
+    NetworkDefinitionGraphView, ReactionDependencyGraph, ReactionVertex, ValidatedNetwork,
+    compilation_reaction_graph,
+};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// An immutable executable topology compiled from a validated network.
@@ -53,6 +64,40 @@ struct CompiledInner<D> {
     external_output_lookup: BTreeMap<AnyExternalOutputKey, ExternalOutputIndex>,
     operation_lookup: BTreeMap<ReactionVertex, OperationIndex>,
     toggle_initial_states: Vec<LogicLevel>,
+    qualified_node_lookup: BTreeMap<QualifiedNodeRef, NodeKey>,
+    qualified_node_reverse: BTreeMap<NodeKey, QualifiedNodeRef>,
+    qualified_input_reverse: BTreeMap<AnyInPortKey, QualifiedInPortRef>,
+    qualified_connection_lookup: BTreeMap<QualifiedConnectionRef, ConnectionKey>,
+    modules: BTreeMap<QualifiedModuleRef, ModuleDef<D>>,
+    module_inputs: BTreeMap<(QualifiedModuleRef, crate::key::AnyModuleInputKey), OperationIndex>,
+    module_outputs: BTreeMap<(QualifiedModuleRef, crate::key::AnyModuleOutputKey), OperationIndex>,
+}
+
+#[derive(Debug)]
+struct LoweredMetadata<D> {
+    qualified_node_lookup: BTreeMap<QualifiedNodeRef, NodeKey>,
+    qualified_node_reverse: BTreeMap<NodeKey, QualifiedNodeRef>,
+    qualified_input_reverse: BTreeMap<AnyInPortKey, QualifiedInPortRef>,
+    qualified_connection_lookup: BTreeMap<QualifiedConnectionRef, ConnectionKey>,
+    modules: BTreeMap<QualifiedModuleRef, ModuleDef<D>>,
+    module_input_sources:
+        BTreeMap<(QualifiedModuleRef, crate::key::AnyModuleInputKey), ConnectionEndpoint>,
+    module_output_sources:
+        BTreeMap<(QualifiedModuleRef, crate::key::AnyModuleOutputKey), ConnectionEndpoint>,
+}
+
+impl<D> Default for LoweredMetadata<D> {
+    fn default() -> Self {
+        Self {
+            qualified_node_lookup: BTreeMap::new(),
+            qualified_node_reverse: BTreeMap::new(),
+            qualified_input_reverse: BTreeMap::new(),
+            qualified_connection_lookup: BTreeMap::new(),
+            modules: BTreeMap::new(),
+            module_input_sources: BTreeMap::new(),
+            module_output_sources: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -156,6 +201,7 @@ enum OperationDescriptor {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct FullEvaluation {
     pub(crate) values: Vec<LogicLevel>,
+    pub(crate) operation_levels: Vec<Option<LogicLevel>>,
     pub(crate) causes: Vec<EvaluationCause>,
     pub(crate) external_outputs: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     pub(crate) pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
@@ -231,8 +277,31 @@ enum EvaluationValue {
 
 impl<D> CompiledNetwork<D> {
     pub(crate) fn from_validated(validated: &ValidatedNetwork<D>) -> Report<Self, D> {
-        let graph = validated.reaction_dependencies();
-        let inner = CompiledInner::build(validated, &graph);
+        let inner = if validated.definition().module_instances().is_empty() {
+            let graph = validated.reaction_dependencies();
+            CompiledInner::build(
+                validated,
+                clone_definition(validated.definition()),
+                &graph,
+                validated.topological_order(),
+                LoweredMetadata::default(),
+            )
+        } else {
+            let lowered = lower_module_instances(validated.definition());
+            let (graph, order) = match compilation_reaction_graph(&lowered.definition) {
+                Some(result) => result,
+                None => panic!(
+                    "module lowering must preserve the validated acyclic current-reaction invariant"
+                ),
+            };
+            CompiledInner::build(
+                validated,
+                lowered.definition,
+                &graph,
+                &order,
+                lowered.metadata,
+            )
+        };
         #[cfg(any(test, debug_assertions))]
         debug_assert!(
             inner.check_invariants().is_ok(),
@@ -268,6 +337,12 @@ impl<D> CompiledNetwork<D> {
     #[must_use]
     pub fn input_schema_fingerprint(&self) -> InputSchemaFingerprint {
         self.inner.input_schema_fingerprint
+    }
+
+    /// Borrows the retained authored graph and complete module hierarchy.
+    #[must_use]
+    pub fn graph(&self) -> NetworkDefinitionGraphView<'_, D> {
+        NetworkDefinitionGraphView::new(&self.inner.definition)
     }
 
     /// Spawns an independent uninitialized machine with an explicit policy.
@@ -407,6 +482,88 @@ impl<D> CompiledNetwork<D> {
 
     pub(crate) fn contains_node(&self, node: NodeKey) -> bool {
         self.inner.node_lookup.contains_key(&node)
+    }
+
+    pub(crate) fn qualified_node(&self, node: NodeKey) -> Option<&QualifiedNodeRef> {
+        self.inner.qualified_node_reverse.get(&node)
+    }
+
+    pub(crate) fn node_subject(&self, node: NodeKey) -> NodeSubject {
+        match self.qualified_node(node) {
+            Some(qualified) => NodeSubject::Qualified(qualified.clone()),
+            None => NodeSubject::Node(node),
+        }
+    }
+
+    pub(crate) fn pulse_port_subject(&self, port: InPortKey<Pulse>) -> PulsePortSubject {
+        match self.inner.qualified_input_reverse.get(&port.into()) {
+            Some(qualified) => PulsePortSubject::Qualified(qualified.clone()),
+            None => PulsePortSubject::Port(port),
+        }
+    }
+
+    pub(crate) fn module(&self, module: &QualifiedModuleRef) -> Option<&ModuleDef<D>> {
+        self.inner.modules.get(module)
+    }
+
+    pub(crate) fn qualified_nodes_under(
+        &self,
+        module: &QualifiedModuleRef,
+    ) -> impl Iterator<Item = (&QualifiedNodeRef, NodeKey)> {
+        self.inner
+            .qualified_node_lookup
+            .iter()
+            .filter(move |(node, _)| node.instances().starts_with(module.instances()))
+            .map(|(node, flat)| (node, *flat))
+    }
+
+    pub(crate) fn qualified_connections_under(
+        &self,
+        module: &QualifiedModuleRef,
+    ) -> impl Iterator<Item = &QualifiedConnectionRef> {
+        self.inner
+            .qualified_connection_lookup
+            .keys()
+            .filter(move |connection| connection.instances().starts_with(module.instances()))
+    }
+
+    pub(crate) fn qualified_modules_under(
+        &self,
+        module: &QualifiedModuleRef,
+    ) -> impl Iterator<Item = &QualifiedModuleRef> {
+        self.inner
+            .modules
+            .keys()
+            .filter(move |candidate| candidate.instances().starts_with(module.instances()))
+    }
+
+    pub(crate) fn module_input_operation(
+        &self,
+        module: &QualifiedModuleRef,
+        input: crate::key::AnyModuleInputKey,
+    ) -> Option<usize> {
+        self.inner
+            .module_inputs
+            .get(&(module.clone(), input))
+            .map(|index| index.0)
+    }
+
+    pub(crate) fn module_output_operation(
+        &self,
+        module: &QualifiedModuleRef,
+        output: crate::key::AnyModuleOutputKey,
+    ) -> Option<usize> {
+        self.inner
+            .module_outputs
+            .get(&(module.clone(), output))
+            .map(|index| index.0)
+    }
+
+    pub(crate) fn node_operation(&self, node: NodeKey) -> Option<usize> {
+        self.inner
+            .operation_lookup
+            .get(&ReactionVertex::NodeOperation(node))
+            .map(|index| index.0)
     }
 }
 
@@ -814,6 +971,13 @@ impl<D> CompiledInner<D> {
                     EvaluationValue::Pulse(_) => None,
                 })
                 .collect(),
+            operation_levels: complete_values
+                .iter()
+                .map(|value| match value {
+                    EvaluationValue::Level(value) => Some(*value),
+                    EvaluationValue::Pulse(_) => None,
+                })
+                .collect(),
             causes,
             external_outputs,
             pulse_outputs,
@@ -866,8 +1030,14 @@ impl<D> CompiledInner<D> {
             .ok_or(EvaluationFailure::Incomplete)
     }
 
-    fn build(validated: &ValidatedNetwork<D>, graph: &ReactionDependencyGraph) -> Self {
-        let definition = clone_definition(validated.definition());
+    fn build(
+        validated: &ValidatedNetwork<D>,
+        execution_definition: UncheckedNetwork<D>,
+        graph: &ReactionDependencyGraph,
+        topological_order: &[ReactionVertex],
+        metadata: LoweredMetadata<D>,
+    ) -> Self {
+        let definition = execution_definition;
         let mut nodes = Vec::new();
         let mut ports = Vec::new();
         let mut node_lookup = BTreeMap::new();
@@ -975,15 +1145,13 @@ impl<D> CompiledInner<D> {
             .map(|(index, output)| (output.key(), ExternalOutputIndex(index)))
             .collect();
 
-        let operation_lookup = validated
-            .topological_order()
+        let operation_lookup = topological_order
             .iter()
             .copied()
             .enumerate()
             .map(|(index, vertex)| (vertex, OperationIndex(index)))
             .collect::<BTreeMap<_, _>>();
-        let operations = validated
-            .topological_order()
+        let operations = topological_order
             .iter()
             .copied()
             .map(|vertex| {
@@ -1034,8 +1202,19 @@ impl<D> CompiledInner<D> {
             })
             .collect();
 
+        let module_inputs = metadata
+            .module_input_sources
+            .into_iter()
+            .map(|(key, source)| (key, operation_lookup[&connection_source(source)]))
+            .collect();
+        let module_outputs = metadata
+            .module_output_sources
+            .into_iter()
+            .map(|(key, source)| (key, operation_lookup[&connection_source(source)]))
+            .collect();
+
         Self {
-            definition,
+            definition: clone_complete_definition(validated.definition()),
             fingerprint: validated.fingerprint(),
             input_schema_fingerprint: validated.input_schema_fingerprint(),
             nodes,
@@ -1053,6 +1232,13 @@ impl<D> CompiledInner<D> {
             external_output_lookup,
             operation_lookup,
             toggle_initial_states,
+            qualified_node_lookup: metadata.qualified_node_lookup,
+            qualified_node_reverse: metadata.qualified_node_reverse,
+            qualified_input_reverse: metadata.qualified_input_reverse,
+            qualified_connection_lookup: metadata.qualified_connection_lookup,
+            modules: metadata.modules,
+            module_inputs,
+            module_outputs,
         }
     }
 
@@ -1270,6 +1456,609 @@ fn reaction_source(source: crate::key::AnySignalSourceKey) -> ReactionVertex {
             )
         }
     }
+}
+
+struct LoweredNetwork<D> {
+    definition: UncheckedNetwork<D>,
+    metadata: LoweredMetadata<D>,
+}
+
+enum ScopeDefinition<'a, D> {
+    Network(&'a UncheckedNetwork<D>),
+    Module(ModuleDef<D>),
+}
+
+impl<D> ScopeDefinition<'_, D> {
+    fn nodes(&self) -> &[NodeDef<D>] {
+        match self {
+            Self::Network(definition) => definition.nodes(),
+            Self::Module(definition) => definition.graph().nodes(),
+        }
+    }
+
+    fn connections(&self) -> &[ConnectionDef] {
+        match self {
+            Self::Network(definition) => definition.connections(),
+            Self::Module(definition) => definition.graph().connections(),
+        }
+    }
+
+    fn mappings(&self) -> &[ModuleInterfaceMapping] {
+        match self {
+            Self::Network(_) => &[],
+            Self::Module(definition) => definition.graph().mappings(),
+        }
+    }
+
+    fn instances(&self) -> &[ModuleInstanceDef<D>] {
+        match self {
+            Self::Network(definition) => definition.module_instances(),
+            Self::Module(definition) => definition.graph().module_instances(),
+        }
+    }
+
+    fn inputs(&self) -> Vec<crate::key::AnyModuleInputKey> {
+        match self {
+            Self::Network(_) => Vec::new(),
+            Self::Module(definition) => definition.inputs().map(|input| input.key()).collect(),
+        }
+    }
+
+    fn outputs(&self) -> Vec<crate::key::AnyModuleOutputKey> {
+        match self {
+            Self::Network(_) => Vec::new(),
+            Self::Module(definition) => definition.outputs().map(|output| output.key()).collect(),
+        }
+    }
+}
+
+struct ScopeData<'a, D> {
+    definition: ScopeDefinition<'a, D>,
+    module: Option<QualifiedModuleRef>,
+    input_bindings: BTreeMap<crate::key::AnyModuleInputKey, (usize, ConnectionEndpoint)>,
+    output_mappings: BTreeMap<crate::key::AnyModuleOutputKey, ConnectionEndpoint>,
+    node_inputs: BTreeMap<AnyInPortKey, AnyInPortKey>,
+    node_outputs: BTreeMap<AnyOutPortKey, AnyOutPortKey>,
+    instances: BTreeMap<ModuleInstanceKey, usize>,
+}
+
+type QualifiedInstancePath<D> = (ModuleInstanceDef<D>, Vec<ModuleInstanceKey>);
+
+struct PrivateKeyAllocator {
+    nodes: BTreeSet<NodeKey>,
+    inputs: BTreeSet<AnyInPortKey>,
+    outputs: BTreeSet<AnyOutPortKey>,
+    connections: BTreeSet<ConnectionKey>,
+    next_node: u128,
+    next_input: u128,
+    next_output: u128,
+    next_connection: u128,
+}
+
+impl PrivateKeyAllocator {
+    fn from_network<D>(definition: &UncheckedNetwork<D>) -> Self {
+        Self {
+            nodes: definition.nodes().iter().map(NodeDef::key).collect(),
+            inputs: definition
+                .nodes()
+                .iter()
+                .flat_map(|node| node.ports().inputs().iter().copied())
+                .collect(),
+            outputs: definition
+                .nodes()
+                .iter()
+                .flat_map(|node| node.ports().outputs().iter().copied())
+                .collect(),
+            connections: definition
+                .connections()
+                .iter()
+                .map(ConnectionDef::key)
+                .collect(),
+            next_node: 0,
+            next_input: 0,
+            next_output: 0,
+            next_connection: 0,
+        }
+    }
+
+    fn node(&mut self) -> NodeKey {
+        loop {
+            let key = NodeKey::from_u128(self.next_node);
+            self.next_node = next_private_payload(self.next_node, "node");
+            if self.nodes.insert(key) {
+                return key;
+            }
+        }
+    }
+
+    fn input(&mut self, kind: SignalKind) -> AnyInPortKey {
+        loop {
+            let key = match kind {
+                SignalKind::Level => InPortKey::<Level>::from_u128(self.next_input).into(),
+                SignalKind::Pulse => InPortKey::<Pulse>::from_u128(self.next_input).into(),
+            };
+            self.next_input = next_private_payload(self.next_input, "input port");
+            if self.inputs.insert(key) {
+                return key;
+            }
+        }
+    }
+
+    fn output(&mut self, kind: SignalKind) -> AnyOutPortKey {
+        loop {
+            let key = match kind {
+                SignalKind::Level => OutPortKey::<Level>::from_u128(self.next_output).into(),
+                SignalKind::Pulse => OutPortKey::<Pulse>::from_u128(self.next_output).into(),
+            };
+            self.next_output = next_private_payload(self.next_output, "output port");
+            if self.outputs.insert(key) {
+                return key;
+            }
+        }
+    }
+
+    fn connection(&mut self) -> ConnectionKey {
+        loop {
+            let key = ConnectionKey::from_u128(self.next_connection);
+            self.next_connection = next_private_payload(self.next_connection, "connection");
+            if self.connections.insert(key) {
+                return key;
+            }
+        }
+    }
+}
+
+fn next_private_payload(value: u128, category: &'static str) -> u128 {
+    match value.checked_add(1) {
+        Some(next) => next,
+        None => panic!("validated module lowering exhausted the private {category} key space"),
+    }
+}
+
+struct ModuleLowerer<'a, D> {
+    network: &'a UncheckedNetwork<D>,
+    scopes: Vec<ScopeData<'a, D>>,
+    allocator: PrivateKeyAllocator,
+    nodes: Vec<NodeDef<D>>,
+    connections: Vec<ConnectionDef>,
+    metadata: LoweredMetadata<D>,
+}
+
+impl<'a, D> ModuleLowerer<'a, D> {
+    fn new(network: &'a UncheckedNetwork<D>) -> Self {
+        Self {
+            network,
+            scopes: Vec::new(),
+            allocator: PrivateKeyAllocator::from_network(network),
+            nodes: Vec::new(),
+            connections: Vec::new(),
+            metadata: LoweredMetadata::default(),
+        }
+    }
+
+    fn lower(mut self) -> Result<LoweredNetwork<D>, &'static str> {
+        let root = self.register_scope(
+            ScopeDefinition::Network(self.network),
+            None,
+            BTreeMap::new(),
+            true,
+        )?;
+        if root != 0 {
+            return Err("network lowering root scope is not canonical");
+        }
+        self.lower_connections()?;
+        self.capture_module_boundaries()?;
+
+        let external_inputs = self
+            .network
+            .external_inputs()
+            .iter()
+            .map(|input| ExternalInputDef::new(input.key(), input.meta().clone()))
+            .collect();
+        let mut external_outputs = Vec::new();
+        for output in self.network.external_outputs() {
+            let source = self.resolve_endpoint(0, endpoint_from_signal(output.source()))?;
+            external_outputs.push(ExternalOutputDef::new(
+                output.key(),
+                signal_from_endpoint(source)?,
+                output.meta().clone(),
+            ));
+        }
+        let definition = UncheckedNetwork::new(
+            self.network.key(),
+            self.network.time_domain_id(),
+            self.network.meta().clone(),
+            self.nodes,
+            external_inputs,
+            external_outputs,
+            self.connections,
+        );
+        Ok(LoweredNetwork {
+            definition,
+            metadata: self.metadata,
+        })
+    }
+
+    fn register_scope(
+        &mut self,
+        definition: ScopeDefinition<'a, D>,
+        module: Option<QualifiedModuleRef>,
+        input_bindings: BTreeMap<crate::key::AnyModuleInputKey, (usize, ConnectionEndpoint)>,
+        top_level: bool,
+    ) -> Result<usize, &'static str> {
+        let output_mappings = definition
+            .mappings()
+            .iter()
+            .filter_map(|mapping| match *mapping {
+                ModuleInterfaceMapping::Output { output, source } => Some((output, source)),
+                ModuleInterfaceMapping::Input { .. } => None,
+            })
+            .collect();
+        let scope = self.scopes.len();
+        self.scopes.push(ScopeData {
+            definition,
+            module: module.clone(),
+            input_bindings,
+            output_mappings,
+            node_inputs: BTreeMap::new(),
+            node_outputs: BTreeMap::new(),
+            instances: BTreeMap::new(),
+        });
+
+        let mut nodes = self.scopes[scope].definition.nodes().to_vec();
+        nodes.sort_by_key(NodeDef::key);
+        for node in nodes {
+            let flat_node = if top_level {
+                node.key()
+            } else {
+                self.allocator.node()
+            };
+            let mut inputs = Vec::new();
+            for input in node.ports().inputs() {
+                let flat = if top_level {
+                    *input
+                } else {
+                    self.allocator.input(input.kind())
+                };
+                self.scopes[scope].node_inputs.insert(*input, flat);
+                inputs.push(flat);
+            }
+            let mut outputs = Vec::new();
+            for output in node.ports().outputs() {
+                let flat = if top_level {
+                    *output
+                } else {
+                    self.allocator.output(output.kind())
+                };
+                self.scopes[scope].node_outputs.insert(*output, flat);
+                outputs.push(flat);
+            }
+            self.nodes.push(NodeDef::new(
+                flat_node,
+                node.kind().clone(),
+                NodePorts::with_input_roles(
+                    inputs.clone(),
+                    node.ports().input_roles().to_vec(),
+                    outputs,
+                ),
+                node.meta().clone(),
+            ));
+            if let Some(module) = &module {
+                let qualified = QualifiedNodeRef::new(module.instances().to_vec(), node.key());
+                self.metadata
+                    .qualified_node_lookup
+                    .insert(qualified.clone(), flat_node);
+                self.metadata
+                    .qualified_node_reverse
+                    .insert(flat_node, qualified);
+                for (local, flat) in node.ports().inputs().iter().zip(&inputs) {
+                    self.metadata.qualified_input_reverse.insert(
+                        *flat,
+                        QualifiedInPortRef::new(module.instances().to_vec(), *local),
+                    );
+                }
+            }
+        }
+
+        let instances = canonical_instance_paths(
+            self.scopes[scope].definition.instances(),
+            module
+                .as_ref()
+                .map_or(&[][..], QualifiedModuleRef::instances),
+        )?;
+        for (instance, path) in instances {
+            let qualified = QualifiedModuleRef::new(path);
+            self.metadata
+                .modules
+                .insert(qualified.clone(), instance.module().clone());
+            let bindings = instance
+                .bindings()
+                .bindings()
+                .iter()
+                .map(|binding| (binding.input(), (scope, binding.source())))
+                .collect();
+            let child = self.register_scope(
+                ScopeDefinition::Module(instance.module().clone()),
+                Some(qualified),
+                bindings,
+                false,
+            )?;
+            self.scopes[scope].instances.insert(instance.key(), child);
+        }
+        Ok(scope)
+    }
+
+    fn lower_connections(&mut self) -> Result<(), &'static str> {
+        for scope in 0..self.scopes.len() {
+            let module = self.scopes[scope].module.clone();
+            let mut connections = self.scopes[scope].definition.connections().to_vec();
+            connections.sort_by_key(ConnectionDef::key);
+            for connection in connections {
+                let source = self.resolve_endpoint(scope, connection.from())?;
+                let target = self.resolve_target(scope, connection.to())?;
+                let key = if scope == 0 {
+                    connection.key()
+                } else {
+                    self.allocator.connection()
+                };
+                self.connections.push(ConnectionDef::new(
+                    key,
+                    source,
+                    target,
+                    connection.meta().clone(),
+                ));
+                if let Some(module) = &module {
+                    self.metadata.qualified_connection_lookup.insert(
+                        QualifiedConnectionRef::new(module.instances().to_vec(), connection.key()),
+                        key,
+                    );
+                }
+            }
+
+            let mappings = self.scopes[scope].definition.mappings().to_vec();
+            for mapping in mappings {
+                let ModuleInterfaceMapping::Input { input, target } = mapping else {
+                    continue;
+                };
+                let source =
+                    self.resolve_endpoint(scope, ConnectionEndpoint::ModuleInput(input))?;
+                let target = self.resolve_target(scope, target)?;
+                self.connections.push(ConnectionDef::new(
+                    self.allocator.connection(),
+                    source,
+                    target,
+                    crate::metadata::DiagnosticMeta::default(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn capture_module_boundaries(&mut self) -> Result<(), &'static str> {
+        for scope in 1..self.scopes.len() {
+            let Some(module) = self.scopes[scope].module.clone() else {
+                return Err("non-root lowering scope lacks qualified module identity");
+            };
+            for input in self.scopes[scope].definition.inputs() {
+                let source =
+                    self.resolve_endpoint(scope, ConnectionEndpoint::ModuleInput(input))?;
+                self.metadata
+                    .module_input_sources
+                    .insert((module.clone(), input), source);
+            }
+            for output in self.scopes[scope].definition.outputs() {
+                let source = self.resolve_module_output(scope, output)?;
+                self.metadata
+                    .module_output_sources
+                    .insert((module.clone(), output), source);
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve_target(
+        &self,
+        scope: usize,
+        endpoint: ConnectionEndpoint,
+    ) -> Result<ConnectionEndpoint, &'static str> {
+        let ConnectionEndpoint::NodeInput(input) = endpoint else {
+            return Err("validated lowered connection target is not a node input");
+        };
+        self.scopes[scope]
+            .node_inputs
+            .get(&input)
+            .copied()
+            .map(ConnectionEndpoint::NodeInput)
+            .ok_or("validated lowered node input is missing")
+    }
+
+    fn resolve_endpoint(
+        &self,
+        scope: usize,
+        endpoint: ConnectionEndpoint,
+    ) -> Result<ConnectionEndpoint, &'static str> {
+        self.resolve_endpoint_inner(scope, endpoint, &mut Vec::new())
+    }
+
+    fn resolve_endpoint_inner(
+        &self,
+        scope: usize,
+        endpoint: ConnectionEndpoint,
+        visited: &mut Vec<(usize, ConnectionEndpoint)>,
+    ) -> Result<ConnectionEndpoint, &'static str> {
+        if visited.contains(&(scope, endpoint)) {
+            return Err("validated module source projection contains a resolution cycle");
+        }
+        visited.push((scope, endpoint));
+        let resolved = match endpoint {
+            ConnectionEndpoint::ExternalInput(_) if scope == 0 => endpoint,
+            ConnectionEndpoint::NodeOutput(output) => self.scopes[scope]
+                .node_outputs
+                .get(&output)
+                .copied()
+                .map(ConnectionEndpoint::NodeOutput)
+                .ok_or("validated module source references a missing node output")?,
+            ConnectionEndpoint::ModuleInput(input) => {
+                let (parent, source) = self.scopes[scope]
+                    .input_bindings
+                    .get(&input)
+                    .copied()
+                    .ok_or("validated module input lacks its exact binding")?;
+                self.resolve_endpoint_inner(parent, source, visited)?
+            }
+            ConnectionEndpoint::ModuleOutput { instance, output } => {
+                let child = *self.scopes[scope]
+                    .instances
+                    .get(&instance)
+                    .ok_or("validated module output references a missing instance")?;
+                let source = *self.scopes[child]
+                    .output_mappings
+                    .get(&output)
+                    .ok_or("validated module output lacks its exact mapping")?;
+                self.resolve_endpoint_inner(child, source, visited)?
+            }
+            ConnectionEndpoint::ExternalInput(_)
+            | ConnectionEndpoint::NodeInput(_)
+            | ConnectionEndpoint::ExternalOutput(_) => {
+                return Err("validated module source has an invalid direction or scope");
+            }
+        };
+        visited.pop();
+        Ok(resolved)
+    }
+
+    fn resolve_module_output(
+        &self,
+        scope: usize,
+        output: crate::key::AnyModuleOutputKey,
+    ) -> Result<ConnectionEndpoint, &'static str> {
+        let source = *self.scopes[scope]
+            .output_mappings
+            .get(&output)
+            .ok_or("validated module output lacks its exact mapping")?;
+        self.resolve_endpoint(scope, source)
+    }
+}
+
+fn canonical_instance_paths<D>(
+    instances: &[ModuleInstanceDef<D>],
+    prefix: &[ModuleInstanceKey],
+) -> Result<Vec<QualifiedInstancePath<D>>, &'static str> {
+    let by_key: BTreeMap<_, _> = instances
+        .iter()
+        .map(|instance| (instance.key(), instance))
+        .collect();
+    let mut ordered: Vec<_> = instances.iter().collect();
+    ordered.sort_by_key(|instance| instance.key());
+    let mut result = Vec::with_capacity(ordered.len());
+    for instance in ordered {
+        let mut reversed = Vec::new();
+        let mut visited = BTreeSet::new();
+        let mut current = Some(instance.key());
+        while let Some(key) = current {
+            if !visited.insert(key) {
+                return Err("validated module hierarchy contains a cycle during lowering");
+            }
+            reversed.push(key);
+            current = match by_key.get(&key) {
+                Some(candidate) => candidate.parent(),
+                None => return Err("validated module hierarchy references a missing parent"),
+            };
+        }
+        reversed.reverse();
+        let mut path = prefix.to_vec();
+        path.extend(reversed);
+        result.push((instance.clone(), path));
+    }
+    Ok(result)
+}
+
+fn endpoint_from_signal(source: crate::key::AnySignalSourceKey) -> ConnectionEndpoint {
+    match source {
+        crate::key::AnySignalSourceKey::Level(crate::key::SignalSourceKey::ExternalInput(key)) => {
+            ConnectionEndpoint::ExternalInput(key.into())
+        }
+        crate::key::AnySignalSourceKey::Level(crate::key::SignalSourceKey::NodeOutput(key)) => {
+            ConnectionEndpoint::NodeOutput(key.into())
+        }
+        crate::key::AnySignalSourceKey::Level(crate::key::SignalSourceKey::ModuleOutput {
+            instance,
+            output,
+        }) => ConnectionEndpoint::ModuleOutput {
+            instance,
+            output: output.into(),
+        },
+        crate::key::AnySignalSourceKey::Pulse(crate::key::SignalSourceKey::ExternalInput(key)) => {
+            ConnectionEndpoint::ExternalInput(key.into())
+        }
+        crate::key::AnySignalSourceKey::Pulse(crate::key::SignalSourceKey::NodeOutput(key)) => {
+            ConnectionEndpoint::NodeOutput(key.into())
+        }
+        crate::key::AnySignalSourceKey::Pulse(crate::key::SignalSourceKey::ModuleOutput {
+            instance,
+            output,
+        }) => ConnectionEndpoint::ModuleOutput {
+            instance,
+            output: output.into(),
+        },
+    }
+}
+
+fn signal_from_endpoint(
+    endpoint: ConnectionEndpoint,
+) -> Result<crate::key::AnySignalSourceKey, &'static str> {
+    match endpoint {
+        ConnectionEndpoint::ExternalInput(AnyExternalInputKey::Level(key)) => Ok(
+            crate::key::AnySignalSourceKey::Level(crate::key::SignalSourceKey::ExternalInput(key)),
+        ),
+        ConnectionEndpoint::ExternalInput(AnyExternalInputKey::Pulse(key)) => Ok(
+            crate::key::AnySignalSourceKey::Pulse(crate::key::SignalSourceKey::ExternalInput(key)),
+        ),
+        ConnectionEndpoint::NodeOutput(AnyOutPortKey::Level(key)) => Ok(
+            crate::key::AnySignalSourceKey::Level(crate::key::SignalSourceKey::NodeOutput(key)),
+        ),
+        ConnectionEndpoint::NodeOutput(AnyOutPortKey::Pulse(key)) => Ok(
+            crate::key::AnySignalSourceKey::Pulse(crate::key::SignalSourceKey::NodeOutput(key)),
+        ),
+        ConnectionEndpoint::NodeInput(_)
+        | ConnectionEndpoint::ModuleInput(_)
+        | ConnectionEndpoint::ModuleOutput { .. }
+        | ConnectionEndpoint::ExternalOutput(_) => {
+            Err("lowered external output did not resolve to an ordinary signal source")
+        }
+    }
+}
+
+fn lower_module_instances<D>(definition: &UncheckedNetwork<D>) -> LoweredNetwork<D> {
+    match ModuleLowerer::new(definition).lower() {
+        Ok(lowered) => lowered,
+        Err(reason) => panic!(
+            "validated module lowering must resolve every qualified source and target: {reason}"
+        ),
+    }
+}
+
+fn clone_complete_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> {
+    UncheckedNetwork::new_with_instances(
+        definition.key(),
+        definition.time_domain_id(),
+        definition.meta().clone(),
+        definition.nodes().to_vec(),
+        definition
+            .external_inputs()
+            .iter()
+            .map(|input| ExternalInputDef::new(input.key(), input.meta().clone()))
+            .collect(),
+        definition
+            .external_outputs()
+            .iter()
+            .map(|output| {
+                ExternalOutputDef::new(output.key(), output.source(), output.meta().clone())
+            })
+            .collect(),
+        definition.connections().to_vec(),
+        definition.module_instances().to_vec(),
+    )
 }
 
 fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> {
@@ -2029,16 +2818,18 @@ mod tests {
 
     #[test]
     fn compiled_invariant_checker_detects_seeded_forward_edge_violation() {
+        let validated = network(false)
+            .validate()
+            .require_artifact()
+            .unwrap_or_else(|_| panic!("fixture must validate"));
+        let graph = validated.reaction_dependencies();
+        let order = graph.topological_order();
         let mut inner = CompiledInner::build(
-            &network(false)
-                .validate()
-                .require_artifact()
-                .unwrap_or_else(|_| panic!("fixture must validate")),
-            &network(false)
-                .validate_structural()
-                .artifact()
-                .unwrap_or_else(|| panic!("fixture must validate structurally"))
-                .reaction_dependencies(),
+            &validated,
+            clone_definition(validated.definition()),
+            &graph,
+            &order,
+            LoweredMetadata::default(),
         );
         inner.successors[1].push(OperationIndex(0));
         inner.successors[1].sort();
@@ -2055,7 +2846,14 @@ mod tests {
             .require_artifact()
             .unwrap_or_else(|_| panic!("fixture must validate"));
         let graph = validated.reaction_dependencies();
-        let mut inner = CompiledInner::build(&validated, &graph);
+        let order = graph.topological_order();
+        let mut inner = CompiledInner::build(
+            &validated,
+            clone_definition(validated.definition()),
+            &graph,
+            &order,
+            LoweredMetadata::default(),
+        );
         inner.predecessors[0].push(OperationIndex(1));
         assert_eq!(
             inner.check_invariants(),
@@ -2070,7 +2868,14 @@ mod tests {
             .require_artifact()
             .unwrap_or_else(|_| panic!("fixture must validate"));
         let graph = validated.reaction_dependencies();
-        let mut inner = CompiledInner::build(&validated, &graph);
+        let order = graph.topological_order();
+        let mut inner = CompiledInner::build(
+            &validated,
+            clone_definition(validated.definition()),
+            &graph,
+            &order,
+            LoweredMetadata::default(),
+        );
         let (index, target) = inner
             .successors
             .iter()

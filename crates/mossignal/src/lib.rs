@@ -30,13 +30,16 @@ pub use input::{
     InputBuildFailure, InputDelta, InputDeltaBuilder, InputSnapshot, InputSnapshotBuilder,
 };
 pub use machine::{
-    Machine, MachineStatus, NetworkRevision, PendingEventKey, PendingPulseDelayInspection,
-    PulseDelayDefinitionInspection, PulseDelayInspection, PulseDelayInspectionFailure, Schedule,
-    ScheduleFailure, ToggleDefinitionInspection, ToggleInspection, ToggleInspectionFailure,
+    Machine, MachineStatus, ModuleInputInspection, ModuleInspection, ModuleInspectionFailure,
+    ModuleNodeInspection, ModuleOutputInspection, ModulePendingPulseDelayInspection,
+    NetworkRevision, PendingEventKey, PendingPulseDelayInspection, PulseDelayDefinitionInspection,
+    PulseDelayInspection, PulseDelayInspectionFailure, Schedule, ScheduleFailure,
+    ToggleDefinitionInspection, ToggleInspection, ToggleInspectionFailure,
 };
 pub use module::{
-    DefinitionGraphView, ModuleDef, ModuleInputIter, ModuleOrigin, ModuleOutputIter,
-    QualifiedConnectionRef, QualifiedNodeRef,
+    DefinitionGraphView, ModuleDef, ModuleInputIter, ModuleOrigin, ModuleOutputIter, NodeSubject,
+    PulsePortSubject, QualifiedConnectionRef, QualifiedInPortRef, QualifiedModuleRef,
+    QualifiedNodeRef,
 };
 pub use policy::{
     PolicyFailure, RuntimePolicy, RuntimePolicyBuilder, RuntimePolicyId, RuntimePolicyLimit,

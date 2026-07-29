@@ -127,18 +127,12 @@ impl<D> ValidatedNetwork<D> {
     /// Compiles this validated definition into immutable execution topology.
     #[must_use]
     pub fn compile(self) -> Report<CompiledNetwork<D>, D> {
-        if !self.definition.module_instances().is_empty() {
-            return unsupported_module_compilation(&self.definition);
-        }
         CompiledNetwork::from_validated(&self)
     }
 
     /// Compiles a shared validated definition without consuming it.
     #[must_use]
     pub fn compile_ref(&self) -> Report<CompiledNetwork<D>, D> {
-        if !self.definition.module_instances().is_empty() {
-            return unsupported_module_compilation(&self.definition);
-        }
         CompiledNetwork::from_validated(self)
     }
 
@@ -165,6 +159,9 @@ pub struct NetworkDefinitionGraphView<'a, D> {
 }
 
 impl<'a, D> NetworkDefinitionGraphView<'a, D> {
+    pub(crate) const fn new(definition: &'a UncheckedNetwork<D>) -> Self {
+        Self { definition }
+    }
     #[must_use]
     pub fn nodes(self) -> &'a [NodeDef<D>] {
         self.definition.nodes()
@@ -185,36 +182,10 @@ impl<'a, D> NetworkDefinitionGraphView<'a, D> {
     pub fn qualified_connections(self) -> Vec<crate::module::QualifiedConnectionRef> {
         crate::module::qualified_connections(self.definition.module_instances())
     }
-}
 
-fn unsupported_module_compilation<D>(
-    definition: &UncheckedNetwork<D>,
-) -> Report<CompiledNetwork<D>, D> {
-    let mut instances = Vec::new();
-    collect_instance_keys(definition.module_instances(), &mut instances);
-    let problem = Problem::new(
-        SubjectRef::Network(definition.key()),
-        Vec::new(),
-        ProblemEvidence::unsupported_module_instances(instances),
-    );
-    let diagnostics = match Diagnostic::new(problem) {
-        Ok(diagnostic) => DiagnosticSet::from_diagnostic(diagnostic),
-        Err(_) => panic!(
-            "compilation.unsupported_module_instances must remain a report-deliverable catalogue condition"
-        ),
-    };
-    Report::new(None, diagnostics)
-}
-
-fn collect_instance_keys<D>(
-    definitions: &[ModuleInstanceDef<D>],
-    instances: &mut Vec<ModuleInstanceKey>,
-) {
-    // SPEC: docs/specs/contracts/module-instantiation-hierarchy.yaml
-    // "temporary-module-compilation-boundary" — nested instances are affected too.
-    for instance in definitions {
-        instances.push(instance.key());
-        collect_instance_keys(instance.module().graph().module_instances(), instances);
+    #[must_use]
+    pub fn qualified_modules(self) -> Vec<crate::module::QualifiedModuleRef> {
+        crate::module::qualified_modules(self.definition.module_instances())
     }
 }
 
@@ -705,6 +676,16 @@ pub(crate) fn cycle_step(edge: ReactionDependency) -> CurrentReactionCycleStep {
         },
         target: reaction_member(edge.to),
     }
+}
+
+pub(crate) fn compilation_reaction_graph<D>(
+    definition: &UncheckedNetwork<D>,
+) -> Option<(ReactionDependencyGraph, Vec<ReactionVertex>)> {
+    let graph = ReactionDependencyGraph::from_candidate(&StructuralCandidate {
+        network: definition,
+    });
+    let order = graph.topological_order();
+    (order.len() == graph.vertices().count()).then_some((graph, order))
 }
 
 impl<D> UncheckedNetwork<D> {

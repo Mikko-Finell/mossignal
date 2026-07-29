@@ -4,10 +4,11 @@ use crate::compile::{EvaluationCause, EvaluationFailure, FullEvaluation};
 use crate::diagnostics::{Responsibility, Severity};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
 use crate::input::{InputDelta, InputSnapshot};
-use crate::key::{ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey};
+use crate::key::{ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey};
 use crate::machine::{
     Machine, MachineStatus, NetworkRevision, PendingEventKey, PendingPulseDelay, Schedule,
 };
+use crate::module::{NodeSubject, PulsePortSubject, QualifiedNodeRef};
 use crate::policy::{RuntimePolicy, RuntimePolicyLimit};
 use crate::signal::{Level, LogicLevel, Pulse, PulseCount};
 use crate::time::{Span, Time};
@@ -92,7 +93,7 @@ impl<D> Transaction<D> {
 
 /// One structured runtime rejection with an exact catalogue-backed category.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeFailureEvidence {
     AlreadyInitialized,
     DeltaBeforeInitialization,
@@ -124,10 +125,10 @@ pub enum RuntimeFailureEvidence {
         consumed: u64,
     },
     PulseCountOverflow {
-        node: NodeKey,
+        node: NodeSubject,
     },
     TimeOverflow {
-        node: NodeKey,
+        node: NodeSubject,
         origin_ticks: u64,
         delay_ticks: u64,
     },
@@ -233,25 +234,26 @@ impl fmt::Debug for CauseRef {
 
 /// The semantic subject of one derived initialization cause.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProvenanceSubject {
     Node(NodeKey),
+    QualifiedNode(QualifiedNodeRef),
     ExternalOutput(ExternalOutputKey<Level>),
     PulseExternalOutput(ExternalOutputKey<Pulse>),
 }
 
 /// One stable Merge input-port contribution to a simultaneous pulse result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PulseContribution {
-    port: InPortKey<Pulse>,
+    port: PulsePortSubject,
     count: PulseCount,
     cause: CauseRef,
 }
 
 impl PulseContribution {
     #[must_use]
-    pub const fn port(&self) -> InPortKey<Pulse> {
-        self.port
+    pub const fn port(&self) -> &PulsePortSubject {
+        &self.port
     }
 
     #[must_use]
@@ -284,7 +286,7 @@ enum ProvenanceRecord<D> {
     },
     PendingPulseDelay {
         event: PendingEventKey,
-        node: NodeKey,
+        owner: NodeSubject,
         origin: Time<D>,
         deadline: Time<D>,
         count: PulseCount,
@@ -324,7 +326,7 @@ pub enum CauseInspection<'a, D> {
     },
     PendingPulseDelay {
         event: PendingEventKey,
-        node: NodeKey,
+        owner: &'a NodeSubject,
         origin: Time<D>,
         deadline: Time<D>,
         count: PulseCount,
@@ -370,7 +372,8 @@ struct ProvenanceBuild<D> {
     pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
 }
 
-struct EvaluationProvenanceInputs<'a> {
+struct EvaluationProvenanceInputs<'a, D> {
+    compiled: &'a crate::CompiledNetwork<D>,
     levels: &'a BTreeMap<ExternalInputKey<Level>, CauseRef>,
     pulses: &'a BTreeMap<ExternalInputKey<Pulse>, CauseRef>,
     due_pulse_delays: &'a BTreeMap<NodeKey, Vec<CauseRef>>,
@@ -426,7 +429,7 @@ impl<D> ProvenanceView<D> {
             }
             ProvenanceRecord::PendingPulseDelay {
                 event,
-                node,
+                owner,
                 origin,
                 deadline,
                 count,
@@ -434,7 +437,7 @@ impl<D> ProvenanceView<D> {
                 supporters,
             } => CauseInspection::PendingPulseDelay {
                 event: *event,
-                node: *node,
+                owner,
                 origin: *origin,
                 deadline: *deadline,
                 count: *count,
@@ -445,7 +448,7 @@ impl<D> ProvenanceView<D> {
                 subject,
                 supporters,
             } => CauseInspection::Derived {
-                subject: *subject,
+                subject: subject.clone(),
                 supporters,
             },
             ProvenanceRecord::PulseDerived {
@@ -454,7 +457,7 @@ impl<D> ProvenanceView<D> {
                 result,
                 supporters,
             } => CauseInspection::PulseDerived {
-                subject: *subject,
+                subject: subject.clone(),
                 contributions,
                 result: *result,
                 supporters,
@@ -477,6 +480,7 @@ impl<D> ProvenanceView<D> {
     fn append_pending_pulse_delay(
         &mut self,
         pending: &PendingPulseDelay<D>,
+        owner: NodeSubject,
         scheduling_cause: CauseRef,
     ) -> CauseRef {
         let Some(records) = Arc::get_mut(&mut self.records) else {
@@ -487,7 +491,7 @@ impl<D> ProvenanceView<D> {
             records,
             ProvenanceRecord::PendingPulseDelay {
                 event: pending.key,
-                node: pending.node,
+                owner,
                 origin: pending.origin,
                 deadline: pending.deadline,
                 count: pending.count,
@@ -689,8 +693,7 @@ impl<D> Machine<D> {
             toggle_inversion_causes,
             pulse_delay_schedules,
         } = build_initialization_provenance(
-            self.compiled.network_key(),
-            self.compiled.fingerprint(),
+            &self.compiled,
             revision,
             at,
             &levels,
@@ -702,6 +705,7 @@ impl<D> Machine<D> {
         let mut next_pending_event_serial = 0;
         schedule_pulse_delays(
             PulseDelayScheduling {
+                compiled: &self.compiled,
                 pending: &mut pending_pulse_delays,
                 next_serial: &mut next_pending_event_serial,
                 created_events: &mut created_pending_events,
@@ -820,15 +824,16 @@ impl<D> Machine<D> {
                 Some(batch) => batch,
                 None => panic!("selected temporal deadline must retain its event batch"),
             };
-            let due = aggregate_due::<D>(batch)?;
+            let due = aggregate_due::<D>(&self.compiled, batch)?;
             let internal = self
                 .compiled
                 .evaluate_temporal_reaction(&levels, &empty_pulses, &toggle_states, &due.counts)
-                .map_err(evaluation_failure)?;
+                .map_err(|failure| evaluation_failure(&self.compiled, failure))?;
             reaction_count = reaction_count.saturating_add(1);
             enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, reaction_count)?;
 
             let mut built = build_ready_provenance(
+                &self.compiled,
                 self.compiled.network_key(),
                 self.compiled.fingerprint(),
                 revision,
@@ -864,6 +869,7 @@ impl<D> Machine<D> {
             output_baselines = internal.external_outputs.clone();
             schedule_pulse_delays(
                 PulseDelayScheduling {
+                    compiled: &self.compiled,
                     pending: &mut pending_pulse_delays,
                     next_serial: &mut next_pending_event_serial,
                     created_events: &mut created_pending_events,
@@ -893,17 +899,18 @@ impl<D> Machine<D> {
         levels.extend(explicit_levels.iter().map(|(key, value)| (*key, *value)));
         let due = pending_pulse_delays
             .remove(&at)
-            .map(aggregate_due::<D>)
+            .map(|batch| aggregate_due::<D>(&self.compiled, batch))
             .transpose()?
             .unwrap_or_default();
         let evaluation = self
             .compiled
             .evaluate_temporal_reaction(&levels, &pulses, &toggle_states, &due.counts)
-            .map_err(evaluation_failure)?;
+            .map_err(|failure| evaluation_failure(&self.compiled, failure))?;
         reaction_count = reaction_count.saturating_add(1);
         enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, reaction_count)?;
 
         let mut built = build_ready_provenance(
+            &self.compiled,
             self.compiled.network_key(),
             self.compiled.fingerprint(),
             revision,
@@ -933,6 +940,7 @@ impl<D> Machine<D> {
         output_events.append(&mut final_events);
         schedule_pulse_delays(
             PulseDelayScheduling {
+                compiled: &self.compiled,
                 pending: &mut pending_pulse_delays,
                 next_serial: &mut next_pending_event_serial,
                 created_events: &mut created_pending_events,
@@ -1063,7 +1071,9 @@ fn evaluate_reaction<D>(
     match compiled.evaluate_reaction_with_state(levels, pulses, previous_toggle_states) {
         Ok(evaluation) => Ok(evaluation),
         Err(EvaluationFailure::PulseCountOverflow { node }) => Err(RuntimeFailure::new(
-            RuntimeFailureEvidence::PulseCountOverflow { node },
+            RuntimeFailureEvidence::PulseCountOverflow {
+                node: compiled.node_subject(node),
+            },
         )),
         Err(EvaluationFailure::Incomplete) => {
             panic!("validated topology and exact-bound inputs must evaluate completely")
@@ -1071,10 +1081,15 @@ fn evaluate_reaction<D>(
     }
 }
 
-fn evaluation_failure<D>(failure: EvaluationFailure) -> RuntimeFailure<D> {
+fn evaluation_failure<D>(
+    compiled: &crate::CompiledNetwork<D>,
+    failure: EvaluationFailure,
+) -> RuntimeFailure<D> {
     match failure {
         EvaluationFailure::PulseCountOverflow { node } => {
-            RuntimeFailure::new(RuntimeFailureEvidence::PulseCountOverflow { node })
+            RuntimeFailure::new(RuntimeFailureEvidence::PulseCountOverflow {
+                node: compiled.node_subject(node),
+            })
         }
         EvaluationFailure::Incomplete => {
             panic!("validated topology and exact-bound inputs must evaluate completely")
@@ -1089,12 +1104,16 @@ struct DuePulseDelays {
 }
 
 struct PulseDelayScheduling<'a, D> {
+    compiled: &'a crate::CompiledNetwork<D>,
     pending: &'a mut BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
     next_serial: &'a mut u64,
     created_events: &'a mut u64,
 }
 
-fn aggregate_due<D>(batch: Vec<PendingPulseDelay<D>>) -> Result<DuePulseDelays, RuntimeFailure<D>> {
+fn aggregate_due<D>(
+    compiled: &crate::CompiledNetwork<D>,
+    batch: Vec<PendingPulseDelay<D>>,
+) -> Result<DuePulseDelays, RuntimeFailure<D>> {
     let mut due = DuePulseDelays::default();
     for event in batch {
         let previous = due
@@ -1103,7 +1122,9 @@ fn aggregate_due<D>(batch: Vec<PendingPulseDelay<D>>) -> Result<DuePulseDelays, 
             .copied()
             .unwrap_or(PulseCount::ZERO);
         let combined = previous.checked_add(event.count).map_err(|_| {
-            RuntimeFailure::new(RuntimeFailureEvidence::PulseCountOverflow { node: event.node })
+            RuntimeFailure::new(RuntimeFailureEvidence::PulseCountOverflow {
+                node: compiled.node_subject(event.node),
+            })
         })?;
         due.counts.insert(event.node, combined);
         due.causes.entry(event.node).or_default().push(event.cause);
@@ -1129,7 +1150,7 @@ fn schedule_pulse_delays<D>(
             .checked_add(Span::from_ticks(proposal.delay_ticks))
             .map_err(|_| {
                 RuntimeFailure::new(RuntimeFailureEvidence::TimeOverflow {
-                    node: proposal.node,
+                    node: scheduling.compiled.node_subject(proposal.node),
                     origin_ticks: origin.ticks(),
                     delay_ticks: proposal.delay_ticks,
                 })
@@ -1155,7 +1176,11 @@ fn schedule_pulse_delays<D>(
             revision,
             cause: scheduling_cause,
         };
-        pending.cause = provenance.append_pending_pulse_delay(&pending, scheduling_cause);
+        pending.cause = provenance.append_pending_pulse_delay(
+            &pending,
+            scheduling.compiled.node_subject(pending.node),
+            scheduling_cause,
+        );
         scheduling
             .pending
             .entry(deadline)
@@ -1276,6 +1301,7 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     candidate.status = MachineStatus::Ready { now: at };
     candidate.external_levels = levels;
     candidate.settled_levels = evaluation.values;
+    candidate.operation_levels = evaluation.operation_levels;
     candidate.output_baselines = evaluation.external_outputs;
     candidate.input_causes = input_causes;
     candidate.output_causes = output_causes;
@@ -1348,15 +1374,21 @@ fn provenance_scope<D>(
 }
 
 fn build_initialization_provenance<D>(
-    network_key: NetworkKey,
-    fingerprint: NetworkFingerprint,
+    compiled: &crate::CompiledNetwork<D>,
     revision: NetworkRevision,
     at: Time<D>,
     levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     evaluation: &FullEvaluation,
 ) -> ProvenanceBuild<D> {
-    let scope = provenance_scope(network_key, fingerprint, revision, at, levels, pulses);
+    let scope = provenance_scope(
+        compiled.network_key(),
+        compiled.fingerprint(),
+        revision,
+        at,
+        levels,
+        pulses,
+    );
     let mut records = Vec::new();
     let transaction_cause = push_record(
         scope,
@@ -1397,6 +1429,7 @@ fn build_initialization_provenance<D>(
         transaction_cause,
         evaluation,
         EvaluationProvenanceInputs {
+            compiled,
             levels: &input_causes,
             pulses: &pulse_input_causes,
             due_pulse_delays: &BTreeMap::new(),
@@ -1420,6 +1453,7 @@ fn build_initialization_provenance<D>(
 
 #[allow(clippy::too_many_arguments)]
 fn build_ready_provenance<D>(
+    compiled: &crate::CompiledNetwork<D>,
     network_key: NetworkKey,
     fingerprint: NetworkFingerprint,
     revision: NetworkRevision,
@@ -1485,6 +1519,7 @@ fn build_ready_provenance<D>(
         transaction_cause,
         evaluation,
         EvaluationProvenanceInputs {
+            compiled,
             levels: &input_causes,
             pulses: &pulse_input_causes,
             due_pulse_delays,
@@ -1521,7 +1556,7 @@ fn append_evaluation_provenance<D>(
     records: &mut Vec<ProvenanceRecord<D>>,
     transaction_cause: CauseRef,
     evaluation: &FullEvaluation,
-    input_causes: EvaluationProvenanceInputs<'_>,
+    input_causes: EvaluationProvenanceInputs<'_, D>,
     previous_outputs: Option<PreviousLevelOutputs<'_>>,
     previous_toggle_inversions: Option<&BTreeMap<NodeKey, CauseRef>>,
 ) -> EvaluationCauseMaps {
@@ -1553,7 +1588,7 @@ fn append_evaluation_provenance<D>(
                 scope,
                 records,
                 ProvenanceRecord::Derived {
-                    subject: ProvenanceSubject::Node(*node),
+                    subject: provenance_subject(input_causes.compiled, *node),
                     supporters: vec![transaction_cause],
                 },
             ),
@@ -1568,7 +1603,7 @@ fn append_evaluation_provenance<D>(
                     scope,
                     records,
                     ProvenanceRecord::Derived {
-                        subject: ProvenanceSubject::Node(*node),
+                        subject: provenance_subject(input_causes.compiled, *node),
                         supporters,
                     },
                 )
@@ -1581,12 +1616,12 @@ fn append_evaluation_provenance<D>(
                 let mut grouped = contributions
                     .iter()
                     .map(|contribution| PulseContribution {
-                        port: contribution.port,
+                        port: input_causes.compiled.pulse_port_subject(contribution.port),
                         count: contribution.count,
                         cause: operation_cause(&operation_causes, contribution.source),
                     })
                     .collect::<Vec<_>>();
-                grouped.sort_by_key(|contribution| contribution.port);
+                grouped.sort_by(|left, right| left.port.cmp(&right.port));
                 let mut supporters = vec![transaction_cause];
                 supporters.extend(grouped.iter().map(|contribution| contribution.cause));
                 supporters.sort();
@@ -1595,7 +1630,7 @@ fn append_evaluation_provenance<D>(
                     scope,
                     records,
                     ProvenanceRecord::PulseDerived {
-                        subject: ProvenanceSubject::Node(*node),
+                        subject: provenance_subject(input_causes.compiled, *node),
                         contributions: grouped,
                         result: *result,
                         supporters,
@@ -1623,7 +1658,7 @@ fn append_evaluation_provenance<D>(
                     scope,
                     records,
                     ProvenanceRecord::Derived {
-                        subject: ProvenanceSubject::Node(*node),
+                        subject: provenance_subject(input_causes.compiled, *node),
                         supporters,
                     },
                 );
@@ -1648,7 +1683,7 @@ fn append_evaluation_provenance<D>(
                     scope,
                     records,
                     ProvenanceRecord::Derived {
-                        subject: ProvenanceSubject::Node(*node),
+                        subject: provenance_subject(input_causes.compiled, *node),
                         supporters,
                     },
                 )
@@ -1717,7 +1752,7 @@ fn append_evaluation_provenance<D>(
             scope,
             records,
             ProvenanceRecord::Derived {
-                subject: ProvenanceSubject::Node(proposal.node),
+                subject: provenance_subject(input_causes.compiled, proposal.node),
                 supporters,
             },
         );
@@ -1728,6 +1763,13 @@ fn append_evaluation_provenance<D>(
         pulse_outputs: pulse_output_causes,
         toggle_inversions: toggle_inversion_causes,
         pulse_delay_schedules,
+    }
+}
+
+fn provenance_subject<D>(compiled: &crate::CompiledNetwork<D>, node: NodeKey) -> ProvenanceSubject {
+    match compiled.node_subject(node) {
+        NodeSubject::Node(node) => ProvenanceSubject::Node(node),
+        NodeSubject::Qualified(node) => ProvenanceSubject::QualifiedNode(node),
     }
 }
 
@@ -1764,7 +1806,7 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: [u8; 16]) -> ProvenanceR
         }
         ProvenanceRecord::PendingPulseDelay {
             event,
-            node,
+            owner,
             origin,
             deadline,
             count,
@@ -1772,7 +1814,7 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: [u8; 16]) -> ProvenanceR
             supporters,
         } => ProvenanceRecord::PendingPulseDelay {
             event: *event,
-            node: *node,
+            owner: owner.clone(),
             origin: *origin,
             deadline: *deadline,
             count: *count,
@@ -1786,7 +1828,7 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: [u8; 16]) -> ProvenanceR
             subject,
             supporters,
         } => ProvenanceRecord::Derived {
-            subject: *subject,
+            subject: subject.clone(),
             supporters: supporters
                 .iter()
                 .map(|cause| remap_cause(*cause, scope))
@@ -1798,11 +1840,11 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: [u8; 16]) -> ProvenanceR
             result,
             supporters,
         } => ProvenanceRecord::PulseDerived {
-            subject: *subject,
+            subject: subject.clone(),
             contributions: contributions
                 .iter()
                 .map(|contribution| PulseContribution {
-                    port: contribution.port,
+                    port: contribution.port.clone(),
                     count: contribution.count,
                     cause: remap_cause(contribution.cause, scope),
                 })
@@ -1947,9 +1989,9 @@ mod tests {
     use crate::metadata::DiagnosticMeta;
     use crate::signal::{Level, LogicLevel, Pulse, PulseCount};
     use crate::{
-        CauseInspection, CauseRef, MachineStatus, NetworkRevision, OutputEvent, ProvenanceSubject,
-        ProvenanceView, RuntimeFailureEvidence, RuntimePolicy, RuntimePolicyLimit, TimeDomainId,
-        Transaction,
+        CauseInspection, CauseRef, MachineStatus, NetworkRevision, NodeSubject, OutputEvent,
+        ProvenanceSubject, ProvenanceView, RuntimeFailureEvidence, RuntimePolicy,
+        RuntimePolicyLimit, TimeDomainId, Transaction,
     };
     use std::collections::BTreeSet;
 
@@ -3867,7 +3909,7 @@ mod tests {
         assert_eq!(
             failure.evidence(),
             &RuntimeFailureEvidence::PulseCountOverflow {
-                node: NodeKey::from_u128(10),
+                node: NodeSubject::Node(NodeKey::from_u128(10)),
             }
         );
         assert_eq!(observe(&machine), before);

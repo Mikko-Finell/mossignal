@@ -237,14 +237,12 @@ Explicitly exclude:
 
 At the end of this item, authored and validated networks can contain nested
 module instances, but compiled execution integration remains the next boundary.
-Until item 36 supplies that integration, `compile` and `compile_ref` reject a
-validated network containing module instances with the structured
-`compilation.unsupported_module_instances` report. This is a temporary staged
-boundary, not permanent product behavior.
+Item 36 retires the temporary staged compilation boundary for validated module
+instances.
 
 ---
 
-## 36. Module-aware compilation, execution, and observation
+## 36. [DONE] Module-aware compilation, execution, and observation
 
 Extend the accepted compilation and runtime paths across module hierarchy:
 
@@ -261,13 +259,8 @@ Extend the accepted compilation and runtime paths across module hierarchy:
   forms where the specifications require behavioral rather than identity
   equivalence.
 
-This item must make the temporary
-`compilation.unsupported_module_instances` condition unreachable for supported
-module instances, remove the item-35 rejection-path tests, and retire the
-temporary diagnostic implementation, evidence surface, catalogue entry, API
-rule, and contract rule. None of that temporary scaffolding is compatibility
-behavior unless later authoritative policy explicitly reserves it for a
-distinct unsupported case.
+This item retires the temporary item-35 compilation boundary and its diagnostic,
+evidence, catalogue, API, contract, and rejection-test scaffolding.
 
 Compilation must not add callback evaluators, hidden state, or module-specific
 transaction semantics. Modules execute through their ordinary primitive

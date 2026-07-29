@@ -10,8 +10,9 @@ use mossignal::metadata::DiagnosticMeta;
 use mossignal::signal::{Pulse, PulseCount};
 use mossignal::time::{NonZeroSpan, Time};
 use mossignal::{
-    CauseInspection, CauseRef, NetworkBuilder, OutputEvent, ProvenanceView, PulseDelayConfig,
-    RuntimeFailureEvidence, RuntimePolicy, RuntimePolicyLimit, Schedule, TimeDomainId, Transaction,
+    CauseInspection, CauseRef, NetworkBuilder, NodeSubject, OutputEvent, ProvenanceView,
+    PulseDelayConfig, RuntimeFailureEvidence, RuntimePolicy, RuntimePolicyLimit, Schedule,
+    TimeDomainId, Transaction,
 };
 
 #[derive(Debug, PartialEq)]
@@ -238,7 +239,7 @@ fn pulse_delay_schedules_exact_future_work_and_fires_once() {
     assert_eq!(pending.count(), PulseCount::new(3));
     let CauseInspection::PendingPulseDelay {
         event,
-        node: cause_node,
+        owner,
         origin,
         deadline,
         count,
@@ -252,7 +253,7 @@ fn pulse_delay_schedules_exact_future_work_and_fires_once() {
         panic!("pending cause must preserve the temporal obligation")
     };
     assert_eq!(event, pending.event());
-    assert_eq!(cause_node, node);
+    assert_eq!(owner, &NodeSubject::Node(node));
     assert_eq!(origin, pending.origin());
     assert_eq!(deadline, pending.deadline());
     assert_eq!(count, pending.count());
@@ -668,7 +669,7 @@ fn temporal_budget_and_time_overflow_failures_preserve_calendar_and_identity() {
     assert_eq!(
         failure.evidence(),
         &RuntimeFailureEvidence::TimeOverflow {
-            node,
+            node: NodeSubject::Node(node),
             origin_ticks: u64::MAX - 1,
             delay_ticks: 2,
         }

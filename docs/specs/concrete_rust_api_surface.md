@@ -2242,16 +2242,9 @@ The two fingerprints are computed only after successful validation and belong
 intrinsically to the validated network. Compilation accepts no identity context
 and carries the same values unchanged.
 
-Until module-aware executable lowering is implemented, both compile forms MUST
-return an absent artifact with exactly one blocking
-`compilation.unsupported_module_instances` finding when the validated network
-contains one or more module instances. Its evidence contains the canonical set
-of affected stable module-instance keys. This is a temporary staged capability
-boundary: module-free compilation is unchanged, and future module-aware
-lowering MUST make the condition unreachable for every supported instance
-rather than preserve the rejection as compatibility behavior. The lowering
-change also retires the temporary diagnostic implementation and this staged API
-rule unless a separately specified unsupported-module case still requires them.
+Both compile forms accept supported validated user-module instances and retain
+their hierarchy and qualified stable correspondence while lowering execution
+into the ordinary primitive runtime machinery.
 
 ## 44. `CompiledNetwork<D>`
 

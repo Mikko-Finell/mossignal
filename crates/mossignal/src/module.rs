@@ -184,7 +184,48 @@ pub struct QualifiedNodeRef {
     node: NodeKey,
 }
 
+/// A stable public identity for either a containing-network or module-local node.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NodeSubject {
+    Node(NodeKey),
+    Qualified(QualifiedNodeRef),
+}
+
+/// A stable input-port identity qualified by its complete module-instance path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QualifiedInPortRef {
+    instances: Vec<ModuleInstanceKey>,
+    port: AnyInPortKey,
+}
+
+impl QualifiedInPortRef {
+    pub(crate) fn new(instances: Vec<ModuleInstanceKey>, port: AnyInPortKey) -> Self {
+        Self { instances, port }
+    }
+
+    #[must_use]
+    pub fn instances(&self) -> &[ModuleInstanceKey] {
+        &self.instances
+    }
+
+    #[must_use]
+    pub const fn port(&self) -> AnyInPortKey {
+        self.port
+    }
+}
+
+/// A stable public identity for a Pulse input-port contribution.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PulsePortSubject {
+    Port(crate::key::InPortKey<crate::signal::Pulse>),
+    Qualified(QualifiedInPortRef),
+}
+
 impl QualifiedNodeRef {
+    pub(crate) fn new(instances: Vec<ModuleInstanceKey>, node: NodeKey) -> Self {
+        Self { instances, node }
+    }
+
     #[must_use]
     pub fn instances(&self) -> &[ModuleInstanceKey] {
         &self.instances
@@ -192,6 +233,39 @@ impl QualifiedNodeRef {
     #[must_use]
     pub const fn node(&self) -> NodeKey {
         self.node
+    }
+}
+
+/// A stable module-instance identity qualified by its complete containment path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QualifiedModuleRef {
+    instances: Vec<ModuleInstanceKey>,
+}
+
+impl QualifiedModuleRef {
+    /// Creates one qualified module identity from a non-empty instance path.
+    #[must_use]
+    pub fn from_instances(instances: Vec<ModuleInstanceKey>) -> Option<Self> {
+        (!instances.is_empty()).then_some(Self { instances })
+    }
+
+    pub(crate) fn new(instances: Vec<ModuleInstanceKey>) -> Self {
+        Self { instances }
+    }
+
+    /// Returns the complete outermost-to-innermost instance path.
+    #[must_use]
+    pub fn instances(&self) -> &[ModuleInstanceKey] {
+        &self.instances
+    }
+
+    /// Returns the innermost instance key.
+    #[must_use]
+    pub fn instance(&self) -> ModuleInstanceKey {
+        match self.instances.last() {
+            Some(instance) => *instance,
+            None => panic!("qualified module identity must retain a non-empty instance path"),
+        }
     }
 }
 
@@ -203,6 +277,13 @@ pub struct QualifiedConnectionRef {
 }
 
 impl QualifiedConnectionRef {
+    pub(crate) fn new(instances: Vec<ModuleInstanceKey>, connection: ConnectionKey) -> Self {
+        Self {
+            instances,
+            connection,
+        }
+    }
+
     #[must_use]
     pub fn instances(&self) -> &[ModuleInstanceKey] {
         &self.instances
@@ -249,6 +330,39 @@ impl<'a, D> DefinitionGraphView<'a, D> {
     pub fn qualified_connections(self) -> Vec<QualifiedConnectionRef> {
         qualified_connections(self.definition.module_instances())
     }
+
+    /// Projects every nested instance through its complete containment path.
+    #[must_use]
+    pub fn qualified_modules(self) -> Vec<QualifiedModuleRef> {
+        qualified_modules(self.definition.module_instances())
+    }
+}
+
+pub(crate) fn qualified_modules<D>(
+    instances: &[crate::authored::ModuleInstanceDef<D>],
+) -> Vec<QualifiedModuleRef> {
+    fn visit<D>(
+        instances: &[crate::authored::ModuleInstanceDef<D>],
+        prefix: &[ModuleInstanceKey],
+        result: &mut Vec<QualifiedModuleRef>,
+    ) {
+        let mut instances: Vec<_> = instances.iter().collect();
+        instances.sort_by_key(|instance| instance.key());
+        let by_key: BTreeMap<_, _> = instances
+            .iter()
+            .map(|instance| (instance.key(), *instance))
+            .collect();
+        for instance in instances {
+            let mut path = prefix.to_vec();
+            path.extend(instance_path(instance, &by_key));
+            result.push(QualifiedModuleRef::new(path.clone()));
+            visit(instance.module().graph().module_instances(), &path, result);
+        }
+    }
+    let mut result = Vec::new();
+    visit(instances, &[], &mut result);
+    result.sort();
+    result
 }
 
 pub(crate) fn qualified_nodes<D>(

@@ -9,8 +9,22 @@ use mossignal::key::{
     SignalSourceKey,
 };
 use mossignal::metadata::DiagnosticMeta;
-use mossignal::signal::{Level, Pulse};
-use mossignal::{ModuleBuilder, ModuleDef, NetworkBuilder, TimeDomainId};
+use mossignal::signal::{Level, LogicLevel, Pulse};
+use mossignal::time::Time;
+use mossignal::{
+    ModuleBuilder, ModuleDef, NetworkBuilder, RuntimePolicy, TimeDomainId, Transaction,
+};
+
+fn runtime_policy() -> RuntimePolicy {
+    RuntimePolicy::builder()
+        .max_internal_reactions(100)
+        .max_evaluated_operations(10_000)
+        .max_pending_events(100)
+        .max_events_created_per_transaction(100)
+        .max_required_provenance_growth(10_000)
+        .build()
+        .unwrap()
+}
 
 fn inverter_module() -> (ModuleDef<()>, ModuleInputKey<Level>, ModuleOutputKey<Level>) {
     let mut builder = ModuleBuilder::<()>::new();
@@ -27,7 +41,7 @@ fn inverter_module() -> (ModuleDef<()>, ModuleInputKey<Level>, ModuleOutputKey<L
 }
 
 #[test]
-fn typed_instantiation_retains_exact_output_identity_and_staged_compile_boundary() {
+fn typed_instantiation_retains_exact_output_identity_and_compiles() {
     let (module, input, output) = inverter_module();
     let instance = ModuleInstanceKey::from_u128(10);
     let external_input = ExternalInputKey::from_u128(20);
@@ -62,22 +76,28 @@ fn typed_instantiation_retains_exact_output_identity_and_staged_compile_boundary
 
     let validated = builder.finish().require_artifact().unwrap();
     assert_eq!(validated.graph().module_instances().len(), 1);
-    let compile_ref = validated.compile_ref();
-    assert!(compile_ref.artifact().is_none());
-    assert_eq!(compile_ref.diagnostics().len(), 1);
-    let finding = compile_ref.diagnostics().iter().next().unwrap();
+    let borrowed = validated.compile_ref().require_artifact().unwrap();
+    let compiled = validated.compile().require_artifact().unwrap();
+    assert_eq!(borrowed.fingerprint(), compiled.fingerprint());
+
+    let snapshot = compiled
+        .input_snapshot()
+        .set(external_input, LogicLevel::High)
+        .and_then(mossignal::InputSnapshotBuilder::finish)
+        .unwrap();
+    let mut machine = compiled.spawn(runtime_policy());
+    machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            snapshot,
+        ))
+        .unwrap();
+    assert_eq!(machine.output_level(external_output), Some(LogicLevel::Low));
     assert_eq!(
-        finding.problem().code(),
-        DiagnosticCode::CompilationUnsupportedModuleInstances
+        machine.output_level(ExternalOutputKey::from_u128(31)),
+        Some(LogicLevel::Low)
     );
-    assert!(matches!(
-        finding.problem().evidence(),
-        ProblemEvidence::CompilationUnsupportedModuleInstances { instances, .. }
-            if instances == &[instance]
-    ));
-    let compile = validated.compile();
-    assert!(compile.artifact().is_none());
-    assert_eq!(compile.diagnostics(), compile_ref.diagnostics());
 }
 
 #[test]
@@ -545,7 +565,7 @@ fn explicit_parent_hierarchy_qualifies_instance_internals() {
 }
 
 #[test]
-fn staged_compile_evidence_includes_nested_instance_keys() {
+fn nested_instances_compile_and_retain_fingerprints() {
     let mut leaf = ModuleBuilder::<()>::new();
     let output = leaf.constant(mossignal::signal::LogicLevel::High);
     let leaf_output = leaf.level_output("output", output).unwrap();
@@ -579,19 +599,9 @@ fn staged_compile_evidence_includes_nested_instance_keys() {
         validated.fingerprint().to_string(),
         "d12911bb5de70e571f448759888c268d62dae3884e80d02ed708d63070f85a41"
     );
-    let report = validated.compile_ref();
-    let evidence = report
-        .diagnostics()
-        .iter()
-        .next()
-        .unwrap()
-        .problem()
-        .evidence();
-    assert!(matches!(
-        evidence,
-        ProblemEvidence::CompilationUnsupportedModuleInstances { instances, .. }
-            if instances == &[nested, top]
-    ));
+    let expected = validated.fingerprint();
+    let compiled = validated.compile_ref().require_artifact().unwrap();
+    assert_eq!(compiled.fingerprint(), expected);
 }
 
 #[test]

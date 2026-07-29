@@ -1,8 +1,13 @@
 //! Mutable machine lifecycle over an immutable compiled topology.
 
+use crate::authored::NodeKind;
 use crate::compile::CompiledNetwork;
-use crate::identity::NetworkFingerprint;
-use crate::key::{ExternalInputKey, ExternalOutputKey, NodeKey};
+use crate::identity::{ModuleFingerprint, NetworkFingerprint};
+use crate::key::{
+    AnyModuleInputKey, AnyModuleOutputKey, ExternalInputKey, ExternalOutputKey, ModuleInstanceKey,
+    NodeKey,
+};
+use crate::module::{ModuleOrigin, QualifiedConnectionRef, QualifiedModuleRef, QualifiedNodeRef};
 use crate::policy::{RuntimePolicy, RuntimePolicyId};
 use crate::signal::{Level, LogicLevel, PulseCount};
 use crate::time::{NonZeroSpan, Time};
@@ -219,6 +224,193 @@ pub enum PulseDelayInspectionFailure {
     NotInitialized,
 }
 
+/// One public module input and its retained committed Level value, when applicable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModuleInputInspection {
+    key: AnyModuleInputKey,
+    level: Option<LogicLevel>,
+}
+
+impl ModuleInputInspection {
+    #[must_use]
+    pub const fn key(&self) -> AnyModuleInputKey {
+        self.key
+    }
+
+    /// Returns the committed Level value, or `None` for Pulse ports and before initialization.
+    #[must_use]
+    pub const fn level(&self) -> Option<LogicLevel> {
+        self.level
+    }
+}
+
+/// One public module output and its retained committed Level value, when applicable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModuleOutputInspection {
+    key: AnyModuleOutputKey,
+    level: Option<LogicLevel>,
+}
+
+impl ModuleOutputInspection {
+    #[must_use]
+    pub const fn key(&self) -> AnyModuleOutputKey {
+        self.key
+    }
+
+    /// Returns the committed Level value, or `None` for Pulse ports and before initialization.
+    #[must_use]
+    pub const fn level(&self) -> Option<LogicLevel> {
+        self.level
+    }
+}
+
+/// One qualified pending temporal obligation owned by a module-local PulseDelay.
+pub struct ModulePendingPulseDelayInspection<D> {
+    event: PendingEventKey,
+    origin: Time<D>,
+    deadline: Time<D>,
+    count: PulseCount,
+    cause: CauseRef,
+}
+
+impl<D> ModulePendingPulseDelayInspection<D> {
+    #[must_use]
+    pub const fn event(&self) -> PendingEventKey {
+        self.event
+    }
+    #[must_use]
+    pub const fn origin(&self) -> Time<D> {
+        self.origin
+    }
+    #[must_use]
+    pub const fn deadline(&self) -> Time<D> {
+        self.deadline
+    }
+    #[must_use]
+    pub const fn count(&self) -> PulseCount {
+        self.count
+    }
+    #[must_use]
+    pub const fn cause(&self) -> CauseRef {
+        self.cause
+    }
+}
+
+/// Owned runtime facts for one expanded module-local primitive occurrence.
+pub struct ModuleNodeInspection<D> {
+    node: QualifiedNodeRef,
+    kind: NodeKind<D>,
+    level: Option<LogicLevel>,
+    toggle_state: Option<LogicLevel>,
+    toggle_inversion: Option<CauseRef>,
+    pending: Vec<ModulePendingPulseDelayInspection<D>>,
+}
+
+impl<D> ModuleNodeInspection<D> {
+    #[must_use]
+    pub const fn node(&self) -> &QualifiedNodeRef {
+        &self.node
+    }
+    #[must_use]
+    pub const fn kind(&self) -> &NodeKind<D> {
+        &self.kind
+    }
+    #[must_use]
+    pub const fn level(&self) -> Option<LogicLevel> {
+        self.level
+    }
+    #[must_use]
+    pub const fn toggle_state(&self) -> Option<LogicLevel> {
+        self.toggle_state
+    }
+    #[must_use]
+    pub const fn toggle_inversion(&self) -> Option<CauseRef> {
+        self.toggle_inversion
+    }
+    #[must_use]
+    pub fn pending(&self) -> &[ModulePendingPulseDelayInspection<D>] {
+        &self.pending
+    }
+}
+
+/// An owned public-boundary and expanded-internal observation of one user module.
+pub struct ModuleInspection<D> {
+    module: QualifiedModuleRef,
+    origin: ModuleOrigin<D>,
+    fingerprint: ModuleFingerprint,
+    revision: NetworkRevision,
+    at: Option<Time<D>>,
+    inputs: Vec<ModuleInputInspection>,
+    outputs: Vec<ModuleOutputInspection>,
+    nodes: Vec<ModuleNodeInspection<D>>,
+    connections: Vec<QualifiedConnectionRef>,
+    modules: Vec<QualifiedModuleRef>,
+}
+
+impl<D> ModuleInspection<D> {
+    #[must_use]
+    pub const fn module(&self) -> &QualifiedModuleRef {
+        &self.module
+    }
+    #[must_use]
+    pub const fn origin(&self) -> &ModuleOrigin<D> {
+        &self.origin
+    }
+    #[must_use]
+    pub const fn fingerprint(&self) -> ModuleFingerprint {
+        self.fingerprint
+    }
+    #[must_use]
+    pub const fn revision(&self) -> NetworkRevision {
+        self.revision
+    }
+    #[must_use]
+    pub const fn at(&self) -> Option<Time<D>> {
+        self.at
+    }
+    #[must_use]
+    pub fn inputs(&self) -> &[ModuleInputInspection] {
+        &self.inputs
+    }
+    #[must_use]
+    pub fn outputs(&self) -> &[ModuleOutputInspection] {
+        &self.outputs
+    }
+    #[must_use]
+    pub fn nodes(&self) -> &[ModuleNodeInspection<D>] {
+        &self.nodes
+    }
+    #[must_use]
+    pub fn connections(&self) -> &[QualifiedConnectionRef] {
+        &self.connections
+    }
+    #[must_use]
+    pub fn modules(&self) -> &[QualifiedModuleRef] {
+        &self.modules
+    }
+}
+
+/// Failure to find a retained qualified module instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleInspectionFailure {
+    module: QualifiedModuleRef,
+}
+
+impl ModuleInspectionFailure {
+    #[must_use]
+    pub const fn module(&self) -> &QualifiedModuleRef {
+        &self.module
+    }
+}
+
+impl fmt::Display for ModuleInspectionFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("the qualified module is absent from the compiled topology")
+    }
+}
+
+impl std::error::Error for ModuleInspectionFailure {}
+
 impl NetworkRevision {
     const INITIAL: Self = Self(0);
 
@@ -287,6 +479,7 @@ pub(crate) struct MachineStore<D> {
     pub(crate) revision: NetworkRevision,
     pub(crate) external_levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     pub(crate) settled_levels: Vec<LogicLevel>,
+    pub(crate) operation_levels: Vec<Option<LogicLevel>>,
     pub(crate) output_baselines: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     pub(crate) input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
     pub(crate) output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
@@ -304,6 +497,7 @@ impl<D> Clone for MachineStore<D> {
             revision: self.revision,
             external_levels: self.external_levels.clone(),
             settled_levels: self.settled_levels.clone(),
+            operation_levels: self.operation_levels.clone(),
             output_baselines: self.output_baselines.clone(),
             input_causes: self.input_causes.clone(),
             output_causes: self.output_causes.clone(),
@@ -427,6 +621,7 @@ impl<D> Machine<D> {
                 revision: NetworkRevision::INITIAL,
                 external_levels: BTreeMap::new(),
                 settled_levels: Vec::new(),
+                operation_levels: Vec::new(),
                 output_baselines: BTreeMap::new(),
                 input_causes: BTreeMap::new(),
                 output_causes: BTreeMap::new(),
@@ -511,6 +706,9 @@ impl<D> Machine<D> {
         &self,
         node: NodeKey,
     ) -> Result<PulseDelayDefinitionInspection<D>, PulseDelayInspectionFailure> {
+        if self.compiled.qualified_node(node).is_some() {
+            return Err(PulseDelayInspectionFailure::UnknownNode(node));
+        }
         let Some(delay) = self.compiled.pulse_delay(node) else {
             return Err(if self.compiled.contains_node(node) {
                 PulseDelayInspectionFailure::NotPulseDelay(node)
@@ -558,6 +756,122 @@ impl<D> Machine<D> {
         })
     }
 
+    /// Returns an owned observation of one top-level user-module instance.
+    pub fn inspect_module(
+        &self,
+        instance: ModuleInstanceKey,
+    ) -> Result<ModuleInspection<D>, ModuleInspectionFailure> {
+        let module = match QualifiedModuleRef::from_instances(vec![instance]) {
+            Some(module) => module,
+            None => panic!("one explicit instance key must form a qualified module identity"),
+        };
+        self.inspect_qualified_module(module)
+    }
+
+    /// Returns an owned observation of one exact qualified user-module instance.
+    pub fn inspect_qualified_module(
+        &self,
+        module: QualifiedModuleRef,
+    ) -> Result<ModuleInspection<D>, ModuleInspectionFailure> {
+        let Some(definition) = self.compiled.module(&module) else {
+            return Err(ModuleInspectionFailure { module });
+        };
+        let level_at = |operation: Option<usize>| {
+            if !self.is_initialized() {
+                return None;
+            }
+            operation
+                .and_then(|index| self.store.operation_levels.get(index))
+                .copied()
+                .flatten()
+        };
+        let inputs = definition
+            .inputs()
+            .map(|input| ModuleInputInspection {
+                key: input.key(),
+                level: level_at(self.compiled.module_input_operation(&module, input.key())),
+            })
+            .collect();
+        let outputs = definition
+            .outputs()
+            .map(|output| ModuleOutputInspection {
+                key: output.key(),
+                level: level_at(self.compiled.module_output_operation(&module, output.key())),
+            })
+            .collect();
+        let mut nodes = Vec::new();
+        for (qualified, flat) in self.compiled.qualified_nodes_under(&module) {
+            let Some(owner) = QualifiedModuleRef::from_instances(qualified.instances().to_vec())
+            else {
+                panic!("qualified module-local node must retain its owning instance path");
+            };
+            let Some(owner_definition) = self.compiled.module(&owner) else {
+                panic!("compiled qualified node owner must retain its module definition");
+            };
+            let Some(kind) = owner_definition
+                .graph()
+                .nodes()
+                .iter()
+                .find(|node| node.key() == qualified.node())
+                .map(|node| node.kind().clone())
+            else {
+                panic!("compiled qualified node must retain its module-local definition");
+            };
+            let toggle_state = self
+                .compiled
+                .toggle_state_slot(flat)
+                .and_then(|(slot, _)| self.store.toggle_states.get(slot.value()).copied())
+                .filter(|_| self.is_initialized());
+            let toggle_inversion = self.store.toggle_inversion_causes.get(&flat).copied();
+            let mut pending = self
+                .store
+                .pending_pulse_delays
+                .values()
+                .flatten()
+                .filter(|event| event.node == flat)
+                .map(|event| ModulePendingPulseDelayInspection {
+                    event: event.key,
+                    origin: event.origin,
+                    deadline: event.deadline,
+                    count: event.count,
+                    cause: event.cause,
+                })
+                .collect::<Vec<_>>();
+            pending.sort_by_key(|event| (event.deadline, event.event));
+            nodes.push(ModuleNodeInspection {
+                node: qualified.clone(),
+                kind,
+                level: level_at(self.compiled.node_operation(flat)),
+                toggle_state,
+                toggle_inversion,
+                pending,
+            });
+        }
+        let connections = self
+            .compiled
+            .qualified_connections_under(&module)
+            .cloned()
+            .collect();
+        let modules = self
+            .compiled
+            .qualified_modules_under(&module)
+            .filter(|candidate| *candidate != &module)
+            .cloned()
+            .collect();
+        Ok(ModuleInspection {
+            module,
+            origin: definition.origin().clone(),
+            fingerprint: definition.fingerprint(),
+            revision: self.store.revision,
+            at: self.now(),
+            inputs,
+            outputs,
+            nodes,
+            connections,
+            modules,
+        })
+    }
+
     /// Returns one authoritative external level after initialization.
     #[must_use]
     pub fn external_level(&self, input: ExternalInputKey<Level>) -> Option<LogicLevel> {
@@ -590,6 +904,9 @@ impl<D> Machine<D> {
         &self,
         node: NodeKey,
     ) -> Result<ToggleDefinitionInspection, ToggleInspectionFailure> {
+        if self.compiled.qualified_node(node).is_some() {
+            return Err(ToggleInspectionFailure::UnknownNode(node));
+        }
         let Some((_, initial)) = self.compiled.toggle_state_slot(node) else {
             return Err(if self.compiled.contains_node(node) {
                 ToggleInspectionFailure::NotToggle(node)

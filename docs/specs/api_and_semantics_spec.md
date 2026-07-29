@@ -424,16 +424,9 @@ Only a validated network may compile:
 let compiled = validated.compile().require_artifact()?;
 ```
 
-During the staged boundary before module-aware executable lowering exists, a
-network containing valid module instances remains a `ValidatedNetwork<D>`.
-Calling `compile` or `compile_ref` on it MUST return the structured blocking
-`compilation.unsupported_module_instances` report defined by the diagnostic
-catalogue rather than reclassifying valid module topology as a validation
-defect. Module-free compilation remains unchanged. This temporary condition is
-not permanent product behavior and MUST become unreachable for supported module
-instances when module-aware lowering is implemented. The accepted lowering
-change also retires the temporary diagnostic surface and its specification text
-unless a separately specified unsupported-module case still requires them.
+Networks containing supported user-module instances compile through recursive
+ordinary-primitive lowering. Compilation retains the authored module hierarchy
+and stable qualified internal identity alongside its private executable layout.
 
 Validation is a one-way type transition. Invalid data MUST NOT be representable as `ValidatedNetwork<D>`.
 
