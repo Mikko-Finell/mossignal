@@ -1,0 +1,301 @@
+schema_version: "0.1"
+id: mossignal.module.aware_execution
+title: Module-aware lowering, execution, and observation
+kind: capability
+status: reviewed
+
+source_baseline:
+  commit: a7e75d75699d40c65c2f4b1a092866e6d1df4e47
+  working_tree: dirty
+
+summary: >-
+  Every validated user-module instance lowers recursively into the ordinary
+  primitive compiled and runtime machinery while retaining stable
+  instance-qualified correspondence, module hierarchy, and observable causal
+  ownership.
+
+scope:
+  includes:
+    - deterministic recursive executable lowering of validated user-module instances
+    - module-qualified compiled correspondence and retained hierarchy
+    - ordinary reaction, state, temporal, transaction, provenance, inspection, and budget integration
+    - owned user-module inspection with public and expanded internal views
+    - nested-module output and causal conformance
+  excludes:
+    - standard-catalogue discovery and typed standard-module conveniences
+    - persistence, snapshots, restoration, replay, and module migration
+    - module replacement, topology patches, and runtime-state migration
+    - module-specialized evaluators, optimized incremental lowering, and complete explanation rendering
+
+known_uncovered:
+  - Persistent encoding and restoration of module-qualified runtime subjects
+  - Compatible module replacement with state and pending-event migration
+  - Standard-catalogue construction and standard-origin module conformance
+
+aliases:
+  - executable module lowering
+  - flattened module execution
+  - module-qualified runtime subject
+
+requirements:
+  - id: recursive-ordinary-primitive-lowering
+    kind: lifecycle
+    statement: >-
+      Both compile forms accept every otherwise supported ValidatedNetwork that
+      contains user-module instances and recursively lower each instance's
+      complete validated primitive graph. Lowered nodes use the existing closed
+      primitive descriptor and evaluator families; modules introduce no
+      callbacks, hidden semantic state, fixed-point evaluation, or distinct
+      transaction semantics.
+    sources: [api-validated, concrete-instantiation, runtime-compilation, runtime-reaction, standard-purpose, standard-closed-boundary]
+    basis: derived
+
+  - id: exact-interface-and-nested-correspondence
+    kind: semantic
+    statement: >-
+      Lowering resolves every public module input to its exact bound containing
+      source and every public output to its exact internal source, preserving
+      signal kind, connection incidence, fan-out, pulse multiplicity, and
+      current-reaction dependencies recursively through nested instances.
+      Instance paths plus module-local stable keys remain the logical identity
+      of internal nodes, ports, connections, state owners, and temporal owners;
+      private dense positions never establish correspondence.
+    sources: [concrete-instantiation, module-qualified-identity, runtime-stable-keys, runtime-reaction, testing-signal]
+    basis: derived
+
+  - id: deterministic-module-compilation
+    kind: verification
+    statement: >-
+      Equivalent stable-keyed module-containing definitions built with
+      different insertion, traversal, or hierarchy-storage orders produce
+      equivalent compiled graph views, reaction relations, descriptors, state
+      schemas, temporal ownership, and externally observable behavior. A
+      deterministic private flattening layout is permitted only where it does
+      not affect semantic identity or observation.
+    sources: [runtime-topology, runtime-compilation, testing-compilation]
+
+  - id: retained-hierarchy-and-encapsulation
+    kind: public_surface
+    statement: >-
+      Compiled graph access and runtime observation retain every module
+      instance, parent-child relation, public interface, binding, and canonical
+      expanded internal subject. Private internals remain non-connectable from
+      outside but are discoverable and grouped beneath their complete instance
+      path for structural inspection, diagnostics, provenance, and node or
+      pending-work inspection. Owned ModuleInspection preserves the user-module
+      boundary, origin, public ports and values, aggregate public state, and a
+      grouped expanded view of internal subjects and their supported runtime
+      facts.
+    sources: [api-modules, api-graph, api-inspection, concrete-direct-inspection, concrete-graph, concrete-inspection]
+
+  - id: ordinary-state-and-temporal-ownership
+    kind: semantic
+    statement: >-
+      Each lowered stateful or temporal primitive receives an independent
+      module-qualified owner and ordinary family-specific runtime slot. Its
+      current output, previous and proposed state, future work, cancellation,
+      equal-deadline processing, and schedule use the same laws as an explicit
+      primitive. Separate instances and nested paths must never alias mutable
+      state or pending events.
+    sources: [runtime-family-storage, runtime-state, runtime-events, runtime-temporal]
+    basis: derived
+
+  - id: module-transparent-reaction-semantics
+    kind: semantic
+    statement: >-
+      Module boundaries do not alter settlement: expanded operations execute in
+      the validated acyclic current-reaction graph, after all predecessors
+      settle, with glitch-free Level values and complete simultaneous Pulse
+      counts. Current outputs, proposed successors, future operations,
+      diagnostics, and causal derivations are the same as for the corresponding
+      explicit primitive graph wherever behavioral rather than identity
+      equivalence is required.
+    sources: [runtime-reaction, runtime-evaluation, testing-reaction, testing-signal, testing-metamorphic]
+    basis: derived
+
+  - id: module-transparent-atomicity-and-budgets
+    kind: system_effect
+    statement: >-
+      Module-expanded work participates in the existing explicit runtime
+      policy and the single transaction publication boundary as ordinary
+      primitive work. Any structured execution rejection, including overflow
+      or budget exhaustion during expanded state, event, provenance,
+      diagnostic, or result preparation, publishes no partial module output,
+      state, event, provenance, diagnostic, time, schedule, or baseline change.
+    sources: [runtime-atomicity, runtime-policy, standard-closed-boundary, testing-atomicity, testing-budgets]
+    basis: derived
+
+  - id: qualified-provenance-and-observation
+    kind: public_surface
+    statement: >-
+      Module-generated output events, state transitions, pending obligations,
+      diagnostics, and causal support identify stable module-qualified internal
+      subjects and the owning hierarchy rather than collision-prone local keys
+      or dense slots. Inspection remains a pure committed-state projection and
+      distinguishes each instance's state and pending work even when several
+      instances share one ModuleDef.
+    sources: [module-qualified-identity, runtime-provenance, runtime-inspection, api-inspection, concrete-direct-inspection, concrete-inspection, testing-provenance, testing-inspection]
+    basis: derived
+
+  - id: module-execution-verification
+    kind: verification
+    statement: >-
+      Focused and differential verification covers module-free regression,
+      single and multiple instances, mixed containing and internal primitives,
+      multiple nesting levels, Level and Pulse boundaries, stateful and
+      temporal internals, output fan-out, exact-deadline behavior, retained
+      hierarchy and qualified ownership, fingerprint stability, public
+      observation, budget boundaries, and complete failure atomicity. Equivalent
+      explicit and module-wrapped primitive graphs are compared after
+      normalizing intentionally distinct stable identity and hierarchy.
+    sources: [api-compiled, runtime-fingerprint, testing-compilation, testing-reaction, testing-temporal, testing-atomicity, testing-inspection, testing-budgets, testing-metamorphic]
+    basis: derived
+
+implementation_freedom:
+  - Direct flattening and equivalent recursive descriptor building are both permitted when they deterministically reuse the ordinary primitive compiler and evaluator semantics.
+  - Collision-free derived private keys, path interning, hierarchy indices, lookup tables, descriptor sharing, and deterministic dense layout remain private choices.
+  - The exact typed module-qualified subject representation and owned ModuleInspection layout remain open; general query planning, subscriptions, and complete explanation rendering are outside scope.
+
+open_questions: []
+
+sources:
+  api-validated:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:ba5bdf22f7ee67ffe108d8dadd7bc7e2da25c61f82b81d6be21a50f063e31a63
+  api-compiled:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 14. `CompiledNetwork<D>`]
+    reviewed_hash: sha256:7b054448afb88f96043a2fadc937abd85b026fd22907de1a4c0adac206fb1018
+  api-modules:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part XI — Modules and graph queries, 64. Modules]
+    reviewed_hash: sha256:2709760df44dedd80d1e5ba55da90bb4206d5e2877a6cbc023a114f660582f8b
+  api-graph:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part XI — Modules and graph queries, 65. Read-only graph view]
+    reviewed_hash: sha256:16bdb05e6144bb1a6e36f1b9970cb3a158e7f54d8b522188b918417dce3e5c58
+  api-inspection:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 48. Inspection is core]
+    reviewed_hash: sha256:22fc5616b40716c3dda6327430fc974ce61fc62f507639e681fab7ab23b30003
+  concrete-instantiation:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 34. Module instantiation]
+    reviewed_hash: sha256:5a2057e8852ab75756c0f0781af03ea8dee18f50a441080abba988b48dbc9db1
+  concrete-inspection:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIX — Inspection, 72. Owned inspection values]
+    reviewed_hash: sha256:90f6d3724be4c8c5f52adb19ab3c9960c57c3ce1c2b01854cf013bf633b2272f
+  concrete-direct-inspection:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIX — Inspection, 71. Direct inspection]
+    reviewed_hash: sha256:587055fde66a96491804ff86b526e395f5ceb4959ae1752ef98ba0911a6f72e3
+  concrete-graph:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXI — Graph access, 79. Graph views]
+    reviewed_hash: sha256:597997793197e5c8a9b874b59697dcd5f4db3911f786b77c663a8f4ee14a26f1
+  module-qualified-identity:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part II — Structural correspondence and identity, 12. Module-qualified internal identity]
+    reviewed_hash: sha256:49262636c2e74ccf2cf41f2ba5c50cf3e8e878aa24b1122ecdf075059271e206
+  standard-purpose:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: ["`mossignal` Standard Module Catalogue", 1. Purpose]
+    reviewed_hash: sha256:93d5e160107f8dc6a0a751859f634a7b6dd8463f2d6f647036cc1f475e4598e1
+  standard-closed-boundary:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part I — Boundaries and classification, 4. Closed semantic boundary]
+    reviewed_hash: sha256:82fe03b778457af8e4cab541adfcdc20845076045f88a038619cda73abf46f26
+  runtime-topology:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 3. Lifecycle, 3.3 Compiled topology]
+    reviewed_hash: sha256:890ccd0d0811de6986c71bbde3ffbf4c27db19e3510396682370f8683aa39dc2
+  runtime-stable-keys:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part I — Representation and ownership, 5. Stable keys and dense indices]
+    reviewed_hash: sha256:0f33e38d1614c05f37932049a428191738c25ffcda50efb4a409c358ee544e2e
+  runtime-reaction:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 15. Reaction dependency graph]
+    reviewed_hash: sha256:bb051caaa0cd3627f58f17edca8b2e09df6b72c3b042238f523b0dfb40dcda9a
+  runtime-compilation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 21. Compilation responsibilities]
+    reviewed_hash: sha256:f086a8575e9ed012b3a9aca9d4b8b193a323040e8b58b341c77d9de835db2237
+  runtime-fingerprint:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 23. Semantic fingerprint]
+    reviewed_hash: sha256:93810388dc436f32e1d3395798095baa37c59213f8becc008194c7e1a0df5985
+  runtime-family-storage:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part V — Runtime storage, 24. Storage by semantic family]
+    reviewed_hash: sha256:1a617b381c940086fb932cd2e87c7075e8e1adf5caf0e9d4494da702cc60c3f4
+  runtime-state:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part V — Runtime storage, 27. Previous and proposed state]
+    reviewed_hash: sha256:484b7e5f9121da346bc2df3176671942a0fb8e684da85104d48ae9b728a53461
+  runtime-events:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part V — Runtime storage, 29. Event records and deadline index]
+    reviewed_hash: sha256:15de2111e766635277858006abd706b6aa669be84fcbc98cb3594257aeb61341
+  runtime-evaluation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 33. Full reference evaluation]
+    reviewed_hash: sha256:582cdbde0046465fa88793dfa2f0e58976170719a591231f70d2a38b77ebe621
+  runtime-temporal:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 41. Advancing time]
+    reviewed_hash: sha256:2cd676a9ab1fa86bc37437cc7d485b15104ba231359672e214b1c0cff38bc278
+  runtime-atomicity:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 47. State-transition model]
+    reviewed_hash: sha256:fcccb31e85f023ec9af8b0fcf6033427bb165f9b34130192dd7d1b00f281abd0
+  runtime-provenance:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 65. Current support and transition cause]
+    reviewed_hash: sha256:5d08e732804e9aad13ba3e00ed410d86020e8c126a8dcf318ab7359b3c6cee14
+  runtime-inspection:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XII — Inspection and observer state, 75. Inspection as projection]
+    reviewed_hash: sha256:9613e929cb9c5f38508c3c48889f9a5ec4246a762b9e7a367d7f51aec2d9bedc
+  runtime-policy:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XIV — Runtime policy and replay, 91. Budget failure]
+    reviewed_hash: sha256:2ca78ad09dfa909af6d1ad6e2685bbeea97ea77dc45df56832e4f27c3be4d879
+  testing-compilation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72
+  testing-reaction:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 29. Full reaction semantics]
+    reviewed_hash: sha256:09490fcbb877503a0aa2b2e00b65c7436ca4d072010eb25fbfbb44edb19f6401
+  testing-signal:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 34. Pulse algebra]
+    reviewed_hash: sha256:0e9cad7bccffb06aa64c8b1f0a75ff2d73862c35e36f7bac2d1ea44aafef0e31
+  testing-temporal:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 44. Direct-jump equivalence]
+    reviewed_hash: sha256:9b7524d7e25090b847af11c47ba86e311e4dc91f2af6fdb4de927c3f34c17954
+  testing-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
+  testing-provenance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 68. Authoritative-root completeness]
+    reviewed_hash: sha256:31301008860a4fec9c0cd20e272a80b5323700daa6818a7c21cc57bd3de40523
+  testing-inspection:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIV — Inspection and observer verification, 78. Inspection purity]
+    reviewed_hash: sha256:417f23a13d6e0198272e0c3d054ea0d8f43de706803305c8bcf0edcbb2e6e55c
+  testing-budgets:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XVI — Runtime-policy and budget verification, 92. Budget boundaries]
+    reviewed_hash: sha256:cff7fe7bd3bcc9e478cfdf31ec758817d34bf117517d9eb4250402db640d6789
+  testing-metamorphic:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XVII — Property-based and differential campaigns, 96. Metamorphic properties]
+    reviewed_hash: sha256:afeb4a4797fe471e98a7d3f22df11317c4a1bce250d92b50e79d13c4ab093111
