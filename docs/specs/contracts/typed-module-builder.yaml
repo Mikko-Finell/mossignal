@@ -1,0 +1,176 @@
+schema_version: "0.1"
+id: mossignal.authoring.typed_module_builder
+title: Typed user-module builder foundation
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 3fa0ce1da397f46104f9c4a3774e4401d277799d
+  working_tree: dirty
+
+summary: >-
+  ModuleBuilder<D> is the owning strongly typed Rust authoring surface for one
+  reusable user module. It applies the established builder-scoped Signal<S>
+  rules, exposes a typed module interface, reuses the ordinary primitive
+  constructor family, and lowers through UncheckedModule<D> and its existing
+  validation boundary rather than creating a parallel graph model.
+
+scope:
+  includes:
+    - owning typed authoring of one reusable user module
+    - builder-scoped Level and Pulse signals and foreign-signal rejection
+    - typed public module input and output authoring
+    - built-in primitive constructor parity with the implemented NetworkBuilder family
+    - explicit module-local stable identities for primitive construction
+    - completion into unchecked and validated user-module artifacts
+  excludes:
+    - dynamic UncheckedModule storage and ModuleDef validation semantics
+    - module instantiation, bindings, nested modules, and hierarchy
+    - standard-module constructors and standard catalogue declarations
+    - compilation, execution, runtime state, persistence, and reconfiguration
+
+known_uncovered:
+  - Standard-module constructor parity required by the eventual complete ModuleBuilder surface
+  - Built-in primitive constructors not yet present on the implemented NetworkBuilder surface
+  - Module-instance construction and nested-module authoring
+  - Signal annotation conveniences on ModuleBuilder
+
+aliases:
+  - ModuleBuilder<D>
+  - typed module authoring
+  - user-module builder
+
+requirements:
+  - id: owning-user-module-authoring
+    kind: lifecycle
+    statement: >-
+      ModuleBuilder<D> is an owned typed authoring builder for one reusable
+      module definition. It owns its caller-local allocation and authored state
+      and exposes a module interface rather than application-level external
+      endpoints.
+    sources: [concrete-modules]
+
+  - id: module-scoped-typed-signals
+    kind: public_surface
+    statement: >-
+      ModuleBuilder follows the same Signal<S> rules as NetworkBuilder: a signal
+      preserves Level or Pulse at the type level, belongs to one builder scope,
+      refers to one source in that scope, and remains an opaque builder-only
+      authoring handle rather than a persistent structural identity.
+    sources: [api-typed-builder, concrete-signals, concrete-modules]
+
+  - id: foreign-signal-is-structured-failure
+    kind: prohibition
+    statement: >-
+      A ModuleBuilder operation supplied a Signal from another builder scope
+      must return AuthoringFailure::ForeignSignal rather than panic or connect
+      an unrelated source.
+    sources: [concrete-signals, concrete-modules, catalogue-authoring]
+    basis: derived
+
+  - id: typed-public-interface-authoring
+    kind: public_surface
+    statement: >-
+      The builder provides Level and Pulse public-input construction that
+      returns the corresponding typed ModuleInputKey<S> and Signal<S>, and
+      Level and Pulse public-output construction that accepts only a same-kind
+      local Signal<S> and returns the corresponding ModuleOutputKey<S> through
+      structured authoring failure where the operation can fail.
+    sources: [concrete-modules]
+
+  - id: explicit-identity-rejection
+    kind: prohibition
+    statement: >-
+      Explicit stable-keyed module authoring must not overwrite, silently merge,
+      or ambiguously rebind a duplicate module-interface or module-local
+      primitive identity. Immediately determinable duplicates are rejected
+      through the structured authoring or validation problem model.
+    sources: [concrete-inputs, concrete-modules, catalogue-authoring, catalogue-validation]
+    basis: derived
+
+  - id: builtin-primitive-family-parity
+    kind: public_surface
+    statement: >-
+      ModuleBuilder supports the same built-in primitive constructor family and
+      explicit module-local stable-key construction forms as NetworkBuilder for
+      the primitive kinds present in the implemented authoring surface. Those
+      forms retain the ordinary primitive definitions, ports, semantic
+      configuration, and Signal<S> rules rather than introducing module-only
+      primitive semantics.
+    sources: [concrete-explicit-primitives, concrete-primitives, concrete-modules]
+
+  - id: canonical-unchecked-lowering
+    kind: lifecycle
+    statement: >-
+      Consuming into_unchecked lowers the complete typed interface and internal
+      primitive structure into the ordinary owned UncheckedModule<D>
+      representation. Typed authoring must not create a second dynamic graph or
+      module-only primitive semantic model.
+    sources: [concrete-modules]
+    basis: derived
+
+  - id: ordinary-validation-completion
+    kind: lifecycle
+    statement: >-
+      Consuming finish returns Report<ModuleDef<D>, D> at the ordinary module
+      validation boundary. Its artifact presence, diagnostics, validated
+      structure, and ModuleFingerprint must agree with validation of the
+      equivalent UncheckedModule<D>; no separate weaker validation semantics
+      apply to typed authoring.
+    sources: [api-reports, concrete-modules]
+    basis: derived
+
+recommendations:
+  - id: statically-reject-kind-errors
+    statement: >-
+      The typed module authoring surface should make wrong signal kinds,
+      reversed directions, wrong fixed arity, and unresolved dynamic elements
+      unrepresentable where practical, leaving remaining dynamic invariants to
+      structured validation.
+    sources: [api-typed-builder, concrete-modules]
+
+implementation_freedom:
+  - Constructor spelling, argument grouping, supporting helper types, Rust module placement, and private storage layout are free beyond the exact ModuleBuilder methods represented by the concrete module section.
+  - Reuse, extraction, or private composition of NetworkBuilder authoring helpers is free; choose the smallest design that keeps builder scopes distinct and emits the canonical UncheckedModule representation.
+  - Exact convenience allocation namespaces and explicit module-interface method names are not frozen; choose deterministic local allocation and the smallest pattern consistent with the accepted stable-key APIs, test it, and record the concrete choice.
+  - This foundation may mirror only the built-in primitive methods already implemented on NetworkBuilder; later primitive and standard-module additions extend both builders without placeholder methods in this slice.
+
+open_questions: []
+
+sources:
+  api-typed-builder:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 11. `NetworkBuilder<D>`]
+    reviewed_hash: sha256:619764394d49d756d164e43a5a55c2acff8e2f069ae41e17996bbbdf03c5ef97
+  api-reports:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 45. Reports]
+    reviewed_hash: sha256:20197431f1ff31d0d39de2a9463f1688aea0f9e0f56323267fac4ef5177684e6
+  concrete-signals:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 23. Builder-scoped signals]
+    reviewed_hash: sha256:b200d59e0de48f3f401776baa69a2e37fa07f8cebded5b7663fd771436e4d72d
+  concrete-inputs:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 24. External input authoring]
+    reviewed_hash: sha256:21211c7e9da4c2fca3d328c71301013a941eb1d74bf216025511a2f0743354e6
+  concrete-primitives:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  concrete-explicit-primitives:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 28. Explicit keyed primitive construction]
+    reviewed_hash: sha256:eebf1d5f4f29d91da4e1483f86545fa1ed80b3aa7abb514939fd3dd2a7f8efdf
+  concrete-modules:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+    reviewed_hash: sha256:de8ed7d677513f9268ea2aa34ab57661a9153405ab31ae41e8e3a95ed5203ca4
+  catalogue-authoring:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 25. Authoring]
+    reviewed_hash: sha256:2f9e3a0f43a065ff23b7af2d620e049419eab0f73276f508ec73996fa8a00480
+  catalogue-validation:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions]
+    reviewed_hash: sha256:6c2eeae3d44af53103f991f364f2d321a9fe195f03b8924e8f902fb5e3dfef40
