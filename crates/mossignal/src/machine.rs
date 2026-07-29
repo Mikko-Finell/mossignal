@@ -122,6 +122,7 @@ impl<D> PulseDelayDefinitionInspection<D> {
 /// One owned observation of a pending PulseDelay group.
 pub struct PendingPulseDelayInspection<D> {
     event: PendingEventKey,
+    node: NodeKey,
     origin: Time<D>,
     deadline: Time<D>,
     count: PulseCount,
@@ -133,6 +134,12 @@ impl<D> PendingPulseDelayInspection<D> {
     #[must_use]
     pub const fn event(&self) -> PendingEventKey {
         self.event
+    }
+
+    /// Returns the stable identity of the PulseDelay that owns this obligation.
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
     }
 
     #[must_use]
@@ -531,6 +538,7 @@ impl<D> Machine<D> {
             .filter(|event| event.node == node)
             .map(|event| PendingPulseDelayInspection {
                 event: event.key,
+                node: event.node,
                 origin: event.origin,
                 deadline: event.deadline,
                 count: event.count,

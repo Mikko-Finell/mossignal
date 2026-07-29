@@ -126,7 +126,11 @@ pub enum RuntimeFailureEvidence {
     PulseCountOverflow {
         node: NodeKey,
     },
-    TimeOverflow,
+    TimeOverflow {
+        node: NodeKey,
+        origin_ticks: u64,
+        delay_ticks: u64,
+    },
 }
 
 /// A structured rejection of one runtime transaction.
@@ -166,7 +170,7 @@ impl<D> RuntimeFailure<D> {
             RuntimeFailureEvidence::StaleInputSchema { .. } => "input.stale_schema",
             RuntimeFailureEvidence::BudgetExceeded { .. } => "runtime.budget_exceeded",
             RuntimeFailureEvidence::PulseCountOverflow { .. } => "runtime.pulse_count_overflow",
-            RuntimeFailureEvidence::TimeOverflow => "runtime.time_overflow",
+            RuntimeFailureEvidence::TimeOverflow { .. } => "runtime.time_overflow",
         }
     }
 
@@ -191,7 +195,7 @@ impl<D> RuntimeFailure<D> {
             | RuntimeFailureEvidence::StaleInputSchema { .. } => Responsibility::Compatibility,
             RuntimeFailureEvidence::BudgetExceeded { .. } => Responsibility::ResourceLimit,
             RuntimeFailureEvidence::PulseCountOverflow { .. }
-            | RuntimeFailureEvidence::TimeOverflow => Responsibility::SemanticRejection,
+            | RuntimeFailureEvidence::TimeOverflow { .. } => Responsibility::SemanticRejection,
         }
     }
 }
@@ -278,6 +282,15 @@ enum ProvenanceRecord<D> {
         input: ExternalInputKey<Pulse>,
         count: PulseCount,
     },
+    PendingPulseDelay {
+        event: PendingEventKey,
+        node: NodeKey,
+        origin: Time<D>,
+        deadline: Time<D>,
+        count: PulseCount,
+        revision: NetworkRevision,
+        supporters: Vec<CauseRef>,
+    },
     Derived {
         subject: ProvenanceSubject,
         supporters: Vec<CauseRef>,
@@ -308,6 +321,15 @@ pub enum CauseInspection<'a, D> {
     ExternalPulseObservation {
         input: ExternalInputKey<Pulse>,
         count: PulseCount,
+    },
+    PendingPulseDelay {
+        event: PendingEventKey,
+        node: NodeKey,
+        origin: Time<D>,
+        deadline: Time<D>,
+        count: PulseCount,
+        revision: NetworkRevision,
+        supporters: &'a [CauseRef],
     },
     Derived {
         subject: ProvenanceSubject,
@@ -402,6 +424,23 @@ impl<D> ProvenanceView<D> {
                     count: *count,
                 }
             }
+            ProvenanceRecord::PendingPulseDelay {
+                event,
+                node,
+                origin,
+                deadline,
+                count,
+                revision,
+                supporters,
+            } => CauseInspection::PendingPulseDelay {
+                event: *event,
+                node: *node,
+                origin: *origin,
+                deadline: *deadline,
+                count: *count,
+                revision: *revision,
+                supporters,
+            },
             ProvenanceRecord::Derived {
                 subject,
                 supporters,
@@ -433,6 +472,29 @@ impl<D> ProvenanceView<D> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
+    }
+
+    fn append_pending_pulse_delay(
+        &mut self,
+        pending: &PendingPulseDelay<D>,
+        scheduling_cause: CauseRef,
+    ) -> CauseRef {
+        let Some(records) = Arc::get_mut(&mut self.records) else {
+            panic!("new transaction provenance must be uniquely owned before publication");
+        };
+        push_record(
+            self.scope,
+            records,
+            ProvenanceRecord::PendingPulseDelay {
+                event: pending.key,
+                node: pending.node,
+                origin: pending.origin,
+                deadline: pending.deadline,
+                count: pending.count,
+                revision: pending.revision,
+                supporters: vec![scheduling_cause],
+            },
+        )
     }
 }
 
@@ -620,7 +682,7 @@ impl<D> Machine<D> {
         let evaluation =
             evaluate_reaction::<D>(&self.compiled, &levels, &pulses, &self.store.toggle_states)?;
         let ProvenanceBuild {
-            provenance,
+            mut provenance,
             input_causes,
             output_causes,
             pulse_output_causes,
@@ -648,6 +710,7 @@ impl<D> Machine<D> {
             revision,
             &evaluation,
             &pulse_delay_schedules,
+            &mut provenance,
             &self.policy,
         )?;
         enforce_budget::<D>(
@@ -765,7 +828,7 @@ impl<D> Machine<D> {
             reaction_count = reaction_count.saturating_add(1);
             enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, reaction_count)?;
 
-            let built = build_ready_provenance(
+            let mut built = build_ready_provenance(
                 self.compiled.network_key(),
                 self.compiled.fingerprint(),
                 revision,
@@ -797,7 +860,6 @@ impl<D> Machine<D> {
             input_causes = built.input_causes;
             output_causes = built.output_causes;
             toggle_inversion_causes = built.toggle_inversion_causes;
-            provenance = built.provenance;
             toggle_states = internal.proposed_toggle_states.clone();
             output_baselines = internal.external_outputs.clone();
             schedule_pulse_delays(
@@ -810,8 +872,10 @@ impl<D> Machine<D> {
                 revision,
                 &internal,
                 &built.pulse_delay_schedules,
+                &mut built.provenance,
                 &self.policy,
             )?;
+            provenance = built.provenance;
             enforce_created_event_budget::<D>(
                 &self.policy,
                 created_pending_events,
@@ -839,7 +903,7 @@ impl<D> Machine<D> {
         reaction_count = reaction_count.saturating_add(1);
         enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, reaction_count)?;
 
-        let built = build_ready_provenance(
+        let mut built = build_ready_provenance(
             self.compiled.network_key(),
             self.compiled.fingerprint(),
             revision,
@@ -877,6 +941,7 @@ impl<D> Machine<D> {
             revision,
             &evaluation,
             &built.pulse_delay_schedules,
+            &mut built.provenance,
             &self.policy,
         )?;
         enforce_created_event_budget::<D>(
@@ -1056,12 +1121,19 @@ fn schedule_pulse_delays<D>(
     revision: NetworkRevision,
     evaluation: &FullEvaluation,
     proposal_causes: &BTreeMap<NodeKey, CauseRef>,
+    provenance: &mut ProvenanceView<D>,
     policy: &RuntimePolicy,
 ) -> Result<(), RuntimeFailure<D>> {
     for proposal in &evaluation.pulse_delay_proposals {
         let deadline = origin
             .checked_add(Span::from_ticks(proposal.delay_ticks))
-            .map_err(|_| RuntimeFailure::new(RuntimeFailureEvidence::TimeOverflow))?;
+            .map_err(|_| {
+                RuntimeFailure::new(RuntimeFailureEvidence::TimeOverflow {
+                    node: proposal.node,
+                    origin_ticks: origin.ticks(),
+                    delay_ticks: proposal.delay_ticks,
+                })
+            })?;
         let key = PendingEventKey::from_serial(*scheduling.next_serial);
         *scheduling.next_serial = scheduling.next_serial.checked_add(1).ok_or_else(|| {
             RuntimeFailure::new(RuntimeFailureEvidence::BudgetExceeded {
@@ -1070,23 +1142,25 @@ fn schedule_pulse_delays<D>(
                 consumed: u64::MAX,
             })
         })?;
-        let cause = match proposal_causes.get(&proposal.node).copied() {
+        let scheduling_cause = match proposal_causes.get(&proposal.node).copied() {
             Some(cause) => cause,
             None => panic!("every PulseDelay proposal must retain a scheduling cause"),
         };
+        let mut pending = PendingPulseDelay {
+            key,
+            node: proposal.node,
+            origin,
+            deadline,
+            count: proposal.count,
+            revision,
+            cause: scheduling_cause,
+        };
+        pending.cause = provenance.append_pending_pulse_delay(&pending, scheduling_cause);
         scheduling
             .pending
             .entry(deadline)
             .or_default()
-            .push(PendingPulseDelay {
-                key,
-                node: proposal.node,
-                origin,
-                deadline,
-                count: proposal.count,
-                revision,
-                cause,
-            });
+            .push(pending);
         *scheduling.created_events = scheduling.created_events.saturating_add(1);
         enforce_budget::<D>(
             policy,
@@ -1688,6 +1762,26 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: [u8; 16]) -> ProvenanceR
                 count: *count,
             }
         }
+        ProvenanceRecord::PendingPulseDelay {
+            event,
+            node,
+            origin,
+            deadline,
+            count,
+            revision,
+            supporters,
+        } => ProvenanceRecord::PendingPulseDelay {
+            event: *event,
+            node: *node,
+            origin: *origin,
+            deadline: *deadline,
+            count: *count,
+            revision: *revision,
+            supporters: supporters
+                .iter()
+                .map(|cause| remap_cause(*cause, scope))
+                .collect(),
+        },
         ProvenanceRecord::Derived {
             subject,
             supporters,
@@ -2685,7 +2779,8 @@ mod tests {
                 .inspect(cause)
                 .unwrap_or_else(|failure| panic!("cause must resolve: {failure}"))
             {
-                CauseInspection::Derived { supporters, .. } => {
+                CauseInspection::Derived { supporters, .. }
+                | CauseInspection::PendingPulseDelay { supporters, .. } => {
                     assert!(
                         !supporters.is_empty(),
                         "derived provenance must terminate in authoritative roots"

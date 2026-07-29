@@ -2744,5 +2744,37 @@ mod tests {
             Vec::new(),
         );
         assert!(malformed.validate_structural().artifact().is_none());
+
+        let delayed_feedback = UncheckedNetwork::new(
+            NetworkKey::from_u128(15),
+            TimeDomainId::from_u128(16),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                node,
+                NodeKind::pulse_delay(delay),
+                NodePorts::with_input_roles(
+                    vec![input.into()],
+                    vec![InputPortRole::PulseDelay],
+                    vec![output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            Vec::new(),
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Pulse>::from_u128(8).into(),
+                SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(9),
+                output.into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )],
+        );
+        assert!(
+            delayed_feedback.validate().artifact().is_some(),
+            "a strictly-future feedback edge is not a current-reaction cycle"
+        );
     }
 }
