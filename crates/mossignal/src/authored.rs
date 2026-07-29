@@ -1,12 +1,13 @@
-//! Lossless authored network definitions awaiting structural validation.
+//! Lossless authored network and reusable-module definitions awaiting structural validation.
 //!
 //! This module deliberately represents structure only. It does not validate,
-//! compile, or execute a network.
+//! compile, instantiate, or execute a definition.
 
 use crate::identity::TimeDomainId;
 use crate::key::{
-    AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, AnySignalSourceKey,
-    ConnectionKey, ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey, OutPortKey,
+    AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
+    AnyOutPortKey, AnySignalSourceKey, ConnectionKey, ExternalInputKey, ExternalOutputKey,
+    InPortKey, NetworkKey, NodeKey, OutPortKey,
 };
 use crate::metadata::DiagnosticMeta;
 use crate::signal::{Level, LogicLevel, Pulse, SignalKind};
@@ -98,8 +99,235 @@ impl<D> UncheckedNetwork<D> {
     }
 }
 
-/// One stable-keyed authored node claim.
+/// The explicit origin retained by an unchecked caller-authored module.
+///
+/// Standard catalogue declarations belong to a later validated-module slice.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UncheckedModuleOrigin {
+    /// The module was authored by a caller rather than produced from a standard declaration.
+    User,
+}
+
+/// One stable-keyed public module-input declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleInputDef {
+    key: AnyModuleInputKey,
+    meta: DiagnosticMeta,
+}
+
+impl ModuleInputDef {
+    /// Creates a module-input declaration without validating its mappings.
+    #[must_use]
+    pub const fn new(key: AnyModuleInputKey, meta: DiagnosticMeta) -> Self {
+        Self { key, meta }
+    }
+
+    /// Returns the stable kind-aware public input identity.
+    #[must_use]
+    pub const fn key(&self) -> AnyModuleInputKey {
+        self.key
+    }
+
+    /// Returns presentation metadata attached to this public input.
+    #[must_use]
+    pub const fn meta(&self) -> &DiagnosticMeta {
+        &self.meta
+    }
+}
+
+/// One stable-keyed public module-output declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleOutputDef {
+    key: AnyModuleOutputKey,
+    meta: DiagnosticMeta,
+}
+
+impl ModuleOutputDef {
+    /// Creates a module-output declaration without validating its mappings.
+    #[must_use]
+    pub const fn new(key: AnyModuleOutputKey, meta: DiagnosticMeta) -> Self {
+        Self { key, meta }
+    }
+
+    /// Returns the stable kind-aware public output identity.
+    #[must_use]
+    pub const fn key(&self) -> AnyModuleOutputKey {
+        self.key
+    }
+
+    /// Returns presentation metadata attached to this public output.
+    #[must_use]
+    pub const fn meta(&self) -> &DiagnosticMeta {
+        &self.meta
+    }
+}
+
+/// One raw mapping claim between a public module interface and private structure.
+///
+/// Endpoint direction and signal kind are retained but deliberately unchecked.
+/// Repeating a claim, omitting one, or supplying several claims for one public
+/// key remains observable to later module validation.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleInterfaceMapping {
+    /// Claims that a public module input drives one private endpoint.
+    Input {
+        /// The stable kind-aware public input identity.
+        input: AnyModuleInputKey,
+        /// The claimed private destination, including a direction-invalid endpoint.
+        target: ConnectionEndpoint,
+    },
+    /// Claims that a public module output exports one private endpoint.
+    Output {
+        /// The stable kind-aware public output identity.
+        output: AnyModuleOutputKey,
+        /// The claimed private source, including a direction-invalid endpoint.
+        source: ConnectionEndpoint,
+    },
+}
+
+impl ModuleInterfaceMapping {
+    /// Creates an unchecked public-input-to-private-endpoint mapping claim.
+    #[must_use]
+    pub const fn input(input: AnyModuleInputKey, target: ConnectionEndpoint) -> Self {
+        Self::Input { input, target }
+    }
+
+    /// Creates an unchecked private-endpoint-to-public-output mapping claim.
+    #[must_use]
+    pub const fn output(output: AnyModuleOutputKey, source: ConnectionEndpoint) -> Self {
+        Self::Output { output, source }
+    }
+}
+
+/// An owned caller-authored reusable module definition that may be malformed.
+///
+/// Every collection retains caller order and duplicates. Equality is raw
+/// structural equality over those retained claims and metadata; it is not a
+/// semantic module identity or persistence-order promise.
+pub struct UncheckedModule<D> {
+    origin: UncheckedModuleOrigin,
+    meta: DiagnosticMeta,
+    inputs: Vec<ModuleInputDef>,
+    outputs: Vec<ModuleOutputDef>,
+    mappings: Vec<ModuleInterfaceMapping>,
+    nodes: Vec<NodeDef<D>>,
+    connections: Vec<ConnectionDef>,
+}
+
+impl<D> UncheckedModule<D> {
+    /// Creates an unchecked user module without interpreting or validating any claim.
+    #[must_use]
+    pub fn new_user(
+        meta: DiagnosticMeta,
+        inputs: Vec<ModuleInputDef>,
+        outputs: Vec<ModuleOutputDef>,
+        mappings: Vec<ModuleInterfaceMapping>,
+        nodes: Vec<NodeDef<D>>,
+        connections: Vec<ConnectionDef>,
+    ) -> Self {
+        // SPEC: docs/specs/contracts/unchecked-module-definition.yaml
+        // "malformed-claims-remain-observable"
+        // Separate raw vectors preserve duplicates, omissions, wrong kinds, and wrong directions.
+        Self {
+            origin: UncheckedModuleOrigin::User,
+            meta,
+            inputs,
+            outputs,
+            mappings,
+            nodes,
+            connections,
+        }
+    }
+
+    /// Returns the module's explicit caller-authored origin.
+    #[must_use]
+    pub const fn origin(&self) -> UncheckedModuleOrigin {
+        self.origin
+    }
+
+    /// Returns presentation metadata attached to this module.
+    #[must_use]
+    pub const fn meta(&self) -> &DiagnosticMeta {
+        &self.meta
+    }
+
+    /// Returns every public input declaration in caller order, including duplicates.
+    #[must_use]
+    pub fn inputs(&self) -> &[ModuleInputDef] {
+        &self.inputs
+    }
+
+    /// Returns every public output declaration in caller order, including duplicates.
+    #[must_use]
+    pub fn outputs(&self) -> &[ModuleOutputDef] {
+        &self.outputs
+    }
+
+    /// Returns every raw interface mapping claim in caller order.
+    #[must_use]
+    pub fn mappings(&self) -> &[ModuleInterfaceMapping] {
+        &self.mappings
+    }
+
+    /// Returns every private module-local node claim in caller order.
+    #[must_use]
+    pub fn nodes(&self) -> &[NodeDef<D>] {
+        &self.nodes
+    }
+
+    /// Returns every private module-local connection claim in caller order.
+    #[must_use]
+    pub fn connections(&self) -> &[ConnectionDef] {
+        &self.connections
+    }
+}
+
+impl<D> Clone for UncheckedModule<D> {
+    fn clone(&self) -> Self {
+        Self {
+            origin: self.origin,
+            meta: self.meta.clone(),
+            inputs: self.inputs.clone(),
+            outputs: self.outputs.clone(),
+            mappings: self.mappings.clone(),
+            nodes: self.nodes.clone(),
+            connections: self.connections.clone(),
+        }
+    }
+}
+
+impl<D> PartialEq for UncheckedModule<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.origin == other.origin
+            && self.meta == other.meta
+            && self.inputs == other.inputs
+            && self.outputs == other.outputs
+            && self.mappings == other.mappings
+            && self.nodes == other.nodes
+            && self.connections == other.connections
+    }
+}
+
+impl<D> Eq for UncheckedModule<D> {}
+
+impl<D> fmt::Debug for UncheckedModule<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UncheckedModule")
+            .field("origin", &self.origin)
+            .field("meta", &self.meta)
+            .field("inputs", &self.inputs)
+            .field("outputs", &self.outputs)
+            .field("mappings", &self.mappings)
+            .field("nodes", &self.nodes)
+            .field("connections", &self.connections)
+            .finish()
+    }
+}
+
+/// One stable-keyed authored node claim.
 pub struct NodeDef<D> {
     key: NodeKey,
     kind: NodeKind<D>,
@@ -150,9 +378,42 @@ impl<D> NodeDef<D> {
     }
 }
 
+impl<D> Clone for NodeDef<D> {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key,
+            kind: self.kind.clone(),
+            ports: self.ports.clone(),
+            meta: self.meta.clone(),
+        }
+    }
+}
+
+impl<D> PartialEq for NodeDef<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.kind == other.kind
+            && self.ports == other.ports
+            && self.meta == other.meta
+    }
+}
+
+impl<D> Eq for NodeDef<D> {}
+
+impl<D> fmt::Debug for NodeDef<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NodeDef")
+            .field("key", &self.key)
+            .field("kind", &self.kind)
+            .field("ports", &self.ports)
+            .field("meta", &self.meta)
+            .finish()
+    }
+}
+
 /// The restricted initial closed set of authored node kinds.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind<D> {
     /// A level constant with no inputs and one level output after validation.
     Constant(ConstantConfig<D>),
@@ -174,6 +435,60 @@ pub enum NodeKind<D> {
     Toggle(ToggleConfig),
     /// A temporal pulse reproducer with one pulse input and one pulse output.
     PulseDelay(PulseDelayConfig<D>),
+}
+
+impl<D> Clone for NodeKind<D> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Constant(config) => Self::constant(config.value()),
+            Self::Not => Self::Not,
+            Self::All => Self::All,
+            Self::Any => Self::Any,
+            Self::Parity => Self::Parity,
+            Self::AtLeast(config) => Self::AtLeast(*config),
+            Self::Select => Self::Select,
+            Self::Merge => Self::Merge,
+            Self::Toggle(config) => Self::Toggle(*config),
+            Self::PulseDelay(config) => Self::PulseDelay(*config),
+        }
+    }
+}
+
+impl<D> PartialEq for NodeKind<D> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Constant(left), Self::Constant(right)) => left.value() == right.value(),
+            (Self::Not, Self::Not)
+            | (Self::All, Self::All)
+            | (Self::Any, Self::Any)
+            | (Self::Parity, Self::Parity)
+            | (Self::Select, Self::Select)
+            | (Self::Merge, Self::Merge) => true,
+            (Self::AtLeast(left), Self::AtLeast(right)) => left == right,
+            (Self::Toggle(left), Self::Toggle(right)) => left == right,
+            (Self::PulseDelay(left), Self::PulseDelay(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+impl<D> Eq for NodeKind<D> {}
+
+impl<D> fmt::Debug for NodeKind<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Constant(config) => formatter.debug_tuple("Constant").field(config).finish(),
+            Self::Not => formatter.write_str("Not"),
+            Self::All => formatter.write_str("All"),
+            Self::Any => formatter.write_str("Any"),
+            Self::Parity => formatter.write_str("Parity"),
+            Self::AtLeast(config) => formatter.debug_tuple("AtLeast").field(config).finish(),
+            Self::Select => formatter.write_str("Select"),
+            Self::Merge => formatter.write_str("Merge"),
+            Self::Toggle(config) => formatter.debug_tuple("Toggle").field(config).finish(),
+            Self::PulseDelay(config) => formatter.debug_tuple("PulseDelay").field(config).finish(),
+        }
+    }
 }
 
 impl<D> NodeKind<D> {
@@ -239,10 +554,32 @@ impl<D> NodeKind<D> {
 }
 
 /// The semantic configuration of an authored [`NodeKind::Constant`] claim.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstantConfig<D> {
     value: LogicLevel,
     domain: PhantomData<fn() -> D>,
+}
+
+impl<D> Clone for ConstantConfig<D> {
+    fn clone(&self) -> Self {
+        Self::new(self.value)
+    }
+}
+
+impl<D> PartialEq for ConstantConfig<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl<D> Eq for ConstantConfig<D> {}
+
+impl<D> fmt::Debug for ConstantConfig<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ConstantConfig")
+            .field("value", &self.value)
+            .finish()
+    }
 }
 
 impl<D> ConstantConfig<D> {
@@ -659,13 +996,65 @@ impl ExternalOutputDef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::key::{ExternalInputKey, ExternalOutputKey, InPortKey, OutPortKey, SignalSourceKey};
+    use crate::key::{
+        ExternalInputKey, ExternalOutputKey, InPortKey, ModuleInputKey, ModuleOutputKey,
+        OutPortKey, SignalSourceKey,
+    };
 
     fn meta(name: &str) -> DiagnosticMeta {
         DiagnosticMeta {
             name: Some(name.into()),
             ..DiagnosticMeta::default()
         }
+    }
+
+    fn representative_module<D>() -> UncheckedModule<D> {
+        let level_input = ModuleInputKey::<Level>::from_u128(10);
+        let pulse_input = ModuleInputKey::<Pulse>::from_u128(11);
+        let level_output = ModuleOutputKey::<Level>::from_u128(12);
+        let pulse_output = ModuleOutputKey::<Pulse>::from_u128(13);
+        let not_input = InPortKey::<Level>::from_u128(20);
+        let not_output = OutPortKey::<Level>::from_u128(21);
+        let merge_input = InPortKey::<Pulse>::from_u128(22);
+        let merge_output = OutPortKey::<Pulse>::from_u128(23);
+
+        UncheckedModule::new_user(
+            meta("mixed module"),
+            vec![
+                ModuleInputDef::new(level_input.into(), meta("level in")),
+                ModuleInputDef::new(pulse_input.into(), meta("pulse in")),
+            ],
+            vec![
+                ModuleOutputDef::new(level_output.into(), meta("level out")),
+                ModuleOutputDef::new(pulse_output.into(), meta("pulse out")),
+            ],
+            vec![
+                ModuleInterfaceMapping::input(level_input.into(), not_input.into()),
+                ModuleInterfaceMapping::input(pulse_input.into(), merge_input.into()),
+                ModuleInterfaceMapping::output(level_output.into(), not_output.into()),
+                ModuleInterfaceMapping::output(pulse_output.into(), merge_output.into()),
+            ],
+            vec![
+                NodeDef::new(
+                    NodeKey::from_u128(30),
+                    NodeKind::Not,
+                    NodePorts::new(vec![not_input.into()], vec![not_output.into()]),
+                    meta("inverter"),
+                ),
+                NodeDef::new(
+                    NodeKey::from_u128(31),
+                    NodeKind::Merge,
+                    NodePorts::new(vec![merge_input.into()], vec![merge_output.into()]),
+                    meta("pulse merge"),
+                ),
+            ],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(40),
+                not_output.into(),
+                not_input.into(),
+                meta("retained malformed feedback"),
+            )],
+        )
     }
 
     #[test]
@@ -802,5 +1191,159 @@ mod tests {
             network.external_inputs()[1].meta().name.as_deref(),
             Some("second")
         );
+    }
+
+    #[test]
+    fn represents_a_mixed_user_module_with_ordinary_private_structure() {
+        let module = representative_module::<()>();
+
+        assert_eq!(module.origin(), UncheckedModuleOrigin::User);
+        assert_eq!(module.meta().name.as_deref(), Some("mixed module"));
+        assert_eq!(module.inputs().len(), 2);
+        assert_eq!(module.outputs().len(), 2);
+        assert_eq!(module.mappings().len(), 4);
+        assert_eq!(module.nodes().len(), 2);
+        assert_eq!(module.connections().len(), 1);
+        assert_eq!(module.inputs()[0].key().kind(), SignalKind::Level);
+        assert_eq!(module.inputs()[1].key().kind(), SignalKind::Pulse);
+        assert_eq!(module.outputs()[0].key().kind(), SignalKind::Level);
+        assert_eq!(module.outputs()[1].key().kind(), SignalKind::Pulse);
+        assert!(matches!(module.nodes()[0].kind(), NodeKind::Not));
+        assert!(matches!(module.nodes()[1].kind(), NodeKind::Merge));
+        assert_eq!(module.connections()[0].key(), ConnectionKey::from_u128(40));
+        assert_eq!(module.inputs()[0].meta().name.as_deref(), Some("level in"));
+        assert_eq!(
+            module.outputs()[1].meta().name.as_deref(),
+            Some("pulse out")
+        );
+    }
+
+    #[test]
+    fn retains_malformed_module_claims_without_repair() {
+        let duplicate_input = ModuleInputKey::<Level>::from_u128(1);
+        let incomplete_output = ModuleOutputKey::<Pulse>::from_u128(2);
+        let duplicate_node = NodeKey::from_u128(3);
+        let wrong_kind_target = InPortKey::<Pulse>::from_u128(4);
+        let direction_invalid_source = InPortKey::<Level>::from_u128(5);
+        let malformed_connection = ConnectionDef::new(
+            ConnectionKey::from_u128(6),
+            InPortKey::<Pulse>::from_u128(7).into(),
+            OutPortKey::<Level>::from_u128(8).into(),
+            meta("wrong directions"),
+        );
+        let module = UncheckedModule::<()>::new_user(
+            DiagnosticMeta::default(),
+            vec![
+                ModuleInputDef::new(duplicate_input.into(), meta("first")),
+                ModuleInputDef::new(duplicate_input.into(), meta("second")),
+            ],
+            vec![ModuleOutputDef::new(
+                incomplete_output.into(),
+                meta("unmapped"),
+            )],
+            vec![
+                ModuleInterfaceMapping::input(duplicate_input.into(), wrong_kind_target.into()),
+                ModuleInterfaceMapping::output(
+                    ModuleOutputKey::<Level>::from_u128(99).into(),
+                    direction_invalid_source.into(),
+                ),
+            ],
+            vec![
+                NodeDef::new(
+                    duplicate_node,
+                    NodeKind::Not,
+                    NodePorts::new(vec![], vec![]),
+                    meta("first node"),
+                ),
+                NodeDef::new(
+                    duplicate_node,
+                    NodeKind::Merge,
+                    NodePorts::new(vec![], vec![]),
+                    meta("second node"),
+                ),
+            ],
+            vec![malformed_connection],
+        );
+
+        assert_eq!(module.inputs().len(), 2);
+        assert_eq!(module.inputs()[0].key(), module.inputs()[1].key());
+        assert_eq!(module.nodes().len(), 2);
+        assert_eq!(module.nodes()[0].key(), module.nodes()[1].key());
+        assert_eq!(module.mappings().len(), 2);
+        assert!(matches!(
+            module.mappings()[0],
+            ModuleInterfaceMapping::Input { input, target }
+                if input.kind() == SignalKind::Level
+                    && target.kind() == SignalKind::Pulse
+        ));
+        assert!(matches!(
+            module.mappings()[1],
+            ModuleInterfaceMapping::Output {
+                source: ConnectionEndpoint::NodeInput(_),
+                ..
+            }
+        ));
+        assert_eq!(module.outputs().len(), 1);
+        assert_eq!(module.outputs()[0].key(), incomplete_output.into());
+        assert_eq!(module.connections().len(), 1);
+        assert!(matches!(
+            module.connections()[0].from(),
+            ConnectionEndpoint::NodeInput(_)
+        ));
+        assert!(matches!(
+            module.connections()[0].to(),
+            ConnectionEndpoint::NodeOutput(_)
+        ));
+    }
+
+    #[test]
+    fn raw_module_equality_preserves_order_and_metadata_without_rebinding_keys() {
+        let original = representative_module::<()>();
+        assert_eq!(original, original.clone());
+
+        let mut reordered_inputs = original.inputs().to_vec();
+        reordered_inputs.reverse();
+        let reordered = UncheckedModule::new_user(
+            original.meta().clone(),
+            reordered_inputs,
+            original.outputs().to_vec(),
+            original.mappings().to_vec(),
+            original.nodes().to_vec(),
+            original.connections().to_vec(),
+        );
+        assert_ne!(original, reordered);
+
+        let renamed = UncheckedModule::new_user(
+            meta("renamed module"),
+            original.inputs().to_vec(),
+            original.outputs().to_vec(),
+            original.mappings().to_vec(),
+            original.nodes().to_vec(),
+            original.connections().to_vec(),
+        );
+        assert_ne!(original, renamed);
+        assert_eq!(original.inputs()[0].key(), renamed.inputs()[0].key());
+        assert_eq!(original.nodes()[0].key(), renamed.nodes()[0].key());
+    }
+
+    #[test]
+    fn module_value_traits_do_not_require_domain_traits() {
+        enum TraitHostileDomain {}
+
+        fn assert_value_traits<T: Clone + fmt::Debug + Eq>() {}
+
+        assert_value_traits::<UncheckedModule<TraitHostileDomain>>();
+        let empty = UncheckedModule::<TraitHostileDomain>::new_user(
+            DiagnosticMeta::default(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        );
+        assert_eq!(empty, empty.clone());
+        assert!(empty.inputs().is_empty());
+        assert!(empty.outputs().is_empty());
+        assert!(empty.nodes().is_empty());
     }
 }

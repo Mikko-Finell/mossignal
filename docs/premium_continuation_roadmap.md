@@ -104,7 +104,7 @@ land rather than independently designing the entire continuation in advance.
 
 # Part I — Module composition
 
-## 32. Module interface identities and unchecked definitions
+## 32. [DONE] Module interface identities and unchecked definitions
 
 Establish the stable authored vocabulary for reusable modules:
 
