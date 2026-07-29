@@ -2,7 +2,10 @@
 
 #![allow(dead_code)] // Consumed by the following private validation phase.
 
-use crate::authored::{ConnectionEndpoint, InputPortRole, NodeKind, UncheckedNetwork};
+use crate::authored::{
+    ConnectionEndpoint, InputPortRole, ModuleInterfaceMapping, NodeKind, UncheckedModule,
+    UncheckedNetwork,
+};
 use crate::compile::CompiledNetwork;
 use crate::diagnostics::{
     CurrentReactionCycleStep, Diagnostic, DiagnosticSet, DuplicateClaim, DuplicateNodeKind,
@@ -10,8 +13,8 @@ use crate::diagnostics::{
 };
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId, fingerprints};
 use crate::key::{
-    AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, AnySignalSourceKey,
-    ConnectionKey, NodeKey, SignalSourceKey,
+    AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
+    AnyOutPortKey, AnySignalSourceKey, ConnectionKey, NodeKey, SignalSourceKey,
 };
 use crate::signal::{LogicLevel, SignalKind};
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,8 +45,10 @@ impl<'a, D> StructuralCandidate<'a, D> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ReactionVertex {
     ExternalInput(AnyExternalInputKey),
+    ModuleInput(AnyModuleInputKey),
     NodeOperation(NodeKey),
     NodeOutput(AnyOutPortKey),
+    ModuleOutput(AnyModuleOutputKey),
     ExternalOutput(AnyExternalOutputKey),
 }
 
@@ -51,7 +56,9 @@ pub(crate) enum ReactionVertex {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ReactionDependencySubject {
     Connection(ConnectionKey),
+    ModuleInput(AnyModuleInputKey),
     Node(NodeKey),
+    ModuleOutput(AnyModuleOutputKey),
     ExternalOutput(AnyExternalOutputKey),
 }
 
@@ -206,6 +213,98 @@ impl ReactionDependencyGraph {
         }
     }
 
+    pub(crate) fn from_module<D>(module: &UncheckedModule<D>) -> Self {
+        let mut vertices = BTreeSet::new();
+        let mut dependencies = BTreeSet::new();
+        let mut input_owners = BTreeMap::new();
+
+        for input in module.inputs() {
+            vertices.insert(ReactionVertex::ModuleInput(input.key()));
+        }
+        for node in module.nodes() {
+            let operation = ReactionVertex::NodeOperation(node.key());
+            vertices.insert(operation);
+            for input in node.ports().inputs() {
+                input_owners.insert(*input, node.key());
+            }
+            for output in node.ports().outputs() {
+                let output = ReactionVertex::NodeOutput(*output);
+                vertices.insert(output);
+                dependencies.insert(ReactionDependency {
+                    from: operation,
+                    to: output,
+                    subject: ReactionDependencySubject::Node(node.key()),
+                });
+            }
+        }
+        for connection in module.connections() {
+            let ConnectionEndpoint::NodeInput(input) = connection.to() else {
+                continue;
+            };
+            let Some(&owner) = input_owners.get(&input) else {
+                continue;
+            };
+            if module
+                .nodes()
+                .iter()
+                .any(|node| node.key() == owner && matches!(node.kind(), NodeKind::PulseDelay(_)))
+            {
+                continue;
+            }
+            let Some(source) = reaction_source(connection.from()) else {
+                continue;
+            };
+            dependencies.insert(ReactionDependency {
+                from: source,
+                to: ReactionVertex::NodeOperation(owner),
+                subject: ReactionDependencySubject::Connection(connection.key()),
+            });
+        }
+        for mapping in module.mappings() {
+            match *mapping {
+                ModuleInterfaceMapping::Input { input, target } => {
+                    let ConnectionEndpoint::NodeInput(target) = target else {
+                        continue;
+                    };
+                    let Some(&owner) = input_owners.get(&target) else {
+                        continue;
+                    };
+                    if module.nodes().iter().any(|node| {
+                        node.key() == owner && matches!(node.kind(), NodeKind::PulseDelay(_))
+                    }) {
+                        continue;
+                    }
+                    dependencies.insert(ReactionDependency {
+                        from: ReactionVertex::ModuleInput(input),
+                        to: ReactionVertex::NodeOperation(owner),
+                        subject: ReactionDependencySubject::ModuleInput(input),
+                    });
+                }
+                ModuleInterfaceMapping::Output { output, source } => {
+                    let ConnectionEndpoint::NodeOutput(source) = source else {
+                        continue;
+                    };
+                    let source = ReactionVertex::NodeOutput(source);
+                    let observed = ReactionVertex::ModuleOutput(output);
+                    vertices.insert(observed);
+                    dependencies.insert(ReactionDependency {
+                        from: source,
+                        to: observed,
+                        subject: ReactionDependencySubject::ModuleOutput(output),
+                    });
+                }
+            }
+        }
+        for edge in &dependencies {
+            vertices.insert(edge.from);
+            vertices.insert(edge.to);
+        }
+        Self {
+            vertices,
+            dependencies,
+        }
+    }
+
     pub(crate) fn vertices(&self) -> impl Iterator<Item = ReactionVertex> + '_ {
         self.vertices.iter().copied()
     }
@@ -214,7 +313,7 @@ impl ReactionDependencyGraph {
         self.dependencies.iter().copied()
     }
 
-    fn cyclic_components(&self) -> Vec<BTreeSet<ReactionVertex>> {
+    pub(crate) fn cyclic_components(&self) -> Vec<BTreeSet<ReactionVertex>> {
         let mut forward: BTreeMap<ReactionVertex, Vec<ReactionVertex>> = BTreeMap::new();
         let mut reverse: BTreeMap<ReactionVertex, Vec<ReactionVertex>> = BTreeMap::new();
         for vertex in &self.vertices {
@@ -262,7 +361,10 @@ impl ReactionDependencyGraph {
         components
     }
 
-    fn cycle_witness(&self, component: &BTreeSet<ReactionVertex>) -> Vec<ReactionDependency> {
+    pub(crate) fn cycle_witness(
+        &self,
+        component: &BTreeSet<ReactionVertex>,
+    ) -> Vec<ReactionDependency> {
         let mut edges: Vec<_> = self
             .dependencies
             .iter()
@@ -287,7 +389,7 @@ impl ReactionDependencyGraph {
         witness
     }
 
-    fn topological_order(&self) -> Vec<ReactionVertex> {
+    pub(crate) fn topological_order(&self) -> Vec<ReactionVertex> {
         let mut indegree: BTreeMap<_, usize> =
             self.vertices.iter().copied().map(|v| (v, 0)).collect();
         let mut outgoing: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
@@ -401,11 +503,15 @@ fn compare_dependency_paths(
         .cmp(right.iter().map(|edge| cycle_step(*edge)))
 }
 
-fn reaction_member(vertex: ReactionVertex) -> ReactionMemberRef {
+pub(crate) fn reaction_member(vertex: ReactionVertex) -> ReactionMemberRef {
     match vertex {
         ReactionVertex::ExternalInput(key) => ReactionMemberRef {
             subject: SubjectRef::ExternalInput(key),
             role: ReactionRole::ExternalInput,
+        },
+        ReactionVertex::ModuleInput(key) => ReactionMemberRef {
+            subject: SubjectRef::ModuleInput(key),
+            role: ReactionRole::ModuleInput,
         },
         ReactionVertex::NodeOperation(key) => ReactionMemberRef {
             subject: SubjectRef::Node(key),
@@ -415,6 +521,10 @@ fn reaction_member(vertex: ReactionVertex) -> ReactionMemberRef {
             subject: SubjectRef::OutPort(key),
             role: ReactionRole::NodeOutput,
         },
+        ReactionVertex::ModuleOutput(key) => ReactionMemberRef {
+            subject: SubjectRef::ModuleOutput(key),
+            role: ReactionRole::ModuleOutput,
+        },
         ReactionVertex::ExternalOutput(key) => ReactionMemberRef {
             subject: SubjectRef::ExternalOutput(key),
             role: ReactionRole::ExternalOutput,
@@ -422,12 +532,14 @@ fn reaction_member(vertex: ReactionVertex) -> ReactionMemberRef {
     }
 }
 
-fn cycle_step(edge: ReactionDependency) -> CurrentReactionCycleStep {
+pub(crate) fn cycle_step(edge: ReactionDependency) -> CurrentReactionCycleStep {
     CurrentReactionCycleStep {
         source: reaction_member(edge.from),
         dependency: match edge.subject {
             ReactionDependencySubject::Connection(key) => SubjectRef::Connection(key),
+            ReactionDependencySubject::ModuleInput(key) => SubjectRef::ModuleInput(key),
             ReactionDependencySubject::Node(key) => SubjectRef::Node(key),
+            ReactionDependencySubject::ModuleOutput(key) => SubjectRef::ModuleOutput(key),
             ReactionDependencySubject::ExternalOutput(key) => SubjectRef::ExternalOutput(key),
         },
         target: reaction_member(edge.to),
@@ -487,6 +599,16 @@ impl<D> UncheckedNetwork<D> {
     {
         StructuralValidator::new(self).run()
     }
+
+    pub(crate) fn validate_structural_for_module(
+        &self,
+        boundary_drivers: &BTreeSet<AnyInPortKey>,
+    ) -> Report<StructuralCandidate<'_, D>, D>
+    where
+        D: PartialEq,
+    {
+        StructuralValidator::for_module(self, boundary_drivers).run()
+    }
 }
 
 struct StructuralValidator<'a, D> {
@@ -497,6 +619,8 @@ struct StructuralValidator<'a, D> {
     outputs: BTreeSet<AnyOutPortKey>,
     external_inputs: BTreeSet<AnyExternalInputKey>,
     external_outputs: BTreeSet<AnyExternalOutputKey>,
+    boundary_drivers: BTreeSet<AnyInPortKey>,
+    use_network_duplicate_subject: bool,
 }
 
 impl<'a, D: PartialEq> StructuralValidator<'a, D> {
@@ -509,7 +633,19 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
             outputs: BTreeSet::new(),
             external_inputs: BTreeSet::new(),
             external_outputs: BTreeSet::new(),
+            boundary_drivers: BTreeSet::new(),
+            use_network_duplicate_subject: true,
         }
+    }
+
+    fn for_module(
+        network: &'a UncheckedNetwork<D>,
+        boundary_drivers: &BTreeSet<AnyInPortKey>,
+    ) -> Self {
+        let mut validator = Self::new(network);
+        validator.boundary_drivers = boundary_drivers.clone();
+        validator.use_network_duplicate_subject = false;
+        validator
     }
 
     fn run(mut self) -> Report<StructuralCandidate<'a, D>, D> {
@@ -642,7 +778,11 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
     fn duplicate(&mut self, claims: &[DuplicateClaim]) {
         // The kernel preserves multiplicity and canonicalizes claim subjects.
         self.add(
-            SubjectRef::Network(self.network.key()),
+            if self.use_network_duplicate_subject {
+                SubjectRef::Network(self.network.key())
+            } else {
+                duplicate_claim_subject(&claims[0])
+            },
             ProblemEvidence::duplicate_key(duplicate_claim_subject(&claims[0]), claims.to_vec()),
         );
     }
@@ -903,7 +1043,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
         }
         for node in self.network.nodes() {
             for input in node.ports().inputs() {
-                if !drivers.contains_key(input) {
+                if !drivers.contains_key(input) && !self.boundary_drivers.contains(input) {
                     self.add(
                         SubjectRef::Node(node.key()),
                         ProblemEvidence::missing_required_input(
@@ -1119,6 +1259,8 @@ fn duplicate_claim_subject(claim: &DuplicateClaim) -> SubjectRef {
         DuplicateClaim::Connection { key, .. } => SubjectRef::Connection(*key),
         DuplicateClaim::ExternalInput { key, .. } => SubjectRef::ExternalInput(*key),
         DuplicateClaim::ExternalOutput { key, .. } => SubjectRef::ExternalOutput(*key),
+        DuplicateClaim::ModuleInput { key, .. } => SubjectRef::ModuleInput(*key),
+        DuplicateClaim::ModuleOutput { key, .. } => SubjectRef::ModuleOutput(*key),
     }
 }
 

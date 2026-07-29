@@ -1223,6 +1223,9 @@ fn operation_descriptor(
         ReactionVertex::ExternalOutput(key) => {
             OperationDescriptor::ExternalOutput(external_outputs[&key])
         }
+        ReactionVertex::ModuleInput(_) | ReactionVertex::ModuleOutput(_) => {
+            panic!("network compilation must not receive module-boundary reaction vertices")
+        }
     }
 }
 

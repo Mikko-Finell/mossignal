@@ -9,6 +9,7 @@ mod input;
 pub mod key;
 mod machine;
 pub mod metadata;
+mod module;
 mod policy;
 pub mod signal;
 pub mod time;
@@ -19,7 +20,7 @@ mod validation;
 pub use authored::{PulseDelayConfig, ToggleConfig};
 pub use builder::{NetworkBuilder, Signal};
 pub use compile::CompiledNetwork;
-pub use identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
+pub use identity::{InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint, TimeDomainId};
 pub use input::{
     InputBuildFailure, InputDelta, InputDeltaBuilder, InputSnapshot, InputSnapshotBuilder,
 };
@@ -28,6 +29,7 @@ pub use machine::{
     PulseDelayDefinitionInspection, PulseDelayInspection, PulseDelayInspectionFailure, Schedule,
     ScheduleFailure, ToggleDefinitionInspection, ToggleInspection, ToggleInspectionFailure,
 };
+pub use module::{DefinitionGraphView, ModuleDef, ModuleInputIter, ModuleOrigin, ModuleOutputIter};
 pub use policy::{
     PolicyFailure, RuntimePolicy, RuntimePolicyBuilder, RuntimePolicyId, RuntimePolicyLimit,
 };

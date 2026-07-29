@@ -4,9 +4,10 @@
 //! representation used by later graph construction and validation modules.
 
 use crate::authored::InputPortRole;
+use crate::identity::ModuleFingerprint;
 use crate::key::{
-    AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyOutPortKey, ConnectionKey,
-    NetworkKey, NodeKey,
+    AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
+    AnyOutPortKey, ConnectionKey, NetworkKey, NodeKey,
 };
 use crate::metadata::OriginRef;
 use crate::signal::{LogicLevel, SignalKind};
@@ -19,6 +20,12 @@ use core::marker::PhantomData;
 pub enum SubjectRef {
     /// An authored network.
     Network(NetworkKey),
+    /// A validated reusable module definition.
+    ModuleDefinition(ModuleFingerprint),
+    /// A typed public module input.
+    ModuleInput(AnyModuleInputKey),
+    /// A typed public module output.
+    ModuleOutput(AnyModuleOutputKey),
     /// An authored node.
     Node(NodeKey),
     /// An authored node input port.
@@ -38,8 +45,10 @@ pub enum SubjectRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ReactionRole {
     ExternalInput,
+    ModuleInput,
     NodeOperation,
     NodeOutput,
+    ModuleOutput,
     ExternalOutput,
 }
 
@@ -62,6 +71,11 @@ impl SubjectRef {
     fn ordering_key(&self) -> (u8, SubjectPayload) {
         match self {
             Self::Network(key) => (0, SubjectPayload::Direct(key.as_u128())),
+            Self::ModuleDefinition(fingerprint) => {
+                (3, SubjectPayload::Fingerprint(fingerprint.as_bytes()))
+            }
+            Self::ModuleInput(key) => (5, SubjectPayload::ModuleInput(*key)),
+            Self::ModuleOutput(key) => (6, SubjectPayload::ModuleOutput(*key)),
             Self::Node(key) => (7, SubjectPayload::Direct(key.as_u128())),
             Self::InPort(key) => (8, SubjectPayload::InPort(*key)),
             Self::OutPort(key) => (9, SubjectPayload::OutPort(*key)),
@@ -79,6 +93,9 @@ impl SubjectRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SubjectPayload {
     Direct(u128),
+    Fingerprint([u8; 32]),
+    ModuleInput(AnyModuleInputKey),
+    ModuleOutput(AnyModuleOutputKey),
     InPort(AnyInPortKey),
     OutPort(AnyOutPortKey),
     ExternalInput(AnyExternalInputKey),
@@ -230,6 +247,14 @@ pub enum DuplicateClaim {
     ExternalOutput {
         key: AnyExternalOutputKey,
         source: SubjectRef,
+        origin: Option<OriginRef>,
+    },
+    ModuleInput {
+        key: AnyModuleInputKey,
+        origin: Option<OriginRef>,
+    },
+    ModuleOutput {
+        key: AnyModuleOutputKey,
         origin: Option<OriginRef>,
     },
 }
