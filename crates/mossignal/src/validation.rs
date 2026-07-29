@@ -1218,9 +1218,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     );
                 }
             }
-            if let Some(declaration) = instance.module().standard_declaration()
-                && let Some(threshold) = declaration.exactly_threshold()
-            {
+            if let Some(declaration) = instance.module().standard_declaration() {
                 let public_inputs: Vec<_> = declaration.variadic_inputs().collect();
                 if public_inputs.is_empty() {
                     self.add(
@@ -1240,13 +1238,27 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         ),
                     );
                 }
-                if threshold > public_inputs.len() as u64 {
+                if let Some(threshold) = declaration.exactly_threshold()
+                    && threshold > public_inputs.len() as u64
+                {
                     self.add(
                         SubjectRef::ModuleInstance(instance.key()),
                         ProblemEvidence::standard_module_impossible_threshold(
                             declaration.module_ref().clone(),
                             public_inputs.len(),
                             threshold,
+                        ),
+                    );
+                }
+                if let Some(threshold) = declaration.at_most_threshold()
+                    && public_inputs.len() > 1
+                    && threshold >= public_inputs.len() as u64
+                {
+                    self.add(
+                        SubjectRef::ModuleInstance(instance.key()),
+                        ProblemEvidence::standard_module_constant_result(
+                            declaration.module_ref().clone(),
+                            crate::signal::LogicLevel::High,
                         ),
                     );
                 }

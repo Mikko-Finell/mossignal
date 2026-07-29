@@ -1,4 +1,4 @@
-//! Immutable standard-module catalogue and canonical `Exactly` construction.
+//! Immutable standard-module catalogue and canonical stateless construction.
 
 use crate::ModuleDef;
 use crate::authored::{
@@ -18,6 +18,8 @@ use core::marker::PhantomData;
 use std::collections::BTreeSet;
 
 const EXACTLY_ID: &str = "mossignal.standard.exactly";
+const AT_MOST_ID: &str = "mossignal.standard.at_most";
+const ALL_EQUAL_ID: &str = "mossignal.standard.all_equal";
 const PUBLIC_KEY_DOMAIN: &str = "mossignal/standard_module_public_key/v1";
 const INTERNAL_KEY_DOMAIN: &str = "mossignal/standard_module_internal_key/v1";
 const EXPANSION_FINGERPRINT_DOMAIN: &str = "mossignal/standard_module_expansion_fingerprint/v1";
@@ -105,6 +107,14 @@ impl StandardModuleId {
     pub(crate) fn exactly() -> Self {
         Self(EXACTLY_ID.to_owned())
     }
+
+    pub(crate) fn at_most() -> Self {
+        Self(AT_MOST_ID.to_owned())
+    }
+
+    pub(crate) fn all_equal() -> Self {
+        Self(ALL_EQUAL_ID.to_owned())
+    }
 }
 
 impl fmt::Debug for StandardModuleId {
@@ -166,6 +176,26 @@ impl StandardModuleRef {
     pub fn exactly() -> Self {
         Self::new(
             StandardModuleId::exactly(),
+            StandardModuleSemanticVersion::one(),
+            StandardModuleExpansionVersion::one(),
+        )
+    }
+
+    /// Returns the current provisional `AtMost` descriptor reference.
+    #[must_use]
+    pub fn at_most() -> Self {
+        Self::new(
+            StandardModuleId::at_most(),
+            StandardModuleSemanticVersion::one(),
+            StandardModuleExpansionVersion::one(),
+        )
+    }
+
+    /// Returns the current provisional `AllEqual` descriptor reference.
+    #[must_use]
+    pub fn all_equal() -> Self {
+        Self::new(
+            StandardModuleId::all_equal(),
             StandardModuleSemanticVersion::one(),
             StandardModuleExpansionVersion::one(),
         )
@@ -464,16 +494,27 @@ impl<D> StandardModuleDeclaration<D> {
 
     #[must_use]
     pub fn exactly_threshold(&self) -> Option<u64> {
-        if self.module_ref.id.as_str() != EXACTLY_ID {
+        self.threshold_for(EXACTLY_ID)
+    }
+
+    /// Returns the `AtMost` threshold when this is an `AtMost` declaration.
+    #[must_use]
+    pub fn at_most_threshold(&self) -> Option<u64> {
+        self.threshold_for(AT_MOST_ID)
+    }
+
+    fn threshold_for(&self, module_id: &str) -> Option<u64> {
+        if self.module_ref.id.as_str() != module_id {
             return None;
         }
         self.parameters.iter().find_map(|assignment| {
-            (assignment.key.as_str() == "threshold")
-                .then_some(match assignment.value {
-                    StandardParameterValue::U64(value) => Some(value),
-                    _ => None,
-                })
-                .flatten()
+            if assignment.key.as_str() != "threshold" {
+                return None;
+            }
+            match assignment.value {
+                StandardParameterValue::U64(value) => Some(value),
+                _ => None,
+            }
         })
     }
 
@@ -490,18 +531,47 @@ impl<D> StandardModuleDeclaration<D> {
         )
     }
 
+    /// Returns the declaration-sensitive dependency class for `AtMost`.
+    #[must_use]
+    pub fn at_most_dependency(&self) -> Option<AtMostDependency> {
+        let threshold = self.at_most_threshold()?;
+        Some(if threshold >= self.variadic_inputs.len() as u64 {
+            AtMostDependency::Constant
+        } else {
+            AtMostDependency::EveryInput
+        })
+    }
+
+    /// Returns the declaration-sensitive dependency class for `AllEqual`.
+    #[must_use]
+    pub fn all_equal_dependency(&self) -> Option<AllEqualDependency> {
+        (self.module_ref.id.as_str() == ALL_EQUAL_ID).then_some(
+            if self.variadic_inputs.len() <= 1 {
+                AllEqualDependency::Constant
+            } else {
+                AllEqualDependency::EveryInput
+            },
+        )
+    }
+
     /// Returns the public current-reaction dependency relation for this declaration.
     #[must_use]
     pub fn public_dependencies(&self) -> Vec<StandardPublicDependency> {
-        if self.exactly_dependency() != Some(ExactlyDependency::EveryInput) {
+        let output = if self.exactly_dependency() == Some(ExactlyDependency::EveryInput) {
+            exactly_result_key()
+        } else if self.at_most_dependency() == Some(AtMostDependency::EveryInput) {
+            at_most_result_key()
+        } else if self.all_equal_dependency() == Some(AllEqualDependency::EveryInput) {
+            all_equal_result_key()
+        } else {
             return Vec::new();
-        }
+        };
         self.variadic_inputs
             .iter()
             .copied()
             .map(|input| StandardPublicDependency {
                 input: input.into(),
-                output: exactly_result_key().into(),
+                output: output.into(),
             })
             .collect()
     }
@@ -622,11 +692,29 @@ pub struct StandardModuleDescriptor<D> {
 
 impl<D> StandardModuleDescriptor<D> {
     fn exactly() -> Self {
+        Self::stateless_threshold(
+            StandardModuleRef::exactly(),
+            "Exactly",
+            "High exactly when the number of High inputs equals threshold.",
+            exactly_result_key(),
+        )
+    }
+
+    fn at_most() -> Self {
+        Self::stateless_threshold(
+            StandardModuleRef::at_most(),
+            "AtMost",
+            "High when the number of High inputs is at most threshold.",
+            at_most_result_key(),
+        )
+    }
+
+    fn all_equal() -> Self {
         Self {
-            module_ref: StandardModuleRef::exactly(),
+            module_ref: StandardModuleRef::all_equal(),
             introduced: StandardCatalogueVersion::one(),
-            display_name: "Exactly",
-            documentation: "High exactly when the number of High inputs equals threshold.",
+            display_name: "AllEqual",
+            documentation: "High when every input has the same level.",
             category: StandardModuleCategory::Combinational,
             availability: StandardModuleAvailability::Available,
             inputs: vec![StandardPortSchema {
@@ -641,7 +729,39 @@ impl<D> StandardModuleDescriptor<D> {
                 kind: SignalKind::Level,
                 variadic: false,
                 fixed_input: None,
-                fixed_output: Some(exactly_result_key().into()),
+                fixed_output: Some(all_equal_result_key().into()),
+            }],
+            parameters: Vec::new(),
+            marker: PhantomData,
+        }
+    }
+
+    fn stateless_threshold(
+        module_ref: StandardModuleRef,
+        display_name: &'static str,
+        documentation: &'static str,
+        result_key: ModuleOutputKey<Level>,
+    ) -> Self {
+        Self {
+            module_ref,
+            introduced: StandardCatalogueVersion::one(),
+            display_name,
+            documentation,
+            category: StandardModuleCategory::Combinational,
+            availability: StandardModuleAvailability::Available,
+            inputs: vec![StandardPortSchema {
+                role: "inputs",
+                kind: SignalKind::Level,
+                variadic: true,
+                fixed_input: None,
+                fixed_output: None,
+            }],
+            outputs: vec![StandardPortSchema {
+                role: "result",
+                kind: SignalKind::Level,
+                variadic: false,
+                fixed_input: None,
+                fixed_output: Some(result_key.into()),
             }],
             parameters: vec![StandardParameterSchema {
                 key: StandardParameterKey::threshold(),
@@ -772,6 +892,28 @@ pub struct StandardCatalogue<D> {
     descriptors: Vec<StandardModuleDescriptor<D>>,
 }
 
+#[derive(Clone, Copy)]
+enum StatelessStandardKind {
+    Exactly,
+    AtMost,
+    AllEqual,
+}
+
+impl StatelessStandardKind {
+    fn from_ref(module_ref: &StandardModuleRef) -> Option<Self> {
+        match module_ref.id.as_str() {
+            EXACTLY_ID => Some(Self::Exactly),
+            AT_MOST_ID => Some(Self::AtMost),
+            ALL_EQUAL_ID => Some(Self::AllEqual),
+            _ => None,
+        }
+    }
+
+    const fn requires_threshold(self) -> bool {
+        matches!(self, Self::Exactly | Self::AtMost)
+    }
+}
+
 impl<D> Default for StandardCatalogue<D> {
     fn default() -> Self {
         Self::current()
@@ -782,7 +924,11 @@ impl<D> StandardCatalogue<D> {
     #[must_use]
     pub fn current() -> Self {
         Self {
-            descriptors: vec![StandardModuleDescriptor::exactly()],
+            descriptors: vec![
+                StandardModuleDescriptor::exactly(),
+                StandardModuleDescriptor::at_most(),
+                StandardModuleDescriptor::all_equal(),
+            ],
         }
     }
     #[must_use]
@@ -869,10 +1015,20 @@ impl<D> StandardCatalogue<D> {
             insert_problem(&mut diagnostics, failure.into_problem());
             return Report::new(None, diagnostics);
         }
+        let Some(kind) = StatelessStandardKind::from_ref(&request.module_ref) else {
+            insert_evidence(
+                &mut diagnostics,
+                ProblemEvidence::standard_module_catalogue_invariant(
+                    request.module_ref.clone(),
+                    "shipped descriptor has no stateless construction dispatch",
+                ),
+            );
+            return Report::new(None, diagnostics);
+        };
         let threshold_key = StandardParameterKey::threshold();
         let mut threshold = None;
         for (key, value) in &request.parameters {
-            if key != &threshold_key {
+            if !kind.requires_threshold() || key != &threshold_key {
                 insert_evidence(
                     &mut diagnostics,
                     ProblemEvidence::standard_module_unexpected_parameter(
@@ -902,7 +1058,7 @@ impl<D> StandardCatalogue<D> {
                 threshold = Some(*value);
             }
         }
-        if threshold.is_none() {
+        if kind.requires_threshold() && threshold.is_none() {
             insert_evidence(
                 &mut diagnostics,
                 ProblemEvidence::standard_module_missing_parameter(
@@ -928,11 +1084,18 @@ impl<D> StandardCatalogue<D> {
         if diagnostics.has_severity(crate::diagnostics::Severity::Error) {
             return Report::new(None, diagnostics);
         }
-        let Some(threshold) = threshold else {
-            return Report::new(None, diagnostics);
-        };
         inputs.sort();
-        let (unchecked, roles) = exactly_expansion::<D>(&request.module_ref, threshold, &inputs);
+        let (unchecked, roles) = match kind {
+            StatelessStandardKind::Exactly => {
+                exactly_expansion::<D>(&request.module_ref, threshold.unwrap_or_default(), &inputs)
+            }
+            StatelessStandardKind::AtMost => {
+                at_most_expansion::<D>(&request.module_ref, threshold.unwrap_or_default(), &inputs)
+            }
+            StatelessStandardKind::AllEqual => {
+                all_equal_expansion::<D>(&request.module_ref, &inputs)
+            }
+        };
         let mut generated = BTreeSet::new();
         for role in &roles {
             if !generated.insert((role.category(), role.key())) {
@@ -964,16 +1127,19 @@ impl<D> StandardCatalogue<D> {
         );
         let declaration = StandardModuleDeclaration {
             module_ref: request.module_ref.clone(),
-            parameters: vec![StandardParameterAssignment {
-                key: StandardParameterKey::threshold(),
-                value: StandardParameterValue::U64(threshold),
-            }],
+            parameters: threshold
+                .map(|value| StandardParameterAssignment {
+                    key: StandardParameterKey::threshold(),
+                    value: StandardParameterValue::U64(value),
+                })
+                .into_iter()
+                .collect(),
             variadic_inputs: inputs.clone(),
             expansion_fingerprint,
             internal_roles: roles,
         };
         let module = user_module.with_standard_origin(declaration);
-        add_exactly_warnings(&mut diagnostics, &module, threshold, &inputs);
+        add_stateless_warnings(&mut diagnostics, &module, kind, threshold, &inputs);
         Report::new(Some(module), diagnostics)
     }
 }
@@ -981,22 +1147,43 @@ impl<D> StandardCatalogue<D> {
 /// Returns the fixed public result key for `Exactly`.
 #[must_use]
 pub fn exactly_result_key() -> ModuleOutputKey<Level> {
+    result_key(&StandardModuleRef::exactly())
+}
+
+/// Returns the fixed public result key for `AtMost`.
+#[must_use]
+pub fn at_most_result_key() -> ModuleOutputKey<Level> {
+    result_key(&StandardModuleRef::at_most())
+}
+
+/// Returns the fixed public result key for `AllEqual`.
+#[must_use]
+pub fn all_equal_result_key() -> ModuleOutputKey<Level> {
+    result_key(&StandardModuleRef::all_equal())
+}
+
+fn result_key(module_ref: &StandardModuleRef) -> ModuleOutputKey<Level> {
     ModuleOutputKey::from_u128(derive_public_key(
         PUBLIC_KEY_DOMAIN,
-        StandardModuleRef::exactly().id(),
+        module_ref.id(),
         "output",
         "level",
         "result",
     ))
 }
 
-fn add_exactly_warnings<D: PartialEq>(
+fn add_stateless_warnings<D: PartialEq>(
     diagnostics: &mut DiagnosticSet<D>,
     module: &ModuleDef<D>,
-    threshold: u64,
+    kind: StatelessStandardKind,
+    threshold: Option<u64>,
     inputs: &[ModuleInputKey<Level>],
 ) {
-    let module_ref = StandardModuleRef::exactly();
+    let module_ref = match kind {
+        StatelessStandardKind::Exactly => StandardModuleRef::exactly(),
+        StatelessStandardKind::AtMost => StandardModuleRef::at_most(),
+        StatelessStandardKind::AllEqual => StandardModuleRef::all_equal(),
+    };
     if inputs.is_empty() {
         insert_for_module(
             diagnostics,
@@ -1011,16 +1198,28 @@ fn add_exactly_warnings<D: PartialEq>(
             ProblemEvidence::standard_module_unary_degenerate(module_ref.clone(), inputs.to_vec()),
         );
     }
-    if threshold > inputs.len() as u64 {
-        insert_for_module(
-            diagnostics,
-            module,
-            ProblemEvidence::standard_module_impossible_threshold(
-                module_ref,
-                inputs.len(),
-                threshold,
-            ),
-        );
+    match (kind, threshold) {
+        (StatelessStandardKind::Exactly, Some(threshold)) if threshold > inputs.len() as u64 => {
+            insert_for_module(
+                diagnostics,
+                module,
+                ProblemEvidence::standard_module_impossible_threshold(
+                    module_ref,
+                    inputs.len(),
+                    threshold,
+                ),
+            );
+        }
+        (StatelessStandardKind::AtMost, Some(threshold))
+            if inputs.len() > 1 && threshold >= inputs.len() as u64 =>
+        {
+            insert_for_module(
+                diagnostics,
+                module,
+                ProblemEvidence::standard_module_constant_result(module_ref, LogicLevel::High),
+            );
+        }
+        _ => {}
     }
 }
 
@@ -1278,7 +1477,70 @@ fn exactly_expansion<D>(
         let not_upper = expansion.not("not_upper", upper);
         expansion.variadic("combine", NodeKind::all(), &[lower, not_upper])
     };
-    let output = exactly_result_key();
+    finish_expansion(expansion, inputs, result, exactly_result_key())
+}
+
+fn at_most_expansion<D>(
+    module_ref: &StandardModuleRef,
+    threshold: u64,
+    inputs: &[ModuleInputKey<Level>],
+) -> (UncheckedModule<D>, Vec<StandardInternalRole>) {
+    // SPEC: docs/specs/contracts/standard-stateless-expansion.yaml "at-most-canonical-expansion"
+    // Identity follows the specified case table, never a behaviorally equivalent graph.
+    let mut expansion = Expansion::new(module_ref);
+    let sources: Vec<_> = inputs
+        .iter()
+        .copied()
+        .map(ExpansionSource::Public)
+        .collect();
+    let arity = inputs.len() as u64;
+    let result = if threshold >= arity {
+        expansion.constant("constant_result", LogicLevel::High)
+    } else if threshold == 0 && arity == 1 {
+        expansion.not("not_only", sole_source(&sources))
+    } else if threshold == 0 {
+        let any = expansion.variadic("any_input", NodeKind::any(), &sources);
+        expansion.not("not_any", any)
+    } else {
+        let upper = expansion.variadic(
+            "at_least_upper",
+            NodeKind::at_least(threshold + 1),
+            &sources,
+        );
+        expansion.not("not_upper", upper)
+    };
+    finish_expansion(expansion, inputs, result, at_most_result_key())
+}
+
+fn all_equal_expansion<D>(
+    module_ref: &StandardModuleRef,
+    inputs: &[ModuleInputKey<Level>],
+) -> (UncheckedModule<D>, Vec<StandardInternalRole>) {
+    // SPEC: docs/specs/contracts/standard-stateless-expansion.yaml "all-equal-canonical-expansion"
+    // The fixed All/Any/Not/Any structure is observable canonical identity.
+    let mut expansion = Expansion::new(module_ref);
+    let sources: Vec<_> = inputs
+        .iter()
+        .copied()
+        .map(ExpansionSource::Public)
+        .collect();
+    let result = if inputs.len() <= 1 {
+        expansion.constant("constant_true", LogicLevel::High)
+    } else {
+        let all_high = expansion.variadic("all_high", NodeKind::all(), &sources);
+        let any_high = expansion.variadic("any_high", NodeKind::any(), &sources);
+        let none_high = expansion.not("none_high", any_high);
+        expansion.variadic("combine", NodeKind::any(), &[all_high, none_high])
+    };
+    finish_expansion(expansion, inputs, result, all_equal_result_key())
+}
+
+fn finish_expansion<D>(
+    mut expansion: Expansion<D>,
+    inputs: &[ModuleInputKey<Level>],
+    result: ExpansionSource,
+    output: ModuleOutputKey<Level>,
+) -> (UncheckedModule<D>, Vec<StandardInternalRole>) {
     let export_key = expansion.key("export", "result", Some(result.qualifier()));
     expansion.roles.push(StandardInternalRole {
         category: StandardInternalCategory::Export,
@@ -1316,14 +1578,14 @@ fn exactly_expansion<D>(
 fn sole_source(sources: &[ExpansionSource]) -> ExpansionSource {
     match sources {
         [source] => *source,
-        _ => panic!("Exactly unary canonical branch requires exactly one public source"),
+        _ => panic!("canonical unary branch requires exactly one public source"),
     }
 }
 
 fn expansion_fingerprint<D>(
     module: &UncheckedModule<D>,
     module_ref: &StandardModuleRef,
-    threshold: u64,
+    threshold: Option<u64>,
     inputs: &[ModuleInputKey<Level>],
     roles: &[StandardInternalRole],
 ) -> StandardModuleExpansionFingerprint {
@@ -1332,7 +1594,9 @@ fn expansion_fingerprint<D>(
     push_text(&mut bytes, module_ref.id.as_str());
     bytes.extend_from_slice(&module_ref.semantic_version.get().to_be_bytes());
     bytes.extend_from_slice(&module_ref.expansion_version.get().to_be_bytes());
-    bytes.extend_from_slice(&threshold.to_be_bytes());
+    if let Some(threshold) = threshold {
+        bytes.extend_from_slice(&threshold.to_be_bytes());
+    }
     for input in inputs {
         bytes.extend_from_slice(&input.as_u128().to_be_bytes());
     }
@@ -1414,6 +1678,20 @@ fn push_text(bytes: &mut Vec<u8>, value: &str) {
 /// Declaration-sensitive public dependency classification for `Exactly`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExactlyDependency {
+    Constant,
+    EveryInput,
+}
+
+/// Declaration-sensitive public dependency classification for `AtMost`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtMostDependency {
+    Constant,
+    EveryInput,
+}
+
+/// Declaration-sensitive public dependency classification for `AllEqual`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllEqualDependency {
     Constant,
     EveryInput,
 }
@@ -1565,6 +1843,250 @@ pub enum ExactlyExplanation {
     },
 }
 
+/// Structured public summary of one initialized `AtMost` instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtMostInspection {
+    threshold: u64,
+    arity: usize,
+    high_inputs: Vec<ModuleInputKey<Level>>,
+    low_inputs: Vec<ModuleInputKey<Level>>,
+    result: LogicLevel,
+    dependency: AtMostDependency,
+}
+
+impl AtMostInspection {
+    pub(crate) fn new(
+        threshold: u64,
+        levels: impl Iterator<Item = (ModuleInputKey<Level>, LogicLevel)>,
+        result: LogicLevel,
+    ) -> Self {
+        let levels: Vec<_> = levels.collect();
+        let high_inputs = levels
+            .iter()
+            .filter_map(|(key, level)| level.is_high().then_some(*key))
+            .collect();
+        let low_inputs = levels
+            .iter()
+            .filter_map(|(key, level)| (!level.is_high()).then_some(*key))
+            .collect();
+        let arity = levels.len();
+        Self {
+            threshold,
+            arity,
+            high_inputs,
+            low_inputs,
+            result,
+            dependency: if threshold >= arity as u64 {
+                AtMostDependency::Constant
+            } else {
+                AtMostDependency::EveryInput
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn threshold(&self) -> u64 {
+        self.threshold
+    }
+    #[must_use]
+    pub const fn arity(&self) -> usize {
+        self.arity
+    }
+    #[must_use]
+    pub fn high_count(&self) -> usize {
+        self.high_inputs.len()
+    }
+    #[must_use]
+    pub fn low_count(&self) -> usize {
+        self.low_inputs.len()
+    }
+    #[must_use]
+    pub fn high_inputs(&self) -> &[ModuleInputKey<Level>] {
+        &self.high_inputs
+    }
+    #[must_use]
+    pub fn low_inputs(&self) -> &[ModuleInputKey<Level>] {
+        &self.low_inputs
+    }
+    #[must_use]
+    pub const fn result(&self) -> LogicLevel {
+        self.result
+    }
+    #[must_use]
+    pub const fn dependency(&self) -> AtMostDependency {
+        self.dependency
+    }
+    #[must_use]
+    pub const fn constant_result(&self) -> bool {
+        matches!(self.dependency, AtMostDependency::Constant)
+    }
+    #[must_use]
+    pub fn remaining_allowance(&self) -> Option<u64> {
+        let high = self.high_count() as u64;
+        (high <= self.threshold).then_some(self.threshold - high)
+    }
+    #[must_use]
+    pub fn excess(&self) -> Option<usize> {
+        let threshold = usize::try_from(self.threshold).unwrap_or(usize::MAX);
+        (self.high_count() > threshold).then_some(self.high_count() - threshold)
+    }
+    #[must_use]
+    pub fn explanation(&self) -> AtMostExplanation {
+        if self.threshold >= self.arity as u64 {
+            AtMostExplanation::ThresholdCoversAll {
+                threshold: self.threshold,
+                arity: self.arity,
+            }
+        } else if self.result.is_high() {
+            AtMostExplanation::WithinAllowance {
+                high_count: self.high_count(),
+                remaining: self.remaining_allowance().unwrap_or_default(),
+            }
+        } else {
+            AtMostExplanation::Excess {
+                excess: self.excess().unwrap_or_default(),
+                high_inputs: self.high_inputs.clone(),
+            }
+        }
+    }
+}
+
+/// Structured public reason for an `AtMost` result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AtMostExplanation {
+    WithinAllowance {
+        high_count: usize,
+        remaining: u64,
+    },
+    Excess {
+        excess: usize,
+        high_inputs: Vec<ModuleInputKey<Level>>,
+    },
+    ThresholdCoversAll {
+        threshold: u64,
+        arity: usize,
+    },
+}
+
+/// Structured public summary of one initialized `AllEqual` instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllEqualInspection {
+    arity: usize,
+    high_inputs: Vec<ModuleInputKey<Level>>,
+    low_inputs: Vec<ModuleInputKey<Level>>,
+    result: LogicLevel,
+    dependency: AllEqualDependency,
+}
+
+impl AllEqualInspection {
+    pub(crate) fn new(
+        levels: impl Iterator<Item = (ModuleInputKey<Level>, LogicLevel)>,
+        result: LogicLevel,
+    ) -> Self {
+        let levels: Vec<_> = levels.collect();
+        let high_inputs = levels
+            .iter()
+            .filter_map(|(key, level)| level.is_high().then_some(*key))
+            .collect();
+        let low_inputs = levels
+            .iter()
+            .filter_map(|(key, level)| (!level.is_high()).then_some(*key))
+            .collect();
+        let arity = levels.len();
+        Self {
+            arity,
+            high_inputs,
+            low_inputs,
+            result,
+            dependency: if arity <= 1 {
+                AllEqualDependency::Constant
+            } else {
+                AllEqualDependency::EveryInput
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn arity(&self) -> usize {
+        self.arity
+    }
+    #[must_use]
+    pub fn high_count(&self) -> usize {
+        self.high_inputs.len()
+    }
+    #[must_use]
+    pub fn low_count(&self) -> usize {
+        self.low_inputs.len()
+    }
+    #[must_use]
+    pub fn high_inputs(&self) -> &[ModuleInputKey<Level>] {
+        &self.high_inputs
+    }
+    #[must_use]
+    pub fn low_inputs(&self) -> &[ModuleInputKey<Level>] {
+        &self.low_inputs
+    }
+    #[must_use]
+    pub const fn result(&self) -> LogicLevel {
+        self.result
+    }
+    #[must_use]
+    pub const fn dependency(&self) -> AllEqualDependency {
+        self.dependency
+    }
+    #[must_use]
+    pub const fn constant_result(&self) -> bool {
+        matches!(self.dependency, AllEqualDependency::Constant)
+    }
+    #[must_use]
+    pub fn common_level(&self) -> Option<LogicLevel> {
+        if !self.result.is_high() || self.arity == 0 {
+            None
+        } else if self.high_inputs.is_empty() {
+            Some(LogicLevel::Low)
+        } else {
+            Some(LogicLevel::High)
+        }
+    }
+    #[must_use]
+    pub fn explanation(&self) -> AllEqualExplanation {
+        if self.arity <= 1 {
+            AllEqualExplanation::Vacuous { arity: self.arity }
+        } else if self.high_inputs.is_empty() {
+            AllEqualExplanation::AllLow {
+                inputs: self.low_inputs.clone(),
+            }
+        } else if self.low_inputs.is_empty() {
+            AllEqualExplanation::AllHigh {
+                inputs: self.high_inputs.clone(),
+            }
+        } else {
+            AllEqualExplanation::Mixed {
+                high_inputs: self.high_inputs.clone(),
+                low_inputs: self.low_inputs.clone(),
+            }
+        }
+    }
+}
+
+/// Structured public reason for an `AllEqual` result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AllEqualExplanation {
+    Vacuous {
+        arity: usize,
+    },
+    AllLow {
+        inputs: Vec<ModuleInputKey<Level>>,
+    },
+    AllHigh {
+        inputs: Vec<ModuleInputKey<Level>>,
+    },
+    Mixed {
+        high_inputs: Vec<ModuleInputKey<Level>>,
+        low_inputs: Vec<ModuleInputKey<Level>>,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1588,7 +2110,7 @@ mod tests {
         let changed_expansion = expansion_fingerprint(
             module.definition(),
             &declaration.module_ref,
-            1,
+            Some(1),
             &[input],
             &declaration.internal_roles,
         );

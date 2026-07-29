@@ -11,7 +11,8 @@ use crate::module::{ModuleOrigin, QualifiedConnectionRef, QualifiedModuleRef, Qu
 use crate::policy::{RuntimePolicy, RuntimePolicyId};
 use crate::signal::{Level, LogicLevel, PulseCount};
 use crate::standard::{
-    ExactlyInspection, StandardInternalCategory, StandardModuleDeclaration, exactly_result_key,
+    AllEqualInspection, AtMostInspection, ExactlyInspection, StandardInternalCategory,
+    StandardModuleDeclaration, all_equal_result_key, at_most_result_key, exactly_result_key,
 };
 use crate::time::{NonZeroSpan, Time};
 use crate::transaction::{CauseRef, ProvenanceView};
@@ -375,6 +376,8 @@ pub struct ModuleInspection<D> {
     fingerprint: ModuleFingerprint,
     standard_declaration: Option<StandardModuleDeclaration<D>>,
     exactly: Option<ExactlyInspection>,
+    at_most: Option<AtMostInspection>,
+    all_equal: Option<AllEqualInspection>,
     revision: NetworkRevision,
     at: Option<Time<D>>,
     inputs: Vec<ModuleInputInspection>,
@@ -404,6 +407,14 @@ impl<D> ModuleInspection<D> {
     #[must_use]
     pub const fn exactly(&self) -> Option<&ExactlyInspection> {
         self.exactly.as_ref()
+    }
+    #[must_use]
+    pub const fn at_most(&self) -> Option<&AtMostInspection> {
+        self.at_most.as_ref()
+    }
+    #[must_use]
+    pub const fn all_equal(&self) -> Option<&AllEqualInspection> {
+        self.all_equal.as_ref()
     }
     #[must_use]
     pub const fn revision(&self) -> NetworkRevision {
@@ -970,12 +981,54 @@ impl<D> Machine<D> {
                 result,
             ))
         });
+        let at_most = standard_declaration.as_ref().and_then(|declaration| {
+            let threshold = declaration.at_most_threshold()?;
+            let levels: Option<Vec<_>> = declaration
+                .variadic_inputs()
+                .map(|key| {
+                    inputs
+                        .iter()
+                        .find(|input| input.key() == AnyModuleInputKey::Level(key))
+                        .and_then(ModuleInputInspection::level)
+                        .map(|level| (key, level))
+                })
+                .collect();
+            let result = outputs
+                .iter()
+                .find(|output| output.key() == AnyModuleOutputKey::Level(at_most_result_key()))
+                .and_then(ModuleOutputInspection::level)?;
+            Some(AtMostInspection::new(
+                threshold,
+                levels?.into_iter(),
+                result,
+            ))
+        });
+        let all_equal = standard_declaration.as_ref().and_then(|declaration| {
+            declaration.all_equal_dependency()?;
+            let levels: Option<Vec<_>> = declaration
+                .variadic_inputs()
+                .map(|key| {
+                    inputs
+                        .iter()
+                        .find(|input| input.key() == AnyModuleInputKey::Level(key))
+                        .and_then(ModuleInputInspection::level)
+                        .map(|level| (key, level))
+                })
+                .collect();
+            let result = outputs
+                .iter()
+                .find(|output| output.key() == AnyModuleOutputKey::Level(all_equal_result_key()))
+                .and_then(ModuleOutputInspection::level)?;
+            Some(AllEqualInspection::new(levels?.into_iter(), result))
+        });
         Ok(ModuleInspection {
             module,
             origin: definition.origin().clone(),
             fingerprint: definition.fingerprint(),
             standard_declaration,
             exactly,
+            at_most,
+            all_equal,
             revision: self.store.revision,
             at: self.now(),
             inputs,

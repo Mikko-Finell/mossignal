@@ -17,7 +17,7 @@ use crate::metadata::DiagnosticMeta;
 use crate::signal::{Level, LogicLevel, Pulse, SignalType};
 use crate::standard::{
     StandardCatalogue, StandardModuleRef, StandardModuleRequest, StandardParameterKey,
-    StandardParameterValue, exactly_result_key,
+    StandardParameterValue, all_equal_result_key, at_most_result_key, exactly_result_key,
 };
 use crate::{ModuleDef, ValidatedNetwork};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -490,11 +490,122 @@ impl<D> NetworkBuilder<D> {
         I: IntoIterator<Item = KeyedModuleInput<Level>>,
         D: PartialEq,
     {
+        self.add_stateless_standard(
+            key,
+            StandardModuleRef::exactly(),
+            Some(threshold),
+            inputs,
+            meta,
+            exactly_result_key(),
+        )
+    }
+
+    /// Adds `AtMost` with locally allocated instance and public-input identities.
+    pub fn at_most<I>(
+        &mut self,
+        threshold: u64,
+        inputs: I,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+        D: PartialEq,
+    {
+        let key = self.next_module_instance_key();
+        let inputs: Vec<_> = inputs
+            .into_iter()
+            .map(|source| KeyedModuleInput {
+                key: self.allocator.module_input(),
+                source,
+            })
+            .collect();
+        Ok(self
+            .add_at_most(key, threshold, inputs, DiagnosticMeta::default())?
+            .into_outputs())
+    }
+
+    /// Adds one explicitly identified canonical `AtMost` instance.
+    pub fn add_at_most<I>(
+        &mut self,
+        key: ModuleInstanceKey,
+        threshold: u64,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = KeyedModuleInput<Level>>,
+        D: PartialEq,
+    {
+        self.add_stateless_standard(
+            key,
+            StandardModuleRef::at_most(),
+            Some(threshold),
+            inputs,
+            meta,
+            at_most_result_key(),
+        )
+    }
+
+    /// Adds `AllEqual` with locally allocated instance and public-input identities.
+    pub fn all_equal<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+        D: PartialEq,
+    {
+        let key = self.next_module_instance_key();
+        let inputs: Vec<_> = inputs
+            .into_iter()
+            .map(|source| KeyedModuleInput {
+                key: self.allocator.module_input(),
+                source,
+            })
+            .collect();
+        Ok(self
+            .add_all_equal(key, inputs, DiagnosticMeta::default())?
+            .into_outputs())
+    }
+
+    /// Adds one explicitly identified canonical `AllEqual` instance.
+    pub fn add_all_equal<I>(
+        &mut self,
+        key: ModuleInstanceKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = KeyedModuleInput<Level>>,
+        D: PartialEq,
+    {
+        self.add_stateless_standard(
+            key,
+            StandardModuleRef::all_equal(),
+            None,
+            inputs,
+            meta,
+            all_equal_result_key(),
+        )
+    }
+
+    fn add_stateless_standard<I>(
+        &mut self,
+        key: ModuleInstanceKey,
+        module_ref: StandardModuleRef,
+        threshold: Option<u64>,
+        inputs: I,
+        meta: DiagnosticMeta,
+        result_key: ModuleOutputKey<Level>,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = KeyedModuleInput<Level>>,
+        D: PartialEq,
+    {
         let inputs: Vec<_> = inputs.into_iter().collect();
-        let mut request = StandardModuleRequest::new(StandardModuleRef::exactly()).with_parameter(
-            StandardParameterKey::threshold(),
-            StandardParameterValue::U64(threshold),
-        );
+        let mut request = StandardModuleRequest::new(module_ref.clone());
+        if let Some(threshold) = threshold {
+            request = request.with_parameter(
+                StandardParameterKey::threshold(),
+                StandardParameterValue::U64(threshold),
+            );
+        }
         for input in &inputs {
             request = request.with_variadic_input(input.key.into());
         }
@@ -507,11 +618,11 @@ impl<D> NetworkBuilder<D> {
             instance = instance.bind_level(input.key, input.source)?;
         }
         let added = instance.finish()?;
-        let output = added.level_output(exactly_result_key())?;
+        let output = added.level_output(result_key)?;
         Ok(AddedStandardModule {
             instance: added,
             outputs: output,
-            module_ref: StandardModuleRef::exactly(),
+            module_ref,
         })
     }
 
@@ -1660,6 +1771,57 @@ impl<D> ModuleBuilder<D> {
         D: PartialEq,
     {
         self.graph.add_exactly(key, threshold, inputs, meta)
+    }
+
+    /// Adds `AtMost` with locally allocated stable identities.
+    pub fn at_most<I>(
+        &mut self,
+        threshold: u64,
+        inputs: I,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+        D: PartialEq,
+    {
+        self.graph.at_most(threshold, inputs)
+    }
+
+    /// Adds one explicitly identified canonical `AtMost` instance.
+    pub fn add_at_most<I>(
+        &mut self,
+        key: ModuleInstanceKey,
+        threshold: u64,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = KeyedModuleInput<Level>>,
+        D: PartialEq,
+    {
+        self.graph.add_at_most(key, threshold, inputs, meta)
+    }
+
+    /// Adds `AllEqual` with locally allocated stable identities.
+    pub fn all_equal<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+        D: PartialEq,
+    {
+        self.graph.all_equal(inputs)
+    }
+
+    /// Adds one explicitly identified canonical `AllEqual` instance.
+    pub fn add_all_equal<I>(
+        &mut self,
+        key: ModuleInstanceKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = KeyedModuleInput<Level>>,
+        D: PartialEq,
+    {
+        self.graph.add_all_equal(key, inputs, meta)
     }
 
     /// Adds a convenience level input with locally allocated stable identity.

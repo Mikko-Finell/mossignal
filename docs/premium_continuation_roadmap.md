@@ -315,7 +315,7 @@ This item establishes the canonical pattern for durable named compositions.
 
 ---
 
-## 38. Stateless standard-module expansion
+## 38. [DONE] Stateless standard-module expansion
 
 Extend the accepted catalogue pattern mechanically with:
 

@@ -46,14 +46,16 @@ pub use policy::{
     PolicyFailure, RuntimePolicy, RuntimePolicyBuilder, RuntimePolicyId, RuntimePolicyLimit,
 };
 pub use standard::{
-    CatalogueFailure, ExactlyDependency, ExactlyExplanation, ExactlyInspection, StandardCatalogue,
-    StandardCatalogueVersion, StandardEnumValue, StandardInternalCategory, StandardInternalRole,
-    StandardModuleAvailability, StandardModuleCategory, StandardModuleDeclaration,
-    StandardModuleDescriptor, StandardModuleExpansionFingerprint, StandardModuleExpansionVersion,
-    StandardModuleId, StandardModuleIdError, StandardModuleRef, StandardModuleRequest,
-    StandardModuleSemanticVersion, StandardParameterAssignment, StandardParameterKey,
-    StandardParameterKind, StandardParameterSchema, StandardParameterValue, StandardPortSchema,
-    StandardPublicDependency, exactly_result_key,
+    AllEqualDependency, AllEqualExplanation, AllEqualInspection, AtMostDependency,
+    AtMostExplanation, AtMostInspection, CatalogueFailure, ExactlyDependency, ExactlyExplanation,
+    ExactlyInspection, StandardCatalogue, StandardCatalogueVersion, StandardEnumValue,
+    StandardInternalCategory, StandardInternalRole, StandardModuleAvailability,
+    StandardModuleCategory, StandardModuleDeclaration, StandardModuleDescriptor,
+    StandardModuleExpansionFingerprint, StandardModuleExpansionVersion, StandardModuleId,
+    StandardModuleIdError, StandardModuleRef, StandardModuleRequest, StandardModuleSemanticVersion,
+    StandardParameterAssignment, StandardParameterKey, StandardParameterKind,
+    StandardParameterSchema, StandardParameterValue, StandardPortSchema, StandardPublicDependency,
+    all_equal_result_key, at_most_result_key, exactly_result_key,
 };
 pub use transaction::{
     CauseInspection, CauseLookupFailure, CauseRef, OutputEvent, ProvenanceSubject, ProvenanceView,
