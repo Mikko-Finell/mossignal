@@ -172,7 +172,7 @@ module artifacts even though networks cannot instantiate them yet.
 
 ---
 
-## 34. Typed `ModuleBuilder` foundation
+## 34. [DONE] Typed `ModuleBuilder` foundation
 
 Establish typed user-module authoring by adapting the accepted network-builder
 pattern:

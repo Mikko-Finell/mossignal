@@ -1,18 +1,19 @@
 //! Typed authoring for the restricted Level and Pulse network foundation.
 
-use crate::ValidatedNetwork;
 use crate::authored::{
-    ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, NodeDef, NodeKind,
-    NodePorts, PulseDelayConfig, ToggleConfig, UncheckedNetwork,
+    ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, ModuleInputDef,
+    ModuleInterfaceMapping, ModuleOutputDef, NodeDef, NodeKind, NodePorts, PulseDelayConfig,
+    ToggleConfig, UncheckedModule, UncheckedNetwork,
 };
 use crate::diagnostics::Report;
 use crate::identity::TimeDomainId;
 use crate::key::{
-    ExternalInputKey, ExternalOutputKey, InPortKey, KeyAllocator, NetworkKey, NodeKey, OutPortKey,
-    SignalSourceKey,
+    AnyExternalInputKey, ExternalInputKey, ExternalOutputKey, InPortKey, KeyAllocator,
+    ModuleInputKey, ModuleOutputKey, NetworkKey, NodeKey, OutPortKey, SignalSourceKey,
 };
 use crate::metadata::DiagnosticMeta;
 use crate::signal::{Level, LogicLevel, Pulse, SignalType};
+use crate::{ModuleDef, ValidatedNetwork};
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::BTreeSet;
 
@@ -51,6 +52,14 @@ pub enum AuthoringFailure {
     DuplicatePulseExternalInputKey(ExternalInputKey<Pulse>),
     /// An explicit pulse output key is already present in this builder.
     DuplicatePulseExternalOutputKey(ExternalOutputKey<Pulse>),
+    /// An explicit level module-input key is already present in this builder.
+    DuplicateModuleInputKey(ModuleInputKey<Level>),
+    /// An explicit level module-output key is already present in this builder.
+    DuplicateModuleOutputKey(ModuleOutputKey<Level>),
+    /// An explicit pulse module-input key is already present in this builder.
+    DuplicatePulseModuleInputKey(ModuleInputKey<Pulse>),
+    /// An explicit pulse module-output key is already present in this builder.
+    DuplicatePulseModuleOutputKey(ModuleOutputKey<Pulse>),
     /// An explicit node key is already present in this builder.
     DuplicateNodeKey(NodeKey),
     /// An explicit input-port key is already present in this builder.
@@ -1249,6 +1258,686 @@ impl<D> NetworkBuilder<D> {
     }
 }
 
+/// An owning, typed authoring surface for one reusable caller-authored module.
+///
+/// Signals are scoped to this builder. The builder exposes a typed module
+/// interface while reusing the ordinary primitive construction and authored
+/// graph representation used by [`NetworkBuilder`].
+///
+/// Signal kinds remain part of the typed interface:
+///
+/// ```compile_fail
+/// use mossignal::ModuleBuilder;
+///
+/// let mut module = ModuleBuilder::<()>::new();
+/// let (_, pulse) = module.pulse_input("pulse");
+/// let _ = module.level_output("wrong kind", pulse);
+/// ```
+pub struct ModuleBuilder<D> {
+    meta: DiagnosticMeta,
+    interface_allocator: KeyAllocator,
+    graph: NetworkBuilder<D>,
+    inputs: Vec<ModuleInputDef>,
+    outputs: Vec<ModuleOutputDef>,
+    mappings: Vec<ModuleInterfaceMapping>,
+    level_input_keys: BTreeSet<ModuleInputKey<Level>>,
+    pulse_input_keys: BTreeSet<ModuleInputKey<Pulse>>,
+    level_output_keys: BTreeSet<ModuleOutputKey<Level>>,
+    pulse_output_keys: BTreeSet<ModuleOutputKey<Pulse>>,
+}
+
+impl<D> ModuleBuilder<D> {
+    /// Creates an empty caller-authored module with deterministic local allocation.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_meta(DiagnosticMeta::default())
+    }
+
+    /// Creates an empty caller-authored module with retained diagnostic metadata.
+    #[must_use]
+    pub fn with_meta(meta: DiagnosticMeta) -> Self {
+        Self {
+            meta,
+            interface_allocator: KeyAllocator::new(0),
+            graph: NetworkBuilder::new(TimeDomainId::from_u128(0)),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            mappings: Vec::new(),
+            level_input_keys: BTreeSet::new(),
+            pulse_input_keys: BTreeSet::new(),
+            level_output_keys: BTreeSet::new(),
+            pulse_output_keys: BTreeSet::new(),
+        }
+    }
+
+    /// Adds a convenience level input with locally allocated stable identity.
+    pub fn level_input(
+        &mut self,
+        name: impl Into<String>,
+    ) -> (ModuleInputKey<Level>, Signal<Level>) {
+        let key = self.next_level_input_key();
+        let signal = match self.add_level_input(key, named_meta(name)) {
+            Ok(signal) => signal,
+            Err(_) => panic!("fresh module input key must not conflict with builder state"),
+        };
+        (key, signal)
+    }
+
+    /// Adds an explicit level module input and retains its metadata unchanged.
+    pub fn add_level_input(
+        &mut self,
+        key: ModuleInputKey<Level>,
+        meta: DiagnosticMeta,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        if self.level_input_keys.contains(&key) {
+            return Err(AuthoringFailure::DuplicateModuleInputKey(key));
+        }
+        let surrogate = ExternalInputKey::from_u128(key.as_u128());
+        let signal = match self.graph.add_level_input(surrogate, meta.clone()) {
+            Ok(signal) => signal,
+            Err(_) => panic!("unique module input must have a unique private source surrogate"),
+        };
+        self.level_input_keys.insert(key);
+        self.inputs.push(ModuleInputDef::new(key.into(), meta));
+        Ok(signal)
+    }
+
+    /// Adds a convenience pulse input with locally allocated stable identity.
+    pub fn pulse_input(
+        &mut self,
+        name: impl Into<String>,
+    ) -> (ModuleInputKey<Pulse>, Signal<Pulse>) {
+        let key = self.next_pulse_input_key();
+        let signal = match self.add_pulse_input(key, named_meta(name)) {
+            Ok(signal) => signal,
+            Err(_) => panic!("fresh pulse module input key must not conflict with builder state"),
+        };
+        (key, signal)
+    }
+
+    /// Adds an explicit pulse module input and retains its metadata unchanged.
+    pub fn add_pulse_input(
+        &mut self,
+        key: ModuleInputKey<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        if self.pulse_input_keys.contains(&key) {
+            return Err(AuthoringFailure::DuplicatePulseModuleInputKey(key));
+        }
+        let surrogate = ExternalInputKey::from_u128(key.as_u128());
+        let signal = match self.graph.add_pulse_input(surrogate, meta.clone()) {
+            Ok(signal) => signal,
+            Err(_) => {
+                panic!("unique pulse module input must have a unique private source surrogate")
+            }
+        };
+        self.pulse_input_keys.insert(key);
+        self.inputs.push(ModuleInputDef::new(key.into(), meta));
+        Ok(signal)
+    }
+
+    /// Adds a convenience level output with locally allocated stable identity.
+    pub fn level_output(
+        &mut self,
+        name: impl Into<String>,
+        source: Signal<Level>,
+    ) -> Result<ModuleOutputKey<Level>, AuthoringFailure> {
+        self.graph.require_local(source)?;
+        let key = self.next_level_output_key();
+        self.add_level_output(key, source, named_meta(name))?;
+        Ok(key)
+    }
+
+    /// Adds an explicit level module output and retains its metadata unchanged.
+    pub fn add_level_output(
+        &mut self,
+        key: ModuleOutputKey<Level>,
+        source: Signal<Level>,
+        meta: DiagnosticMeta,
+    ) -> Result<(), AuthoringFailure> {
+        self.graph.require_local(source)?;
+        if !self.level_output_keys.insert(key) {
+            return Err(AuthoringFailure::DuplicateModuleOutputKey(key));
+        }
+        self.outputs.push(ModuleOutputDef::new(key.into(), meta));
+        self.mappings.push(ModuleInterfaceMapping::output(
+            key.into(),
+            source_endpoint(source.source),
+        ));
+        Ok(())
+    }
+
+    /// Adds a convenience pulse output with locally allocated stable identity.
+    pub fn pulse_output(
+        &mut self,
+        name: impl Into<String>,
+        source: Signal<Pulse>,
+    ) -> Result<ModuleOutputKey<Pulse>, AuthoringFailure> {
+        self.graph.require_local(source)?;
+        let key = self.next_pulse_output_key();
+        self.add_pulse_output(key, source, named_meta(name))?;
+        Ok(key)
+    }
+
+    /// Adds an explicit pulse module output and retains its metadata unchanged.
+    pub fn add_pulse_output(
+        &mut self,
+        key: ModuleOutputKey<Pulse>,
+        source: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<(), AuthoringFailure> {
+        self.graph.require_local(source)?;
+        if !self.pulse_output_keys.insert(key) {
+            return Err(AuthoringFailure::DuplicatePulseModuleOutputKey(key));
+        }
+        self.outputs.push(ModuleOutputDef::new(key.into(), meta));
+        self.mappings.push(ModuleInterfaceMapping::output(
+            key.into(),
+            source_endpoint_pulse(source.source),
+        ));
+        Ok(())
+    }
+
+    /// Adds an infallible level constant with locally allocated identity.
+    pub fn constant(&mut self, value: LogicLevel) -> Signal<Level> {
+        self.graph.constant(value)
+    }
+
+    /// Adds an explicit constant node with a locally allocated output port.
+    pub fn add_constant(
+        &mut self,
+        key: NodeKey,
+        value: LogicLevel,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph.add_constant(key, value, meta)
+    }
+
+    /// Adds an explicit constant node with an exact output-port identity.
+    pub fn add_constant_with_output(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Level>,
+        value: LogicLevel,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph
+            .add_constant_with_output(key, output, value, meta)
+    }
+
+    /// Adds a level inverter with locally allocated identities.
+    pub fn not(&mut self, input: Signal<Level>) -> Result<Signal<Level>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph.not(input)
+    }
+
+    /// Adds an explicit inverter with locally allocated port identities.
+    pub fn add_not(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Level>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph.add_not(key, input, meta)
+    }
+
+    /// Adds an explicit inverter with exact port identities.
+    pub fn add_not_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Level>,
+        output_port: OutPortKey<Level>,
+        input: Signal<Level>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph
+            .add_not_with_ports(key, input_port, output_port, input, meta)
+    }
+
+    /// Adds a variadic level conjunction.
+    pub fn all<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.graph.require_all_local(&inputs)?;
+        self.graph.all(inputs)
+    }
+
+    /// Adds an explicitly keyed conjunction with locally allocated ports.
+    pub fn add_all<I>(
+        &mut self,
+        key: NodeKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.graph.require_all_local(&inputs)?;
+        self.graph.add_all(key, inputs, meta)
+    }
+
+    /// Adds an explicitly keyed conjunction with exact ports.
+    pub fn add_all_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Level>,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Level>, Signal<Level>)>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        for (_, input) in &inputs {
+            self.graph.require_local(*input)?;
+        }
+        self.graph.add_all_with_ports(key, output, inputs, meta)
+    }
+
+    /// Adds a variadic level disjunction.
+    pub fn any<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.graph.require_all_local(&inputs)?;
+        self.graph.any(inputs)
+    }
+
+    /// Adds an explicitly keyed disjunction with locally allocated ports.
+    pub fn add_any<I>(
+        &mut self,
+        key: NodeKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.graph.require_all_local(&inputs)?;
+        self.graph.add_any(key, inputs, meta)
+    }
+
+    /// Adds an explicitly keyed disjunction with exact ports.
+    pub fn add_any_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Level>,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Level>, Signal<Level>)>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        for (_, input) in &inputs {
+            self.graph.require_local(*input)?;
+        }
+        self.graph.add_any_with_ports(key, output, inputs, meta)
+    }
+
+    /// Adds a variadic odd-parity node.
+    pub fn parity<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.graph.require_all_local(&inputs)?;
+        self.graph.parity(inputs)
+    }
+
+    /// Adds an explicitly keyed parity node with locally allocated ports.
+    pub fn add_parity<I>(
+        &mut self,
+        key: NodeKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.graph.require_all_local(&inputs)?;
+        self.graph.add_parity(key, inputs, meta)
+    }
+
+    /// Adds an explicitly keyed parity node with exact ports.
+    pub fn add_parity_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Level>,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Level>, Signal<Level>)>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        for (_, input) in &inputs {
+            self.graph.require_local(*input)?;
+        }
+        self.graph.add_parity_with_ports(key, output, inputs, meta)
+    }
+
+    /// Adds a variadic threshold node.
+    pub fn at_least<I>(
+        &mut self,
+        threshold: u64,
+        inputs: I,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.graph.require_all_local(&inputs)?;
+        self.graph.at_least(threshold, inputs)
+    }
+
+    /// Adds an explicitly keyed threshold node with locally allocated ports.
+    pub fn add_at_least<I>(
+        &mut self,
+        key: NodeKey,
+        threshold: u64,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.graph.require_all_local(&inputs)?;
+        self.graph.add_at_least(key, threshold, inputs, meta)
+    }
+
+    /// Adds an explicitly keyed threshold node with exact ports.
+    pub fn add_at_least_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Level>,
+        threshold: u64,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Level>, Signal<Level>)>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        for (_, input) in &inputs {
+            self.graph.require_local(*input)?;
+        }
+        self.graph
+            .add_at_least_with_ports(key, output, threshold, inputs, meta)
+    }
+
+    /// Adds a fixed level branch selector.
+    pub fn select(
+        &mut self,
+        selector: Signal<Level>,
+        when_low: Signal<Level>,
+        when_high: Signal<Level>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        self.graph
+            .require_all_local(&[selector, when_low, when_high])?;
+        self.graph.select(selector, when_low, when_high)
+    }
+
+    /// Adds an explicitly keyed selector with locally allocated ports.
+    pub fn add_select(
+        &mut self,
+        key: NodeKey,
+        selector: Signal<Level>,
+        when_low: Signal<Level>,
+        when_high: Signal<Level>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph
+            .require_all_local(&[selector, when_low, when_high])?;
+        self.graph
+            .add_select(key, selector, when_low, when_high, meta)
+    }
+
+    /// Adds an explicitly keyed selector with exact ports.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_select_with_ports(
+        &mut self,
+        key: NodeKey,
+        selector_port: InPortKey<Level>,
+        when_low_port: InPortKey<Level>,
+        when_high_port: InPortKey<Level>,
+        output: OutPortKey<Level>,
+        selector: Signal<Level>,
+        when_low: Signal<Level>,
+        when_high: Signal<Level>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph
+            .require_all_local(&[selector, when_low, when_high])?;
+        self.graph.add_select_with_ports(
+            key,
+            selector_port,
+            when_low_port,
+            when_high_port,
+            output,
+            selector,
+            when_low,
+            when_high,
+            meta,
+        )
+    }
+
+    /// Adds a variadic pulse Merge.
+    pub fn merge<I>(&mut self, inputs: I) -> Result<Signal<Pulse>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Pulse>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.graph.require_all_local(&inputs)?;
+        self.graph.merge(inputs)
+    }
+
+    /// Adds an explicitly keyed Merge with locally allocated ports.
+    pub fn add_merge<I>(
+        &mut self,
+        key: NodeKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Pulse>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.graph.require_all_local(&inputs)?;
+        self.graph.add_merge(key, inputs, meta)
+    }
+
+    /// Adds an explicitly keyed Merge with exact ports.
+    pub fn add_merge_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Pulse>,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Pulse>, Signal<Pulse>)>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        for (_, input) in &inputs {
+            self.graph.require_local(*input)?;
+        }
+        self.graph.add_merge_with_ports(key, output, inputs, meta)
+    }
+
+    /// Adds a pulse-controlled Toggle.
+    pub fn toggle(
+        &mut self,
+        input: Signal<Pulse>,
+        config: ToggleConfig,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph.toggle(input, config)
+    }
+
+    /// Adds an explicitly keyed Toggle with locally allocated ports.
+    pub fn add_toggle(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Pulse>,
+        config: ToggleConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph.add_toggle(key, input, config, meta)
+    }
+
+    /// Adds an explicitly keyed Toggle with exact ports.
+    pub fn add_toggle_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Pulse>,
+        output_port: OutPortKey<Level>,
+        input: Signal<Pulse>,
+        config: ToggleConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph
+            .add_toggle_with_ports(key, input_port, output_port, input, config, meta)
+    }
+
+    /// Adds a PulseDelay.
+    pub fn pulse_delay(
+        &mut self,
+        input: Signal<Pulse>,
+        config: PulseDelayConfig<D>,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph.pulse_delay(input, config)
+    }
+
+    /// Adds an explicitly keyed PulseDelay with locally allocated ports.
+    pub fn add_pulse_delay(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Pulse>,
+        config: PulseDelayConfig<D>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph.add_pulse_delay(key, input, config, meta)
+    }
+
+    /// Adds an explicitly keyed PulseDelay with exact ports.
+    pub fn add_pulse_delay_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Pulse>,
+        output_port: OutPortKey<Pulse>,
+        input: Signal<Pulse>,
+        config: PulseDelayConfig<D>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph
+            .add_pulse_delay_with_ports(key, input_port, output_port, input, config, meta)
+    }
+
+    /// Consumes the builder into the canonical unchecked user-module definition.
+    #[must_use]
+    pub fn into_unchecked(self) -> UncheckedModule<D> {
+        let Self {
+            meta,
+            graph,
+            inputs,
+            outputs,
+            mappings: output_mappings,
+            ..
+        } = self;
+        let NetworkBuilder {
+            nodes, connections, ..
+        } = graph;
+        let mut mappings = Vec::new();
+        let mut internal_connections = Vec::with_capacity(connections.len());
+        for connection in connections {
+            match connection.from() {
+                ConnectionEndpoint::ExternalInput(key) => {
+                    mappings.push(ModuleInterfaceMapping::input(
+                        module_input_from_surrogate(key),
+                        connection.to(),
+                    ))
+                }
+                _ => internal_connections.push(connection),
+            }
+        }
+        mappings.extend(output_mappings);
+        UncheckedModule::new_user(meta, inputs, outputs, mappings, nodes, internal_connections)
+    }
+
+    /// Consumes, lowers, and validates the authored user module.
+    #[must_use]
+    pub fn finish(self) -> Report<ModuleDef<D>, D>
+    where
+        D: PartialEq,
+    {
+        self.into_unchecked().validate()
+    }
+
+    fn next_level_input_key(&mut self) -> ModuleInputKey<Level> {
+        loop {
+            let key = self.interface_allocator.module_input();
+            if !self.level_input_keys.contains(&key) {
+                return key;
+            }
+        }
+    }
+
+    fn next_pulse_input_key(&mut self) -> ModuleInputKey<Pulse> {
+        loop {
+            let key = self.interface_allocator.module_input();
+            if !self.pulse_input_keys.contains(&key) {
+                return key;
+            }
+        }
+    }
+
+    fn next_level_output_key(&mut self) -> ModuleOutputKey<Level> {
+        loop {
+            let key = self.interface_allocator.module_output();
+            if !self.level_output_keys.contains(&key) {
+                return key;
+            }
+        }
+    }
+
+    fn next_pulse_output_key(&mut self) -> ModuleOutputKey<Pulse> {
+        loop {
+            let key = self.interface_allocator.module_output();
+            if !self.pulse_output_keys.contains(&key) {
+                return key;
+            }
+        }
+    }
+}
+
+impl<D> Default for ModuleBuilder<D> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn module_input_from_surrogate(key: AnyExternalInputKey) -> crate::key::AnyModuleInputKey {
+    match key {
+        AnyExternalInputKey::Level(key) => ModuleInputKey::<Level>::from_u128(key.as_u128()).into(),
+        AnyExternalInputKey::Pulse(key) => ModuleInputKey::<Pulse>::from_u128(key.as_u128()).into(),
+    }
+}
+
 fn named_meta(name: impl Into<String>) -> DiagnosticMeta {
     DiagnosticMeta {
         name: Some(name.into()),
@@ -2248,5 +2937,232 @@ mod tests {
                 .evaluate_reaction(&BTreeMap::new(), &pulses)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn typed_module_lowering_matches_the_exact_dynamic_definition() {
+        let input = ModuleInputKey::<Level>::from_u128(10);
+        let node = NodeKey::from_u128(11);
+        let node_input = InPortKey::<Level>::from_u128(12);
+        let node_output = OutPortKey::<Level>::from_u128(13);
+        let output = ModuleOutputKey::<Level>::from_u128(14);
+
+        let mut typed = ModuleBuilder::<()>::with_meta(meta("module"));
+        let source = typed.add_level_input(input, meta("input")).unwrap();
+        let inverted = typed
+            .add_not_with_ports(node, node_input, node_output, source, meta("not"))
+            .unwrap()
+            .into_outputs();
+        typed
+            .add_level_output(output, inverted, meta("output"))
+            .unwrap();
+
+        let dynamic = UncheckedModule::new_user(
+            meta("module"),
+            vec![ModuleInputDef::new(input.into(), meta("input"))],
+            vec![ModuleOutputDef::new(output.into(), meta("output"))],
+            vec![
+                ModuleInterfaceMapping::input(input.into(), node_input.into()),
+                ModuleInterfaceMapping::output(output.into(), node_output.into()),
+            ],
+            vec![NodeDef::new(
+                node,
+                NodeKind::not(),
+                NodePorts::new(vec![node_input.into()], vec![node_output.into()]),
+                meta("not"),
+            )],
+            Vec::new(),
+        );
+
+        assert_eq!(typed.into_unchecked(), dynamic);
+    }
+
+    fn representative_typed_module() -> ModuleBuilder<()> {
+        let mut module = ModuleBuilder::with_meta(meta("representative"));
+        let (_, first) = module.level_input("first");
+        let (_, second) = module.level_input("second");
+        let (_, pulses) = module.pulse_input("pulses");
+
+        let constant = module.constant(LogicLevel::High);
+        let inverted = module.not(first).unwrap();
+        let all = module.all([first, second]).unwrap();
+        let any = module.any([first, second]).unwrap();
+        let parity = module.parity([first, second]).unwrap();
+        let threshold = module.at_least(1, [first, second]).unwrap();
+        let selected = module.select(constant, inverted, all).unwrap();
+        let merged = module.merge([pulses, pulses]).unwrap();
+        let toggled = module
+            .toggle(merged, ToggleConfig::new(LogicLevel::Low))
+            .unwrap();
+        let delay = crate::time::NonZeroSpan::from_ticks(3).unwrap();
+        let delayed = module
+            .pulse_delay(pulses, PulseDelayConfig::new(delay))
+            .unwrap();
+
+        module.level_output("selected", selected).unwrap();
+        module.level_output("any", any).unwrap();
+        module.level_output("parity", parity).unwrap();
+        module.level_output("threshold", threshold).unwrap();
+        module.level_output("toggled", toggled).unwrap();
+        module.pulse_output("delayed", delayed).unwrap();
+        module
+    }
+
+    #[test]
+    fn typed_module_supports_the_complete_implemented_primitive_family() {
+        let unchecked = representative_typed_module().into_unchecked();
+        assert_eq!(unchecked.inputs().len(), 3);
+        assert_eq!(unchecked.outputs().len(), 6);
+        assert_eq!(unchecked.nodes().len(), 10);
+        assert!(
+            unchecked
+                .connections()
+                .iter()
+                .all(|connection| matches!(connection.from(), ConnectionEndpoint::NodeOutput(_)))
+        );
+
+        let kinds = unchecked
+            .nodes()
+            .iter()
+            .map(NodeDef::kind)
+            .collect::<Vec<_>>();
+        assert!(
+            kinds
+                .iter()
+                .any(|kind| matches!(kind, NodeKind::Constant(_)))
+        );
+        assert!(kinds.iter().any(|kind| matches!(kind, NodeKind::Not)));
+        assert!(kinds.iter().any(|kind| matches!(kind, NodeKind::All)));
+        assert!(kinds.iter().any(|kind| matches!(kind, NodeKind::Any)));
+        assert!(kinds.iter().any(|kind| matches!(kind, NodeKind::Parity)));
+        assert!(
+            kinds
+                .iter()
+                .any(|kind| matches!(kind, NodeKind::AtLeast(_)))
+        );
+        assert!(kinds.iter().any(|kind| matches!(kind, NodeKind::Select)));
+        assert!(kinds.iter().any(|kind| matches!(kind, NodeKind::Merge)));
+        assert!(kinds.iter().any(|kind| matches!(kind, NodeKind::Toggle(_))));
+        assert!(
+            kinds
+                .iter()
+                .any(|kind| matches!(kind, NodeKind::PulseDelay(_)))
+        );
+    }
+
+    #[test]
+    fn typed_module_finish_matches_direct_unchecked_validation() {
+        let direct = representative_typed_module().into_unchecked();
+        let direct_report = direct.validate_ref();
+        let typed_report = representative_typed_module().finish();
+        assert_eq!(typed_report.diagnostics(), direct_report.diagnostics());
+        let typed = typed_report.require_artifact().unwrap();
+        let direct = direct_report.require_artifact().unwrap();
+        assert_eq!(typed.fingerprint(), direct.fingerprint());
+        assert_eq!(typed.inputs().len(), direct.inputs().len());
+        assert_eq!(typed.outputs().len(), direct.outputs().len());
+        assert_eq!(typed.graph().nodes(), direct.graph().nodes());
+        assert_eq!(typed.graph().connections(), direct.graph().connections());
+        assert!(matches!(typed.origin(), crate::ModuleOrigin::User));
+    }
+
+    #[test]
+    fn module_interface_duplicates_are_structured_and_non_mutating() {
+        let input = ModuleInputKey::<Level>::from_u128(1);
+        let output = ModuleOutputKey::<Level>::from_u128(2);
+        let mut module = ModuleBuilder::<()>::new();
+        let source = module
+            .add_level_input(input, DiagnosticMeta::default())
+            .unwrap();
+        assert!(matches!(
+            module.add_level_input(input, meta("duplicate")),
+            Err(AuthoringFailure::DuplicateModuleInputKey(actual)) if actual == input
+        ));
+        let constant = module.constant(LogicLevel::Low);
+        module
+            .add_level_output(output, constant, DiagnosticMeta::default())
+            .unwrap();
+        assert!(matches!(
+            module.add_level_output(output, source, meta("duplicate")),
+            Err(AuthoringFailure::DuplicateModuleOutputKey(actual)) if actual == output
+        ));
+        let lowered = module.into_unchecked();
+        assert_eq!(lowered.inputs().len(), 1);
+        assert_eq!(lowered.outputs().len(), 1);
+        assert_eq!(lowered.mappings().len(), 1);
+    }
+
+    fn exercise_foreign_level_calls(receiver: &mut ModuleBuilder<()>, foreign: Signal<Level>) {
+        assert!(matches!(
+            receiver.not(foreign),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.all([foreign]),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.any([foreign]),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.parity([foreign]),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.at_least(1, [foreign]),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.select(foreign, foreign, foreign),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert_eq!(
+            receiver.level_output("foreign", foreign),
+            Err(AuthoringFailure::ForeignSignal)
+        );
+    }
+
+    fn exercise_foreign_pulse_calls(receiver: &mut ModuleBuilder<()>, foreign: Signal<Pulse>) {
+        assert!(matches!(
+            receiver.merge([foreign]),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert!(matches!(
+            receiver.toggle(foreign, ToggleConfig::new(LogicLevel::Low)),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        let delay = crate::time::NonZeroSpan::from_ticks(1).unwrap();
+        assert!(matches!(
+            receiver.pulse_delay(foreign, PulseDelayConfig::new(delay)),
+            Err(AuthoringFailure::ForeignSignal)
+        ));
+        assert_eq!(
+            receiver.pulse_output("foreign", foreign),
+            Err(AuthoringFailure::ForeignSignal)
+        );
+    }
+
+    #[test]
+    fn foreign_module_and_network_signals_fail_before_authored_mutation() {
+        let mut foreign_module = ModuleBuilder::<()>::new();
+        let (_, module_level) = foreign_module.level_input("level");
+        let (_, module_pulse) = foreign_module.pulse_input("pulse");
+        let mut receiver = ModuleBuilder::<()>::new();
+        exercise_foreign_level_calls(&mut receiver, module_level);
+        exercise_foreign_pulse_calls(&mut receiver, module_pulse);
+
+        let mut foreign_network = NetworkBuilder::<()>::new(TimeDomainId::from_u128(1));
+        let (_, network_level) = foreign_network.level_input("level");
+        let (_, network_pulse) = foreign_network.pulse_input("pulse");
+        exercise_foreign_level_calls(&mut receiver, network_level);
+        exercise_foreign_pulse_calls(&mut receiver, network_pulse);
+
+        let lowered = receiver.into_unchecked();
+        assert!(lowered.inputs().is_empty());
+        assert!(lowered.outputs().is_empty());
+        assert!(lowered.mappings().is_empty());
+        assert!(lowered.nodes().is_empty());
+        assert!(lowered.connections().is_empty());
     }
 }
