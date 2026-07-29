@@ -75,6 +75,11 @@ Use:
   implementation because requirements conflict, fundamental semantics are
   missing, or an already-frozen compatibility promise prevents a safe choice.
 
+Use the pre-release compatibility policy in `AGENTS.md` when applying the last
+category. It requires an explicit maintainer freeze decision naming the surface
+and baseline; version labels, public APIs, goldens, persistence designs, and
+stability wording are not enough.
+
 A missing constructor name, accessor, private field, derive, module path,
 storage type, or convenience is not an open question. It becomes blocking only
 when an already-frozen compatibility promise requires a choice that cannot be

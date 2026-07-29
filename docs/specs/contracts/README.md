@@ -44,6 +44,12 @@ does not depend on it. `open_questions` is reserved for genuine blockers inside
 `scope.includes`: conflicting requirements, missing fundamental semantics, or
 an already-frozen compatibility promise that prevents a safe local choice.
 
+The pre-release compatibility policy in `AGENTS.md` controls what counts as
+already frozen. Before an explicit maintainer decision names a frozen surface
+and baseline, version labels, public visibility, goldens, persistence designs,
+and stability wording remain provisional across repository revisions and must
+not create contract questions or bead blockers.
+
 When the specifications permit several reasonable implementations, preserve
 that freedom. The implementation chooses the simplest deterministic option,
 tests it, and records the decision. A specification amendment is not a

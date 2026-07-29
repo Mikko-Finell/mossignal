@@ -80,6 +80,10 @@ Use contract rule IDs when they improve traceability. Do not copy the entire con
   semantics required for correct behavior, or an already-frozen compatibility
   promise that prevents a safe local choice, and only when the blocker burden
   below is satisfied.
+- Under the pre-release policy in `AGENTS.md`, the compatibility category also
+  requires an explicit maintainer freeze decision naming the surface and
+  baseline. Do not infer one from version labels, public APIs, goldens,
+  persistence machinery, or stability language.
 - Do not require specification amendments before ordinary implementation
   choices. Review the concrete result first; update specifications afterward
   only if the accepted choice should become a permanent promise.
@@ -96,6 +100,9 @@ or an already-frozen compatibility promise
 the concrete conflict, missing semantic rule, or frozen promise
 why the simplest deterministic conforming choice cannot safely resolve it
 ```
+
+A compatibility blocker without the explicit freeze decision and named
+baseline fails this burden and must not withhold readiness.
 
 If any item is absent, classify the matter as `known_uncovered`, implementation
 freedom, adjacent future work, optional improvement, or outside the bead and keep

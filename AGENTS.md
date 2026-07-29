@@ -41,6 +41,31 @@ to produce correct behavior are missing, or an already-frozen compatibility
 promise prevents a safe local choice. Mere observable differences between
 otherwise conforming implementations are not a blocker.
 
+## Pre-release compatibility policy
+
+Mossignal is pre-alpha and has no downstream consumers. Until the maintainer
+explicitly declares a release-readiness baseline, all public APIs, schemas,
+catalogues, descriptors, version numbers, fingerprints, persistence formats,
+goldens, and inventories are provisional across repository revisions. Evolve
+them in place as roadmap work requires. Keep each revision internally coherent,
+deterministic, specified, and tested, but do not add compatibility shims,
+migrations, deprecation periods, tombstones, or historical-version support
+solely to preserve behavior from an earlier repository revision.
+
+A compatibility freeze exists only when an authoritative specification or this
+file records an explicit maintainer decision that names the frozen surface and
+baseline. A `v1` label, numeric version wrapper, public visibility, checked-in
+golden, persistence design, compatibility algorithm, or wording about stable
+identity does not by itself constitute a release or freeze. Do not propose,
+infer, or request a freeze as part of ordinary roadmap preparation,
+implementation, contract review, or implementation acceptance.
+
+This policy concerns compatibility between repository revisions. It does not
+weaken semantics that require artifacts within one revision to reject wrong
+versions, preserve runtime state across a supported topology change, maintain
+stable identity inside an artifact lifecycle, or otherwise enforce
+compatibility as current product behavior.
+
 The bead and commit rules in this file govern ordinary product work.
 `docs/testing_and_verification_policy.md` governs verification depth.
 
@@ -94,7 +119,10 @@ acceptance.
 Implementation does not by itself turn an open choice into permanent product
 policy. After review of the concrete result, update the authoritative
 specifications and applicable contracts only if the choice should constrain
-future implementations or compatibility.
+future implementations or compatibility. Before the explicit release-readiness
+baseline, such updates constrain the current coherent design but do not freeze
+the surface across repository revisions unless they expressly invoke the
+pre-release compatibility policy above and name the frozen baseline.
 
 A claimed design blocker must identify all of:
 

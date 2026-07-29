@@ -210,7 +210,26 @@ StandardCatalogueVersion(1)
 
 The catalogue version identifies one released set of descriptors and discovery metadata.
 
-Adding, deprecating, or changing a descriptor increments the catalogue version.
+Before mossignal declares its first compatibility-bearing release baseline, the
+catalogue and descriptor version values in this specification are provisional
+development identities. During that pre-release phase:
+
+- the current catalogue MAY expose the implemented subset of the target initial
+  inventory as roadmap work proceeds;
+- catalogue, semantic, and expansion versions MAY change in place without a
+  compatibility shim or migration path;
+- every build MUST still be internally coherent: exact references, descriptor
+  data, generated expansions, fingerprints, diagnostics, and golden tests must
+  agree within that build; and
+- no pre-release numeric value promises compatibility with another revision.
+
+The maintainer freezes the catalogue inventory and all descriptor versions only
+through an explicit release-readiness decision after capability assessment.
+The compatibility and migration rules below apply across revisions only after
+that freeze.
+
+After the release baseline is frozen, adding, deprecating, or changing a
+descriptor increments the catalogue version.
 
 The catalogue version itself MUST NOT contribute to an individual module or network fingerprint. Adding an unrelated module to a later catalogue must not alter existing network identity.
 
@@ -253,6 +272,12 @@ pub struct StandardModuleExpansionVersion(pub u32);
 ```
 
 Numeric adjacency implies no compatibility. Compatibility is defined by an explicit table.
+
+Before the explicit release freeze defined by section 8, these numbers identify
+the exact descriptor within one coherent development revision but do not create
+a cross-revision compatibility promise. Semantic or expansion changes may
+replace the provisional version in place when specifications, generated data,
+fingerprints, and tests are updated together.
 
 ### 10.1 Semantic version
 
@@ -629,7 +654,8 @@ The execution-state and observable-state digests do not repeat standard descript
 
 ## 22. Complete catalogue version 1 inventory
 
-Catalogue version 1 contains exactly these standard modules:
+The target inventory frozen for the first compatibility-bearing catalogue
+version 1 contains exactly these standard modules:
 
 ```text
 mossignal.standard.exactly
@@ -641,6 +667,12 @@ mossignal.standard.level_resettable_sample_hold
 ```
 
 Each has semantic version `1` and expansion version `1`.
+
+Before the explicit release freeze, development builds MAY expose only the
+implemented prefix or subset of this inventory while retaining provisional
+catalogue and descriptor version values under section 8. Such a build is not a
+released catalogue version and creates no promise that another development
+revision accepts its identities or artifacts.
 
 No temporal standard module is included in catalogue version 1.
 
@@ -2748,6 +2780,11 @@ golden expansion fingerprints
 Generated presentation artifacts are not semantic persistence artifacts. Persisted network and module definitions remain governed by the persistence specification.
 
 ## 83. Release gate
+
+Passing this gate and an explicit maintainer release-readiness decision ends the
+pre-release policy in section 8. The accepted inventory and exact catalogue,
+semantic, and expansion versions then become compatibility-bearing; subsequent
+changes follow the version and migration rules in this specification.
 
 A descriptor may enter the released standard catalogue only when:
 

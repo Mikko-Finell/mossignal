@@ -281,7 +281,7 @@ authoring through runtime observation.
 
 # Part II — Standard composition and application ergonomics
 
-## 37. Standard catalogue foundation with `Exactly`
+## 37. [IN PROGRESS] Standard catalogue foundation with `Exactly`
 
 Establish the versioned standard-module mechanism using one first stateless
 module:

@@ -1,0 +1,189 @@
+schema_version: "0.1"
+id: mossignal.standard.exactly
+title: Exactly standard module
+kind: node
+status: draft
+
+source_baseline:
+  commit: d954b6ab1698417a2e99606c4da529f16143c745
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/standard_module_catalogue_spec.md
+
+summary: >-
+  Exactly is the stateless variadic Level standard module whose result is High
+  exactly when the number of High public input ports equals its required u64
+  threshold, with one fixed canonical primitive expansion per arity case.
+
+scope:
+  includes:
+    - Exactly identity, interface, total behavioral law, and dependency signature
+    - canonical expansion cases and stable variadic correspondence
+    - static diagnostics, inspection summary, explanation semantics, and exhaustive conformance
+  excludes:
+    - AtMost, AllEqual, primitive Majority alias, and other standard descriptors
+    - persistence, reconfiguration, migration, and optimized evaluation
+
+known_uncovered:
+  - Persistence and compatible replacement across future Exactly descriptor versions
+
+aliases:
+  - Exactly
+  - mossignal.standard.exactly
+  - exact cardinality
+
+requirements:
+  - id: exact-identity-and-interface
+    kind: public_surface
+    statement: >-
+      Exactly is standard module mossignal.standard.exactly at semantic version
+      1 and expansion version 1. It has zero or more stable-keyed variadic Level
+      inputs, one catalogue-role Level output named result, and one required u64
+      threshold parameter with no default.
+    sources: [exact-identity, exact-interface]
+
+  - id: total-exact-cardinality-law
+    kind: semantic
+    statement: >-
+      For arity n, High-port count h, and threshold k, result is High if and
+      only if h equals k. Zero and unary arities are valid, k greater than n is
+      constant Low, k zero means all inputs are Low, k equal to n means all are
+      High, and duplicate upstream sources contribute once per public port.
+    sources: [shared-variadic, exact-law]
+
+  - id: declaration-sensitive-dependency
+    kind: semantic
+    statement: >-
+      Every public input may affect result when n is positive and k is at most
+      n. When n is zero or k exceeds n, result is constant and the declaration
+      has no current public input dependency. The descriptor signature must
+      equal the transitive public dependency induced by its canonical expansion.
+    sources: [shared-dependency, exact-dependency]
+
+  - id: fixed-canonical-case-expansion
+    kind: semantic
+    statement: >-
+      Exactly uses the specified four-way canonical case split: Constant Low
+      for k > n; Constant High for k = n = 0; Not for k = 0, n = 1; Any then
+      Not for k = 0, n > 1; direct sole-input export for k = n = 1; All for
+      k = n > 1; and AtLeast(k), AtLeast(k + 1), Not, then All for 0 < k < n.
+      No behaviorally equivalent expansion may replace these cases.
+    sources: [exact-expansion]
+
+  - id: stable-role-and-port-correspondence
+    kind: semantic
+    statement: >-
+      Canonical internal roles and keys are deterministic from the exact
+      descriptor and public keys. Variadic internal ports and connections are
+      qualified by their public ModuleInputKey, so insertion or presentation
+      order does not affect expansion or fingerprints, while added, removed, or
+      changed stable public keys change the corresponding semantic incidence.
+    sources: [public-port-identity, internal-identity, exact-expansion]
+
+  - id: precise-static-diagnostics
+    kind: system_effect
+    statement: >-
+      Exactly reports the catalogue's independent non-blocking empty-variadic,
+      unary-degenerate, impossible-threshold, constant-result, and
+      duplicate-source conditions when applicable. A more precise empty,
+      unary, or impossible-threshold condition suppresses only generic
+      constant-result; descriptor-intentional unused inputs and internal case
+      choices do not create redundant primitive or unused-input warnings.
+    sources: [shared-variadic, module-diagnostics, diagnostic-catalogue]
+
+  - id: cardinality-inspection-and-explanation
+    kind: public_surface
+    statement: >-
+      Module inspection exposes threshold, arity, current High and Low counts,
+      result, constant-result classification, and dependency classification,
+      alongside the standard declaration and expanded primitive view. Structured
+      explanation identifies all contributors and non-contributors when High;
+      when Low it distinguishes threshold deficit, excess, and impossibility.
+    sources: [exact-explanation, exact-inspection, shared-inspection]
+
+  - id: ordinary-module-execution
+    kind: semantic
+    statement: >-
+      Exactly executes only through its ordinary validated ModuleDef and
+      canonical Constant, Not, Any, All, and AtLeast expansion, inheriting
+      generic module compilation, runtime budgets, transaction atomicity,
+      provenance, hierarchy, and qualified primitive observation.
+    sources: [standard-boundary, public-expansion-equivalence]
+    basis: derived
+
+  - id: exhaustive-bounded-conformance
+    kind: verification
+    statement: >-
+      Tests exhaust every Level valuation for arities zero through at least five
+      and thresholds 0, 1, arity minus one where defined, arity, arity plus one,
+      and u64::MAX. They include duplicate sources and stable-key port
+      permutations, compare the independent public law with the canonical
+      expansion, and verify deterministic unique roles, keys, dependencies,
+      diagnostics, inspection, hierarchy, fingerprints, and ordinary execution.
+    sources: [dual-view, exhaustive-combinational, canonical-verification]
+
+implementation_freedom:
+  - Descriptor table layout, generation helper structure, and typed inspection value spelling are open when the exact public facts and canonical roles remain structured and deterministic.
+  - Concise builders may allocate instance and public variadic keys locally; explicit keyed construction is the durable reconstruction path.
+  - Exhaustive tests may share a compact independent truth-table oracle, but it must not reuse canonical expansion control flow.
+
+open_questions: []
+
+sources:
+  exact-identity:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.1 Identity]
+  exact-interface:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.3 Public interface]
+  shared-variadic:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 35. Shared variadic level rules]
+  exact-law:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.4 Behavioral law]
+  shared-dependency:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IV — Shared standard-module semantics, 27. Public current-reaction dependency signature]
+  exact-dependency:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.5 Public dependency signature]
+  exact-expansion:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.6 Canonical expansion]
+  public-port-identity:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 15. Public port identity]
+  internal-identity:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 18. Variadic internal identity]
+  module-diagnostics:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IX — Diagnostics, 58. Non-blocking module diagnostics]
+  diagnostic-catalogue:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 41. Standard modules — non-blocking conditions]
+  exact-explanation:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.7 Explanation]
+  exact-inspection:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.8 Inspection]
+  shared-inspection:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IV — Shared standard-module semantics, 33. Inspection]
+  standard-boundary:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part I — Boundaries and classification, 4. Closed semantic boundary]
+  public-expansion-equivalence:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IV — Shared standard-module semantics, 26. Public behavioral law and expansion equivalence]
+  dual-view:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 76. Dual-view equivalence]
+  exhaustive-combinational:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 77. Exhaustive combinational verification]
+  canonical-verification:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 79. Canonical expansion verification]

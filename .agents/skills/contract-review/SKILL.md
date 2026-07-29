@@ -42,6 +42,10 @@ For each contract:
    already-frozen compatibility promise that prevents a safe local choice. Move
    specific adjacent or future unrepresented facets to `known_uncovered` and
    preserve ordinary design choices as implementation freedom.
+   Apply the pre-release policy in `AGENTS.md`: version labels, public surfaces,
+   goldens, persistence designs, and stability wording are not evidence of a
+   freeze without an explicit maintainer decision naming the surface and
+   baseline.
 10. For each verification rule, confirm that it states a distinct verification obligation rather than restating product semantics, and that each cited source contributes authority appropriate to its role.
 
 Do not promote a contract until the individual and cross-contract passes are
@@ -123,6 +127,10 @@ or an already-frozen compatibility promise
 the concrete conflict, missing semantic rule, or frozen promise
 why the simplest deterministic conforming choice cannot safely resolve it
 ```
+
+For a compatibility blocker, require the explicit maintainer freeze decision
+and its named surface and baseline. Otherwise correct the false blocker and
+keep the contract promotable and bead ready.
 
 If any item is missing, classify the matter as `known_uncovered`, implementation
 freedom, adjacent future work, optional improvement, or outside the current slice

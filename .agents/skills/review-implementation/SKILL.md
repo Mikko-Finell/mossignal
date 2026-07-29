@@ -62,6 +62,12 @@ semantics, or an already-frozen compatibility promise, stop and report the exact
 blocker. Leave bead-state changes to renewed planning or explicit user
 direction; do not independently reopen it.
 
+Apply the pre-release compatibility policy in `AGENTS.md`. Do not reject or
+complicate an implementation to preserve an earlier repository revision unless
+an explicit maintainer freeze decision names the affected surface and baseline.
+Version labels, public APIs, goldens, persistence machinery, and stable identity
+rules alone are not evidence of such a freeze.
+
 ## Handle contracts discovered during implementation
 
 If the implementation produced draft contracts, require their independent

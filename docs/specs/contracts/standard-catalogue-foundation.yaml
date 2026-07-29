@@ -1,0 +1,279 @@
+schema_version: "0.1"
+id: mossignal.standard.catalogue_foundation
+title: Versioned standard-module catalogue foundation
+kind: capability
+status: draft
+
+source_baseline:
+  commit: d954b6ab1698417a2e99606c4da529f16143c745
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/standard_module_catalogue_spec.md
+
+summary: >-
+  The standard catalogue is an immutable, versioned, discoverable collection
+  of authoritative module descriptors that constructs ordinary canonical
+  ModuleDef values with exact standard origin and no privileged evaluator path.
+
+scope:
+  includes:
+    - catalogue, descriptor, module-reference, parameter, and expansion identity
+    - descriptor discovery and exact dynamic construction
+    - canonical standard declaration, public interface, expansion, and stable internal identity
+    - typed, explicit-keyed, and generic instantiation equivalence
+    - module-level diagnostics, hierarchy, inspection, and verification hooks
+  excludes:
+    - individual standard-module behavioral laws and expansion case tables
+    - persistence envelopes, restoration, replay, and canonical decoding
+    - topology replacement, compatibility migration, and internal patch enforcement
+    - primitive aliases, metadata-only conveniences, and builder-only compositions
+
+known_uncovered:
+  - Persistent validation of declarations against regenerated canonical expansions
+  - Standard-module replacement and migration across descriptor versions
+
+aliases:
+  - StandardCatalogue<D>
+  - StandardModuleDescriptor<D>
+  - StandardModuleRef
+  - StandardModuleDeclaration<D>
+
+requirements:
+  - id: closed-ordinary-module-boundary
+    kind: prohibition
+    statement: >-
+      A standard module is a visible ordinary module composed only from
+      supported primitives or exact standard descriptors. It introduces no
+      evaluator extension, callback, hidden state, signal kind, host effect,
+      special transaction semantics, fixed-point settlement, or uninspectable
+      state or pending work.
+    sources: [standard-boundary]
+
+  - id: pre-release-evolving-catalogue
+    kind: compatibility
+    statement: >-
+      Until an explicit maintainer release-readiness decision, catalogue,
+      semantic, and expansion versions are provisional development identities.
+      A development catalogue may expose the implemented subset of the target
+      inventory, versions may change in place without compatibility ceremony,
+      and no numeric value promises cross-revision compatibility, while every
+      individual build still keeps references, descriptors, expansions,
+      fingerprints, diagnostics, and golden tests internally coherent.
+    sources: [catalogue-version, catalogue-inventory]
+
+  - id: explicit-release-freeze
+    kind: compatibility
+    statement: >-
+      The first compatibility-bearing catalogue version 1 targets Exactly,
+      AtMost, AllEqual, PulseResettableToggle, LevelResettableToggle, and
+      LevelResettableSampleHold at semantic and expansion version 1. Only an
+      explicit release decision after the descriptor release gate freezes that
+      inventory and those versions; after freezing, catalogue additions or
+      changes increment versions and follow declared compatibility and migration
+      rules. Catalogue version remains excluded from individual fingerprints.
+    sources: [catalogue-version, catalogue-inventory, release-gate]
+
+  - id: permanent-exact-descriptor-identity
+    kind: public_surface
+    statement: >-
+      Each descriptor has one permanent reserved lowercase ASCII
+      mossignal.standard.* identifier and independent semantic and expansion
+      versions. StandardModuleRef is their exact combined identity; display
+      names, Rust constructors, aliases, and numeric version adjacency do not
+      establish identity or compatibility.
+    sources: [module-identifiers, descriptor-versions, descriptor-reference, concrete-identity]
+
+  - id: immutable-structured-descriptor-discovery
+    kind: public_surface
+    statement: >-
+      StandardCatalogue exposes its version, canonical descriptor iteration,
+      exact-reference lookup, latest-id authoring lookup, and structured
+      descriptor metadata. One published descriptor is immutable under its
+      exact StandardModuleRef, and constructors, generated documentation,
+      diagnostic links, conformance data, and canonical expansion must derive
+      from or be checked against the same authoritative descriptor source.
+    sources: [authoritative-descriptor, catalogue-types, descriptor-discovery, concrete-descriptors]
+
+  - id: exact-standard-declaration-and-origin
+    kind: semantic
+    statement: >-
+      Successful catalogue construction produces an ordinary validated
+      ModuleDef with ModuleOrigin::Standard. Its declaration retains the exact
+      StandardModuleRef, canonical parameter assignments, public variadic input
+      keys, and canonical expansion fingerprint. A behaviorally identical User
+      module remains User-origin and has distinct semantic identity.
+    sources: [standard-origin, concrete-module-origin, dynamic-construction]
+
+  - id: typed-parameters-and-public-interface
+    kind: semantic
+    statement: >-
+      Dynamic requests retain an exact descriptor reference, explicit closed
+      typed parameter values, and explicit variadic public keys for structured
+      validation. Descriptor-defined fixed ports have deterministic permanent
+      roles and keys; variadic ports retain caller-visible stable identity,
+      canonicalize by stable-key order, preserve duplicate-source multiplicity,
+      and treat display order as non-semantic unless a descriptor says otherwise.
+    sources: [parameter-representation, public-port-identity, dynamic-requests]
+
+  - id: one-canonical-expanded-module
+    kind: semantic
+    statement: >-
+      One exact descriptor reference, parameter set, and public interface
+      determines one canonical stable-keyed ordinary primitive ModuleDef. The
+      implementation must not substitute a behaviorally equivalent graph;
+      deterministic internal roles and derived node, typed-port, connection,
+      and export keys preserve observable identity, provenance, diagnostics,
+      inspection, hierarchy, expansion fingerprint, and module fingerprint.
+    sources: [canonical-expansion, internal-key-derivation, variadic-internal-identity, fingerprints]
+
+  - id: structured-construction-failures
+    kind: system_effect
+    statement: >-
+      Dynamic construction reports unknown ids or versions, missing,
+      unexpected, wrong-kind, or invalid parameters, interface and public-key
+      defects, and canonical generation defects through structured catalogue
+      failures or Report<ModuleDef<D>, D>. Caller defects suppress the artifact;
+      shipped descriptor collisions or invariant disagreement remain structured
+      LibraryDefect conditions rather than panics or silent repair.
+    sources: [dynamic-construction, blocking-diagnostics, diagnostic-catalogue]
+
+  - id: equivalent-construction-and-instantiation
+    kind: public_surface
+    statement: >-
+      NetworkBuilder and ModuleBuilder both support concise and explicit-keyed
+      standard constructors. Equivalent concise, explicit-keyed, dynamic-build,
+      and generic ModuleDef instantiation paths converge on the same standard
+      declaration and canonical instance structure for equivalent stable
+      identities, parameters, keys, bindings, and metadata semantics.
+    sources: [typed-construction, keyed-construction, ordinary-instantiation, concrete-equivalence]
+
+  - id: retained-standard-boundary-observation
+    kind: public_surface
+    statement: >-
+      Graph and module inspection retain the exact standard descriptor,
+      declaration parameters, public roles and values, expansion fingerprint,
+      hierarchy, module diagnostics, canonical internal roles and qualified
+      subjects, and supported causal drill-down even when execution is flattened.
+      Primitive diagnostics remain primitive-owned but group beneath the module.
+    sources: [shared-inspection, diagnostic-ownership, concrete-inspection]
+
+  - id: catalogue-foundation-verification
+    kind: verification
+    statement: >-
+      Verification establishes deterministic discovery and generation, unique
+      canonical keys and roles, typed/dynamic/generic path equivalence, public
+      dependency agreement with expanded graph dependencies, identity and
+      fingerprint sensitivity, hierarchy and inspection visibility, structured
+      diagnostic conformance, and ordinary module-runtime behavior.
+    sources: [conformance-matrix, canonical-verification, testing-standard-modules]
+
+implementation_freedom:
+  - Catalogue storage may be static, generated, or a zero-sized immutable view; choose the smallest deterministic representation whose public iteration and lookup are canonical.
+  - Concrete private schema-view and iterator types remain open when descriptor data stays structured and callers need not parse documentation.
+  - Key-derivation helper decomposition and caching are private; the specified domains, semantic inputs, uniqueness checks, and observable keys are not.
+
+open_questions: []
+
+sources:
+  standard-boundary:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part I — Boundaries and classification, 4. Closed semantic boundary]
+  catalogue-version:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 8. Standard catalogue version]
+  catalogue-inventory:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part III — Initial catalogue and non-module conveniences, 22. Complete catalogue version 1 inventory]
+  module-identifiers:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 9. Standard module identifiers]
+  descriptor-versions:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 10. Descriptor versions]
+  descriptor-reference:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 11. Descriptor reference]
+  concrete-identity:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 31. Primitive aliases and standard modules, 31.2 Catalogue identity]
+  authoritative-descriptor:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 12. Authoritative descriptor]
+  catalogue-types:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VIII — Construction and discovery API, 48. Public catalogue types]
+  descriptor-discovery:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VIII — Construction and discovery API, 49. Descriptor discovery]
+  concrete-descriptors:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 31. Primitive aliases and standard modules, 31.3 Catalogue and descriptors]
+  standard-origin:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 13. Standard module origin]
+  concrete-module-origin:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+  parameter-representation:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 14. Parameter representation]
+  public-port-identity:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 15. Public port identity]
+  canonical-expansion:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 16. Canonical internal expansion]
+  internal-key-derivation:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 17. Internal stable-key derivation]
+  variadic-internal-identity:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 18. Variadic internal identity]
+  fingerprints:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 21. Fingerprints]
+  dynamic-requests:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 31. Primitive aliases and standard modules, 31.4 Dynamic requests and parameter values]
+  dynamic-construction:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VIII — Construction and discovery API, 50. Dynamic construction]
+  blocking-diagnostics:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IX — Diagnostics, 57. Blocking catalogue diagnostics]
+  diagnostic-catalogue:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 40. Standard modules — blocking conditions]
+  typed-construction:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VIII — Construction and discovery API, 53. Typed convenience methods]
+  keyed-construction:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VIII — Construction and discovery API, 54. Explicit keyed forms]
+  ordinary-instantiation:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VIII — Construction and discovery API, 55. Ordinary module instantiation]
+  concrete-equivalence:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 31. Primitive aliases and standard modules, 31.8 Canonical equivalence of construction paths]
+  shared-inspection:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IV — Shared standard-module semantics, 33. Inspection]
+  diagnostic-ownership:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IX — Diagnostics, 56. Diagnostic ownership]
+  concrete-inspection:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIX — Inspection, 72. Owned inspection values]
+  conformance-matrix:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 75. Required standard-module conformance matrix]
+  canonical-verification:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 79. Canonical expansion verification]
+  testing-standard-modules:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XXIII — Requirements for future features, 120. Standard modules]
+  release-gate:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 83. Release gate]

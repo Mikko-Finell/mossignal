@@ -70,6 +70,10 @@ Do not create an implementation patch.
 - Preserve a represented issue in `open_questions` only when it is a genuine
   blocker: conflicting requirements, missing fundamental semantics, or an
   already-frozen compatibility promise.
+- Apply the pre-release compatibility policy in `AGENTS.md`. Do not infer a
+  freeze from a version number, public surface, golden, persistence design, or
+  stability language, and do not propose compatibility ceremony for evolution
+  between pre-release repository revisions.
 - Treat several reasonable specification-conforming designs as implementation
   freedom. Prefer the simplest deterministic option, require it to be tested and
   recorded during implementation, and do not demand a specification amendment
@@ -108,6 +112,10 @@ or an already-frozen compatibility promise
 the concrete conflict, missing semantic rule, or frozen promise
 why the simplest deterministic conforming choice cannot safely resolve it
 ```
+
+For the compatibility category, also cite the explicit maintainer freeze
+decision and the named frozen surface and baseline. Without that evidence, the
+surface is provisional under `AGENTS.md` and compatibility is not a blocker.
 
 If any item is missing, classify the matter as `known_uncovered`, implementation
 freedom, adjacent future work, an optional improvement, or outside the current
