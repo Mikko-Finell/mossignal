@@ -2,7 +2,7 @@
 
 use crate::authored::{
     ConnectionDef, ConnectionEndpoint, ModuleInputDef, ModuleInterfaceMapping, ModuleOutputDef,
-    NodeDef, UncheckedModule, UncheckedNetwork,
+    NodeDef, NodePorts, UncheckedModule, UncheckedNetwork,
 };
 use crate::diagnostics::{
     Diagnostic, DiagnosticSet, DuplicateClaim, Problem, ProblemEvidence, Report, SubjectRef,
@@ -467,7 +467,7 @@ fn normalized<D>(module: &UncheckedModule<D>) -> UncheckedModule<D> {
     let mut inputs = module.inputs().to_vec();
     let mut outputs = module.outputs().to_vec();
     let mut mappings = module.mappings().to_vec();
-    let mut nodes = module.nodes().to_vec();
+    let mut nodes: Vec<_> = module.nodes().iter().map(normalized_node).collect();
     let mut connections = module.connections().to_vec();
     inputs.sort_by_key(|input| input.key());
     outputs.sort_by_key(|output| output.key());
@@ -481,6 +481,26 @@ fn normalized<D>(module: &UncheckedModule<D>) -> UncheckedModule<D> {
         mappings,
         nodes,
         connections,
+    )
+}
+
+fn normalized_node<D>(node: &NodeDef<D>) -> NodeDef<D> {
+    let mut inputs: Vec<_> = node
+        .ports()
+        .inputs()
+        .iter()
+        .copied()
+        .zip(node.ports().input_roles().iter().copied())
+        .collect();
+    inputs.sort_by_key(|(key, role)| (*key, *role));
+    let (inputs, roles): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
+    let mut outputs = node.ports().outputs().to_vec();
+    outputs.sort();
+    NodeDef::new(
+        node.key(),
+        node.kind().clone(),
+        NodePorts::with_input_roles(inputs, roles, outputs),
+        node.meta().clone(),
     )
 }
 
@@ -1054,6 +1074,166 @@ mod tests {
             .artifact()
             .unwrap_or_else(|| panic!("fixture validates"));
         assert_ne!(plain.fingerprint(), changed.fingerprint());
+    }
+
+    #[test]
+    fn module_fingerprint_distinguishes_typed_connection_incidence() {
+        let build = |swap_connection_keys| {
+            let level_input = ModuleInputKey::<Level>::from_u128(1);
+            let pulse_input = ModuleInputKey::<Pulse>::from_u128(1);
+            let level_output = ModuleOutputKey::<Level>::from_u128(2);
+            let pulse_output = ModuleOutputKey::<Pulse>::from_u128(2);
+            let level_source_input = InPortKey::<Level>::from_u128(40);
+            let pulse_source_input = InPortKey::<Pulse>::from_u128(40);
+            let level_source_output = OutPortKey::<Level>::from_u128(50);
+            let pulse_source_output = OutPortKey::<Pulse>::from_u128(50);
+            let level_target_input = InPortKey::<Level>::from_u128(60);
+            let pulse_target_input = InPortKey::<Pulse>::from_u128(60);
+            let level_target_output = OutPortKey::<Level>::from_u128(70);
+            let pulse_target_output = OutPortKey::<Pulse>::from_u128(70);
+            let (level_connection, pulse_connection) = if swap_connection_keys {
+                (81, 80)
+            } else {
+                (80, 81)
+            };
+
+            UncheckedModule::new_user(
+                DiagnosticMeta::default(),
+                vec![
+                    ModuleInputDef::new(level_input.into(), DiagnosticMeta::default()),
+                    ModuleInputDef::new(pulse_input.into(), DiagnosticMeta::default()),
+                ],
+                vec![
+                    ModuleOutputDef::new(level_output.into(), DiagnosticMeta::default()),
+                    ModuleOutputDef::new(pulse_output.into(), DiagnosticMeta::default()),
+                ],
+                vec![
+                    ModuleInterfaceMapping::input(level_input.into(), level_source_input.into()),
+                    ModuleInterfaceMapping::input(pulse_input.into(), pulse_source_input.into()),
+                    ModuleInterfaceMapping::output(level_output.into(), level_target_output.into()),
+                    ModuleInterfaceMapping::output(pulse_output.into(), pulse_target_output.into()),
+                ],
+                vec![
+                    NodeDef::new(
+                        NodeKey::from_u128(10),
+                        NodeKind::<()>::not(),
+                        NodePorts::new(
+                            vec![level_source_input.into()],
+                            vec![level_source_output.into()],
+                        ),
+                        DiagnosticMeta::default(),
+                    ),
+                    NodeDef::new(
+                        NodeKey::from_u128(11),
+                        NodeKind::merge(),
+                        NodePorts::new(
+                            vec![pulse_source_input.into()],
+                            vec![pulse_source_output.into()],
+                        ),
+                        DiagnosticMeta::default(),
+                    ),
+                    NodeDef::new(
+                        NodeKey::from_u128(20),
+                        NodeKind::not(),
+                        NodePorts::new(
+                            vec![level_target_input.into()],
+                            vec![level_target_output.into()],
+                        ),
+                        DiagnosticMeta::default(),
+                    ),
+                    NodeDef::new(
+                        NodeKey::from_u128(21),
+                        NodeKind::merge(),
+                        NodePorts::new(
+                            vec![pulse_target_input.into()],
+                            vec![pulse_target_output.into()],
+                        ),
+                        DiagnosticMeta::default(),
+                    ),
+                ],
+                vec![
+                    ConnectionDef::new(
+                        crate::key::ConnectionKey::from_u128(level_connection),
+                        level_source_output.into(),
+                        level_target_input.into(),
+                        DiagnosticMeta::default(),
+                    ),
+                    ConnectionDef::new(
+                        crate::key::ConnectionKey::from_u128(pulse_connection),
+                        pulse_source_output.into(),
+                        pulse_target_input.into(),
+                        DiagnosticMeta::default(),
+                    ),
+                ],
+            )
+        };
+
+        let first = build(false).validate();
+        let second = build(true).validate();
+        let first = first
+            .artifact()
+            .unwrap_or_else(|| panic!("first typed-incidence fixture validates"));
+        let second = second
+            .artifact()
+            .unwrap_or_else(|| panic!("second typed-incidence fixture validates"));
+        assert_ne!(first.fingerprint(), second.fingerprint());
+    }
+
+    #[test]
+    fn validated_graph_inspection_normalizes_node_port_order() {
+        let build = |reverse| {
+            let public_input = ModuleInputKey::<Level>::from_u128(1);
+            let public_output = ModuleOutputKey::<Level>::from_u128(2);
+            let mut inputs = vec![
+                InPortKey::<Level>::from_u128(11),
+                InPortKey::<Level>::from_u128(12),
+            ];
+            if reverse {
+                inputs.reverse();
+            }
+            let output = OutPortKey::<Level>::from_u128(13);
+            let mut mappings: Vec<_> = inputs
+                .iter()
+                .copied()
+                .map(|input| ModuleInterfaceMapping::input(public_input.into(), input.into()))
+                .collect();
+            mappings.push(ModuleInterfaceMapping::output(
+                public_output.into(),
+                output.into(),
+            ));
+            UncheckedModule::new_user(
+                DiagnosticMeta::default(),
+                vec![ModuleInputDef::new(
+                    public_input.into(),
+                    DiagnosticMeta::default(),
+                )],
+                vec![ModuleOutputDef::new(
+                    public_output.into(),
+                    DiagnosticMeta::default(),
+                )],
+                mappings,
+                vec![NodeDef::new(
+                    NodeKey::from_u128(10),
+                    NodeKind::<()>::all(),
+                    NodePorts::new(
+                        inputs.into_iter().map(Into::into).collect(),
+                        vec![output.into()],
+                    ),
+                    DiagnosticMeta::default(),
+                )],
+                Vec::new(),
+            )
+        };
+
+        let first = build(false).validate();
+        let second = build(true).validate();
+        let first = first
+            .artifact()
+            .unwrap_or_else(|| panic!("first port-order fixture validates"));
+        let second = second
+            .artifact()
+            .unwrap_or_else(|| panic!("second port-order fixture validates"));
+        assert_eq!(first.graph().nodes(), second.graph().nodes());
     }
 
     #[test]

@@ -265,8 +265,9 @@ fn module_connections(writer: &mut Cbor, connections: &[ConnectionDef]) {
         let ConnectionEndpoint::NodeInput(target) = connection.to() else {
             panic!("validated module connection must target a node input");
         };
-        writer.record_start(3);
+        writer.record_start(4);
         writer.field("key", |writer| writer.key(connection.key().as_u128()));
+        writer.field("signal_kind", |writer| signal_kind(writer, source.kind()));
         writer.field("source", |writer| writer.key(out_port_key(source)));
         writer.field("target", |writer| writer.key(in_port_key(target)));
     }
