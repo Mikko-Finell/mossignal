@@ -15,6 +15,10 @@ use crate::key::{
 };
 use crate::metadata::DiagnosticMeta;
 use crate::signal::{Level, LogicLevel, Pulse, SignalType};
+use crate::standard::{
+    StandardCatalogue, StandardModuleRef, StandardModuleRequest, StandardParameterKey,
+    StandardParameterValue, exactly_result_key,
+};
 use crate::{ModuleDef, ValidatedNetwork};
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::BTreeSet;
@@ -85,6 +89,8 @@ pub enum AuthoringFailure {
     UnknownModuleOutput(AnyModuleOutputKey),
     /// A requested containment parent is not present in the owning builder.
     UnknownModuleParent(ModuleInstanceKey),
+    /// A typed standard-module request unexpectedly failed catalogue validation.
+    StandardModuleConstruction,
 }
 
 /// A typed, builder-scoped reference to one authored signal source.
@@ -127,6 +133,44 @@ pub struct AddedModuleInstance {
     key: ModuleInstanceKey,
     level_outputs: BTreeSet<ModuleOutputKey<Level>>,
     pulse_outputs: BTreeSet<ModuleOutputKey<Pulse>>,
+}
+
+/// One explicitly keyed public variadic input binding.
+#[derive(Debug, Clone, Copy)]
+pub struct KeyedModuleInput<S: SignalType> {
+    pub key: ModuleInputKey<S>,
+    pub source: Signal<S>,
+}
+
+/// The result of explicit standard-module construction.
+#[derive(Debug, Clone)]
+pub struct AddedStandardModule<O> {
+    instance: AddedModuleInstance,
+    outputs: O,
+    module_ref: StandardModuleRef,
+}
+
+impl<O> AddedStandardModule<O> {
+    #[must_use]
+    pub const fn instance(&self) -> &AddedModuleInstance {
+        &self.instance
+    }
+    #[must_use]
+    pub const fn key(&self) -> ModuleInstanceKey {
+        self.instance.key()
+    }
+    #[must_use]
+    pub const fn outputs(&self) -> &O {
+        &self.outputs
+    }
+    #[must_use]
+    pub const fn module_ref(&self) -> &StandardModuleRef {
+        &self.module_ref
+    }
+    #[must_use]
+    pub fn into_outputs(self) -> O {
+        self.outputs
+    }
 }
 
 impl AddedModuleInstance {
@@ -408,6 +452,66 @@ impl<D> NetworkBuilder<D> {
             required_inputs: module.inputs().map(|input| input.key()).collect(),
             bound_inputs: BTreeSet::new(),
             bindings: Vec::new(),
+        })
+    }
+
+    /// Adds `Exactly` with locally allocated instance and public-input identities.
+    pub fn exactly<I>(
+        &mut self,
+        threshold: u64,
+        inputs: I,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+        D: PartialEq,
+    {
+        let key = self.next_module_instance_key();
+        let inputs: Vec<_> = inputs
+            .into_iter()
+            .map(|source| KeyedModuleInput {
+                key: self.allocator.module_input(),
+                source,
+            })
+            .collect();
+        Ok(self
+            .add_exactly(key, threshold, inputs, DiagnosticMeta::default())?
+            .into_outputs())
+    }
+
+    /// Adds one explicitly identified canonical `Exactly` instance.
+    pub fn add_exactly<I>(
+        &mut self,
+        key: ModuleInstanceKey,
+        threshold: u64,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = KeyedModuleInput<Level>>,
+        D: PartialEq,
+    {
+        let inputs: Vec<_> = inputs.into_iter().collect();
+        let mut request = StandardModuleRequest::new(StandardModuleRef::exactly()).with_parameter(
+            StandardParameterKey::threshold(),
+            StandardParameterValue::U64(threshold),
+        );
+        for input in &inputs {
+            request = request.with_variadic_input(input.key.into());
+        }
+        let (module, _) = StandardCatalogue::current().build(request).into_parts();
+        let Some(module) = module else {
+            return Err(AuthoringFailure::StandardModuleConstruction);
+        };
+        let mut instance = self.instantiate(&module, key, meta)?;
+        for input in inputs {
+            instance = instance.bind_level(input.key, input.source)?;
+        }
+        let added = instance.finish()?;
+        let output = added.level_output(exactly_result_key())?;
+        Ok(AddedStandardModule {
+            instance: added,
+            outputs: output,
+            module_ref: StandardModuleRef::exactly(),
         })
     }
 
@@ -1386,6 +1490,15 @@ impl<D> NetworkBuilder<D> {
         }
     }
 
+    fn next_module_instance_key(&mut self) -> ModuleInstanceKey {
+        loop {
+            let key = self.allocator.module_instance();
+            if !self.module_instance_keys.contains(&key) {
+                return key;
+            }
+        }
+    }
+
     fn next_in_port_key(&mut self) -> InPortKey<Level> {
         loop {
             let key = self.allocator.in_port();
@@ -1519,6 +1632,34 @@ impl<D> ModuleBuilder<D> {
         meta: DiagnosticMeta,
     ) -> Result<ModuleInstanceBuilder<'a, D>, AuthoringFailure> {
         self.graph.instantiate(module, key, meta)
+    }
+
+    /// Adds `Exactly` with locally allocated stable identities.
+    pub fn exactly<I>(
+        &mut self,
+        threshold: u64,
+        inputs: I,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+        D: PartialEq,
+    {
+        self.graph.exactly(threshold, inputs)
+    }
+
+    /// Adds one explicitly identified canonical `Exactly` instance.
+    pub fn add_exactly<I>(
+        &mut self,
+        key: ModuleInstanceKey,
+        threshold: u64,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = KeyedModuleInput<Level>>,
+        D: PartialEq,
+    {
+        self.graph.add_exactly(key, threshold, inputs, meta)
     }
 
     /// Adds a convenience level input with locally allocated stable identity.
@@ -2099,7 +2240,16 @@ impl<D> ModuleBuilder<D> {
                 _ => internal_connections.push(connection),
             }
         }
-        mappings.extend(output_mappings);
+        mappings.extend(output_mappings.into_iter().map(|mapping| match mapping {
+            ModuleInterfaceMapping::Output {
+                output,
+                source: ConnectionEndpoint::ExternalInput(key),
+            } => ModuleInterfaceMapping::output(
+                output,
+                ConnectionEndpoint::module_input(module_input_from_surrogate(key)),
+            ),
+            mapping => mapping,
+        }));
         for instance in &mut module_instances {
             let bindings = instance
                 .bindings()

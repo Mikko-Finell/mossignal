@@ -12,6 +12,7 @@ pub mod metadata;
 mod module;
 mod policy;
 pub mod signal;
+pub mod standard;
 pub mod time;
 mod transaction;
 
@@ -21,8 +22,8 @@ pub use authored::{
     ModuleBinding, ModuleBindingSet, ModuleInstanceDef, PulseDelayConfig, ToggleConfig,
 };
 pub use builder::{
-    AddedModuleInstance, AddedNode, AuthoringFailure, ModuleBuilder, ModuleInstanceBuilder,
-    NetworkBuilder, Signal,
+    AddedModuleInstance, AddedNode, AddedStandardModule, AuthoringFailure, KeyedModuleInput,
+    ModuleBuilder, ModuleInstanceBuilder, NetworkBuilder, Signal,
 };
 pub use compile::CompiledNetwork;
 pub use identity::{InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint, TimeDomainId};
@@ -43,6 +44,16 @@ pub use module::{
 };
 pub use policy::{
     PolicyFailure, RuntimePolicy, RuntimePolicyBuilder, RuntimePolicyId, RuntimePolicyLimit,
+};
+pub use standard::{
+    CatalogueFailure, ExactlyDependency, ExactlyExplanation, ExactlyInspection, StandardCatalogue,
+    StandardCatalogueVersion, StandardEnumValue, StandardInternalCategory, StandardInternalRole,
+    StandardModuleAvailability, StandardModuleCategory, StandardModuleDeclaration,
+    StandardModuleDescriptor, StandardModuleExpansionFingerprint, StandardModuleExpansionVersion,
+    StandardModuleId, StandardModuleIdError, StandardModuleRef, StandardModuleRequest,
+    StandardModuleSemanticVersion, StandardParameterAssignment, StandardParameterKey,
+    StandardParameterKind, StandardParameterSchema, StandardParameterValue, StandardPortSchema,
+    StandardPublicDependency, exactly_result_key,
 };
 pub use transaction::{
     CauseInspection, CauseLookupFailure, CauseRef, OutputEvent, ProvenanceSubject, ProvenanceView,

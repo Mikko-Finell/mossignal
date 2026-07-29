@@ -1218,6 +1218,77 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     );
                 }
             }
+            if let Some(declaration) = instance.module().standard_declaration()
+                && let Some(threshold) = declaration.exactly_threshold()
+            {
+                let public_inputs: Vec<_> = declaration.variadic_inputs().collect();
+                if public_inputs.is_empty() {
+                    self.add(
+                        SubjectRef::ModuleInstance(instance.key()),
+                        ProblemEvidence::standard_module_empty_variadic(
+                            declaration.module_ref().clone(),
+                            public_inputs.clone(),
+                        ),
+                    );
+                }
+                if public_inputs.len() == 1 {
+                    self.add(
+                        SubjectRef::ModuleInstance(instance.key()),
+                        ProblemEvidence::standard_module_unary_degenerate(
+                            declaration.module_ref().clone(),
+                            public_inputs.clone(),
+                        ),
+                    );
+                }
+                if threshold > public_inputs.len() as u64 {
+                    self.add(
+                        SubjectRef::ModuleInstance(instance.key()),
+                        ProblemEvidence::standard_module_impossible_threshold(
+                            declaration.module_ref().clone(),
+                            public_inputs.len(),
+                            threshold,
+                        ),
+                    );
+                }
+                let mut source_groups: Vec<(
+                    ConnectionEndpoint,
+                    SubjectRef,
+                    Vec<crate::key::ModuleInputKey<crate::signal::Level>>,
+                )> = Vec::new();
+                for public_input in &public_inputs {
+                    let Some(binding) =
+                        instance.bindings().bindings().iter().find(|binding| {
+                            binding.input() == AnyModuleInputKey::Level(*public_input)
+                        })
+                    else {
+                        continue;
+                    };
+                    if let Some((_, _, inputs)) = source_groups
+                        .iter_mut()
+                        .find(|(source, _, _)| *source == binding.source())
+                    {
+                        inputs.push(*public_input);
+                    } else {
+                        source_groups.push((
+                            binding.source(),
+                            endpoint_subject(binding.source()),
+                            vec![*public_input],
+                        ));
+                    }
+                }
+                for (_, source, inputs) in source_groups {
+                    if inputs.len() > 1 {
+                        self.add(
+                            SubjectRef::ModuleInstance(instance.key()),
+                            ProblemEvidence::standard_module_duplicate_source(
+                                declaration.module_ref().clone(),
+                                source,
+                                inputs,
+                            ),
+                        );
+                    }
+                }
+            }
             if let Some(parent) = instance.parent()
                 && !self.module_instances.contains_key(&parent)
             {

@@ -10,6 +10,9 @@ use crate::key::{
 use crate::module::{ModuleOrigin, QualifiedConnectionRef, QualifiedModuleRef, QualifiedNodeRef};
 use crate::policy::{RuntimePolicy, RuntimePolicyId};
 use crate::signal::{Level, LogicLevel, PulseCount};
+use crate::standard::{
+    ExactlyInspection, StandardInternalCategory, StandardModuleDeclaration, exactly_result_key,
+};
 use crate::time::{NonZeroSpan, Time};
 use crate::transaction::{CauseRef, ProvenanceView};
 use core::fmt;
@@ -313,6 +316,7 @@ impl<D> ModulePendingPulseDelayInspection<D> {
 /// Owned runtime facts for one expanded module-local primitive occurrence.
 pub struct ModuleNodeInspection<D> {
     node: QualifiedNodeRef,
+    standard_role: Option<String>,
     kind: NodeKind<D>,
     level: Option<LogicLevel>,
     pulse: Option<PulseCount>,
@@ -326,6 +330,11 @@ impl<D> ModuleNodeInspection<D> {
     #[must_use]
     pub const fn node(&self) -> &QualifiedNodeRef {
         &self.node
+    }
+    /// Returns the permanent canonical role for a standard-module internal node.
+    #[must_use]
+    pub fn standard_role(&self) -> Option<&str> {
+        self.standard_role.as_deref()
     }
     #[must_use]
     pub const fn kind(&self) -> &NodeKind<D> {
@@ -364,6 +373,8 @@ pub struct ModuleInspection<D> {
     module: QualifiedModuleRef,
     origin: ModuleOrigin<D>,
     fingerprint: ModuleFingerprint,
+    standard_declaration: Option<StandardModuleDeclaration<D>>,
+    exactly: Option<ExactlyInspection>,
     revision: NetworkRevision,
     at: Option<Time<D>>,
     inputs: Vec<ModuleInputInspection>,
@@ -385,6 +396,14 @@ impl<D> ModuleInspection<D> {
     #[must_use]
     pub const fn fingerprint(&self) -> ModuleFingerprint {
         self.fingerprint
+    }
+    #[must_use]
+    pub const fn standard_declaration(&self) -> Option<&StandardModuleDeclaration<D>> {
+        self.standard_declaration.as_ref()
+    }
+    #[must_use]
+    pub const fn exactly(&self) -> Option<&ExactlyInspection> {
+        self.exactly.as_ref()
     }
     #[must_use]
     pub const fn revision(&self) -> NetworkRevision {
@@ -838,7 +857,7 @@ impl<D> Machine<D> {
                 .copied()
                 .flatten()
         };
-        let inputs = definition
+        let inputs: Vec<ModuleInputInspection> = definition
             .inputs()
             .map(|input| ModuleInputInspection {
                 key: input.key(),
@@ -846,7 +865,7 @@ impl<D> Machine<D> {
                 pulse: pulse_at(self.compiled.module_input_operation(&module, input.key())),
             })
             .collect();
-        let outputs = definition
+        let outputs: Vec<ModuleOutputInspection> = definition
             .outputs()
             .map(|output| ModuleOutputInspection {
                 key: output.key(),
@@ -895,6 +914,15 @@ impl<D> Machine<D> {
             pending.sort_by_key(|event| (event.deadline, event.event));
             nodes.push(ModuleNodeInspection {
                 node: qualified.clone(),
+                standard_role: definition.standard_declaration().and_then(|declaration| {
+                    declaration
+                        .internal_roles()
+                        .find(|role| {
+                            role.category() == StandardInternalCategory::Node
+                                && role.key() == qualified.node().as_u128()
+                        })
+                        .map(|role| role.role().to_owned())
+                }),
                 kind,
                 level: level_at(self.compiled.node_operation(flat)),
                 pulse: pulse_at(self.compiled.node_operation(flat)),
@@ -919,10 +947,35 @@ impl<D> Machine<D> {
             .filter(|candidate| *candidate != &module)
             .cloned()
             .collect();
+        let standard_declaration = definition.standard_declaration().cloned();
+        let exactly = standard_declaration.as_ref().and_then(|declaration| {
+            let threshold = declaration.exactly_threshold()?;
+            let levels: Option<Vec<_>> = declaration
+                .variadic_inputs()
+                .map(|key| {
+                    inputs
+                        .iter()
+                        .find(|input| input.key() == AnyModuleInputKey::Level(key))
+                        .and_then(ModuleInputInspection::level)
+                        .map(|level| (key, level))
+                })
+                .collect();
+            let result = outputs
+                .iter()
+                .find(|output| output.key() == AnyModuleOutputKey::Level(exactly_result_key()))
+                .and_then(ModuleOutputInspection::level)?;
+            Some(ExactlyInspection::new(
+                threshold,
+                levels?.into_iter(),
+                result,
+            ))
+        });
         Ok(ModuleInspection {
             module,
             origin: definition.origin().clone(),
             fingerprint: definition.fingerprint(),
+            standard_declaration,
+            exactly,
             revision: self.store.revision,
             at: self.now(),
             inputs,

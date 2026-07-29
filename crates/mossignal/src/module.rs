@@ -7,13 +7,16 @@ use crate::authored::{
 use crate::diagnostics::{
     Diagnostic, DiagnosticSet, DuplicateClaim, Problem, ProblemEvidence, Report, SubjectRef,
 };
-use crate::identity::{ModuleFingerprint, TimeDomainId, module_fingerprint};
+use crate::identity::{
+    ModuleFingerprint, TimeDomainId, module_fingerprint, standard_module_fingerprint,
+};
 use crate::key::{
     AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey, AnyOutPortKey, ConnectionKey,
     ModuleInstanceKey, NetworkKey, NodeKey,
 };
 use crate::metadata::DiagnosticMeta;
 use crate::signal::SignalKind;
+use crate::standard::StandardModuleDeclaration;
 use crate::validation::{ReactionDependencyGraph, cycle_step, reaction_member};
 use core::fmt;
 use core::marker::PhantomData;
@@ -25,6 +28,8 @@ use std::sync::Arc;
 pub enum ModuleOrigin<D> {
     /// A caller-authored reusable module.
     User,
+    /// A canonical module produced by one exact built-in descriptor declaration.
+    Standard(StandardModuleDeclaration<D>),
     #[doc(hidden)]
     __Domain(PhantomData<fn() -> D>, core::convert::Infallible),
 }
@@ -33,6 +38,7 @@ impl<D> Clone for ModuleOrigin<D> {
     fn clone(&self) -> Self {
         match self {
             Self::User => Self::User,
+            Self::Standard(declaration) => Self::Standard(declaration.clone()),
             Self::__Domain(_, never) => match *never {},
         }
     }
@@ -42,6 +48,10 @@ impl<D> fmt::Debug for ModuleOrigin<D> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::User => formatter.write_str("User"),
+            Self::Standard(declaration) => formatter
+                .debug_tuple("Standard")
+                .field(declaration)
+                .finish(),
             Self::__Domain(_, never) => match *never {},
         }
     }
@@ -49,7 +59,11 @@ impl<D> fmt::Debug for ModuleOrigin<D> {
 
 impl<D> PartialEq for ModuleOrigin<D> {
     fn eq(&self, other: &Self) -> bool {
-        matches!((self, other), (Self::User, Self::User))
+        match (self, other) {
+            (Self::User, Self::User) => true,
+            (Self::Standard(left), Self::Standard(right)) => left == right,
+            _ => false,
+        }
     }
 }
 
@@ -98,6 +112,15 @@ impl<D> ModuleDef<D> {
         &self.data.origin
     }
 
+    /// Returns the exact standard declaration when this is a catalogue module.
+    #[must_use]
+    pub fn standard_declaration(&self) -> Option<&StandardModuleDeclaration<D>> {
+        match &self.data.origin {
+            ModuleOrigin::Standard(declaration) => Some(declaration),
+            ModuleOrigin::User | ModuleOrigin::__Domain(_, _) => None,
+        }
+    }
+
     /// Returns presentation metadata retained from the authored module.
     #[must_use]
     pub fn meta(&self) -> &DiagnosticMeta {
@@ -130,6 +153,17 @@ impl<D> ModuleDef<D> {
 
     pub(crate) fn definition(&self) -> &UncheckedModule<D> {
         &self.data.definition
+    }
+
+    pub(crate) fn with_standard_origin(self, declaration: StandardModuleDeclaration<D>) -> Self {
+        let fingerprint = standard_module_fingerprint(&self.data.definition, &declaration);
+        Self {
+            data: Arc::new(ModuleData {
+                origin: ModuleOrigin::Standard(declaration),
+                fingerprint,
+                definition: self.data.definition.clone(),
+            }),
+        }
     }
 }
 
@@ -596,7 +630,9 @@ fn validate_module<D: PartialEq>(module: &UncheckedModule<D>) -> Report<ModuleDe
                 }
                 if !matches!(
                     source,
-                    ConnectionEndpoint::NodeOutput(_) | ConnectionEndpoint::ModuleOutput { .. }
+                    ConnectionEndpoint::NodeOutput(_)
+                        | ConnectionEndpoint::ModuleInput(_)
+                        | ConnectionEndpoint::ModuleOutput { .. }
                 ) {
                     add(
                         &mut diagnostics,
@@ -607,6 +643,7 @@ fn validate_module<D: PartialEq>(module: &UncheckedModule<D>) -> Report<ModuleDe
                 }
                 let source_exists = match source {
                     ConnectionEndpoint::NodeOutput(source_key) => out_ports.contains(&source_key),
+                    ConnectionEndpoint::ModuleInput(input) => inputs.contains_key(&input),
                     ConnectionEndpoint::ModuleOutput { instance, output } => module
                         .module_instances()
                         .iter()
@@ -625,6 +662,12 @@ fn validate_module<D: PartialEq>(module: &UncheckedModule<D>) -> Report<ModuleDe
                             ProblemEvidence::missing_port(
                                 SubjectRef::OutPort(source_key),
                                 source_key.kind(),
+                            )
+                        }
+                        ConnectionEndpoint::ModuleInput(input) => {
+                            ProblemEvidence::missing_endpoint(
+                                SubjectRef::ModuleInput(input),
+                                input.kind(),
                             )
                         }
                         _ => ProblemEvidence::missing_endpoint(

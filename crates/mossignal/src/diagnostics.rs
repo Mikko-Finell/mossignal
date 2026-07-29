@@ -7,10 +7,11 @@ use crate::authored::InputPortRole;
 use crate::identity::ModuleFingerprint;
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
-    AnyOutPortKey, ConnectionKey, ModuleInstanceKey, NetworkKey, NodeKey,
+    AnyOutPortKey, ConnectionKey, ModuleInputKey, ModuleInstanceKey, NetworkKey, NodeKey,
 };
 use crate::metadata::OriginRef;
 use crate::signal::{LogicLevel, SignalKind};
+use crate::standard::{StandardModuleRef, StandardParameterKey, StandardParameterKind};
 use core::cmp::Ordering;
 use core::marker::PhantomData;
 
@@ -20,6 +21,8 @@ use core::marker::PhantomData;
 pub enum SubjectRef {
     /// An authored network.
     Network(NetworkKey),
+    /// The immutable built-in standard catalogue.
+    StandardCatalogue,
     /// A validated reusable module definition.
     ModuleDefinition(ModuleFingerprint),
     /// A typed public module input.
@@ -77,6 +80,7 @@ impl SubjectRef {
     fn ordering_key(&self) -> (u8, SubjectPayload) {
         match self {
             Self::Network(key) => (0, SubjectPayload::Direct(key.as_u128())),
+            Self::StandardCatalogue => (1, SubjectPayload::Direct(0)),
             Self::ModuleDefinition(fingerprint) => {
                 (3, SubjectPayload::Fingerprint(fingerprint.as_bytes()))
             }
@@ -178,6 +182,20 @@ pub enum DiagnosticCode {
     ValidationInvalidModuleBinding,
     ValidationMalformedHierarchy,
     ValidationHierarchyCycle,
+    StandardModuleUnknownId,
+    StandardModuleUnsupportedVersion,
+    StandardModuleMissingParameter,
+    StandardModuleUnexpectedParameter,
+    StandardModuleParameterKindMismatch,
+    StandardModuleInvalidParameter,
+    StandardModuleInterfaceMismatch,
+    StandardModuleInternalKeyCollision,
+    StandardModuleCatalogueInvariant,
+    StandardModuleEmptyVariadic,
+    StandardModuleUnaryDegenerate,
+    StandardModuleImpossibleThreshold,
+    StandardModuleConstantResult,
+    StandardModuleDuplicateSource,
     InternalDiagnosticEvidenceConflict,
 }
 
@@ -395,6 +413,78 @@ pub enum ProblemEvidence<D> {
         instances: Vec<ModuleInstanceKey>,
         marker: PhantomData<fn() -> D>,
     },
+    StandardModuleUnknownId {
+        module_ref: StandardModuleRef,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleUnsupportedVersion {
+        module_ref: StandardModuleRef,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleMissingParameter {
+        module_ref: StandardModuleRef,
+        parameter: StandardParameterKey,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleUnexpectedParameter {
+        module_ref: StandardModuleRef,
+        parameter: StandardParameterKey,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleParameterKindMismatch {
+        module_ref: StandardModuleRef,
+        parameter: StandardParameterKey,
+        expected: StandardParameterKind,
+        encountered: StandardParameterKind,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleInvalidParameter {
+        module_ref: StandardModuleRef,
+        parameter: StandardParameterKey,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleInterfaceMismatch {
+        module_ref: StandardModuleRef,
+        inputs: Vec<AnyModuleInputKey>,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleInternalKeyCollision {
+        module_ref: StandardModuleRef,
+        key: u128,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleCatalogueInvariant {
+        module_ref: StandardModuleRef,
+        detail: String,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleEmptyVariadic {
+        module_ref: StandardModuleRef,
+        inputs: Vec<ModuleInputKey<crate::signal::Level>>,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleUnaryDegenerate {
+        module_ref: StandardModuleRef,
+        inputs: Vec<ModuleInputKey<crate::signal::Level>>,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleImpossibleThreshold {
+        module_ref: StandardModuleRef,
+        arity: usize,
+        threshold: u64,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleConstantResult {
+        module_ref: StandardModuleRef,
+        result: LogicLevel,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleDuplicateSource {
+        module_ref: StandardModuleRef,
+        source: SubjectRef,
+        inputs: Vec<ModuleInputKey<crate::signal::Level>>,
+        marker: PhantomData<fn() -> D>,
+    },
     InternalDiagnosticEvidenceConflict {
         conflicting_code: DiagnosticCode,
         conflicting_primary: SubjectRef,
@@ -403,6 +493,161 @@ pub enum ProblemEvidence<D> {
 }
 
 impl<D> ProblemEvidence<D> {
+    #[must_use]
+    pub fn standard_module_unknown_id(module_ref: StandardModuleRef) -> Self {
+        Self::StandardModuleUnknownId {
+            module_ref,
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_unsupported_version(module_ref: StandardModuleRef) -> Self {
+        Self::StandardModuleUnsupportedVersion {
+            module_ref,
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_missing_parameter(
+        module_ref: StandardModuleRef,
+        parameter: StandardParameterKey,
+    ) -> Self {
+        Self::StandardModuleMissingParameter {
+            module_ref,
+            parameter,
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_unexpected_parameter(
+        module_ref: StandardModuleRef,
+        parameter: StandardParameterKey,
+    ) -> Self {
+        Self::StandardModuleUnexpectedParameter {
+            module_ref,
+            parameter,
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_parameter_kind_mismatch(
+        module_ref: StandardModuleRef,
+        parameter: StandardParameterKey,
+        expected: StandardParameterKind,
+        encountered: StandardParameterKind,
+    ) -> Self {
+        Self::StandardModuleParameterKindMismatch {
+            module_ref,
+            parameter,
+            expected,
+            encountered,
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_invalid_parameter(
+        module_ref: StandardModuleRef,
+        parameter: StandardParameterKey,
+    ) -> Self {
+        Self::StandardModuleInvalidParameter {
+            module_ref,
+            parameter,
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_interface_mismatch(
+        module_ref: StandardModuleRef,
+        inputs: Vec<AnyModuleInputKey>,
+    ) -> Self {
+        Self::StandardModuleInterfaceMismatch {
+            module_ref,
+            inputs,
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_internal_key_collision(
+        module_ref: StandardModuleRef,
+        key: u128,
+    ) -> Self {
+        Self::StandardModuleInternalKeyCollision {
+            module_ref,
+            key,
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_catalogue_invariant(
+        module_ref: StandardModuleRef,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self::StandardModuleCatalogueInvariant {
+            module_ref,
+            detail: detail.into(),
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_empty_variadic(
+        module_ref: StandardModuleRef,
+        inputs: Vec<ModuleInputKey<crate::signal::Level>>,
+    ) -> Self {
+        Self::StandardModuleEmptyVariadic {
+            module_ref,
+            inputs,
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_unary_degenerate(
+        module_ref: StandardModuleRef,
+        inputs: Vec<ModuleInputKey<crate::signal::Level>>,
+    ) -> Self {
+        Self::StandardModuleUnaryDegenerate {
+            module_ref,
+            inputs,
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_impossible_threshold(
+        module_ref: StandardModuleRef,
+        arity: usize,
+        threshold: u64,
+    ) -> Self {
+        Self::StandardModuleImpossibleThreshold {
+            module_ref,
+            arity,
+            threshold,
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_constant_result(
+        module_ref: StandardModuleRef,
+        result: LogicLevel,
+    ) -> Self {
+        Self::StandardModuleConstantResult {
+            module_ref,
+            result,
+            marker: PhantomData,
+        }
+    }
+    #[must_use]
+    pub fn standard_module_duplicate_source(
+        module_ref: StandardModuleRef,
+        source: SubjectRef,
+        inputs: Vec<ModuleInputKey<crate::signal::Level>>,
+    ) -> Self {
+        Self::StandardModuleDuplicateSource {
+            module_ref,
+            source,
+            inputs,
+            marker: PhantomData,
+        }
+    }
+
     /// Evidence for a duplicate structural key condition.
     #[must_use]
     pub fn duplicate_key(key: SubjectRef, claims: Vec<DuplicateClaim>) -> Self {
@@ -614,6 +859,16 @@ impl<D> ProblemEvidence<D> {
                 instances.sort();
                 instances.dedup();
             }
+            Self::StandardModuleInterfaceMismatch { inputs, .. } => {
+                inputs.sort();
+                inputs.dedup();
+            }
+            Self::StandardModuleEmptyVariadic { inputs, .. }
+            | Self::StandardModuleUnaryDegenerate { inputs, .. }
+            | Self::StandardModuleDuplicateSource { inputs, .. } => {
+                inputs.sort();
+                inputs.dedup();
+            }
             _ => {}
         }
     }
@@ -671,6 +926,20 @@ opening_diagnostic_registry! {
     ValidationInvalidModuleBinding, Self::ValidationInvalidModuleBinding { .. }, "validation.invalid_module_binding", Error, CallerInput, true;
     ValidationMalformedHierarchy, Self::ValidationMalformedHierarchy { .. }, "validation.malformed_hierarchy", Error, CallerInput, true;
     ValidationHierarchyCycle, Self::ValidationHierarchyCycle { .. }, "validation.hierarchy_cycle", Error, CallerInput, true;
+    StandardModuleUnknownId, Self::StandardModuleUnknownId { .. }, "standard_module.unknown_id", Error, UnsupportedFeature, true;
+    StandardModuleUnsupportedVersion, Self::StandardModuleUnsupportedVersion { .. }, "standard_module.unsupported_version", Error, Compatibility, true;
+    StandardModuleMissingParameter, Self::StandardModuleMissingParameter { .. }, "standard_module.missing_parameter", Error, CallerInput, true;
+    StandardModuleUnexpectedParameter, Self::StandardModuleUnexpectedParameter { .. }, "standard_module.unexpected_parameter", Error, CallerInput, true;
+    StandardModuleParameterKindMismatch, Self::StandardModuleParameterKindMismatch { .. }, "standard_module.parameter_kind_mismatch", Error, CallerInput, true;
+    StandardModuleInvalidParameter, Self::StandardModuleInvalidParameter { .. }, "standard_module.invalid_parameter", Error, CallerInput, true;
+    StandardModuleInterfaceMismatch, Self::StandardModuleInterfaceMismatch { .. }, "standard_module.interface_mismatch", Error, CallerInput, true;
+    StandardModuleInternalKeyCollision, Self::StandardModuleInternalKeyCollision { .. }, "standard_module.internal_key_collision", Error, LibraryDefect, true;
+    StandardModuleCatalogueInvariant, Self::StandardModuleCatalogueInvariant { .. }, "standard_module.catalogue_invariant", Error, LibraryDefect, true;
+    StandardModuleEmptyVariadic, Self::StandardModuleEmptyVariadic { .. }, "standard_module.empty_variadic", Warning, Advisory, true;
+    StandardModuleUnaryDegenerate, Self::StandardModuleUnaryDegenerate { .. }, "standard_module.unary_degenerate", Warning, Advisory, true;
+    StandardModuleImpossibleThreshold, Self::StandardModuleImpossibleThreshold { .. }, "standard_module.impossible_threshold", Warning, Advisory, true;
+    StandardModuleConstantResult, Self::StandardModuleConstantResult { .. }, "standard_module.constant_result", Warning, Advisory, true;
+    StandardModuleDuplicateSource, Self::StandardModuleDuplicateSource { .. }, "standard_module.duplicate_source", Warning, CallerInput, true;
     InternalDiagnosticEvidenceConflict, Self::InternalDiagnosticEvidenceConflict { .. }, "internal.diagnostic_evidence_conflict", Error, LibraryDefect, false;
 }
 
@@ -890,6 +1159,12 @@ enum ConditionDiscriminator {
     Internal(DiagnosticCode, SubjectRef),
     Cycle(Vec<ReactionMemberRef>),
     Instances(Vec<ModuleInstanceKey>),
+    StandardModule(StandardModuleRef),
+    StandardParameter(StandardModuleRef, StandardParameterKey),
+    StandardArity(StandardModuleRef, usize, u64),
+    StandardInputs(StandardModuleRef, Vec<AnyModuleInputKey>),
+    StandardSource(StandardModuleRef, SubjectRef),
+    StandardDetail(StandardModuleRef, String),
 }
 
 fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscriminator {
@@ -955,6 +1230,62 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         ProblemEvidence::ValidationHierarchyCycle { instances, .. } => {
             ConditionDiscriminator::Instances(instances.clone())
         }
+        ProblemEvidence::StandardModuleUnknownId { module_ref, .. }
+        | ProblemEvidence::StandardModuleUnsupportedVersion { module_ref, .. }
+        | ProblemEvidence::StandardModuleConstantResult { module_ref, .. } => {
+            ConditionDiscriminator::StandardModule(module_ref.clone())
+        }
+        ProblemEvidence::StandardModuleMissingParameter {
+            module_ref,
+            parameter,
+            ..
+        }
+        | ProblemEvidence::StandardModuleUnexpectedParameter {
+            module_ref,
+            parameter,
+            ..
+        }
+        | ProblemEvidence::StandardModuleParameterKindMismatch {
+            module_ref,
+            parameter,
+            ..
+        }
+        | ProblemEvidence::StandardModuleInvalidParameter {
+            module_ref,
+            parameter,
+            ..
+        } => ConditionDiscriminator::StandardParameter(module_ref.clone(), parameter.clone()),
+        ProblemEvidence::StandardModuleInterfaceMismatch {
+            module_ref, inputs, ..
+        } => ConditionDiscriminator::StandardInputs(module_ref.clone(), inputs.clone()),
+        ProblemEvidence::StandardModuleInternalKeyCollision {
+            module_ref, key, ..
+        } => ConditionDiscriminator::StandardDetail(module_ref.clone(), format!("key:{key:032x}")),
+        ProblemEvidence::StandardModuleCatalogueInvariant {
+            module_ref, detail, ..
+        } => ConditionDiscriminator::StandardDetail(module_ref.clone(), detail.clone()),
+        ProblemEvidence::StandardModuleEmptyVariadic {
+            module_ref, inputs, ..
+        }
+        | ProblemEvidence::StandardModuleUnaryDegenerate {
+            module_ref, inputs, ..
+        } => ConditionDiscriminator::StandardInputs(
+            module_ref.clone(),
+            inputs
+                .iter()
+                .copied()
+                .map(AnyModuleInputKey::from)
+                .collect(),
+        ),
+        ProblemEvidence::StandardModuleImpossibleThreshold {
+            module_ref,
+            arity,
+            threshold,
+            ..
+        } => ConditionDiscriminator::StandardArity(module_ref.clone(), *arity, *threshold),
+        ProblemEvidence::StandardModuleDuplicateSource {
+            module_ref, source, ..
+        } => ConditionDiscriminator::StandardSource(module_ref.clone(), *source),
         ProblemEvidence::InternalDiagnosticEvidenceConflict {
             conflicting_code,
             conflicting_primary,
@@ -1046,6 +1377,12 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
             ConditionDiscriminator::Internal(_, _) => 9,
             ConditionDiscriminator::Cycle(_) => 10,
             ConditionDiscriminator::Instances(_) => 11,
+            ConditionDiscriminator::StandardModule(_) => 12,
+            ConditionDiscriminator::StandardParameter(_, _) => 13,
+            ConditionDiscriminator::StandardArity(_, _, _) => 14,
+            ConditionDiscriminator::StandardInputs(_, _) => 15,
+            ConditionDiscriminator::StandardSource(_, _) => 16,
+            ConditionDiscriminator::StandardDetail(_, _) => 17,
         }
     }
     tag(&left)
@@ -1103,6 +1440,36 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
             (ConditionDiscriminator::Instances(left), ConditionDiscriminator::Instances(right)) => {
                 left.cmp(&right)
             }
+            (
+                ConditionDiscriminator::StandardModule(left),
+                ConditionDiscriminator::StandardModule(right),
+            ) => left.cmp(&right),
+            (
+                ConditionDiscriminator::StandardParameter(left_module, left_parameter),
+                ConditionDiscriminator::StandardParameter(right_module, right_parameter),
+            ) => (left_module, left_parameter).cmp(&(right_module, right_parameter)),
+            (
+                ConditionDiscriminator::StandardArity(left_module, left_arity, left_threshold),
+                ConditionDiscriminator::StandardArity(right_module, right_arity, right_threshold),
+            ) => (left_module, left_arity, left_threshold).cmp(&(
+                right_module,
+                right_arity,
+                right_threshold,
+            )),
+            (
+                ConditionDiscriminator::StandardInputs(left_module, left_inputs),
+                ConditionDiscriminator::StandardInputs(right_module, right_inputs),
+            ) => (left_module, left_inputs).cmp(&(right_module, right_inputs)),
+            (
+                ConditionDiscriminator::StandardSource(left_module, left_source),
+                ConditionDiscriminator::StandardSource(right_module, right_source),
+            ) => left_module
+                .cmp(&right_module)
+                .then_with(|| left_source.cmp_canonical(&right_source)),
+            (
+                ConditionDiscriminator::StandardDetail(left_module, left_detail),
+                ConditionDiscriminator::StandardDetail(right_module, right_detail),
+            ) => (left_module, left_detail).cmp(&(right_module, right_detail)),
             _ => Ordering::Equal,
         })
 }

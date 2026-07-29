@@ -102,6 +102,22 @@ pub(crate) fn module_fingerprint<D>(module: &UncheckedModule<D>) -> ModuleFinger
     ModuleFingerprint::from_digest(*blake3::hash(&module_digest_input(module)).as_bytes())
 }
 
+pub(crate) fn standard_module_fingerprint<D>(
+    module: &UncheckedModule<D>,
+    declaration: &crate::standard::StandardModuleDeclaration<D>,
+) -> ModuleFingerprint {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(MODULE_DOMAIN.as_bytes());
+    bytes.extend_from_slice(b"/standard");
+    bytes.extend_from_slice(&declaration.fingerprint_bytes());
+    bytes.extend_from_slice(&module_digest_input(module));
+    ModuleFingerprint::from_digest(*blake3::hash(&bytes).as_bytes())
+}
+
+pub(crate) fn module_canonical_bytes<D>(module: &UncheckedModule<D>) -> Vec<u8> {
+    module_digest_input(module)
+}
+
 #[cfg(test)]
 pub(crate) fn canonical_module_input<D>(module: &UncheckedModule<D>) -> Vec<u8> {
     module_digest_input(module)
@@ -193,11 +209,15 @@ fn module_mappings(writer: &mut Cbor, mappings: &[ModuleInterfaceMapping]) {
                 writer.field("signal_kind", |writer| signal_kind(writer, output.kind()));
                 writer.field("source", |writer| match source {
                     ConnectionEndpoint::NodeOutput(source) => writer.key(out_port_key(source)),
+                    ConnectionEndpoint::ModuleInput(input) => {
+                        writer.variant_start("module_input");
+                        writer.key(module_input_key(input))
+                    }
                     ConnectionEndpoint::ModuleOutput { instance, output } => {
                         source_module_output(writer, instance, output)
                     }
                     _ => panic!(
-                        "validated module output mapping must source a node or module output"
+                        "validated module output mapping must source a module input, node output, or module output"
                     ),
                 });
             }
