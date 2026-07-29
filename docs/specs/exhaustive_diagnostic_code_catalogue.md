@@ -865,6 +865,14 @@ reference or recomputed observation
 reproduction seed, generator version, feature configuration, and minimized artifact where available
 ```
 
+### 14.39 `CompilationCapabilityEvidence`
+
+```text
+validated network
+unavailable compilation capability
+canonical affected stable subjects
+```
+
 ## 15. Suggestions
 
 Suggestions are closed, machine-readable actions.
@@ -1579,6 +1587,28 @@ The initial machine core does not require an observer implementation, but these 
 | `internal.canonical_digest_mismatch` | Error | LibraryDefect | Defect | `InternalInvariantEvidence` | Incremental or cached digest differs from canonical recomputation. |
 | `internal.snapshot_round_trip_divergence` | Error | LibraryDefect | Defect | `InternalInvariantEvidence` | Snapshot encode, decode, restore, and observation do not preserve semantic equivalence. |
 
+## 45.1 Compilation — staged capability boundary
+
+| Code | Severity | Responsibility | Delivery | Evidence | Meaning |
+|---|---|---|---|---|---|
+| `compilation.unsupported_module_instances` | Error | UnsupportedFeature | Report | `CompilationCapabilityEvidence` | The validated network contains module instances while module-aware executable lowering is unavailable. |
+
+This condition is a staged implementation boundary, not a permanent rejection
+of valid module topology. Validation remains successful. Until module-aware
+lowering is implemented, `compile` and `compile_ref` MUST return an absent
+artifact and exactly one such finding for a validated network containing one or
+more module instances. The primary subject is that network, the condition
+discriminator is empty, and evidence contains the complete canonical set of
+affected `ModuleInstanceKey` values. Repeated detection merges by canonical set
+union. Module-free compilation is unaffected.
+
+Once module-aware lowering supports those instances, this condition MUST become
+unreachable for them. The accepted lowering change MUST also retire this
+temporary catalogue entry, its dedicated evidence implementation, and its
+rejection-path tests unless a separately specified unsupported-module case
+still needs them. They MUST NOT be retained as compatibility behavior merely
+because the code was previously catalogued.
+
 ---
 
 # Part VI — Rust API integration
@@ -1597,6 +1627,7 @@ AuthoringFailure
 Report<ValidatedNetwork<D>>
 Report<CompiledNetwork<D>>
     validation.*
+    compilation.*
     standard_module.*
     internal.* only through a distinct defect channel
 ```

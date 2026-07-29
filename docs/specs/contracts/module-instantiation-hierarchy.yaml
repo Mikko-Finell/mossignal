@@ -1,0 +1,291 @@
+schema_version: "0.1"
+id: mossignal.module.instantiation_hierarchy
+title: Exact module instantiation and retained hierarchy
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 7c5b547025323549bab6b5e8a725b84ad993a2b2
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/exhaustive_diagnostic_code_catalogue.md
+
+summary: >-
+  A module instance binds every typed public input of one validated reusable
+  module to stable sources in an owning builder, exposes typed instance outputs,
+  and retains instance-qualified internal identity and acyclic containment in
+  canonical unchecked and validated definitions.
+
+scope:
+  includes:
+    - typed generic instantiation in network and reusable-module authoring
+    - owned dynamic module-instance and binding claims
+    - exact interface binding and typed instance-output identity
+    - nested containment, encapsulation, validation, and graph inspection
+    - module-aware current-reaction validation and semantic fingerprints
+    - temporary structured compilation rejection before module-aware lowering
+  excludes:
+    - module-aware executable lowering and runtime execution, state, event, and observation integration
+    - standard-catalogue construction conveniences and descriptor validation
+    - persistence envelopes, restoration, replay, and compatibility migration
+    - module replacement, topology patches, and runtime-state migration
+
+known_uncovered:
+  - Module-aware compilation and execution lowering for otherwise valid instances
+  - Standard-catalogue shortcuts and generic instantiation of standard-origin modules
+  - Persistent definition encoding and module-instance compatibility migration
+
+aliases:
+  - ModuleInstanceDef<D>
+  - ModuleBindingSet
+  - ModuleInstanceBuilder<'a, D>
+  - AddedModuleInstance
+  - nested modules
+
+requirements:
+  - id: stable-instance-and-output-identity
+    kind: semantic
+    statement: >-
+      Each instance has one stable ModuleInstanceKey. A typed instance output
+      retains its signal kind and the exact pair of instance key and public
+      ModuleOutputKey<S>; a logical internal subject retains the pair of
+      instance key and module-local stable key rather than an insertion index,
+      dense position, or presentation path.
+    sources: [concrete-keys, concrete-instantiation]
+    basis: derived
+
+  - id: owned-dynamic-instance-claims
+    kind: public_surface
+    statement: >-
+      Canonical dynamic definitions retain owned ModuleInstanceDef<D> claims
+      containing stable instance identity, a validated ModuleDef<D>, an owned
+      ModuleBindingSet, optional containment parent, and diagnostic metadata.
+      Binding sets explicitly retain each kind-aware public input identity and
+      stable source without borrowing builder signals or containing evaluator
+      callbacks; malformed dynamic bindings and hierarchy remain representable
+      for validation.
+    sources: [api-unchecked, concrete-dynamic]
+
+  - id: typed-transactional-instantiation
+    kind: public_surface
+    statement: >-
+      Typed instantiation begins from a validated module, one explicit instance
+      key, and metadata; binds Level and Pulse module inputs only to same-kind
+      local Signal<S> values; and commits one complete instance only when finish
+      succeeds. NetworkBuilder provides the specified transactional surface,
+      and reusable-module authoring provides an equivalent generic path so
+      nested modules are constructible without exposing private internals.
+    sources: [concrete-instantiation, concrete-signals, concrete-modules, api-modules]
+    basis: derived
+
+  - id: exact-binding-completion
+    kind: prohibition
+    statement: >-
+      Typed completion requires every declared public input exactly once and
+      rejects missing, duplicate, unknown, wrong-kind, or foreign-builder
+      bindings through structured authoring failure. An instance is added to
+      the owning builder's authored definition only by successful completion;
+      rejected construction must not leave a partial instance.
+    sources: [concrete-instantiation, concrete-signals, catalogue-authoring]
+    basis: derived
+
+  - id: typed-output-access-and-encapsulation
+    kind: public_surface
+    statement: >-
+      Successful instantiation returns AddedModuleInstance with its exact key
+      and kind-safe access to every declared public output. Unknown or
+      wrong-kind output requests fail structurally; callers cannot obtain a
+      directly connectable Signal for unexported module-local nodes or ports.
+    sources: [concrete-instantiation, api-modules]
+
+  - id: complete-dynamic-binding-validation
+    kind: semantic
+    statement: >-
+      Ordinary validation establishes unique instance identity, existence and
+      exact kind compatibility for every declared and encountered module input,
+      exactly one binding for every required input, no unexpected binding,
+      valid source direction and existence, and no incompatible network or
+      authoring-scope reference. Independent safe findings use the common
+      deterministic report model and any blocking condition suppresses the
+      validated artifact.
+    sources: [api-validation, concrete-validation, catalogue-validation, testing-validation]
+
+  - id: acyclic-retained-hierarchy
+    kind: semantic
+    statement: >-
+      Nested module containment is explicit and acyclic. Every parent exists,
+      containment preserves interface visibility and stable subject identity,
+      and private internals remain encapsulated. Validated definition graph
+      inspection retains instances, parents, public interfaces, bindings, and
+      instance-qualified internal subjects independent of insertion order even
+      if a later executable representation flattens them.
+    sources: [api-modules, api-graph-view, concrete-graph-view, hierarchy-rules, complete-validation]
+
+  - id: module-aware-current-reaction-validation
+    kind: semantic
+    statement: >-
+      Validation projects each instance's conservative public-input-to-public-
+      output current-reaction dependencies from its already validated module
+      structure, recursively across nested instances. Network-level SCC
+      validation includes those cross-boundary dependencies so a cycle passing
+      through one or more module instances cannot become a ValidatedNetwork.
+    sources: [api-causality, api-validated, complete-validation, testing-cycles]
+    basis: derived
+
+  - id: instance-sensitive-semantic-identity
+    kind: semantic
+    statement: >-
+      ModuleFingerprint covers semantic nested instance structure inside a
+      reusable definition while excluding placement of that definition in a
+      containing network. NetworkFingerprint covers each contained module's
+      fingerprint, stable instance key, exact bindings, and state-relevant
+      hierarchy; both identities exclude insertion order, dense layout, and
+      presentation-only instance metadata.
+    sources: [module-fingerprint, network-fingerprint, definition-artifacts, standard-fingerprints]
+    basis: derived
+
+  - id: typed-dynamic-canonical-equivalence
+    kind: verification
+    statement: >-
+      Equivalent valid typed and dynamic construction paths produce the same
+      exact instance keys, module identities, bindings, output sources,
+      containment, validated graph inspection, dependency relation, and
+      fingerprints. Verification covers both signal kinds, nesting, and
+      permutation invariance. Typed authoring failures and malformed dynamic
+      binding or hierarchy claims are verified independently at their specified
+      failure and validation boundaries.
+    sources: [concrete-instantiation, concrete-dynamic, testing-validation, testing-determinism]
+    basis: derived
+
+  - id: temporary-module-compilation-boundary
+    kind: lifecycle
+    statement: >-
+      Before module-aware executable lowering is implemented, module-containing
+      networks remain valid, but compile and compile_ref return an absent
+      artifact and exactly one deterministic
+      compilation.unsupported_module_instances finding whose evidence contains
+      the complete canonical set of affected stable instance keys. Module-free
+      compilation is unchanged. This is a staged implementation boundary, not
+      permanent product behavior; lowering for supported module instances must
+      make the condition unreachable and retire the temporary rejection path,
+      diagnostic and evidence implementation, catalogue entry, API rule, and
+      this contract requirement unless a separately specified unsupported case
+      still requires them.
+    sources: [api-validated, concrete-validated-compilation, catalogue-compilation]
+
+implementation_freedom:
+  - The private borrowing transaction, collection layout, and shared network/module builder helpers are unconstrained; choose the smallest design that commits atomically and lowers into one canonical dynamic instance representation.
+  - The timing of temporary binding storage and convenience-allocation effects after a rejected instantiation is unconstrained beyond successful completion being the only operation that adds the instance; choose a deterministic behavior, test it, and record the concrete choice.
+  - The non-exhaustive SignalSourceKey family may gain an instance-output variant or use another equally typed stable source value, provided the public identity retains both ModuleInstanceKey and ModuleOutputKey<S> without collision-prone surrogate keys.
+  - Parent storage, hierarchy indices, recursive ModuleDef sharing, and public dependency-summary caching are private choices; select deterministic stable-key ordering, test it, and record the concrete decision.
+  - This foundation may accept only currently constructible reviewed User-origin ModuleDef values while standard catalogue production remains unavailable; do not add placeholder catalogue APIs.
+
+open_questions: []
+
+sources:
+  concrete-keys:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part V — Stable identity, 16. Stable keys]
+    reviewed_hash: sha256:d25c413f9849a49c681f30c450c6784e57a59b707bdcfe8d1a465cc58f2a47a8
+  concrete-signals:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 23. Builder-scoped signals]
+    reviewed_hash: sha256:b200d59e0de48f3f401776baa69a2e37fa07f8cebded5b7663fd771436e4d72d
+  concrete-instantiation:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 34. Module instantiation]
+    reviewed_hash: sha256:5a2057e8852ab75756c0f0781af03ea8dee18f50a441080abba988b48dbc9db1
+  concrete-modules:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+    reviewed_hash: sha256:de8ed7d677513f9268ea2aa34ab57661a9153405ab31ae41e8e3a95ed5203ca4
+  concrete-dynamic:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 38. Dynamic ports and connections]
+    reviewed_hash: sha256:5fbea1f67eb6eea247e70168f60b4b3c3c348da10d98ab75e5b30406712e01ca
+  concrete-validation:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 39. Validation]
+    reviewed_hash: sha256:defeae4e4b77794bde543e03aae26e5a2bdeca83d8173e3302f3d354ab8fdb6c
+  concrete-graph-view:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXI — Graph access, 79. Graph views]
+    reviewed_hash: sha256:597997793197e5c8a9b874b59697dcd5f4db3911f786b77c663a8f4ee14a26f1
+  api-unchecked:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 12. `UncheckedNetwork<D>`]
+    reviewed_hash: sha256:fadbf4674dc9de062d6854ab5b249605bb4a968cb3189cd139570bf10a1713e2
+  api-validated:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:ba5bdf22f7ee67ffe108d8dadd7bc7e2da25c61f82b81d6be21a50f063e31a63
+  api-causality:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 8. Current-reaction causality and cycles]
+    reviewed_hash: sha256:2e50e375a8b29141d0adc2a9515570c1109c82a274fbcd7d38efefd9094f6b8c
+  api-validation:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 46. Required validation coverage]
+    reviewed_hash: sha256:4b67b4241f37763437a7523a4c99a3c729c9b9c4d72a2824b73e4b88b67cfc38
+  api-modules:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part XI — Modules and graph queries, 64. Modules]
+    reviewed_hash: sha256:2709760df44dedd80d1e5ba55da90bb4206d5e2877a6cbc023a114f660582f8b
+  api-graph-view:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part XI — Modules and graph queries, 65. Read-only graph view]
+    reviewed_hash: sha256:16bdb05e6144bb1a6e36f1b9970cb3a158e7f54d8b522188b918417dce3e5c58
+  catalogue-authoring:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 25. Authoring]
+    reviewed_hash: sha256:2f9e3a0f43a065ff23b7af2d620e049419eab0f73276f508ec73996fa8a00480
+  catalogue-validation:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions]
+    reviewed_hash: sha256:6c2eeae3d44af53103f991f364f2d321a9fe195f03b8924e8f902fb5e3dfef40
+  concrete-validated-compilation:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part X — Validation and compilation artifacts, 43. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:0abfd3bd9f068ef801865ce23f1bfe97ae84d812ff6bb1fd81c34e009df4db90
+  catalogue-compilation:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 45.1 Compilation — staged capability boundary]
+    reviewed_hash: sha256:05396cba8e1a91a91a252c295631669d1ffc48a41ab675fdb7fbce172b89d240
+  hierarchy-rules:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part III — Canonical patch-operation language, 19. Hierarchy operations]
+    reviewed_hash: sha256:fd1321d79eb377527aff3be7cf9f1d7f3a3ae930c4b67d069ed7f30a5522f441
+  complete-validation:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 28. Structural validation]
+    reviewed_hash: sha256:739709efa6f44243b456d6dcb2eb5a86ebd5de83a578784121d458e13c42fcc7
+  module-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 55. Module fingerprint]
+    reviewed_hash: sha256:6b41a847681a35c84fbb36310dd608fd9d5342f48c02e14ee1681f01ec0380d0
+  network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.1 Network fingerprint]
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  definition-artifacts:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VIII — Definition artifacts, 67. Network definition artifact]
+    reviewed_hash: sha256:e0ac875f2aa48eb110d64d28fa0b9ba9596322717ee19baa3df61cb0cfdd9689
+  standard-fingerprints:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 21. Fingerprints]
+    reviewed_hash: sha256:abb2170a454514f1787bb0b030389538baa176cabe8008511058d58a2834f596
+  testing-validation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 18. Validation soundness]
+    reviewed_hash: sha256:7e7bd7cced7e93356936c7bf1017af878f79a818d1532f705d40609f2d9e9ee5
+  testing-cycles:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 20. Reaction-cycle verification]
+    reviewed_hash: sha256:7ed65b9139b73dc81b0d4125ade9829700a70bd0577e383e0797f2e02f451d6e
+  testing-determinism:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72

@@ -205,7 +205,7 @@ modules into larger definitions.
 
 ---
 
-## 35. Exact module instantiation and retained hierarchy
+## 35. [IN PROGRESS] Exact module instantiation and retained hierarchy
 
 Allow validated modules to be instantiated through `NetworkBuilder` and
 `ModuleBuilder`:
@@ -237,6 +237,10 @@ Explicitly exclude:
 
 At the end of this item, authored and validated networks can contain nested
 module instances, but compiled execution integration remains the next boundary.
+Until item 36 supplies that integration, `compile` and `compile_ref` reject a
+validated network containing module instances with the structured
+`compilation.unsupported_module_instances` report. This is a temporary staged
+boundary, not permanent product behavior.
 
 ---
 
@@ -256,6 +260,14 @@ Extend the accepted compilation and runtime paths across module hierarchy:
 * equivalent behavior between explicit primitive graphs and their module-wrapped
   forms where the specifications require behavioral rather than identity
   equivalence.
+
+This item must make the temporary
+`compilation.unsupported_module_instances` condition unreachable for supported
+module instances, remove the item-35 rejection-path tests, and retire the
+temporary diagnostic implementation, evidence surface, catalogue entry, API
+rule, and contract rule. None of that temporary scaffolding is compatibility
+behavior unless later authoritative policy explicitly reserves it for a
+distinct unsupported case.
 
 Compilation must not add callback evaluators, hidden state, or module-specific
 transaction semantics. Modules execute through their ordinary primitive
