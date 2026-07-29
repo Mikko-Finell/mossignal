@@ -2,13 +2,11 @@ schema_version: "0.1"
 id: mossignal.standard.catalogue_foundation
 title: Versioned standard-module catalogue foundation
 kind: capability
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: d954b6ab1698417a2e99606c4da529f16143c745
-  working_tree: dirty
-  modified_spec_paths:
-    - docs/specs/standard_module_catalogue_spec.md
+  commit: 0b8ec1eed2b36067ff042dbce39596cbf10c939f
+  working_tree: clean
 
 summary: >-
   The standard catalogue is an immutable, versioned, discoverable collection
@@ -47,7 +45,7 @@ requirements:
       evaluator extension, callback, hidden state, signal kind, host effect,
       special transaction semantics, fixed-point settlement, or uninspectable
       state or pending work.
-    sources: [standard-boundary]
+    sources: [standard-classification, standard-boundary]
 
   - id: pre-release-evolving-catalogue
     kind: compatibility
@@ -76,11 +74,12 @@ requirements:
   - id: permanent-exact-descriptor-identity
     kind: public_surface
     statement: >-
-      Each descriptor has one permanent reserved lowercase ASCII
-      mossignal.standard.* identifier and independent semantic and expansion
-      versions. StandardModuleRef is their exact combined identity; display
-      names, Rust constructors, aliases, and numeric version adjacency do not
-      establish identity or compatibility.
+      Each descriptor has one reserved lowercase ASCII mossignal.standard.*
+      identifier and independent semantic and expansion versions. Once
+      released, the identifier is permanent and cannot be reassigned.
+      StandardModuleRef is the exact combined identity; display names, Rust
+      constructors, aliases, and numeric version adjacency do not establish
+      identity or compatibility.
     sources: [module-identifiers, descriptor-versions, descriptor-reference, concrete-identity]
 
   - id: immutable-structured-descriptor-discovery
@@ -175,105 +174,143 @@ implementation_freedom:
 open_questions: []
 
 sources:
+  standard-classification:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part I — Boundaries and classification, 5. Exhaustive convenience classification, 5.2 Standard module]
+    reviewed_hash: sha256:a98fd0322f157f9e38fc4368be0c866dee8cc72f1003d22f52e8fe1ef7ddbc92
   standard-boundary:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part I — Boundaries and classification, 4. Closed semantic boundary]
+    reviewed_hash: sha256:82fe03b778457af8e4cab541adfcdc20845076045f88a038619cda73abf46f26
   catalogue-version:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 8. Standard catalogue version]
+    reviewed_hash: sha256:999e453b336fc9001c4b99a65b0a0a36371460ffa184d6f3ead91dd9887f35f9
   catalogue-inventory:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part III — Initial catalogue and non-module conveniences, 22. Complete catalogue version 1 inventory]
+    reviewed_hash: sha256:da11e9e2e1ca49d0215e31ea99d32c897058ccb8fe4b4caa881325ef9ee2e72d
   module-identifiers:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 9. Standard module identifiers]
+    reviewed_hash: sha256:4d4a5909a079444e2cc3ddca7397774b9ac563488a1e98c7ece95e022401d8fb
   descriptor-versions:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 10. Descriptor versions]
+    reviewed_hash: sha256:d654dda7e4d9c08ba3a04ff57ba794915d0d0624a092131fe31c81d3e2e11d75
   descriptor-reference:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 11. Descriptor reference]
+    reviewed_hash: sha256:04454465fee3bd1845c145ae6cb27103840021681f0f27ec75edc9a120ac4942
   concrete-identity:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VII — Typed network authoring, 31. Primitive aliases and standard modules, 31.2 Catalogue identity]
+    reviewed_hash: sha256:ca55dbed9a00d6f9724b642837d40c780a6772109f7dc41a49189264571e538b
   authoritative-descriptor:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 12. Authoritative descriptor]
+    reviewed_hash: sha256:75ce3b62fb30a97bc8a336a10ba827721d22400b06b50d7a37ed77a6c510fc6c
   catalogue-types:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part VIII — Construction and discovery API, 48. Public catalogue types]
+    reviewed_hash: sha256:230917a59c0f46d3352f8f74506ea60e5f20fea1f5681709f4a35a1e7bc566ac
   descriptor-discovery:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part VIII — Construction and discovery API, 49. Descriptor discovery]
+    reviewed_hash: sha256:8a2fc9e85395085b65a10c77a33cbf83da23fc92d04e00e6524e4354637e23de
   concrete-descriptors:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VII — Typed network authoring, 31. Primitive aliases and standard modules, 31.3 Catalogue and descriptors]
+    reviewed_hash: sha256:79c6f69165cfdd357c7c9e7d19b67d0bb2156c7ffca44f92695d5013dfe69528
   standard-origin:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 13. Standard module origin]
+    reviewed_hash: sha256:960f518230813e942024ca1619d87aa5db962784b27fa14772ad8b93f3810f16
   concrete-module-origin:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+    reviewed_hash: sha256:de8ed7d677513f9268ea2aa34ab57661a9153405ab31ae41e8e3a95ed5203ca4
   parameter-representation:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 14. Parameter representation]
+    reviewed_hash: sha256:5ea4bbd1bc8a006fefe985b45c3c83360ec9ae34378694b18876b5eebad5b3d6
   public-port-identity:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 15. Public port identity]
+    reviewed_hash: sha256:3f0ff96f412c3e53ae69447b9dd0fc92803a3b62ad6b684b17459fccf77cf699
   canonical-expansion:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 16. Canonical internal expansion]
+    reviewed_hash: sha256:f6214253863f274503dbc819349463044aa56332a3d04de8638a58b3d8c285d7
   internal-key-derivation:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 17. Internal stable-key derivation]
+    reviewed_hash: sha256:b331a3f30f0d0698584fb33f549babd7fb96fedc18210e77addb0064868a2302
   variadic-internal-identity:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 18. Variadic internal identity]
+    reviewed_hash: sha256:bdffce307cc746560c7cde647af5fdf2b3301501096418bf37968907f47962e5
   fingerprints:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 21. Fingerprints]
+    reviewed_hash: sha256:abb2170a454514f1787bb0b030389538baa176cabe8008511058d58a2834f596
   dynamic-requests:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VII — Typed network authoring, 31. Primitive aliases and standard modules, 31.4 Dynamic requests and parameter values]
+    reviewed_hash: sha256:b51216e0778bf49d009104d199b0a3995494ca1d08f053baf4ca4bc6bc1ced5e
   dynamic-construction:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part VIII — Construction and discovery API, 50. Dynamic construction]
+    reviewed_hash: sha256:a0a56d48b57b7cd666826d43680fab8e0f49c1a221c316e4c9068e93c7f0982d
   blocking-diagnostics:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part IX — Diagnostics, 57. Blocking catalogue diagnostics]
+    reviewed_hash: sha256:312c95bc828fffe9675b3a6a2ded0aaed68159f71bb4d1bf178f691f0b267c23
   diagnostic-catalogue:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part V — Exhaustive initial catalogue, 40. Standard modules — blocking conditions]
+    reviewed_hash: sha256:b8be252fb382c84193e697b4c2ec012ed214e25dc707ad9a0394882ceb500da2
   typed-construction:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part VIII — Construction and discovery API, 53. Typed convenience methods]
+    reviewed_hash: sha256:6778e2d44774fe31f65f0e3235ab3c8a404271128f763f675d976df13c3429e2
   keyed-construction:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part VIII — Construction and discovery API, 54. Explicit keyed forms]
+    reviewed_hash: sha256:9e99a789af32338e0afce6fbcdae453e25f59a0d5541ed441dac1cb89cb39dba
   ordinary-instantiation:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part VIII — Construction and discovery API, 55. Ordinary module instantiation]
+    reviewed_hash: sha256:3bd8d0ed1464b33ced681437d251fc3c5586f26dd525f7833d8283fbeef76282
   concrete-equivalence:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VII — Typed network authoring, 31. Primitive aliases and standard modules, 31.8 Canonical equivalence of construction paths]
+    reviewed_hash: sha256:c8266652f87b22bcbfd9a10e2a185e22b84d10cf867e92f218d6c2288728e26a
   shared-inspection:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part IV — Shared standard-module semantics, 33. Inspection]
+    reviewed_hash: sha256:6a450284ceec09e8042ea3c006f499745ea4e43147ac4938fa16a4b78f1049e7
   diagnostic-ownership:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part IX — Diagnostics, 56. Diagnostic ownership]
+    reviewed_hash: sha256:0cb633e178c8ce50ddb7c65c92975ffa4a4f3042410778796b4fb1fdf9e32eba
   concrete-inspection:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XIX — Inspection, 72. Owned inspection values]
+    reviewed_hash: sha256:90f6d3724be4c8c5f52adb19ab3c9960c57c3ce1c2b01854cf013bf633b2272f
   conformance-matrix:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part XII — Verification and generated artifacts, 75. Required standard-module conformance matrix]
+    reviewed_hash: sha256:867a97ec4e3df02546895d774116cd11ed2ee7514d70c88396ef7bb5c83e814f
   canonical-verification:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part XII — Verification and generated artifacts, 79. Canonical expansion verification]
+    reviewed_hash: sha256:35717cd93b493258b6d51bd8d6e8b897f52e6738bde601d82c2ad2b0785528e7
   testing-standard-modules:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part XXIII — Requirements for future features, 120. Standard modules]
+    reviewed_hash: sha256:c680d9d75e08709140d513481ca121556fa350dbd182d5600145955a54e03ca8
   release-gate:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part XII — Verification and generated artifacts, 83. Release gate]
+    reviewed_hash: sha256:71870a2c4d8d2973d9b6dd5556c2ea60f03474635cb7d634cfcd6cb8af3862a4

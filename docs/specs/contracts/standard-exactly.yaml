@@ -2,13 +2,11 @@ schema_version: "0.1"
 id: mossignal.standard.exactly
 title: Exactly standard module
 kind: node
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: d954b6ab1698417a2e99606c4da529f16143c745
-  working_tree: dirty
-  modified_spec_paths:
-    - docs/specs/standard_module_catalogue_spec.md
+  commit: 0b8ec1eed2b36067ff042dbce39596cbf10c939f
+  working_tree: clean
 
 summary: >-
   Exactly is the stateless variadic Level standard module whose result is High
@@ -120,7 +118,7 @@ requirements:
       permutations, compare the independent public law with the canonical
       expansion, and verify deterministic unique roles, keys, dependencies,
       diagnostics, inspection, hierarchy, fingerprints, and ordinary execution.
-    sources: [dual-view, exhaustive-combinational, canonical-verification]
+    sources: [conformance-matrix, dual-view, exhaustive-combinational, canonical-verification, testing-standard-modules]
 
 implementation_freedom:
   - Descriptor table layout, generation helper structure, and typed inspection value spelling are open when the exact public facts and canonical roles remain structured and deterministic.
@@ -133,57 +131,84 @@ sources:
   exact-identity:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.1 Identity]
+    reviewed_hash: sha256:83d799efffa04c9e7d10beec1b17499673fcbed4c1a01af5f27d8187d8ed6d86
   exact-interface:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.3 Public interface]
+    reviewed_hash: sha256:dbe3515d982b3271bd1cfd607711a9137ec43f6d17f61e3a7b028660f58ffdf8
   shared-variadic:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part V — Combinational standard modules, 35. Shared variadic level rules]
+    reviewed_hash: sha256:0c05ef94f4fd1893a921150118cede7996497d89541d6a32f6671a0aa6883a27
   exact-law:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.4 Behavioral law]
+    reviewed_hash: sha256:0f3e526894104d68e8458bf535da5eb2ac74ce54c2050cf366f1be28bd3f9c9c
   shared-dependency:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part IV — Shared standard-module semantics, 27. Public current-reaction dependency signature]
+    reviewed_hash: sha256:7b7578222716085a1f1176dee26aa0da3c3d3e46a83b28f9f0a5d9c336d6ba9e
   exact-dependency:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.5 Public dependency signature]
+    reviewed_hash: sha256:4f397bed6cc12c83a6ee861cd5dcbc43bc28c30c4a22d64e0e3eb60278dcd1f5
   exact-expansion:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.6 Canonical expansion]
+    reviewed_hash: sha256:e1eff1a46255166feaefc04ff63cb91831ca6d55966b14a4b46c48cf6f3347c0
   public-port-identity:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 15. Public port identity]
+    reviewed_hash: sha256:3f0ff96f412c3e53ae69447b9dd0fc92803a3b62ad6b684b17459fccf77cf699
   internal-identity:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part II — Catalogue identity and canonical descriptors, 18. Variadic internal identity]
+    reviewed_hash: sha256:bdffce307cc746560c7cde647af5fdf2b3301501096418bf37968907f47962e5
   module-diagnostics:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part IX — Diagnostics, 58. Non-blocking module diagnostics]
+    reviewed_hash: sha256:5e3ed8df9c68ffd2fc7953eb547c215421f89dcc38cadd026b4146cfa70a81d1
   diagnostic-catalogue:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part V — Exhaustive initial catalogue, 41. Standard modules — non-blocking conditions]
+    reviewed_hash: sha256:9fe8b5a9fdac7c733d1bce32da85e95e5d4ec04d71931a42bd12bac4750b0b42
   exact-explanation:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.7 Explanation]
+    reviewed_hash: sha256:4cd2200dbfb6c132a18f2420089bf5b84a9b66b905091dc3656942956085266e
   exact-inspection:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.8 Inspection]
+    reviewed_hash: sha256:4c89538a0a799986322cf5b07ebd50bb91cf799f91162415860dd5be5a6f5a6b
   shared-inspection:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part IV — Shared standard-module semantics, 33. Inspection]
+    reviewed_hash: sha256:6a450284ceec09e8042ea3c006f499745ea4e43147ac4938fa16a4b78f1049e7
   standard-boundary:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part I — Boundaries and classification, 4. Closed semantic boundary]
+    reviewed_hash: sha256:82fe03b778457af8e4cab541adfcdc20845076045f88a038619cda73abf46f26
   public-expansion-equivalence:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part IV — Shared standard-module semantics, 26. Public behavioral law and expansion equivalence]
+    reviewed_hash: sha256:dffb7a81d31d8655959f5cc9d4d4a482b814fb0cf12aeb5b7470ba22415e992a
   dual-view:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part XII — Verification and generated artifacts, 76. Dual-view equivalence]
+    reviewed_hash: sha256:36ec30fd29e229fb2b56bcd748d86590186a9c2fb9dd4551a327f189d6b099f9
+  conformance-matrix:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 75. Required standard-module conformance matrix]
+    reviewed_hash: sha256:867a97ec4e3df02546895d774116cd11ed2ee7514d70c88396ef7bb5c83e814f
   exhaustive-combinational:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part XII — Verification and generated artifacts, 77. Exhaustive combinational verification]
+    reviewed_hash: sha256:1c83bc9da10c5bc110de3b717703ef6a007c6c3b99600c0392b2347dc996682b
   canonical-verification:
     document: docs/specs/standard_module_catalogue_spec.md
     heading_path: [Part XII — Verification and generated artifacts, 79. Canonical expansion verification]
+    reviewed_hash: sha256:35717cd93b493258b6d51bd8d6e8b897f52e6738bde601d82c2ad2b0785528e7
+  testing-standard-modules:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XXIII — Requirements for future features, 120. Standard modules]
+    reviewed_hash: sha256:c680d9d75e08709140d513481ca121556fa350dbd182d5600145955a54e03ca8
