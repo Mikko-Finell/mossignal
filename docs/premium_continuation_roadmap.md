@@ -342,7 +342,7 @@ Explicitly exclude:
 
 ---
 
-## 39. Supported aliases and builder-only conveniences
+## 39. [DONE] Supported aliases and builder-only conveniences
 
 Implement the convenience classification already expressible through accepted
 primitives and modules.

@@ -1184,6 +1184,85 @@ impl<D> NetworkBuilder<D> {
         )
     }
 
+    /// Authors the primitive alias `xor(a, b)` as exactly `Parity([a, b])`.
+    ///
+    /// Inspection and identity expose the ordinary `Parity` primitive; this
+    /// convenience creates no module instance or independent semantic object.
+    pub fn xor(
+        &mut self,
+        a: Signal<Level>,
+        b: Signal<Level>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        self.parity([a, b])
+    }
+
+    /// Authors the primitive alias `level_gate(value, enable)` as exactly
+    /// `All([value, enable])`.
+    ///
+    /// The gate is an ordinary binary `All` primitive, not a module or a
+    /// separately identified convenience.
+    pub fn level_gate(
+        &mut self,
+        value: Signal<Level>,
+        enable: Signal<Level>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        self.all([value, enable])
+    }
+
+    /// Authors the strict-majority primitive alias as exactly one `AtLeast`.
+    ///
+    /// The threshold is `floor(arity / 2) + 1`. Consequently, an empty input
+    /// creates `AtLeast(1, [])` and has the ordinary constant-Low behavior and
+    /// diagnostics of that primitive.
+    pub fn majority<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        let threshold = inputs.len() as u64 / 2 + 1;
+        self.at_least(threshold, inputs)
+    }
+
+    /// Authors the builder-only operation `nand(inputs)` as exactly
+    /// `Not(All(inputs))`.
+    ///
+    /// Only the ordinary `All` and `Not` primitives are retained. Callers that
+    /// need a durable boundary can author explicit primitives or a user module.
+    pub fn nand<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let conjunction = self.all(inputs)?;
+        self.not(conjunction)
+    }
+
+    /// Authors the builder-only operation `nor(inputs)` as exactly
+    /// `Not(Any(inputs))`.
+    ///
+    /// Only the ordinary `Any` and `Not` primitives are retained. Callers that
+    /// need a durable boundary can author explicit primitives or a user module.
+    pub fn nor<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        let disjunction = self.any(inputs)?;
+        self.not(disjunction)
+    }
+
+    /// Authors the builder-only operation `xnor(a, b)` as exactly
+    /// `Not(Parity([a, b]))`.
+    ///
+    /// Only the ordinary binary `Parity` and downstream `Not` primitives are
+    /// retained; the composition has no independent semantic identity.
+    pub fn xnor(
+        &mut self,
+        a: Signal<Level>,
+        b: Signal<Level>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        let parity = self.parity([a, b])?;
+        self.not(parity)
+    }
+
     /// Adds a fixed level branch selector with locally allocated identities.
     pub fn select(
         &mut self,
@@ -2193,6 +2272,67 @@ impl<D> ModuleBuilder<D> {
         }
         self.graph
             .add_at_least_with_ports(key, output, threshold, inputs, meta)
+    }
+
+    /// Authors the primitive alias `xor(a, b)` as exactly `Parity([a, b])`.
+    ///
+    /// The module retains only the ordinary `Parity` primitive and no nested
+    /// module instance or independent convenience identity.
+    pub fn xor(
+        &mut self,
+        a: Signal<Level>,
+        b: Signal<Level>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        self.graph.xor(a, b)
+    }
+
+    /// Authors the primitive alias `level_gate(value, enable)` as exactly
+    /// `All([value, enable])` with no nested module instance.
+    pub fn level_gate(
+        &mut self,
+        value: Signal<Level>,
+        enable: Signal<Level>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        self.graph.level_gate(value, enable)
+    }
+
+    /// Authors strict majority as exactly one ordinary `AtLeast` primitive.
+    ///
+    /// The threshold is `floor(arity / 2) + 1`, including `AtLeast(1, [])`
+    /// for empty input. No nested module instance is created.
+    pub fn majority<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        self.graph.majority(inputs)
+    }
+
+    /// Authors the builder-only operation `nand(inputs)` as exactly
+    /// `Not(All(inputs))`, retaining only those ordinary primitives.
+    pub fn nand<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        self.graph.nand(inputs)
+    }
+
+    /// Authors the builder-only operation `nor(inputs)` as exactly
+    /// `Not(Any(inputs))`, retaining only those ordinary primitives.
+    pub fn nor<I>(&mut self, inputs: I) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Level>>,
+    {
+        self.graph.nor(inputs)
+    }
+
+    /// Authors the builder-only operation `xnor(a, b)` as exactly
+    /// `Not(Parity([a, b]))`, retaining only those ordinary primitives.
+    pub fn xnor(
+        &mut self,
+        a: Signal<Level>,
+        b: Signal<Level>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        self.graph.xnor(a, b)
     }
 
     /// Adds a fixed level branch selector.
