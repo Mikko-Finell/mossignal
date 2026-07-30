@@ -1,0 +1,324 @@
+schema_version: "0.1"
+id: mossignal.node.level_controlled_pulse
+title: Level-controlled pulse primitive family
+kind: family
+status: reviewed
+
+source_baseline:
+  commit: 566d221497c1a9288ef51e487654bf6dd278e483
+  working_tree: dirty
+
+summary: >-
+  PulseGate, PulseSelect, and PulseRoute are stateless combinational primitives
+  that use fully settled current Level controls to pass, select, or route complete
+  reaction-local Pulse multiplicities without consumption, buffering, or hidden
+  ordering.
+
+scope:
+  includes:
+    - fixed typed port shapes, control polarity, and pulse-multiplicity laws
+    - typed and dynamic authoring, structural validation, and stable port roles
+    - current-reaction causality, compilation, settlement, and event provenance
+    - bounded conformance and pre-stability network and module identity integration
+  excludes:
+    - edge-sensitive, stateful, and temporal behavior
+    - low-enabled aliases, temporal windows, callbacks, and host effects
+    - general inspection subscriptions, explanation rendering, and graph queries
+    - persistence codecs, replay, and topology-patch execution
+
+known_uncovered:
+  - Exact public current-inspection, current-explanation, and why-not projections for passed, selected, routed, and suppressed pulse counts
+  - Topology-patch compatibility and persistence representation beyond semantic fingerprinting
+
+aliases:
+  - PulseGate
+  - PulseSelect
+  - PulseRoute
+  - level-controlled pulse flow
+  - pulse routing
+
+requirements:
+  - id: settled-current-control
+    kind: semantic
+    statement: >-
+      The family is stateless and non-temporal. Every control input uses its
+      fully settled Level value in the current reaction, every Pulse input is a
+      complete simultaneous count for that reaction, and no pulse count or
+      enable state is retained for a later reaction.
+    sources: [node-categories, current-controls, simultaneous-batches, pulse-state]
+
+  - id: pulse-gate-law
+    kind: semantic
+    statement: >-
+      PulseGate has one Pulse input named pulses, one Level input named enable,
+      and one Pulse output. High passes the complete input count unchanged and
+      Low yields zero. High is the sole canonical enabled polarity; low-enabled
+      behavior is explicit Not composition rather than another gate kind.
+    sources: [pulse-gate, pulse-fanout, pulse-multiplicity]
+
+  - id: pulse-select-law
+    kind: semantic
+    statement: >-
+      PulseSelect has a Level selector, distinct when-low and when-high Pulse
+      inputs, and one Pulse output. Low yields the complete when-low count and
+      High yields the complete when-high count; the unselected count is
+      suppressed, is not consumed from its source, and is not remembered.
+    sources: [pulse-select, pulse-fanout, pulse-multiplicity]
+
+  - id: pulse-route-law
+    kind: semantic
+    statement: >-
+      PulseRoute has a Level selector, one Pulse input, and distinct when-low
+      and when-high Pulse outputs. Low sends the complete count only to
+      when-low, High sends it only to when-high, and the other output is zero.
+      The two output roles are semantic even though their signal kinds match.
+    sources: [pulse-route, added-node-handles, semantic-fingerprint]
+    basis: derived
+
+  - id: typed-and-dynamic-authoring
+    kind: public_surface
+    statement: >-
+      NetworkBuilder and ModuleBuilder expose direct typed constructors and
+      explicit stable-keyed forms for all three primitives. PulseRoute returns
+      a node-specific PulseRouteOutputs value with when_low and when_high
+      Signal<Pulse> fields. Dynamic definitions use the corresponding closed
+      NodeKind variants, stable typed ports, semantic roles, and ordinary
+      connections; signal-accepting constructors reject foreign builder scope.
+    sources: [added-node-handles, builder-keyed, constructor-family, module-builder, dynamic-node-kind, dynamic-ports, semantic-fingerprint]
+
+  - id: structural-validation
+    kind: system_effect
+    statement: >-
+      Structural validation enforces each fixed input and output count, Level
+      and Pulse kind, required driver, and expected semantic role, collecting
+      independently safe duplicate-key, missing-port, missing-input,
+      invalid-direction, kind-mismatch, multiple-driver, fixed-arity, and
+      current-reaction-cycle findings through the ordinary report boundary.
+    sources: [pulse-gate, pulse-select, pulse-route, validation-coverage, validation-codes, diagnostic-reports]
+
+  - id: conservative-dependency-signatures
+    kind: semantic
+    statement: >-
+      PulseGate contributes dependencies from pulses and enable to its output;
+      PulseSelect contributes dependencies from selector and both branches to
+      its output; PulseRoute contributes dependencies from selector and pulses
+      to both outputs. These static dependencies do not vary with the current
+      control value and participate in ordinary cycle rejection.
+    sources: [dependency-signatures, reaction-graph]
+
+  - id: complete-glitch-free-settlement
+    kind: semantic
+    statement: >-
+      Compilation retains the stable typed incidence and semantic role
+      information needed to apply each node law in the acyclic reaction graph.
+      Full topological evaluation applies the family laws only after both Level
+      and Pulse predecessors settle, so simultaneous control and count changes
+      have no traversal-order intermediate, pulse consumption, or hidden
+      microstep.
+    sources: [compiled-invariants, glitch-freedom, full-evaluation]
+
+  - id: multiplicity-preserving-results
+    kind: semantic
+    statement: >-
+      Every nonzero family output count is exactly one selected or passed input
+      count. The primitives introduce no addition or local count-overflow path;
+      any upstream structured failure still rejects the complete outer
+      transaction atomically through the shared reaction and Pulse foundation.
+    sources: [pulse-gate, pulse-select, pulse-route, settlement, pulse-algebra]
+    basis: derived
+
+  - id: selected-output-provenance
+    kind: system_effect
+    statement: >-
+      Every emitted pulse event has resolvable acyclic provenance sufficient to
+      identify the current controlling Level fact and the passed or selected
+      Pulse batch. Suppressed counts may remain distinguishable as explanatory
+      context, but do not contribute to emitted multiplicity or become retained
+      pulse state. Equivalent insertion or evaluation orders yield equivalent
+      normalized derivations up to non-semantic cause identifiers.
+    sources: [pulse-gate, pulse-select, pulse-route, causal-provenance, derivation-structure, pulse-provenance]
+    basis: derived
+
+  - id: pre-stability-identity-extension
+    kind: compatibility
+    statement: >-
+      NetworkFingerprint and ModuleFingerprint distinguish all three node kinds
+      and retain stable typed input and output keys, connection incidence, and
+      semantic roles, including PulseRoute's two output roles. Before an
+      explicit frozen baseline, the accepted implementation may extend the
+      provisional canonical projection in place, but authority, implementation,
+      and every affected exact golden vector must remain synchronized in one
+      revision.
+    sources: [semantic-fingerprint, restricted-fingerprint, module-fingerprint, fingerprint-versions]
+    basis: derived
+
+  - id: primitive-conformance
+    kind: verification
+    statement: >-
+      Each member has reusable conformance coverage for every applicable matrix
+      field represented by this contract, while excluded or known-uncovered
+      fields remain explicitly classified rather than silently treated as
+      implemented. Bounded exhaustive cases cross both Level controls with
+      counts zero, one, two, and a larger representable count; verify
+      simultaneous control changes, exact selected multiplicity, fan-out,
+      initialization and ready reactions, no cross-reaction retention,
+      provenance, dependency signatures, order invariance, and complete failure
+      atomicity around upstream failures.
+    sources: [pulse-algebra, node-conformance, conformance-matrix, exhaustive-testing, input-order, failure-atomicity]
+
+implementation_freedom:
+  - The dynamic representation of fixed input and output roles may use the smallest deterministic extension that preserves malformed authored claims, exact reconstruction, validation, dependency extraction, provenance subjects, and semantic identity.
+  - Private descriptor variants, evaluator helpers, pulse-slot access, and provenance record layout are free when they preserve complete settled inputs, selected multiplicity, and deterministic observations.
+  - Fixed port keys may be locally allocated by any deterministic rule; semantic roles remain fixed by each node law, and exact keyed forms remain the durable reconstruction authority.
+
+open_questions: []
+
+sources:
+  node-categories:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 4. Node categories]
+    reviewed_hash: sha256:58c6bf4af486d59dcb0527f19367e2325864316d94cfaffe99711fd66581d0ae
+  simultaneous-batches:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 7. Simultaneous batches]
+    reviewed_hash: sha256:6f0c086ed445bf436c4974044bddc2eb224e4d6299620fedf775de6c641c4941
+  current-controls:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 8. Current-time controls]
+    reviewed_hash: sha256:120b4e4edfeeff5fd29c35ae9b04b6b00cac94026e7ab5405c1d9d31851a6b87
+  dependency-signatures:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
+  pulse-fanout:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 10. Pulse fan-out]
+    reviewed_hash: sha256:2b0cd8792087a22409650dd3e4b6e836d1485136a8f7c02b26678ba6c482c9aa
+  pulse-multiplicity:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 11. Pulse multiplicity]
+    reviewed_hash: sha256:fb65a99f6ae2ce4401cd80e6c20aad5a23606740411cd7c9fc9def8f0b57a130
+  pulse-gate:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part IV — Level-controlled pulse nodes, 34. `PulseGate`]
+    reviewed_hash: sha256:4a31c66373ce5821b563f3523356a8f9e94cb23ba81018e6b1a3b3284c1f38fb
+  pulse-select:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part IV — Level-controlled pulse nodes, 35. `PulseSelect`]
+    reviewed_hash: sha256:d3e160a1413c013becbedf2aca43c6e9f89bcadf0124d0778f7d9d836f8adf70
+  pulse-route:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part IV — Level-controlled pulse nodes, 36. `PulseRoute`]
+    reviewed_hash: sha256:60b90f7415c4442adc02073ac7d77cf415199d8cb73bfabf0f85296998ad067a
+  pulse-state:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 90. Pulse state]
+    reviewed_hash: sha256:32074050a50af076d231984bf492df80330c217a4dddda4230bcdb023e2d033c
+  added-node-handles:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 26. Added-node handles]
+    reviewed_hash: sha256:51fb1882d01fa2a8626e75a5b82d00b5758ffe7958121dcf58857de8c5089e3e
+  builder-keyed:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 28. Explicit keyed primitive construction]
+    reviewed_hash: sha256:eebf1d5f4f29d91da4e1483f86545fa1ed80b3aa7abb514939fd3dd2a7f8efdf
+  constructor-family:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  module-builder:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+    reviewed_hash: sha256:de8ed7d677513f9268ea2aa34ab57661a9153405ab31ae41e8e3a95ed5203ca4
+  dynamic-node-kind:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
+  dynamic-ports:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 38. Dynamic ports and connections]
+    reviewed_hash: sha256:5fbea1f67eb6eea247e70168f60b4b3c3c348da10d98ab75e5b30406712e01ca
+  validation-coverage:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 46. Required validation coverage]
+    reviewed_hash: sha256:4b67b4241f37763437a7523a4c99a3c729c9b9c4d72a2824b73e4b88b67cfc38
+  validation-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions]
+    reviewed_hash: sha256:6c2eeae3d44af53103f991f364f2d321a9fe195f03b8924e8f902fb5e3dfef40
+  diagnostic-reports:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 45. Reports]
+    reviewed_hash: sha256:20197431f1ff31d0d39de2a9463f1688aea0f9e0f56323267fac4ef5177684e6
+  reaction-graph:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 15. Reaction dependency graph]
+    reviewed_hash: sha256:bb051caaa0cd3627f58f17edca8b2e09df6b72c3b042238f523b0dfb40dcda9a
+  compiled-invariants:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 22. Compiled invariants]
+    reviewed_hash: sha256:746554b068081f15488f90197bf4c03ad4b384836a2fca010cd0c90eb81e56fe
+  glitch-freedom:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 32. Glitch freedom]
+    reviewed_hash: sha256:5e497703203dd236303204e3d58726b76af3a0d88150bb265b01f0faeae5af8e
+  full-evaluation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 33. Full reference evaluation]
+    reviewed_hash: sha256:582cdbde0046465fa88793dfa2f0e58976170719a591231f70d2a38b77ebe621
+  settlement:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 26. Settlement]
+    reviewed_hash: sha256:875bead35fccd63f762bf9fc87fbe484c579f99908d5e175bc8b135351296e23
+  causal-provenance:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 53. Causal provenance]
+    reviewed_hash: sha256:9a55ead387cffd6833521d6efa179e653027358990c73721faf8e258eb064574
+  derivation-structure:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 63. Derivation structure]
+    reviewed_hash: sha256:bb1973d9aea76fb8f7e039c7f9713ad91418c3f68c0968605819de55ca0a2c37
+  pulse-provenance:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 69. Pulse provenance]
+    reviewed_hash: sha256:18a5cfbbc600cc44fab9fed9d6730472865bb0b06d8a93eda6bff220c976e3ca
+  semantic-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.1 Network fingerprint]
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  restricted-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
+    reviewed_hash: sha256:349f21ba68dfdf5a8fe88c00892cab044b80c359af41aca893b0263a158a6e33
+  module-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 55. Module fingerprint]
+    reviewed_hash: sha256:6b41a847681a35c84fbb36310dd608fd9d5342f48c02e14ee1681f01ec0380d0
+  fingerprint-versions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 15. Version representation]
+    reviewed_hash: sha256:a59d0cb9deab2c9b183e95c55b2e4df660b7927c8c6cc074defe68bee36c68b1
+  pulse-algebra:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 34. Pulse algebra]
+    reviewed_hash: sha256:0e9cad7bccffb06aa64c8b1f0a75ff2d73862c35e36f7bac2d1ea44aafef0e31
+  input-order:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 32. Input-order invariance]
+    reviewed_hash: sha256:6bb063631903f75427fb410642aadddc444776fe412e1ce90b2d74ac139fd9d6
+  node-conformance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 37. Node conformance requirement]
+    reviewed_hash: sha256:7bf27eaa2865945e6661a140c0f888a31d87ad380479dd90d3d06de5568a461d
+  conformance-matrix:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 38. Common conformance matrix]
+    reviewed_hash: sha256:d37d3539bb2e78723780838aede84b7ec5b6c3539db83d92e769e935022d1942
+  exhaustive-testing:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 39. Exhaustive primitive testing]
+    reviewed_hash: sha256:c67d2593f52b5536672661e3cdb833b44716d657c7a9d23dabb0f698adcdb3de
+  failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
