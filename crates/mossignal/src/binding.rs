@@ -797,15 +797,18 @@ fn validate_input_endpoint<D>(
     {
         return Ok(());
     }
-    let wrong_kind = compiled
+    let expected_kind = compiled
         .graph()
         .external_inputs()
         .iter()
-        .any(|definition| input_payload(definition.key()) == input_payload(endpoint));
+        .find_map(|definition| {
+            let candidate = definition.key();
+            (input_payload(candidate) == input_payload(endpoint)).then_some(candidate.kind())
+        });
     let subject = input_subject(context, endpoint);
     Err(binding_failure(
         context,
-        if wrong_kind {
+        if expected_kind.is_some() {
             DiagnosticCode::BindingWrongSignalKind
         } else {
             DiagnosticCode::BindingUnknownEndpoint
@@ -813,7 +816,7 @@ fn validate_input_endpoint<D>(
         Some(subject),
         Vec::new(),
         Vec::new(),
-        Some(endpoint.kind()),
+        expected_kind,
     ))
 }
 
@@ -830,15 +833,18 @@ fn validate_output_endpoint<D>(
     {
         return Ok(());
     }
-    let wrong_kind = compiled
+    let expected_kind = compiled
         .graph()
         .external_outputs()
         .iter()
-        .any(|definition| output_payload(definition.key()) == output_payload(endpoint));
+        .find_map(|definition| {
+            let candidate = definition.key();
+            (output_payload(candidate) == output_payload(endpoint)).then_some(candidate.kind())
+        });
     let subject = output_subject(context, endpoint);
     Err(binding_failure(
         context,
-        if wrong_kind {
+        if expected_kind.is_some() {
             DiagnosticCode::BindingWrongSignalKind
         } else {
             DiagnosticCode::BindingUnknownEndpoint
@@ -846,7 +852,7 @@ fn validate_output_endpoint<D>(
         Some(subject),
         Vec::new(),
         Vec::new(),
-        Some(endpoint.kind()),
+        expected_kind,
     ))
 }
 
@@ -854,7 +860,7 @@ fn validate_compiled<D>(
     context: &BindingContext,
     compiled: &CompiledNetwork<D>,
 ) -> Result<(), BindingFailure> {
-    if context.network != compiled.network_key() || context.fingerprint != compiled.fingerprint() {
+    if context.network != compiled.network_key() {
         return Err(binding_failure(
             context,
             DiagnosticCode::BindingWrongNetwork,
@@ -864,7 +870,9 @@ fn validate_compiled<D>(
             None,
         ));
     }
-    if context.input_schema != compiled.input_schema_fingerprint() {
+    if context.fingerprint != compiled.fingerprint()
+        || context.input_schema != compiled.input_schema_fingerprint()
+    {
         return Err(binding_failure(
             context,
             DiagnosticCode::BindingStaleSchema,
