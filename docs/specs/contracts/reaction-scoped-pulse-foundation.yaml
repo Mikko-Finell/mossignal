@@ -2,11 +2,13 @@ schema_version: "0.1"
 id: mossignal.runtime.reaction_scoped_pulse_foundation
 title: Reaction-scoped pulse foundation
 kind: family
-status: reviewed
+status: draft
 
 source_baseline:
-  commit: 01ac220b38653e69c8433b7370502b4ca28f72f8
+  commit: 0e1046283970d8d02691d7aaa41a360cc5f9938e
   working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   Pulse values are typed, reaction-scoped simultaneous multiplicities that enter
@@ -166,7 +168,7 @@ recommendations:
 implementation_freedom:
   - Private pulse-slot layout, generation representation, batch maps, evaluator descriptor shape, and event sorting mechanism are free when reaction isolation, multiplicity, stable identity, and deterministic observations are preserved.
   - Explicit zero pulse observations may be retained or normalized to absence internally because both mean zero in the same reaction; choose one deterministic representation, test it, and record the decision without making it a persistence promise.
-  - The synchronized pre-stability version-1 projection uses the canonical `pulse`, `merge`, and `reaction_scoped` tags alongside the existing level projection; no historical migration is required before stabilization.
+  - The synchronized pre-stability version-1 projection uses the canonical `pulse`, `merge`, `coalesce`, `zip`, and `reaction_scoped` tags alongside the existing level projection; no historical migration is required before stabilization.
 
 open_questions: []
 

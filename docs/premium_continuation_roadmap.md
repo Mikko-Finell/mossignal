@@ -410,7 +410,7 @@ without exposing endpoint-key ceremony throughout their execution code.
 
 # Part III — Primitive breadth required by the public toolkit
 
-## 41. Remaining pulse-combinational primitives
+## 41. [DONE] Remaining pulse-combinational primitives
 
 Extend the established pulse foundation with:
 

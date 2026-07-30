@@ -2,10 +2,10 @@ schema_version: "0.1"
 id: mossignal.identity.network_fingerprint
 title: Network semantic fingerprint
 kind: artifact
-status: reviewed
+status: draft
 
 source_baseline:
-  commit: 785e2f3221c2d9d93f1b700adb25b633810ad2e5
+  commit: 0e1046283970d8d02691d7aaa41a360cc5f9938e
   working_tree: dirty
   modified_spec_paths:
     - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
@@ -62,9 +62,9 @@ requirements:
       connection, external-input, external-output, source, target, signal-kind,
       direction, semantic-role, node-kind, and logic-level record and variant
       schemas fixed by the persistence specification, including nullary `not`,
-      `all`, `any`, `parity`, `select`, and `merge` variants, the configured
-      `at_least` variant, configured `toggle` initial level and `stored_level`
-      state schema, configured `pulse_delay` delay ticks and
+      `all`, `any`, `parity`, `select`, `merge`, `coalesce`, and `zip` variants,
+      the configured `at_least` variant, configured `toggle` initial level and
+      `stored_level` state schema, configured `pulse_delay` delay ticks and
       `pending_pulse_group` temporal schema, distinct `Select`, `Toggle`, and
       `PulseDelay` input semantic roles, and the `level` and `pulse` signal-kind
       variants. Collections use the specified stable semantic order and never
@@ -132,7 +132,7 @@ requirements:
       thresholds, `Select` input roles, and `Toggle` initial state. Golden bytes
       cover Toggle's fixed state-schema and input-role representation and
       PulseDelay's exact kind, delay, temporal-schema, and input-role
-      representation.
+      representation, plus the exact nullary Coalesce and Zip kind variants.
     sources: [canonical-vectors, digest-scope-verification, deterministic-compilation]
 
 recommendations:

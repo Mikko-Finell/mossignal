@@ -325,6 +325,8 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
         }
         NodeKind::Select => writer.variant_null("select"),
         NodeKind::Merge => writer.variant_null("merge"),
+        NodeKind::Coalesce => writer.variant_null("coalesce"),
+        NodeKind::Zip => writer.variant_null("zip"),
         NodeKind::Toggle(config) => {
             writer.variant_start("toggle");
             writer.record_start(2);
@@ -568,6 +570,8 @@ fn nodes<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
             }
             NodeKind::Select => writer.variant_null("select"),
             NodeKind::Merge => writer.variant_null("merge"),
+            NodeKind::Coalesce => writer.variant_null("coalesce"),
+            NodeKind::Zip => writer.variant_null("zip"),
             NodeKind::Toggle(config) => {
                 writer.variant_start("toggle");
                 writer.record_start(2);
@@ -1194,6 +1198,50 @@ mod tests {
         )
     }
 
+    fn golden_pulse_combinational(kind: NodeKind<()>, arity: usize) -> UncheckedNetwork<()> {
+        let external = ExternalInputKey::<Pulse>::from_u128(10);
+        let ports = [
+            InPortKey::<Pulse>::from_u128(20),
+            InPortKey::<Pulse>::from_u128(21),
+        ];
+        let output = OutPortKey::<Pulse>::from_u128(30);
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(2),
+                kind,
+                NodePorts::new(
+                    ports[..arity].iter().copied().map(Into::into).collect(),
+                    vec![output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                external.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Pulse>::from_u128(40).into(),
+                SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            ports[..arity]
+                .iter()
+                .enumerate()
+                .map(|(index, port)| {
+                    ConnectionDef::new(
+                        ConnectionKey::from_u128(50 + index as u128),
+                        external.into(),
+                        (*port).into(),
+                        DiagnosticMeta::default(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     fn golden_toggle(initial: LogicLevel, role: InputPortRole) -> UncheckedNetwork<()> {
         let external = ExternalInputKey::<Pulse>::from_u128(10);
         let input = InPortKey::<Pulse>::from_u128(20);
@@ -1545,6 +1593,34 @@ mod tests {
             validated_fingerprints(golden_merge(true)),
             "stable pulse claims must ignore insertion order"
         );
+    }
+
+    #[test]
+    fn pulse_combinational_projection_vectors_are_exact_and_distinct() {
+        for (name, network) in [
+            (
+                "coalesce",
+                golden_pulse_combinational(NodeKind::coalesce(), 1),
+            ),
+            ("zip", golden_pulse_combinational(NodeKind::zip(), 2)),
+        ] {
+            let (bytes, _) = canonical_inputs(&network);
+            let fingerprint = validated_fingerprints(network).0;
+            let encoded = hex(&bytes);
+            let (kind_encoding, expected_fingerprint) = match name {
+                "coalesce" => (
+                    "82646b696e648268636f616c65736365f6",
+                    "2ad938fd66380ac33ac9691bcbd74e505884f27ef9e37932998fb6b5223d0cda",
+                ),
+                "zip" => (
+                    "82646b696e6482637a6970f6",
+                    "9349f1f72fca33acbbbc91a869515c1834d363c04423f7b8b4992bde40bcdc2b",
+                ),
+                _ => panic!("golden fixture must use a represented pulse kind"),
+            };
+            assert!(encoded.contains(kind_encoding));
+            assert_eq!(fingerprint.to_string(), expected_fingerprint);
+        }
     }
 
     #[test]

@@ -2,11 +2,13 @@ schema_version: "0.1"
 id: mossignal.node.pulse_combinational_expansion
 title: Remaining pulse-combinational primitive family
 kind: family
-status: reviewed
+status: draft
 
 source_baseline:
-  commit: ee3b3aa0ff65dfb50f1e684f42ba514e2135cc8f
+  commit: 0e1046283970d8d02691d7aaa41a360cc5f9938e
   working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   Coalesce and Zip complete the initial pulse-combinational primitive family:

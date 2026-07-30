@@ -631,6 +631,10 @@ pub enum NodeKind<D> {
     Select,
     /// A total variadic pulse multiplicity merge with one pulse output after validation.
     Merge,
+    /// A unary pulse presence bound with one pulse output after validation.
+    Coalesce,
+    /// A nonempty variadic pulse grouping operation with one pulse output after validation.
+    Zip,
     /// A pulse-controlled stored level with one pulse input and one level output.
     Toggle(ToggleConfig),
     /// A temporal pulse reproducer with one pulse input and one pulse output.
@@ -648,6 +652,8 @@ impl<D> Clone for NodeKind<D> {
             Self::AtLeast(config) => Self::AtLeast(*config),
             Self::Select => Self::Select,
             Self::Merge => Self::Merge,
+            Self::Coalesce => Self::Coalesce,
+            Self::Zip => Self::Zip,
             Self::Toggle(config) => Self::Toggle(*config),
             Self::PulseDelay(config) => Self::PulseDelay(*config),
         }
@@ -663,7 +669,9 @@ impl<D> PartialEq for NodeKind<D> {
             | (Self::Any, Self::Any)
             | (Self::Parity, Self::Parity)
             | (Self::Select, Self::Select)
-            | (Self::Merge, Self::Merge) => true,
+            | (Self::Merge, Self::Merge)
+            | (Self::Coalesce, Self::Coalesce)
+            | (Self::Zip, Self::Zip) => true,
             (Self::AtLeast(left), Self::AtLeast(right)) => left == right,
             (Self::Toggle(left), Self::Toggle(right)) => left == right,
             (Self::PulseDelay(left), Self::PulseDelay(right)) => left == right,
@@ -685,6 +693,8 @@ impl<D> fmt::Debug for NodeKind<D> {
             Self::AtLeast(config) => formatter.debug_tuple("AtLeast").field(config).finish(),
             Self::Select => formatter.write_str("Select"),
             Self::Merge => formatter.write_str("Merge"),
+            Self::Coalesce => formatter.write_str("Coalesce"),
+            Self::Zip => formatter.write_str("Zip"),
             Self::Toggle(config) => formatter.debug_tuple("Toggle").field(config).finish(),
             Self::PulseDelay(config) => formatter.debug_tuple("PulseDelay").field(config).finish(),
         }
@@ -738,6 +748,18 @@ impl<D> NodeKind<D> {
     #[must_use]
     pub const fn merge() -> Self {
         Self::Merge
+    }
+
+    /// Creates the unary pulse-presence bound node kind.
+    #[must_use]
+    pub const fn coalesce() -> Self {
+        Self::Coalesce
+    }
+
+    /// Creates the nonempty variadic pulse-grouping node kind.
+    #[must_use]
+    pub const fn zip() -> Self {
+        Self::Zip
     }
 
     /// Creates a pulse-controlled Toggle with explicit declared initial state.

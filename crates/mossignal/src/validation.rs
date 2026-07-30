@@ -886,6 +886,8 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         NodeKind::AtLeast(config) => DuplicateNodeKind::AtLeast(config.threshold),
                         NodeKind::Select => DuplicateNodeKind::Select,
                         NodeKind::Merge => DuplicateNodeKind::Merge,
+                        NodeKind::Coalesce => DuplicateNodeKind::Coalesce,
+                        NodeKind::Zip => DuplicateNodeKind::Zip,
                         NodeKind::Toggle(config) => DuplicateNodeKind::Toggle(config.initial),
                         NodeKind::PulseDelay(config) => {
                             DuplicateNodeKind::PulseDelay(config.delay.ticks())
@@ -1014,11 +1016,14 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 NodeKind::Not => Some(1),
                 NodeKind::All | NodeKind::Any | NodeKind::Parity | NodeKind::AtLeast(_) => None,
                 NodeKind::Select => Some(3),
-                NodeKind::Merge => None,
+                NodeKind::Merge | NodeKind::Zip => None,
+                NodeKind::Coalesce => Some(1),
                 NodeKind::Toggle(_) | NodeKind::PulseDelay(_) => Some(1),
             };
             let (expected_input_kind, expected_output_kind) = match node.kind() {
-                NodeKind::Merge => (SignalKind::Pulse, SignalKind::Pulse),
+                NodeKind::Merge | NodeKind::Coalesce | NodeKind::Zip => {
+                    (SignalKind::Pulse, SignalKind::Pulse)
+                }
                 NodeKind::Toggle(_) => (SignalKind::Pulse, SignalKind::Level),
                 NodeKind::PulseDelay(_) => (SignalKind::Pulse, SignalKind::Pulse),
                 _ => (SignalKind::Level, SignalKind::Level),
@@ -1052,7 +1057,11 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
             }
             if matches!(
                 node.kind(),
-                NodeKind::Not | NodeKind::Select | NodeKind::Toggle(_) | NodeKind::PulseDelay(_)
+                NodeKind::Not
+                    | NodeKind::Select
+                    | NodeKind::Coalesce
+                    | NodeKind::Toggle(_)
+                    | NodeKind::PulseDelay(_)
             ) && expected_inputs.is_some_and(|expected| inputs.len() < expected)
             {
                 self.add(
@@ -1143,6 +1152,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     | NodeKind::Parity
                     | NodeKind::AtLeast(_)
                     | NodeKind::Merge
+                    | NodeKind::Zip
             ) && outputs.len() == 1
                 && outputs.iter().all(|key| key.kind() == expected_output_kind)
                 && inputs.iter().all(|key| key.kind() == expected_input_kind)
@@ -1150,7 +1160,14 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 && valid_role_count == inputs.len()
             {
                 let ports = inputs.iter().copied().map(SubjectRef::InPort).collect();
-                if inputs.is_empty() {
+                if matches!(node.kind(), NodeKind::Zip) && inputs.is_empty() {
+                    // SPEC: docs/specs/contracts/pulse-combinational-expansion.yaml
+                    // "structural-validation-and-findings" — Zip has no finite empty law.
+                    self.add(
+                        SubjectRef::Node(node.key()),
+                        ProblemEvidence::invalid_variadic_arity(ports, 1, 0),
+                    );
+                } else if inputs.is_empty() {
                     self.add(
                         SubjectRef::Node(node.key()),
                         ProblemEvidence::empty_variadic_node(ports),
@@ -1379,6 +1396,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     | NodeKind::Parity
                     | NodeKind::AtLeast(_)
                     | NodeKind::Merge
+                    | NodeKind::Zip
             )
         }) {
             for input in node.ports().inputs() {

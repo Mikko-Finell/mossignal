@@ -242,7 +242,7 @@ pub enum ProvenanceSubject {
     PulseExternalOutput(ExternalOutputKey<Pulse>),
 }
 
-/// One stable Merge input-port contribution to a simultaneous pulse result.
+/// One stable input-port contribution to a simultaneous pulse transformation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PulseContribution {
     port: PulsePortSubject,
@@ -1619,7 +1619,7 @@ fn append_evaluation_provenance<D>(
                     },
                 )
             }
-            EvaluationCause::PulseMerge {
+            EvaluationCause::PulseCombinational {
                 node,
                 contributions,
                 result,

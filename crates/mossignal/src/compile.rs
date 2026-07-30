@@ -146,6 +146,8 @@ enum CompiledNodeKind {
         when_high: PortIndex,
     },
     Merge,
+    Coalesce,
+    Zip,
     Toggle {
         input: PortIndex,
         state: ToggleStateIndex,
@@ -230,7 +232,7 @@ pub(crate) enum EvaluationCause {
         node: NodeKey,
         predecessors: Vec<usize>,
     },
-    PulseMerge {
+    PulseCombinational {
         node: NodeKey,
         contributions: Vec<PulseEvaluationContribution>,
         result: PulseCount,
@@ -834,10 +836,67 @@ impl<D> CompiledInner<D> {
                         }
                         (
                             EvaluationValue::Pulse(total),
-                            EvaluationCause::PulseMerge {
+                            EvaluationCause::PulseCombinational {
                                 node: *key,
                                 contributions,
                                 result: total,
+                            },
+                        )
+                    }
+                    NodeDescriptor {
+                        key,
+                        kind: CompiledNodeKind::Coalesce,
+                        inputs,
+                        ..
+                    } => {
+                        let input = inputs.first().ok_or(EvaluationFailure::Incomplete)?;
+                        let count = self.pulse_input_value(*input, &values)?;
+                        let result = if count.is_positive() {
+                            PulseCount::ONE
+                        } else {
+                            PulseCount::ZERO
+                        };
+                        (
+                            EvaluationValue::Pulse(result),
+                            EvaluationCause::PulseCombinational {
+                                node: *key,
+                                contributions: vec![PulseEvaluationContribution {
+                                    port: self.pulse_port_key(*input)?,
+                                    count,
+                                    source: self.input_source(*input)?.0,
+                                }],
+                                result,
+                            },
+                        )
+                    }
+                    NodeDescriptor {
+                        key,
+                        kind: CompiledNodeKind::Zip,
+                        inputs,
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/pulse-combinational-expansion.yaml
+                        // "zip-group-law" — one result group requires one pulse from every port.
+                        let mut minimum = None;
+                        let mut contributions = Vec::with_capacity(inputs.len());
+                        for input in inputs {
+                            let count = self.pulse_input_value(*input, &values)?;
+                            minimum = Some(
+                                minimum.map_or(count, |current: PulseCount| current.min(count)),
+                            );
+                            contributions.push(PulseEvaluationContribution {
+                                port: self.pulse_port_key(*input)?,
+                                count,
+                                source: self.input_source(*input)?.0,
+                            });
+                        }
+                        let result = minimum.ok_or(EvaluationFailure::Incomplete)?;
+                        (
+                            EvaluationValue::Pulse(result),
+                            EvaluationCause::PulseCombinational {
+                                node: *key,
+                                contributions,
+                                result,
                             },
                         )
                     }
@@ -1107,6 +1166,8 @@ impl<D> CompiledInner<D> {
                     }
                 }
                 NodeKind::Merge => CompiledNodeKind::Merge,
+                NodeKind::Coalesce => CompiledNodeKind::Coalesce,
+                NodeKind::Zip => CompiledNodeKind::Zip,
                 NodeKind::Toggle(config) => {
                     let input = inputs.first().copied().unwrap_or_else(|| {
                         panic!("validated Toggle descriptor must retain its pulse input")
@@ -1275,6 +1336,8 @@ impl<D> CompiledInner<D> {
                 | CompiledNodeKind::Parity
                 | CompiledNodeKind::AtLeast(_)
                 | CompiledNodeKind::Merge => node.outputs.len() == 1,
+                CompiledNodeKind::Coalesce => node.inputs.len() == 1 && node.outputs.len() == 1,
+                CompiledNodeKind::Zip => !node.inputs.is_empty() && node.outputs.len() == 1,
                 CompiledNodeKind::Toggle { input, state } => {
                     node.inputs.len() == 1
                         && node.outputs.len() == 1
@@ -1306,7 +1369,9 @@ impl<D> CompiledInner<D> {
                 return Err("compiled descriptor disagrees with node kind");
             }
             let (input_kind, output_kind) = match node.kind {
-                CompiledNodeKind::Merge => (SignalKind::Pulse, SignalKind::Pulse),
+                CompiledNodeKind::Merge | CompiledNodeKind::Coalesce | CompiledNodeKind::Zip => {
+                    (SignalKind::Pulse, SignalKind::Pulse)
+                }
                 CompiledNodeKind::Toggle { .. } => (SignalKind::Pulse, SignalKind::Level),
                 CompiledNodeKind::PulseDelay { .. } => (SignalKind::Pulse, SignalKind::Pulse),
                 _ => (SignalKind::Level, SignalKind::Level),
@@ -2081,6 +2146,8 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
                 NodeKind::AtLeast(config) => NodeKind::at_least(config.threshold),
                 NodeKind::Select => NodeKind::select(),
                 NodeKind::Merge => NodeKind::merge(),
+                NodeKind::Coalesce => NodeKind::coalesce(),
+                NodeKind::Zip => NodeKind::zip(),
                 NodeKind::Toggle(config) => NodeKind::toggle(config.initial),
                 NodeKind::PulseDelay(config) => NodeKind::pulse_delay(config.delay),
             };

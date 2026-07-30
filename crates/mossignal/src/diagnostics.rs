@@ -192,6 +192,7 @@ pub enum DiagnosticCode {
     ValidationUnsupportedMultipleDrivers,
     ValidationMissingRequiredInput,
     ValidationInvalidFixedArity,
+    ValidationInvalidVariadicArity,
     ValidationDuplicateSource,
     ValidationEmptyVariadicNode,
     ValidationUnaryDegenerateNode,
@@ -340,6 +341,8 @@ pub enum DuplicateNodeKind {
     AtLeast(u64),
     Select,
     Merge,
+    Coalesce,
+    Zip,
     Toggle(LogicLevel),
     PulseDelay(u64),
 }
@@ -410,6 +413,12 @@ pub enum ProblemEvidence<D> {
         role: FixedArityRole,
         ports: Vec<SubjectRef>,
         expected: usize,
+        encountered: usize,
+        marker: PhantomData<fn() -> D>,
+    },
+    ValidationInvalidVariadicArity {
+        ports: Vec<SubjectRef>,
+        minimum: usize,
         encountered: usize,
         marker: PhantomData<fn() -> D>,
     },
@@ -820,6 +829,21 @@ impl<D> ProblemEvidence<D> {
         }
     }
 
+    /// Evidence for a variadic port group outside its semantic arity domain.
+    #[must_use]
+    pub fn invalid_variadic_arity(
+        ports: Vec<SubjectRef>,
+        minimum: usize,
+        encountered: usize,
+    ) -> Self {
+        Self::ValidationInvalidVariadicArity {
+            ports,
+            minimum,
+            encountered,
+            marker: PhantomData,
+        }
+    }
+
     /// Evidence that one source feeds several stable ports of a variadic node.
     #[must_use]
     pub fn duplicate_source(source: SubjectRef, ports: Vec<SubjectRef>) -> Self {
@@ -915,7 +939,8 @@ impl<D> ProblemEvidence<D> {
             // "initial-duplicate-key" — claims are a multiset, not a set.
             Self::ValidationDuplicateKey { claims, .. } => claims.sort(),
             Self::ValidationUnsupportedMultipleDrivers { drivers, .. } => canonicalize(drivers),
-            Self::ValidationInvalidFixedArity { ports, .. } => canonicalize(ports),
+            Self::ValidationInvalidFixedArity { ports, .. }
+            | Self::ValidationInvalidVariadicArity { ports, .. } => canonicalize(ports),
             Self::ValidationDuplicateSource { ports, .. }
             | Self::ValidationEmptyVariadicNode { ports, .. }
             | Self::ValidationUnaryDegenerateNode { ports, .. }
@@ -1000,6 +1025,7 @@ opening_diagnostic_registry! {
     ValidationUnsupportedMultipleDrivers, Self::ValidationUnsupportedMultipleDrivers { .. }, "validation.unsupported_multiple_drivers", Error, CallerInput, true;
     ValidationMissingRequiredInput, Self::ValidationMissingRequiredInput { .. }, "validation.missing_required_input", Error, CallerInput, true;
     ValidationInvalidFixedArity, Self::ValidationInvalidFixedArity { .. }, "validation.invalid_fixed_arity", Error, CallerInput, true;
+    ValidationInvalidVariadicArity, Self::ValidationInvalidVariadicArity { .. }, "validation.invalid_variadic_arity", Error, CallerInput, true;
     ValidationDuplicateSource, Self::ValidationDuplicateSource { .. }, "validation.duplicate_source", Warning, CallerInput, true;
     ValidationEmptyVariadicNode, Self::ValidationEmptyVariadicNode { .. }, "validation.empty_variadic_node", Warning, Advisory, true;
     ValidationUnaryDegenerateNode, Self::ValidationUnaryDegenerateNode { .. }, "validation.unary_degenerate_node", Warning, Advisory, true;
@@ -1294,6 +1320,11 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
             encountered,
             ..
         } => ConditionDiscriminator::Arity(*role, *expected, *encountered),
+        ProblemEvidence::ValidationInvalidVariadicArity {
+            minimum,
+            encountered,
+            ..
+        } => ConditionDiscriminator::Arity(FixedArityRole::Input, *minimum, *encountered),
         ProblemEvidence::ValidationDuplicateSource { source, .. } => {
             ConditionDiscriminator::DuplicateSource(*source)
         }
@@ -1459,6 +1490,12 @@ fn merge_evidence<D: PartialEq>(
         (
             ProblemEvidence::ValidationInvalidFixedArity { ports, .. },
             ProblemEvidence::ValidationInvalidFixedArity {
+                ports: incoming, ..
+            },
+        )
+        | (
+            ProblemEvidence::ValidationInvalidVariadicArity { ports, .. },
+            ProblemEvidence::ValidationInvalidVariadicArity {
                 ports: incoming, ..
             },
         ) => {

@@ -33,6 +33,21 @@ enum VariadicNodeKind {
     AtLeast(u64),
 }
 
+#[derive(Clone, Copy)]
+enum PulseVariadicNodeKind {
+    Merge,
+    Zip,
+}
+
+impl PulseVariadicNodeKind {
+    fn authored<D>(self) -> NodeKind<D> {
+        match self {
+            Self::Merge => NodeKind::merge(),
+            Self::Zip => NodeKind::zip(),
+        }
+    }
+}
+
 impl VariadicNodeKind {
     fn authored<D>(self) -> NodeKind<D> {
         match self {
@@ -879,7 +894,7 @@ impl<D> NetworkBuilder<D> {
     where
         I: IntoIterator<Item = Signal<Pulse>>,
     {
-        self.pulse_variadic(inputs)
+        self.pulse_variadic(inputs, PulseVariadicNodeKind::Merge)
     }
 
     /// Adds an explicitly keyed Merge with locally allocated port identities.
@@ -892,7 +907,7 @@ impl<D> NetworkBuilder<D> {
     where
         I: IntoIterator<Item = Signal<Pulse>>,
     {
-        self.add_pulse_variadic(key, inputs, meta)
+        self.add_pulse_variadic(key, inputs, meta, PulseVariadicNodeKind::Merge)
     }
 
     /// Adds an explicitly keyed Merge with exact stable pulse-port identities.
@@ -906,7 +921,99 @@ impl<D> NetworkBuilder<D> {
     where
         I: IntoIterator<Item = (InPortKey<Pulse>, Signal<Pulse>)>,
     {
-        self.add_pulse_variadic_with_ports(key, output, inputs, meta)
+        self.add_pulse_variadic_with_ports(key, output, inputs, meta, PulseVariadicNodeKind::Merge)
+    }
+
+    /// Adds a unary pulse-presence bound with locally allocated stable identities.
+    pub fn coalesce(&mut self, input: Signal<Pulse>) -> Result<Signal<Pulse>, AuthoringFailure> {
+        let key = self.next_node_key();
+        let input_port = self.next_pulse_in_port_key();
+        let output_port = self.next_pulse_out_port_key();
+        Ok(self
+            .add_coalesce_with_ports(
+                key,
+                input_port,
+                output_port,
+                input,
+                DiagnosticMeta::default(),
+            )?
+            .into_outputs())
+    }
+
+    /// Adds an explicitly keyed Coalesce with locally allocated port identities.
+    pub fn add_coalesce(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        let input_port = self.next_pulse_in_port_key();
+        let output_port = self.next_pulse_out_port_key();
+        self.add_coalesce_with_ports(key, input_port, output_port, input, meta)
+    }
+
+    /// Adds an explicitly keyed Coalesce with exact stable pulse-port identities.
+    pub fn add_coalesce_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Pulse>,
+        output_port: OutPortKey<Pulse>,
+        input: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.require_local(input)?;
+        self.insert_pulse_variadic_node_keys(key, [input_port], output_port)?;
+        self.nodes.push(NodeDef::new(
+            key,
+            NodeKind::coalesce(),
+            NodePorts::new(vec![input_port.into()], vec![output_port.into()]),
+            meta,
+        ));
+        self.connections.push(ConnectionDef::new(
+            self.allocator.connection(),
+            source_endpoint_pulse(input.source),
+            ConnectionEndpoint::node_input(input_port.into()),
+            DiagnosticMeta::default(),
+        ));
+        Ok(AddedNode {
+            key,
+            outputs: self.signal(SignalSourceKey::NodeOutput(output_port)),
+        })
+    }
+
+    /// Adds a variadic pulse Zip with locally allocated stable identities.
+    pub fn zip<I>(&mut self, inputs: I) -> Result<Signal<Pulse>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Pulse>>,
+    {
+        self.pulse_variadic(inputs, PulseVariadicNodeKind::Zip)
+    }
+
+    /// Adds an explicitly keyed Zip with locally allocated port identities.
+    pub fn add_zip<I>(
+        &mut self,
+        key: NodeKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Pulse>>,
+    {
+        self.add_pulse_variadic(key, inputs, meta, PulseVariadicNodeKind::Zip)
+    }
+
+    /// Adds an explicitly keyed Zip with exact stable pulse-port identities.
+    pub fn add_zip_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Pulse>,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Pulse>, Signal<Pulse>)>,
+    {
+        self.add_pulse_variadic_with_ports(key, output, inputs, meta, PulseVariadicNodeKind::Zip)
     }
 
     /// Adds a pulse-controlled Toggle with locally allocated stable identities.
@@ -1510,7 +1617,11 @@ impl<D> NetworkBuilder<D> {
         })
     }
 
-    fn pulse_variadic<I>(&mut self, inputs: I) -> Result<Signal<Pulse>, AuthoringFailure>
+    fn pulse_variadic<I>(
+        &mut self,
+        inputs: I,
+        kind: PulseVariadicNodeKind,
+    ) -> Result<Signal<Pulse>, AuthoringFailure>
     where
         I: IntoIterator<Item = Signal<Pulse>>,
     {
@@ -1527,6 +1638,7 @@ impl<D> NetworkBuilder<D> {
             output,
             keyed_inputs,
             DiagnosticMeta::default(),
+            kind,
         ) {
             Ok(added) => Ok(added.into_outputs()),
             Err(_) => panic!("fresh pulse node keys must not conflict with builder state"),
@@ -1538,6 +1650,7 @@ impl<D> NetworkBuilder<D> {
         key: NodeKey,
         inputs: I,
         meta: DiagnosticMeta,
+        kind: PulseVariadicNodeKind,
     ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure>
     where
         I: IntoIterator<Item = Signal<Pulse>>,
@@ -1549,7 +1662,7 @@ impl<D> NetworkBuilder<D> {
         for input in inputs {
             keyed_inputs.push((self.next_pulse_in_port_key(), input));
         }
-        self.add_pulse_variadic_with_ports(key, output, keyed_inputs, meta)
+        self.add_pulse_variadic_with_ports(key, output, keyed_inputs, meta, kind)
     }
 
     fn add_pulse_variadic_with_ports<I>(
@@ -1558,6 +1671,7 @@ impl<D> NetworkBuilder<D> {
         output: OutPortKey<Pulse>,
         inputs: I,
         meta: DiagnosticMeta,
+        kind: PulseVariadicNodeKind,
     ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure>
     where
         I: IntoIterator<Item = (InPortKey<Pulse>, Signal<Pulse>)>,
@@ -1569,7 +1683,7 @@ impl<D> NetworkBuilder<D> {
         self.insert_pulse_variadic_node_keys(key, inputs.iter().map(|(port, _)| *port), output)?;
         self.nodes.push(NodeDef::new(
             key,
-            NodeKind::merge(),
+            kind.authored(),
             NodePorts::new(
                 inputs.iter().map(|(port, _)| (*port).into()).collect(),
                 vec![output.into()],
@@ -2434,6 +2548,82 @@ impl<D> ModuleBuilder<D> {
             self.graph.require_local(*input)?;
         }
         self.graph.add_merge_with_ports(key, output, inputs, meta)
+    }
+
+    /// Adds a unary pulse-presence bound.
+    pub fn coalesce(&mut self, input: Signal<Pulse>) -> Result<Signal<Pulse>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph.coalesce(input)
+    }
+
+    /// Adds an explicitly keyed Coalesce with locally allocated ports.
+    pub fn add_coalesce(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.require_unused_node_key(key)?;
+        self.graph.add_coalesce(key, input, meta)
+    }
+
+    /// Adds an explicitly keyed Coalesce with exact ports.
+    pub fn add_coalesce_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Pulse>,
+        output_port: OutPortKey<Pulse>,
+        input: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph
+            .add_coalesce_with_ports(key, input_port, output_port, input, meta)
+    }
+
+    /// Adds a variadic pulse Zip.
+    pub fn zip<I>(&mut self, inputs: I) -> Result<Signal<Pulse>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Pulse>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.graph.require_all_local(&inputs)?;
+        self.graph.zip(inputs)
+    }
+
+    /// Adds an explicitly keyed Zip with locally allocated ports.
+    pub fn add_zip<I>(
+        &mut self,
+        key: NodeKey,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Pulse>>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        self.graph.require_all_local(&inputs)?;
+        self.require_unused_node_key(key)?;
+        self.graph.add_zip(key, inputs, meta)
+    }
+
+    /// Adds an explicitly keyed Zip with exact ports.
+    pub fn add_zip_with_ports<I>(
+        &mut self,
+        key: NodeKey,
+        output: OutPortKey<Pulse>,
+        inputs: I,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = (InPortKey<Pulse>, Signal<Pulse>)>,
+    {
+        let inputs = inputs.into_iter().collect::<Vec<_>>();
+        for (_, input) in &inputs {
+            self.graph.require_local(*input)?;
+        }
+        self.graph.add_zip_with_ports(key, output, inputs, meta)
     }
 
     /// Adds a pulse-controlled Toggle.

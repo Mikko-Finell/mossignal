@@ -996,8 +996,9 @@ Semantically equivalent stable-keyed definitions must produce the same fingerpri
 ### 54.2 Restricted network-fingerprint projection version 1
 
 For the restricted foundation containing `Constant`, `Not`, `All`, `Any`,
-`Parity`, `AtLeast`, `Select`, pulse `Merge`, stateful `Toggle`, and temporal
-`PulseDelay`, the exact canonical payload is the following record:
+`Parity`, `AtLeast`, `Select`, pulse `Merge`, `Coalesce`, and `Zip`, stateful
+`Toggle`, and temporal `PulseDelay`, the exact canonical payload is the
+following record:
 
 ```text
 network_fingerprint_payload_v1 = record {
@@ -1043,6 +1044,8 @@ kind = ["constant", record {
         }]
      | ["select", null]
      | ["merge", null]
+     | ["coalesce", null]
+     | ["zip", null]
      | ["toggle", record {
             initial,
             state_schema,
@@ -1116,7 +1119,8 @@ external_output = record {
 
 The `selector`, `when_low`, and `when_high` semantic roles apply to the three
 fixed input ports of `Select`; ordinary fixed and variadic level inputs use the
-`input` role. Pulse `Merge` ports use the ordinary `input` and `output` roles.
+`input` role. Pulse `Merge`, `Coalesce`, and `Zip` ports use the ordinary
+`input` and `output` roles.
 `Toggle` uses the `toggle` role for its Pulse input and `output` for its Level
 output. Its kind record includes the declared initial level and closed one-cell
 `stored_level` state schema. The role is part of canonical semantic identity
