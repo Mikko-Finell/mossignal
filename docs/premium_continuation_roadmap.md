@@ -376,7 +376,7 @@ to later items.
 
 ---
 
-## 40. Application bindings and bound execution façade
+## 40. [DONE] Application bindings and bound execution façade
 
 Add the specified adapter layer between caller-owned application identities and
 stable mossignal endpoints:

@@ -4,11 +4,12 @@
 //! representation used by later graph construction and validation modules.
 
 use crate::authored::InputPortRole;
-use crate::identity::ModuleFingerprint;
+use crate::identity::{ModuleFingerprint, NetworkFingerprint};
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
     AnyOutPortKey, ConnectionKey, ModuleInputKey, ModuleInstanceKey, NetworkKey, NodeKey,
 };
+use crate::machine::NetworkRevision;
 use crate::metadata::OriginRef;
 use crate::signal::{LogicLevel, SignalKind};
 use crate::standard::{StandardModuleRef, StandardParameterKey, StandardParameterKind};
@@ -47,6 +48,21 @@ pub enum SubjectRef {
     ExternalInput(AnyExternalInputKey),
     /// An authored external output.
     ExternalOutput(AnyExternalOutputKey),
+    /// One compiled-network-bound application binding slot.
+    Binding(BindingSubjectRef),
+}
+
+/// Stable identity for one non-structural application binding slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BindingSubjectRef {
+    Input {
+        fingerprint: NetworkFingerprint,
+        endpoint: AnyExternalInputKey,
+    },
+    Output {
+        fingerprint: NetworkFingerprint,
+        endpoint: AnyExternalOutputKey,
+    },
 }
 
 /// The semantic role of a stable subject in the current-reaction graph.
@@ -99,6 +115,7 @@ impl SubjectRef {
             Self::Connection(key) => (13, SubjectPayload::Direct(key.as_u128())),
             Self::ExternalInput(key) => (14, SubjectPayload::ExternalInput(*key)),
             Self::ExternalOutput(key) => (15, SubjectPayload::ExternalOutput(*key)),
+            Self::Binding(binding) => (16, SubjectPayload::Binding(*binding)),
         }
     }
 
@@ -119,6 +136,7 @@ enum SubjectPayload {
     OutPort(AnyOutPortKey),
     ExternalInput(AnyExternalInputKey),
     ExternalOutput(AnyExternalOutputKey),
+    Binding(BindingSubjectRef),
 }
 
 /// The severity fixed by a catalogue entry.
@@ -196,6 +214,14 @@ pub enum DiagnosticCode {
     StandardModuleImpossibleThreshold,
     StandardModuleConstantResult,
     StandardModuleDuplicateSource,
+    BindingUnknownEndpoint,
+    BindingWrongSignalKind,
+    BindingDuplicateEndpoint,
+    BindingDuplicateExternalKey,
+    BindingAmbiguousExternalKey,
+    BindingMissingRequiredBinding,
+    BindingWrongNetwork,
+    BindingStaleSchema,
     InternalDiagnosticEvidenceConflict,
 }
 
@@ -323,6 +349,18 @@ pub enum DuplicateNodeKind {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Suggestion {}
+
+/// Catalogue evidence shared by application-binding conditions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingEvidence {
+    pub network: NetworkKey,
+    pub fingerprint: NetworkFingerprint,
+    pub revision: NetworkRevision,
+    pub endpoint: Option<BindingSubjectRef>,
+    pub conflicting: Vec<BindingSubjectRef>,
+    pub missing: Vec<BindingSubjectRef>,
+    pub expected_kind: Option<SignalKind>,
+}
 
 /// Structured evidence for one exact opening catalogue code.
 #[non_exhaustive]
@@ -483,6 +521,38 @@ pub enum ProblemEvidence<D> {
         module_ref: StandardModuleRef,
         source: SubjectRef,
         inputs: Vec<ModuleInputKey<crate::signal::Level>>,
+        marker: PhantomData<fn() -> D>,
+    },
+    BindingUnknownEndpoint {
+        evidence: BindingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    BindingWrongSignalKind {
+        evidence: BindingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    BindingDuplicateEndpoint {
+        evidence: BindingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    BindingDuplicateExternalKey {
+        evidence: BindingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    BindingAmbiguousExternalKey {
+        evidence: BindingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    BindingMissingRequiredBinding {
+        evidence: BindingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    BindingWrongNetwork {
+        evidence: BindingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    BindingStaleSchema {
+        evidence: BindingEvidence,
         marker: PhantomData<fn() -> D>,
     },
     InternalDiagnosticEvidenceConflict {
@@ -886,6 +956,18 @@ macro_rules! opening_diagnostic_registry {
                 self.specification().code
             }
 
+            /// Returns the catalogue-fixed severity of this condition.
+            #[must_use]
+            pub const fn severity(self) -> Severity {
+                self.specification().severity
+            }
+
+            /// Returns the catalogue-fixed responsibility of this condition.
+            #[must_use]
+            pub const fn responsibility(self) -> Responsibility {
+                self.specification().responsibility
+            }
+
             const fn specification(self) -> CodeSpecification {
                 match self {
                     $(Self::$code => CodeSpecification {
@@ -940,6 +1022,14 @@ opening_diagnostic_registry! {
     StandardModuleImpossibleThreshold, Self::StandardModuleImpossibleThreshold { .. }, "standard_module.impossible_threshold", Warning, Advisory, true;
     StandardModuleConstantResult, Self::StandardModuleConstantResult { .. }, "standard_module.constant_result", Warning, Advisory, true;
     StandardModuleDuplicateSource, Self::StandardModuleDuplicateSource { .. }, "standard_module.duplicate_source", Warning, CallerInput, true;
+    BindingUnknownEndpoint, Self::BindingUnknownEndpoint { .. }, "binding.unknown_endpoint", Error, CallerInput, true;
+    BindingWrongSignalKind, Self::BindingWrongSignalKind { .. }, "binding.wrong_signal_kind", Error, CallerInput, true;
+    BindingDuplicateEndpoint, Self::BindingDuplicateEndpoint { .. }, "binding.duplicate_endpoint", Error, CallerInput, true;
+    BindingDuplicateExternalKey, Self::BindingDuplicateExternalKey { .. }, "binding.duplicate_external_key", Error, CallerInput, true;
+    BindingAmbiguousExternalKey, Self::BindingAmbiguousExternalKey { .. }, "binding.ambiguous_external_key", Error, CallerInput, true;
+    BindingMissingRequiredBinding, Self::BindingMissingRequiredBinding { .. }, "binding.missing_required_binding", Error, CallerInput, true;
+    BindingWrongNetwork, Self::BindingWrongNetwork { .. }, "binding.wrong_network", Error, Compatibility, false;
+    BindingStaleSchema, Self::BindingStaleSchema { .. }, "binding.stale_schema", Error, Compatibility, false;
     InternalDiagnosticEvidenceConflict, Self::InternalDiagnosticEvidenceConflict { .. }, "internal.diagnostic_evidence_conflict", Error, LibraryDefect, false;
 }
 
@@ -1165,6 +1255,7 @@ enum ConditionDiscriminator {
     StandardInputs(StandardModuleRef, Vec<AnyModuleInputKey>),
     StandardSource(StandardModuleRef, SubjectRef),
     StandardDetail(StandardModuleRef, String),
+    Binding(DiagnosticCode, Option<BindingSubjectRef>),
 }
 
 fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscriminator {
@@ -1286,6 +1377,48 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         ProblemEvidence::StandardModuleDuplicateSource {
             module_ref, source, ..
         } => ConditionDiscriminator::StandardSource(module_ref.clone(), *source),
+        ProblemEvidence::BindingUnknownEndpoint { evidence, .. } => {
+            ConditionDiscriminator::Binding(
+                DiagnosticCode::BindingUnknownEndpoint,
+                evidence.endpoint,
+            )
+        }
+        ProblemEvidence::BindingWrongSignalKind { evidence, .. } => {
+            ConditionDiscriminator::Binding(
+                DiagnosticCode::BindingWrongSignalKind,
+                evidence.endpoint,
+            )
+        }
+        ProblemEvidence::BindingDuplicateEndpoint { evidence, .. } => {
+            ConditionDiscriminator::Binding(
+                DiagnosticCode::BindingDuplicateEndpoint,
+                evidence.endpoint,
+            )
+        }
+        ProblemEvidence::BindingDuplicateExternalKey { evidence, .. } => {
+            ConditionDiscriminator::Binding(
+                DiagnosticCode::BindingDuplicateExternalKey,
+                evidence.endpoint,
+            )
+        }
+        ProblemEvidence::BindingAmbiguousExternalKey { evidence, .. } => {
+            ConditionDiscriminator::Binding(
+                DiagnosticCode::BindingAmbiguousExternalKey,
+                evidence.endpoint,
+            )
+        }
+        ProblemEvidence::BindingMissingRequiredBinding { evidence, .. } => {
+            ConditionDiscriminator::Binding(
+                DiagnosticCode::BindingMissingRequiredBinding,
+                evidence.endpoint,
+            )
+        }
+        ProblemEvidence::BindingWrongNetwork { evidence, .. } => {
+            ConditionDiscriminator::Binding(DiagnosticCode::BindingWrongNetwork, evidence.endpoint)
+        }
+        ProblemEvidence::BindingStaleSchema { evidence, .. } => {
+            ConditionDiscriminator::Binding(DiagnosticCode::BindingStaleSchema, evidence.endpoint)
+        }
         ProblemEvidence::InternalDiagnosticEvidenceConflict {
             conflicting_code,
             conflicting_primary,
@@ -1383,6 +1516,7 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
             ConditionDiscriminator::StandardInputs(_, _) => 15,
             ConditionDiscriminator::StandardSource(_, _) => 16,
             ConditionDiscriminator::StandardDetail(_, _) => 17,
+            ConditionDiscriminator::Binding(_, _) => 18,
         }
     }
     tag(&left)
@@ -1470,6 +1604,10 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
                 ConditionDiscriminator::StandardDetail(left_module, left_detail),
                 ConditionDiscriminator::StandardDetail(right_module, right_detail),
             ) => (left_module, left_detail).cmp(&(right_module, right_detail)),
+            (
+                ConditionDiscriminator::Binding(left_code, left_subject),
+                ConditionDiscriminator::Binding(right_code, right_subject),
+            ) => (left_code, left_subject).cmp(&(right_code, right_subject)),
             _ => Ordering::Equal,
         })
 }

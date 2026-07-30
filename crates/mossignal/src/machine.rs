@@ -485,6 +485,10 @@ impl std::error::Error for ModuleInspectionFailure {}
 impl NetworkRevision {
     const INITIAL: Self = Self(0);
 
+    pub(crate) const fn initial() -> Self {
+        Self::INITIAL
+    }
+
     #[cfg(test)]
     pub(crate) const fn from_value(value: u64) -> Self {
         Self(value)

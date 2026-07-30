@@ -1,6 +1,7 @@
 //! Core value types for Mossignal.
 
 pub mod authored;
+pub mod binding;
 pub mod builder;
 mod compile;
 pub mod diagnostics;
@@ -20,6 +21,11 @@ mod validation;
 
 pub use authored::{
     ModuleBinding, ModuleBindingSet, ModuleInstanceDef, PulseDelayConfig, ToggleConfig,
+};
+pub use binding::{
+    BindingFailure, BindingSet, BindingSetBuilder, BoundApplyFailure, BoundMachine,
+    BoundOutputFailure, BoundTransactionResult, InputObservation, InputProjectionFailure,
+    InputProjector, ProjectedOutputEvent,
 };
 pub use builder::{
     AddedModuleInstance, AddedNode, AddedStandardModule, AuthoringFailure, KeyedModuleInput,

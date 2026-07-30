@@ -171,6 +171,14 @@ impl<'a, D> NetworkDefinitionGraphView<'a, D> {
         self.definition.connections()
     }
     #[must_use]
+    pub fn external_inputs(self) -> &'a [crate::authored::ExternalInputDef] {
+        self.definition.external_inputs()
+    }
+    #[must_use]
+    pub fn external_outputs(self) -> &'a [crate::authored::ExternalOutputDef] {
+        self.definition.external_outputs()
+    }
+    #[must_use]
     pub fn module_instances(self) -> &'a [ModuleInstanceDef<D>] {
         self.definition.module_instances()
     }
