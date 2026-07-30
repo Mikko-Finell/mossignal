@@ -1072,35 +1072,6 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ),
                 );
             }
-            if matches!(
-                node.kind(),
-                NodeKind::Not
-                    | NodeKind::Select
-                    | NodeKind::PulseGate
-                    | NodeKind::PulseSelect
-                    | NodeKind::PulseRoute
-                    | NodeKind::Coalesce
-                    | NodeKind::Toggle(_)
-                    | NodeKind::PulseDelay(_)
-            ) && expected_inputs.is_some_and(|expected| inputs.len() < expected)
-            {
-                let expected_kind = match node.kind() {
-                    NodeKind::PulseGate | NodeKind::PulseSelect | NodeKind::PulseRoute => {
-                        SignalKind::Pulse
-                    }
-                    NodeKind::Toggle(_) | NodeKind::Coalesce | NodeKind::PulseDelay(_) => {
-                        SignalKind::Pulse
-                    }
-                    _ => SignalKind::Level,
-                };
-                self.add(
-                    SubjectRef::Node(node.key()),
-                    ProblemEvidence::missing_required_input(
-                        SubjectRef::Node(node.key()),
-                        expected_kind,
-                    ),
-                );
-            }
             let expected_input_kind = |role: InputPortRole| match node.kind() {
                 NodeKind::PulseGate => match role {
                     InputPortRole::Pulses => Some(SignalKind::Pulse),
@@ -1131,6 +1102,51 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 .then_some(SignalKind::Level),
                 _ => (role == InputPortRole::Input).then_some(SignalKind::Level),
             };
+            let required_input_roles = match node.kind() {
+                NodeKind::Constant(_) => Vec::new(),
+                NodeKind::Not => vec![InputPortRole::Input],
+                NodeKind::Select | NodeKind::PulseSelect => vec![
+                    InputPortRole::Selector,
+                    InputPortRole::WhenLow,
+                    InputPortRole::WhenHigh,
+                ],
+                NodeKind::PulseGate => {
+                    vec![InputPortRole::Pulses, InputPortRole::Enable]
+                }
+                NodeKind::PulseRoute => {
+                    vec![InputPortRole::Selector, InputPortRole::Pulses]
+                }
+                NodeKind::Coalesce => vec![InputPortRole::Input],
+                NodeKind::Toggle(_) => vec![InputPortRole::Toggle],
+                NodeKind::PulseDelay(_) => vec![InputPortRole::PulseDelay],
+                NodeKind::All
+                | NodeKind::Any
+                | NodeKind::Parity
+                | NodeKind::AtLeast(_)
+                | NodeKind::Merge
+                | NodeKind::Zip => vec![InputPortRole::Input; inputs.len()],
+            };
+            if expected_inputs.is_some() {
+                for required in &required_input_roles {
+                    let attached_count = inputs
+                        .iter()
+                        .zip(node.ports().input_roles())
+                        .filter(|(_, role)| *role == required)
+                        .count();
+                    let required_count = required_input_roles
+                        .iter()
+                        .filter(|role| *role == required)
+                        .count();
+                    if attached_count < required_count
+                        && let Some(expected_kind) = expected_input_kind(*required)
+                    {
+                        self.add(
+                            SubjectRef::Node(node.key()),
+                            ProblemEvidence::missing_required_input_role(*required, expected_kind),
+                        );
+                    }
+                }
+            }
             let input_kinds_valid = inputs
                 .iter()
                 .zip(node.ports().input_roles())
@@ -1158,22 +1174,6 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 );
             }
             let role_count = node.ports().input_roles().len();
-            let required_input_roles = match node.kind() {
-                NodeKind::Select | NodeKind::PulseSelect => vec![
-                    InputPortRole::Selector,
-                    InputPortRole::WhenLow,
-                    InputPortRole::WhenHigh,
-                ],
-                NodeKind::PulseGate => {
-                    vec![InputPortRole::Pulses, InputPortRole::Enable]
-                }
-                NodeKind::PulseRoute => {
-                    vec![InputPortRole::Selector, InputPortRole::Pulses]
-                }
-                NodeKind::Toggle(_) => vec![InputPortRole::Toggle],
-                NodeKind::PulseDelay(_) => vec![InputPortRole::PulseDelay],
-                _ => vec![InputPortRole::Input; inputs.len()],
-            };
             let valid_role_count = required_input_roles
                 .iter()
                 .filter(|role| {

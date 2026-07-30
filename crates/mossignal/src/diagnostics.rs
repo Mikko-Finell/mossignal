@@ -351,6 +351,16 @@ pub enum DuplicateNodeKind {
     PulseDelay(u64),
 }
 
+/// The stable identity of one required fixed input that is absent.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequiredInputRef {
+    /// An authored input port exists but has no driver.
+    Port(SubjectRef),
+    /// A fixed semantic input role has no corresponding authored port.
+    Role(InputPortRole),
+}
+
 /// A safe, machine-readable correction.  The opening validation catalogue has
 /// no unambiguous automatic correction, so no constructors are exposed yet.
 #[non_exhaustive]
@@ -409,7 +419,7 @@ pub enum ProblemEvidence<D> {
         marker: PhantomData<fn() -> D>,
     },
     ValidationMissingRequiredInput {
-        required: SubjectRef,
+        required: RequiredInputRef,
         expected_kind: SignalKind,
         marker: PhantomData<fn() -> D>,
     },
@@ -810,7 +820,17 @@ impl<D> ProblemEvidence<D> {
     #[must_use]
     pub fn missing_required_input(required: SubjectRef, expected_kind: SignalKind) -> Self {
         Self::ValidationMissingRequiredInput {
-            required,
+            required: RequiredInputRef::Port(required),
+            expected_kind,
+            marker: PhantomData,
+        }
+    }
+
+    /// Evidence for an absent fixed semantic input role.
+    #[must_use]
+    pub fn missing_required_input_role(required: InputPortRole, expected_kind: SignalKind) -> Self {
+        Self::ValidationMissingRequiredInput {
+            required: RequiredInputRef::Role(required),
             expected_kind,
             marker: PhantomData,
         }
@@ -1270,7 +1290,7 @@ enum ConditionDiscriminator {
     Subject(SubjectRef),
     SubjectAndKind(SubjectRef, SignalKind),
     Subjects(SubjectRef, SubjectRef),
-    Required(SubjectRef, SignalKind),
+    Required(RequiredInputRef, SignalKind),
     Arity(FixedArityRole, usize, usize),
     DuplicateSource(SubjectRef),
     VariadicArity(usize),
@@ -1579,10 +1599,9 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
                 .cmp_canonical(&right_first)
                 .then_with(|| left_second.cmp_canonical(&right_second)),
             (
-                ConditionDiscriminator::Required(left_subject, left_kind),
-                ConditionDiscriminator::Required(right_subject, right_kind),
-            ) => left_subject
-                .cmp_canonical(&right_subject)
+                ConditionDiscriminator::Required(left_required, left_kind),
+                ConditionDiscriminator::Required(right_required, right_kind),
+            ) => compare_required_inputs(left_required, right_required)
                 .then_with(|| left_kind.cmp(&right_kind)),
             (
                 ConditionDiscriminator::Arity(left_role, left_expected, left_encountered),
@@ -1651,6 +1670,15 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
             ) => (left_code, left_subject).cmp(&(right_code, right_subject)),
             _ => Ordering::Equal,
         })
+}
+
+fn compare_required_inputs(left: RequiredInputRef, right: RequiredInputRef) -> Ordering {
+    match (left, right) {
+        (RequiredInputRef::Port(left), RequiredInputRef::Port(right)) => left.cmp_canonical(&right),
+        (RequiredInputRef::Role(left), RequiredInputRef::Role(right)) => left.cmp(&right),
+        (RequiredInputRef::Port(_), RequiredInputRef::Role(_)) => Ordering::Less,
+        (RequiredInputRef::Role(_), RequiredInputRef::Port(_)) => Ordering::Greater,
+    }
 }
 
 /// An artifact together with all independently collectable findings.

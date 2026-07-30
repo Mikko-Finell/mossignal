@@ -4,13 +4,13 @@ use mossignal::authored::{
     ConnectionDef, ExternalInputDef, ExternalOutputDef, InputPortRole, NodeDef, NodeKind,
     NodePorts, OutputPortRole, UncheckedNetwork,
 };
-use mossignal::diagnostics::DiagnosticCode;
+use mossignal::diagnostics::{DiagnosticCode, ProblemEvidence, RequiredInputRef};
 use mossignal::key::{
     ConnectionKey, ExternalInputKey, ExternalOutputKey, InPortKey, ModuleInputKey,
     ModuleInstanceKey, ModuleOutputKey, NetworkKey, NodeKey, OutPortKey, SignalSourceKey,
 };
 use mossignal::metadata::DiagnosticMeta;
-use mossignal::signal::{Level, LogicLevel, Pulse, PulseCount};
+use mossignal::signal::{Level, LogicLevel, Pulse, PulseCount, SignalKind};
 use mossignal::time::Time;
 use mossignal::{
     CauseInspection, CauseRef, CompiledNetwork, ModuleBuilder, NetworkBuilder, OutputEvent,
@@ -109,6 +109,16 @@ fn observed_counts(
         .collect()
 }
 
+fn observed_output_order(events: &[OutputEvent<TestDomain>]) -> Vec<ExternalOutputKey<Pulse>> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            OutputEvent::Pulsed { output, .. } => Some(*output),
+            _ => None,
+        })
+        .collect()
+}
+
 fn expected_counts(
     fixture: &FamilyFixture,
     control: LogicLevel,
@@ -165,9 +175,11 @@ fn family_exhausts_controls_and_counts_across_initialization_and_ready_reactions
                     snapshot,
                 ))
                 .unwrap_or_else(|failure| panic!("family must initialize: {failure}"));
+            let expected = expected_counts(&fixture, control, count);
+            assert_eq!(observed_counts(initialized.output_events()), expected);
             assert_eq!(
-                observed_counts(initialized.output_events()),
-                expected_counts(&fixture, control, count)
+                observed_output_order(initialized.output_events()),
+                expected.keys().copied().collect::<Vec<_>>()
             );
 
             let next_control = control.invert();
@@ -192,9 +204,11 @@ fn family_exhausts_controls_and_counts_across_initialization_and_ready_reactions
                     simultaneous,
                 ))
                 .unwrap_or_else(|failure| panic!("family must advance: {failure}"));
+            let expected = expected_counts(&fixture, next_control, count);
+            assert_eq!(observed_counts(advanced.output_events()), expected);
             assert_eq!(
-                observed_counts(advanced.output_events()),
-                expected_counts(&fixture, next_control, count)
+                observed_output_order(advanced.output_events()),
+                expected.keys().copied().collect::<Vec<_>>()
             );
 
             let empty = fixture
@@ -415,6 +429,38 @@ fn exact_dynamic_route_roles_match_typed_identity_and_role_defects_block() {
         .unwrap_or_else(|failure| panic!("typed route must validate: {failure:?}"));
     assert_eq!(typed.fingerprint(), valid.fingerprint());
 
+    for (validated, expected_output) in [
+        (&valid, ExternalOutputKey::<Pulse>::from_u128(40)),
+        (
+            &swapped_output_roles,
+            ExternalOutputKey::<Pulse>::from_u128(41),
+        ),
+    ] {
+        let compiled = validated
+            .compile_ref()
+            .require_artifact()
+            .unwrap_or_else(|failure| panic!("dynamic route must compile: {failure:?}"));
+        let snapshot = compiled
+            .input_snapshot()
+            .set(selector, LogicLevel::Low)
+            .and_then(|builder| builder.pulse(pulses, PulseCount::new(9)))
+            .and_then(|builder| builder.finish())
+            .unwrap_or_else(|failure| panic!("dynamic route snapshot must build: {failure}"));
+        let mut machine = compiled.spawn(policy());
+        let result = machine
+            .apply(Transaction::initialize(
+                Time::from_ticks(0),
+                machine.revision(),
+                snapshot,
+            ))
+            .unwrap_or_else(|failure| panic!("dynamic route must initialize: {failure}"));
+        assert!(matches!(
+            result.output_events(),
+            [OutputEvent::Pulsed { output, count, .. }]
+                if *output == expected_output && *count == PulseCount::new(9)
+        ));
+    }
+
     for malformed in [
         definition(
             vec![InputPortRole::Selector, InputPortRole::Selector],
@@ -496,6 +542,78 @@ fn exact_dynamic_route_roles_match_typed_identity_and_role_defects_block() {
             .any(|diagnostic| diagnostic.problem().code()
                 == DiagnosticCode::ValidationCurrentReactionCycle)
     );
+}
+
+#[test]
+fn absent_mixed_kind_ports_report_every_required_input() {
+    let cases = [
+        (
+            NodeKind::pulse_gate(),
+            NodePorts::new(Vec::new(), vec![OutPortKey::<Pulse>::from_u128(10).into()]),
+            vec![
+                (InputPortRole::Pulses, SignalKind::Pulse),
+                (InputPortRole::Enable, SignalKind::Level),
+            ],
+        ),
+        (
+            NodeKind::pulse_select(),
+            NodePorts::new(Vec::new(), vec![OutPortKey::<Pulse>::from_u128(11).into()]),
+            vec![
+                (InputPortRole::Selector, SignalKind::Level),
+                (InputPortRole::WhenLow, SignalKind::Pulse),
+                (InputPortRole::WhenHigh, SignalKind::Pulse),
+            ],
+        ),
+        (
+            NodeKind::pulse_route(),
+            NodePorts::with_roles(
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    OutPortKey::<Pulse>::from_u128(12).into(),
+                    OutPortKey::<Pulse>::from_u128(13).into(),
+                ],
+                vec![OutputPortRole::WhenLow, OutputPortRole::WhenHigh],
+            ),
+            vec![
+                (InputPortRole::Selector, SignalKind::Level),
+                (InputPortRole::Pulses, SignalKind::Pulse),
+            ],
+        ),
+    ];
+
+    for (index, (kind, ports, mut expected_kinds)) in cases.into_iter().enumerate() {
+        let report = UncheckedNetwork::<TestDomain>::new(
+            NetworkKey::from_u128(80 + index as u128),
+            TimeDomainId::from_u128(90),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(100 + index as u128),
+                kind,
+                ports,
+                DiagnosticMeta::default(),
+            )],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .validate();
+        let mut encountered = report
+            .diagnostics()
+            .iter()
+            .filter_map(|diagnostic| match diagnostic.problem().evidence() {
+                ProblemEvidence::ValidationMissingRequiredInput {
+                    required: RequiredInputRef::Role(required),
+                    expected_kind,
+                    ..
+                } => Some((*required, *expected_kind)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        expected_kinds.sort();
+        encountered.sort();
+        assert_eq!(encountered, expected_kinds);
+    }
 }
 
 #[test]

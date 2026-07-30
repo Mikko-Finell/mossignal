@@ -929,7 +929,7 @@ impl ToggleConfig {
     }
 }
 
-/// The semantic role of one level input port.
+/// The semantic role of one input port.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum InputPortRole {
