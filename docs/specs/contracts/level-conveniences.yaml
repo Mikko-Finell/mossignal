@@ -1,0 +1,161 @@
+schema_version: "0.1"
+id: mossignal.authoring.level_conveniences
+title: Level primitive aliases and builder-only operations
+kind: family
+status: reviewed
+
+source_baseline:
+  commit: 40236385cf5d73c6fbe97196cded0d56bf4bfe31
+  working_tree: dirty
+
+summary: >-
+  The initial level conveniences are either exact aliases for one existing
+  primitive or transparent builder-only compositions of ordinary primitives.
+  They add authoring ergonomics without creating new node kinds, module
+  instances, semantic identities, runtime behavior, or compatibility surfaces.
+
+scope:
+  includes:
+    - classification and exact lowering of xor, level_gate, majority, nand, nor, and xnor
+    - typed NetworkBuilder and ModuleBuilder convenience behavior
+    - structural, diagnostic, identity, inspection, and conformance consequences
+  excludes:
+    - standard modules and application-defined ModuleDef wrappers
+    - debounce, any_pulse, and conveniences whose primitive dependencies are not implemented
+    - annotate_signal and other metadata-only authoring
+    - persistence encoding, topology patches, migration, and new primitive semantics
+
+known_uncovered:
+  - Primitive aliases and builder-only operations for future pulse, stateful, and temporal primitive families
+  - Signal annotation API and metadata retention for metadata-only conveniences
+
+aliases:
+  - xor
+  - level_gate
+  - majority
+  - nand
+  - nor
+  - xnor
+  - thin Boolean conveniences
+
+requirements:
+  - id: exact-convenience-classification
+    kind: semantic
+    statement: >-
+      Every supplied named convenience belongs to exactly one semantic
+      classification. xor, level_gate, and majority are primitive aliases;
+      nand, nor, and xnor are builder-only operations. None is a standard
+      module, new primitive kind, metadata-only operation, or independent
+      semantic object.
+    sources: [classification, initial-aliases, initial-builder-operations, thin-boolean]
+
+  - id: exact-level-alias-lowering
+    kind: semantic
+    statement: >-
+      xor(a, b) creates exactly Parity([a, b]); level_gate(value, enable)
+      creates exactly All([value, enable]); and majority(inputs) creates
+      exactly AtLeast(floor(arity / 2) + 1, inputs). majority([]) therefore
+      creates AtLeast(1, []) and yields Low. Each call creates one ordinary
+      primitive and no ModuleInstance.
+    sources: [initial-aliases, initial-builder-operations, thin-boolean, primitive-alias-api]
+
+  - id: exact-builder-only-lowering
+    kind: semantic
+    statement: >-
+      nand(inputs) authors Not(All(inputs)); nor(inputs) authors
+      Not(Any(inputs)); and xnor(a, b) authors Not(Parity([a, b])). These exact
+      ordinary primitive nodes and connections are the complete retained
+      structure; no ModuleInstance or additional semantic wrapper is created.
+    sources: [classification, initial-builder-operations, thin-boolean]
+
+  - id: ordinary-primitive-semantics-and-diagnostics
+    kind: system_effect
+    statement: >-
+      A primitive alias uses its canonical primitive's compatibility and
+      diagnostic rules, while a builder-only operation is inspected and
+      persisted only as the ordinary primitives and connections in its exact
+      expansion. Neither classification introduces convenience-owned
+      diagnostics or suppresses the diagnostics of the authored primitives.
+    sources: [classification, primitive-alias-api]
+
+  - id: no-independent-identity-or-boundary
+    kind: prohibition
+    statement: >-
+      A primitive alias contributes only its one canonical primitive, while a
+      builder-only operation contributes only its authored primitive graph.
+      Neither convenience has a descriptor, version, module hierarchy,
+      independent fingerprint field, reconfiguration boundary, migration
+      rule, runtime state, diagnostic subject, or persistence representation.
+    sources: [classification, primitive-alias-api]
+
+  - id: typed-builder-scope-preservation
+    kind: public_surface
+    statement: >-
+      Convenience methods consume typed Signal<Level> values under the same
+      builder-scope rules as their underlying primitive constructors. Methods
+      offered on NetworkBuilder and ModuleBuilder must therefore return the
+      ordinary structured AuthoringFailure for foreign signals and lower into
+      the same canonical authored graph as direct primitive construction.
+    sources: [builder-signal-scope, primitive-alias-api, module-builder-parity]
+    basis: derived
+
+  - id: exact-lowering-conformance
+    kind: verification
+    statement: >-
+      Verification must demonstrate each convenience's required classification
+      and exact authored primitive node kinds, configurations, incidence, and
+      absence of a ModuleInstance or independent semantic object. It must cover
+      the specified empty-majority boundary and establish that both typed
+      builders preserve the same builder-scoped failure boundary as their
+      underlying primitive constructors.
+    sources: [verification-policy, initial-aliases, initial-builder-operations, builder-signal-scope, module-builder-parity]
+    basis: derived
+
+recommendations:
+  - id: concise-builder-methods
+    statement: >-
+      The typed builders should expose concise methods for the initial
+      builder-only operation set, and should avoid separate conveniences for
+      every inversion, polarity, priority, or branch permutation.
+    sources: [initial-builder-operations]
+
+implementation_freedom:
+  - Share private lowering helpers or delegate directly to existing primitive constructors; choose the smallest implementation that preserves exact call order, builder scope, and authored structure.
+  - Concise convenience calls may use the ordinary deterministic local key allocator. Builder-only operations should not expose a misleading single keyed form; callers needing durable composition identity can author explicit primitives or wrap them in a user ModuleDef.
+  - The convenience name need not be retained as metadata. If retained, it remains non-semantic and must obey the existing metadata fingerprint exclusions.
+
+open_questions: []
+
+sources:
+  classification:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part I — Boundaries and classification, 5. Exhaustive convenience classification]
+    reviewed_hash: sha256:78c9cf85f9327b9774251f62b772f50cbbc6d01db04e9c422a8cb3b044e3456f
+  initial-aliases:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part III — Initial catalogue and non-module conveniences, 23. Primitive aliases in version 1]
+    reviewed_hash: sha256:e9ed5a80dadd84b63ff248c610f3c04ccb4b4522ecdfb915266b428eaadd1017
+  initial-builder-operations:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part III — Initial catalogue and non-module conveniences, 24. Builder-only operations in version 1]
+    reviewed_hash: sha256:85be9d7f63b787448e4fc8a116c1161c32c2ed14ab6657e69067a3d262dc0123
+  thin-boolean:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VII — Deferred and rejected initial candidates, 43. Thin Boolean conveniences]
+    reviewed_hash: sha256:12fc978d74756e24ccbe98fe30ca8377b3cdd24c92f5d7850c1c8797a75664b3
+  primitive-alias-api:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 31. Primitive aliases and standard modules, 31.1 Primitive aliases]
+    reviewed_hash: sha256:131333f4f9b4e5cf85a4d8440a459eb4f0ddd38b93c0d1a4a0b2d9757e2f9b43
+  builder-signal-scope:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 23. Builder-scoped signals]
+    reviewed_hash: sha256:b200d59e0de48f3f401776baa69a2e37fa07f8cebded5b7663fd771436e4d72d
+  module-builder-parity:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+    reviewed_hash: sha256:de8ed7d677513f9268ea2aa34ab57661a9153405ab31ae41e8e3a95ed5203ca4
+  verification-policy:
+    document: docs/testing_and_verification_policy.md
+    heading_path: ["`mossignal` Testing and Verification Policy", 1. Purpose]
+    reviewed_hash: sha256:8ebe8fc92db6d5a24ddd807ec6726d76f170bb671a08475d78bf13311d8a0346
