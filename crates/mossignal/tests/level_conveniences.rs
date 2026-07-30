@@ -9,7 +9,12 @@ use mossignal::key::{
 };
 use mossignal::metadata::DiagnosticMeta;
 use mossignal::signal::{Level, LogicLevel};
-use mossignal::{AuthoringFailure, ModuleBuilder, NetworkBuilder, TimeDomainId};
+use mossignal::time::Time;
+use mossignal::{
+    AuthoringFailure, CauseInspection, CauseRef, ModuleBuilder, NetworkBuilder, OutputEvent,
+    ProvenanceSubject, RuntimePolicy, Schedule, TimeDomainId, Transaction,
+};
+use std::collections::BTreeSet;
 use support::{Circuit, TestTicks, run_complete_trace};
 
 const DOMAIN_ID: u128 = 0x4e56;
@@ -136,6 +141,49 @@ fn convenience_boundaries_preserve_only_ordinary_primitive_diagnostics() {
             | DiagnosticCode::ValidationUnaryDegenerateNode
             | DiagnosticCode::ValidationDuplicateSource
     )));
+}
+
+#[test]
+fn execution_provenance_contains_only_canonical_primitive_subjects_and_no_pending_work() {
+    let definition = network_definition(true);
+    let node_keys = definition
+        .nodes()
+        .iter()
+        .map(|node| node.key())
+        .collect::<BTreeSet<_>>();
+    let validated = definition
+        .validate()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("convenience network must validate: {failure:?}"));
+    let compiled = validated
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("convenience network must compile: {failure:?}"));
+    let snapshot = compiled
+        .input_snapshot()
+        .set(ExternalInputKey::from_u128(1), LogicLevel::High)
+        .and_then(|builder| builder.set(ExternalInputKey::from_u128(2), LogicLevel::Low))
+        .and_then(|builder| builder.set(ExternalInputKey::from_u128(3), LogicLevel::High))
+        .and_then(|builder| builder.finish())
+        .unwrap_or_else(|failure| panic!("complete convenience snapshot must build: {failure}"));
+    let mut machine = compiled.spawn(runtime_policy());
+    let result = machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            snapshot,
+        ))
+        .unwrap_or_else(|failure| panic!("convenience initialization must succeed: {failure}"));
+
+    assert_eq!(result.schedule(), Schedule::Dormant);
+    assert_eq!(result.output_events().len(), 6);
+    for event in result.output_events() {
+        let cause = match event {
+            OutputEvent::LevelEstablished { cause, .. } => *cause,
+            _ => panic!("level conveniences must emit only established level outputs"),
+        };
+        assert_canonical_level_provenance(result.provenance(), cause, &node_keys);
+    }
 }
 
 #[test]
@@ -403,6 +451,62 @@ fn assert_foreign_failures(
 
 fn assert_foreign(result: Result<Signal<Level>, AuthoringFailure>) {
     assert!(matches!(result, Err(AuthoringFailure::ForeignSignal)));
+}
+
+fn assert_canonical_level_provenance(
+    provenance: &mossignal::ProvenanceView<TestTicks>,
+    root: CauseRef,
+    node_keys: &BTreeSet<mossignal::key::NodeKey>,
+) {
+    let mut pending = vec![root];
+    let mut visited = BTreeSet::new();
+    while let Some(cause) = pending.pop() {
+        if !visited.insert(cause) {
+            continue;
+        }
+        match provenance
+            .inspect(cause)
+            .unwrap_or_else(|failure| panic!("convenience cause must resolve: {failure}"))
+        {
+            CauseInspection::Derived {
+                subject: ProvenanceSubject::Node(node),
+                supporters,
+            } => {
+                assert!(node_keys.contains(&node));
+                pending.extend_from_slice(supporters);
+            }
+            CauseInspection::Derived {
+                subject: ProvenanceSubject::ExternalOutput(_),
+                supporters,
+            } => pending.extend_from_slice(supporters),
+            CauseInspection::InitializationTransaction { .. }
+            | CauseInspection::ExternalObservation { .. } => {}
+            CauseInspection::Derived {
+                subject: ProvenanceSubject::QualifiedNode(_),
+                ..
+            } => panic!("builder conveniences must not create module-qualified provenance"),
+            CauseInspection::PendingPulseDelay { .. }
+            | CauseInspection::PulseDerived { .. }
+            | CauseInspection::ExternalPulseObservation { .. }
+            | CauseInspection::ReadyTransaction { .. }
+            | CauseInspection::Derived {
+                subject: ProvenanceSubject::PulseExternalOutput(_),
+                ..
+            } => panic!("level conveniences must not create pulse or pending provenance"),
+            _ => panic!("level conveniences exposed an unexpected provenance subject"),
+        }
+    }
+}
+
+fn runtime_policy() -> RuntimePolicy {
+    RuntimePolicy::builder()
+        .max_internal_reactions(10_000)
+        .max_evaluated_operations(10_000)
+        .max_pending_events(10_000)
+        .max_events_created_per_transaction(10_000)
+        .max_required_provenance_growth(10_000)
+        .build()
+        .unwrap_or_else(|failure| panic!("complete runtime policy must build: {failure}"))
 }
 
 fn binary_valuations() -> Vec<Vec<LogicLevel>> {
