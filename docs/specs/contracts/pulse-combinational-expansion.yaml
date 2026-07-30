@@ -1,0 +1,297 @@
+schema_version: "0.1"
+id: mossignal.node.pulse_combinational_expansion
+title: Remaining pulse-combinational primitive family
+kind: family
+status: reviewed
+
+source_baseline:
+  commit: ee3b3aa0ff65dfb50f1e684f42ba514e2135cc8f
+  working_tree: dirty
+
+summary: >-
+  Coalesce and Zip complete the initial pulse-combinational primitive family:
+  Coalesce bounds one input batch to presence, while Zip forms the maximum
+  number of simultaneous all-input groups without retaining unmatched pulses.
+
+scope:
+  includes:
+    - Coalesce and Zip port shapes, arity domains, and pulse-multiplicity laws
+    - typed and dynamic authoring, structural validation, and quality findings
+    - current-reaction causality, compilation, settlement, and grouped provenance
+    - bounded conformance and pre-stability network-fingerprint integration
+  excludes:
+    - Merge and general reaction-scoped Pulse infrastructure
+    - level-controlled Pulse, stateful, and temporal primitive families
+    - payload transport, persistent Pulse state, and pending-event scheduling
+    - persistence codecs, topology-patch execution, and general explanation rendering
+
+known_uncovered:
+  - Exact current inspection, explanation, and why-not projections for grouped pulse transformations
+  - Topology-patch compatibility and persistence representation beyond network fingerprinting
+
+aliases:
+  - Coalesce
+  - Zip
+  - pulse presence bound
+  - simultaneous pulse grouping
+
+requirements:
+  - id: coalesce-unary-law
+    kind: semantic
+    statement: >-
+      Coalesce is a stateless combinational node with exactly one Pulse input
+      and one Pulse output. In each reaction it maps zero to zero and every
+      positive representable input count to exactly one, without retaining a
+      count between reactions.
+    sources: [coalesce-law, pulse-semantics]
+
+  - id: coalesce-retains-causal-support
+    kind: system_effect
+    statement: >-
+      Coalescing multiplicity to one does not discard causal support: every
+      contributing cause represented by the complete input batch remains
+      available in the output derivation without inventing ordered pulse
+      identities.
+    sources: [coalesce-law, pulse-provenance]
+
+  - id: zip-group-law
+    kind: semantic
+    statement: >-
+      Zip is a stateless combinational node with one or more stable Pulse input
+      ports and one Pulse output. Its reaction-local output count is the minimum
+      complete input count, so each output occurrence represents one joint group
+      containing one occurrence from every input port. Unary Zip is the identity;
+      zero-input Zip is invalid because it has no finite natural result.
+    sources: [zip-law, variadic-inputs]
+
+  - id: zip-port-identity-and-reaction-isolation
+    kind: semantic
+    statement: >-
+      Zip preserves independent stable identity for every input port. Port
+      permutation cannot change its commutative minimum, and repeated use of one
+      source on distinct ports remains port-based because fan-out copies the
+      complete count. Counts above the minimum are unmatched and expire with the
+      reaction rather than becoming state or future work.
+    sources: [zip-law, variadic-inputs, duplicate-sources, pulse-fanout, simultaneous-batches]
+
+  - id: typed-and-dynamic-authoring
+    kind: public_surface
+    statement: >-
+      NetworkBuilder and ModuleBuilder expose direct typed Coalesce construction
+      from one Signal<Pulse>, immediately consumed variadic Zip construction
+      from an IntoIterator of Signal<Pulse>, and an explicit keyed form for each
+      node. Dynamic authored definitions represent the closed Coalesce and Zip
+      node kinds with stable typed ports and ordinary connections.
+    sources: [builder-style, builder-keyed, constructor-family, module-builder, dynamic-node-kind, dynamic-ports]
+
+  - id: structural-validation-and-findings
+    kind: system_effect
+    statement: >-
+      Structural validation enforces Coalesce's one-input/one-output fixed shape
+      and Zip's nonempty variadic input domain with one Pulse output, using the
+      applicable signal-kind, missing-input, fixed-arity, and variadic-arity
+      conditions. A valid unary Zip produces the non-blocking unary-degenerate
+      finding without suppressing its artifact.
+    sources: [coalesce-law, zip-law, validation-blocking, validation-advisories, diagnostic-reports]
+
+  - id: causality-compilation-and-settlement
+    kind: semantic
+    statement: >-
+      Coalesce's input and every Zip input conservatively influence the output
+      in the current reaction. Validation, cycle analysis, and compilation
+      retain those stable incidences in an acyclic dependency graph, and full
+      topological settlement evaluates each complete simultaneous batch only
+      after all predecessors settle, without traversal-order intermediates.
+    sources: [dependency-signature, reaction-graph, compiled-invariants, full-evaluation]
+
+  - id: bounded-checked-count-results
+    kind: semantic
+    statement: >-
+      For representable PulseCount inputs, Coalesce and Zip always produce a
+      representable result no greater than their applicable input count or
+      counts; neither node introduces a local addition-overflow path. Any
+      upstream structured pulse-arithmetic rejection still rejects the complete
+      containing transaction atomically through the shared pulse foundation.
+    sources: [coalesce-law, zip-law, pulse-count, pulse-algebra, failure-atomicity]
+    basis: derived
+
+  - id: joint-group-provenance
+    kind: system_effect
+    statement: >-
+      Zip provenance represents unordered joint support from every input port,
+      recording grouped contribution counts and result multiplicity without
+      ordered pulse identities. Permuting supporter representation while
+      preserving supporter identity, contribution count, and joint grouping
+      yields equivalent normalized derivations, and unmatched occurrences do
+      not become retained pulse state.
+    sources: [zip-law, causal-structure, pulse-provenance, joint-support]
+
+  - id: pre-stability-fingerprint-extension
+    kind: compatibility
+    statement: >-
+      NetworkFingerprint must distinguish Coalesce and Zip from every other node
+      kind and retain their stable typed ports and connection incidence. Before
+      the first frozen fingerprint baseline, the accepted implementation may
+      extend the current canonical projection in place, but the authoritative
+      projection, implementation, and golden vectors must be synchronized in
+      one coherent revision.
+    sources: [network-fingerprint, restricted-fingerprint, fingerprint-versions, deterministic-compilation]
+    basis: derived
+
+  - id: primitive-conformance
+    kind: verification
+    statement: >-
+      Each node requires reusable built-in conformance coverage for every
+      applicable matrix field. Focused pulse-algebra tests cover zero, one, two,
+      and a larger representable count; fan-out and duplicate sources; Coalesce's
+      positive-count bound; Zip's minimum law and lack of cross-reaction
+      retention; and applicable checked-failure atomicity. Zip joint-support
+      tests permute supporter representation while preserving supporter identity,
+      contribution counts, and grouping and require equivalent normalized
+      explanations.
+    sources: [pulse-algebra, node-conformance, conformance-matrix, joint-support]
+
+recommendations:
+  - id: zip-duplicate-source-advisory
+    statement: >-
+      Repeated use of one source on distinct Zip ports should produce the
+      non-blocking duplicate-source finding while preserving independent
+      port-based grouping.
+    sources: [duplicate-sources, validation-advisories]
+
+implementation_freedom:
+  - Private descriptors, comparison strategy, pulse-slot access, evaluator dispatch, and grouped-provenance storage are free when they preserve exact stable incidences and deterministic complete-batch laws.
+  - Locally allocated Zip ports use the simplest deterministic iterator-based rule selected, tested, and recorded during implementation; the explicit keyed path remains available for exact durable reconstruction.
+  - Exact pre-stability canonical variant spellings for Coalesce and Zip are selected deterministically and synchronized with authority and goldens during implementation; no historical migration or compatibility shim is required before a declared freeze.
+
+open_questions: []
+
+sources:
+  pulse-semantics:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 5. Signal kinds, 5.2 Pulse]
+    reviewed_hash: sha256:5f40ffb50a2b7ce46271026003bbee20c6a3cf26c437d9966a54a58b02416b18
+  simultaneous-batches:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 7. Simultaneous batches]
+    reviewed_hash: sha256:6f0c086ed445bf436c4974044bddc2eb224e4d6299620fedf775de6c641c4941
+  dependency-signature:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
+  pulse-fanout:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 10. Pulse fan-out]
+    reviewed_hash: sha256:2b0cd8792087a22409650dd3e4b6e836d1485136a8f7c02b26678ba6c482c9aa
+  variadic-inputs:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 15. Variadic inputs]
+    reviewed_hash: sha256:a97e9f25203740259ea4bec054f12cbd7a847dd8251e8055a89776b3f836c596
+  duplicate-sources:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 16. Duplicate sources]
+    reviewed_hash: sha256:f97907902b2fe39c74ca9b4e81bbfcedd2004edd622b0a00240540dfebbe408e
+  coalesce-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part III — Pulse combinational nodes, 31. `Coalesce`]
+    reviewed_hash: sha256:4abdf91d78641556d0749a332c60662d4e64a69df2a8d42006a08b2d8854c290
+  zip-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part III — Pulse combinational nodes, 32. `Zip`]
+    reviewed_hash: sha256:efbabf90e616ee64de13fb715a596cb292d1a038c4916c22ad4fc1ad5a623d49
+  builder-style:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 27. Primitive construction style]
+    reviewed_hash: sha256:f82aec0ab24fa3b054888b29444264961c9dfee4e6ae57b38745f9ffd0483671
+  builder-keyed:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 28. Explicit keyed primitive construction]
+    reviewed_hash: sha256:eebf1d5f4f29d91da4e1483f86545fa1ed80b3aa7abb514939fd3dd2a7f8efdf
+  constructor-family:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  module-builder:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+    reviewed_hash: sha256:de8ed7d677513f9268ea2aa34ab57661a9153405ab31ae41e8e3a95ed5203ca4
+  dynamic-node-kind:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
+  dynamic-ports:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 38. Dynamic ports and connections]
+    reviewed_hash: sha256:5fbea1f67eb6eea247e70168f60b4b3c3c348da10d98ab75e5b30406712e01ca
+  pulse-count:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part III — Fundamental signal types, 12. Pulse counts]
+    reviewed_hash: sha256:2b37aa087122229ea39aa53b64e32889b43a1806ac08cedb742a45cf66e9eada
+  validation-blocking:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 26. Validation — blocking conditions]
+    reviewed_hash: sha256:6c2eeae3d44af53103f991f364f2d321a9fe195f03b8924e8f902fb5e3dfef40
+  validation-advisories:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 27. Validation — non-blocking conditions]
+    reviewed_hash: sha256:3e0f26d778d325bd809cb0f11606c9d8acd1d290b85f13fd8244aa6ab9cca38b
+  diagnostic-reports:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 45. Reports]
+    reviewed_hash: sha256:20197431f1ff31d0d39de2a9463f1688aea0f9e0f56323267fac4ef5177684e6
+  reaction-graph:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 15. Reaction dependency graph]
+    reviewed_hash: sha256:bb051caaa0cd3627f58f17edca8b2e09df6b72c3b042238f523b0dfb40dcda9a
+  compiled-invariants:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 22. Compiled invariants]
+    reviewed_hash: sha256:746554b068081f15488f90197bf4c03ad4b384836a2fca010cd0c90eb81e56fe
+  full-evaluation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 33. Full reference evaluation]
+    reviewed_hash: sha256:582cdbde0046465fa88793dfa2f0e58976170719a591231f70d2a38b77ebe621
+  causal-structure:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 63. Derivation structure]
+    reviewed_hash: sha256:bb1973d9aea76fb8f7e039c7f9713ad91418c3f68c0968605819de55ca0a2c37
+  pulse-provenance:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 69. Pulse provenance]
+    reviewed_hash: sha256:18a5cfbbc600cc44fab9fed9d6730472865bb0b06d8a93eda6bff220c976e3ca
+  network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.1 Network fingerprint]
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  restricted-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
+    reviewed_hash: sha256:9cb7bd08e4e1c7affda1c7e772e5a6bfbeb7be1e129390ed2249980c0bab5f28
+  fingerprint-versions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 15. Version representation]
+    reviewed_hash: sha256:a59d0cb9deab2c9b183e95c55b2e4df660b7927c8c6cc074defe68bee36c68b1
+  deterministic-compilation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72
+  pulse-algebra:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 34. Pulse algebra]
+    reviewed_hash: sha256:0e9cad7bccffb06aa64c8b1f0a75ff2d73862c35e36f7bac2d1ea44aafef0e31
+  node-conformance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 37. Node conformance requirement]
+    reviewed_hash: sha256:7bf27eaa2865945e6661a140c0f888a31d87ad380479dd90d3d06de5568a461d
+  conformance-matrix:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 38. Common conformance matrix]
+    reviewed_hash: sha256:d37d3539bb2e78723780838aede84b7ec5b6c3539db83d92e769e935022d1942
+  failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
+  joint-support:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 69. Joint and unordered support]
+    reviewed_hash: sha256:3b2733fa8677bd720ac117940b9a9f355a75e54f8f9170f4731999309a7555bd
