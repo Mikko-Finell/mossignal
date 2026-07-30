@@ -2,13 +2,11 @@ schema_version: "0.1"
 id: mossignal.node.pulse_combinational_expansion
 title: Remaining pulse-combinational primitive family
 kind: family
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: 0e1046283970d8d02691d7aaa41a360cc5f9938e
+  commit: 1ef0d331b29eb1fe62364aba1f7721618baf5c0a
   working_tree: dirty
-  modified_spec_paths:
-    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   Coalesce and Zip complete the initial pulse-combinational primitive family:
@@ -163,8 +161,7 @@ recommendations:
 
 implementation_freedom:
   - Private descriptors, comparison strategy, pulse-slot access, evaluator dispatch, and grouped-provenance storage are free when they preserve exact stable incidences and deterministic complete-batch laws.
-  - Locally allocated Zip ports use the simplest deterministic iterator-based rule selected, tested, and recorded during implementation; the explicit keyed path remains available for exact durable reconstruction.
-  - Exact pre-stability canonical variant spellings for Coalesce and Zip are selected deterministically and synchronized with authority and goldens during implementation; no historical migration or compatibility shim is required before a declared freeze.
+  - Locally allocated Zip ports may use any deterministic iterator-based allocation rule; the explicit keyed path remains the authority for exact durable reconstruction.
 
 open_questions: []
 
@@ -268,7 +265,7 @@ sources:
   restricted-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
-    reviewed_hash: sha256:9cb7bd08e4e1c7affda1c7e772e5a6bfbeb7be1e129390ed2249980c0bab5f28
+    reviewed_hash: sha256:349f21ba68dfdf5a8fe88c00892cab044b80c359af41aca893b0263a158a6e33
   fingerprint-versions:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part III — Version and compatibility model, 15. Version representation]

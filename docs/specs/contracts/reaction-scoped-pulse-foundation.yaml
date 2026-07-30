@@ -2,13 +2,11 @@ schema_version: "0.1"
 id: mossignal.runtime.reaction_scoped_pulse_foundation
 title: Reaction-scoped pulse foundation
 kind: family
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: 0e1046283970d8d02691d7aaa41a360cc5f9938e
+  commit: 1ef0d331b29eb1fe62364aba1f7721618baf5c0a
   working_tree: dirty
-  modified_spec_paths:
-    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   Pulse values are typed, reaction-scoped simultaneous multiplicities that enter
@@ -168,7 +166,6 @@ recommendations:
 implementation_freedom:
   - Private pulse-slot layout, generation representation, batch maps, evaluator descriptor shape, and event sorting mechanism are free when reaction isolation, multiplicity, stable identity, and deterministic observations are preserved.
   - Explicit zero pulse observations may be retained or normalized to absence internally because both mean zero in the same reaction; choose one deterministic representation, test it, and record the decision without making it a persistence promise.
-  - The synchronized pre-stability version-1 projection uses the canonical `pulse`, `merge`, `coalesce`, `zip`, and `reaction_scoped` tags alongside the existing level projection; no historical migration is required before stabilization.
 
 open_questions: []
 
@@ -302,7 +299,7 @@ sources:
   restricted-network-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
-    reviewed_hash: sha256:96c04c867dc6b4fb556d6f97a9cec32cde57c4205388307a47123adf1ed9cb53
+    reviewed_hash: sha256:349f21ba68dfdf5a8fe88c00892cab044b80c359af41aca893b0263a158a6e33
   input-schema-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.3 Input schema fingerprint]

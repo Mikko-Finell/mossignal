@@ -2,13 +2,11 @@ schema_version: "0.1"
 id: mossignal.identity.network_fingerprint
 title: Network semantic fingerprint
 kind: artifact
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: 0e1046283970d8d02691d7aaa41a360cc5f9938e
+  commit: 1ef0d331b29eb1fe62364aba1f7721618baf5c0a
   working_tree: dirty
-  modified_spec_paths:
-    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   NetworkFingerprint is the opaque, domain-separated 256-bit identity of a
@@ -129,10 +127,10 @@ requirements:
       Representative NetworkFingerprint values require versioned golden vectors;
       tests also establish insertion-order invariance, metadata exclusion, and
       sensitivity to mutable included semantic categories such as `AtLeast`
-      thresholds, `Select` input roles, and `Toggle` initial state. Golden bytes
-      cover Toggle's fixed state-schema and input-role representation and
-      PulseDelay's exact kind, delay, temporal-schema, and input-role
-      representation, plus the exact nullary Coalesce and Zip kind variants.
+      thresholds and `Select` input roles. The initial corpus retains complete
+      canonical digest-input bytes and expected digests for the restricted
+      minimal, nontrivial, variadic, and remaining level-combinational cases
+      required by the verification policy.
     sources: [canonical-vectors, digest-scope-verification, deterministic-compilation]
 
 recommendations:
@@ -178,7 +176,7 @@ sources:
       - Part VI — Digest and fingerprint suite
       - 54. Network and input-schema fingerprints
       - 54.2 Restricted network-fingerprint projection version 1
-    reviewed_hash: sha256:9cb7bd08e4e1c7affda1c7e772e5a6bfbeb7be1e129390ed2249980c0bab5f28
+    reviewed_hash: sha256:349f21ba68dfdf5a8fe88c00892cab044b80c359af41aca893b0263a158a6e33
   canonical-ordering:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]
@@ -205,11 +203,11 @@ sources:
   api-validated:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]
-    reviewed_hash: sha256:90b918d33b7875dbeef5beba178c107ea0757d28d380fda411097dc2656bd9e5
+    reviewed_hash: sha256:21c95cae542bea77e6acf22714564b7688dc5e603a17e0f1a01aedf8d810ee24
   concrete-validated:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part X — Validation and compilation artifacts, 43. `ValidatedNetwork<D>`]
-    reviewed_hash: sha256:416a8f32e53dbb0625bba2525dc42e38a2d98ffaaf3595caf76ea9ce0c2769f0
+    reviewed_hash: sha256:8a5090e24aafc0ccf3441be5c3baad706453c41935384802e6b903fc7d654533
   api-metadata:
     document: docs/specs/api_and_semantics_spec.md
     heading_path:
