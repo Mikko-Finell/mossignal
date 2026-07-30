@@ -115,13 +115,32 @@ fn coalesce_bounds_complete_batches_and_retains_the_input_cause() {
     assert_eq!(contributions.len(), 1);
     assert_eq!(contributions[0].count(), PulseCount::new(u64::MAX));
 
+    for (ticks, input_count) in [(1, 1), (2, 2), (3, 17)] {
+        let delta = compiled
+            .input_delta()
+            .pulse(input_key, PulseCount::new(input_count))
+            .and_then(|builder| builder.finish())
+            .unwrap_or_else(|failure| panic!("positive delta must build: {failure}"));
+        assert!(matches!(
+            machine
+                .apply(Transaction::advance(
+                    Time::from_ticks(ticks),
+                    machine.revision(),
+                    delta,
+                ))
+                .unwrap_or_else(|failure| panic!("positive reaction must apply: {failure}"))
+                .output_events(),
+            [OutputEvent::Pulsed { count, .. }] if *count == PulseCount::ONE
+        ));
+    }
+
     let omitted = compiled
         .input_delta()
         .finish()
         .unwrap_or_else(|failure| panic!("empty delta must build: {failure}"));
     let advanced = machine
         .apply(Transaction::advance(
-            Time::from_ticks(1),
+            Time::from_ticks(4),
             machine.revision(),
             omitted,
         ))
@@ -478,6 +497,29 @@ fn malformed_coalesce_and_current_reaction_cycles_are_structured() {
         diagnostic.problem().code() == DiagnosticCode::ValidationMissingRequiredInput
     }));
 
+    let malformed_zip = UncheckedNetwork::<TestDomain>::new(
+        NetworkKey::from_u128(58),
+        TimeDomainId::from_u128(59),
+        DiagnosticMeta::default(),
+        vec![NodeDef::new(
+            NodeKey::from_u128(14),
+            NodeKind::zip(),
+            NodePorts::new(Vec::new(), Vec::new()),
+            DiagnosticMeta::default(),
+        )],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .validate();
+    assert!(malformed_zip.artifact().is_none());
+    assert!(malformed_zip.diagnostics().iter().any(|diagnostic| {
+        diagnostic.problem().code() == DiagnosticCode::ValidationInvalidFixedArity
+    }));
+    assert!(malformed_zip.diagnostics().iter().any(|diagnostic| {
+        diagnostic.problem().code() == DiagnosticCode::ValidationInvalidVariadicArity
+    }));
+
     let wrong_kind = UncheckedNetwork::<TestDomain>::new(
         NetworkKey::from_u128(52),
         TimeDomainId::from_u128(53),
@@ -649,6 +691,8 @@ fn upstream_overflow_and_operation_budget_reject_the_complete_graph_atomically()
         .unwrap_or_else(|failure| panic!("zero reaction must initialize: {failure}"));
     let before_status = machine.status();
     let before_revision = machine.revision();
+    let before_now = machine.now();
+    let before_schedule = machine.schedule();
     let overflow = compiled
         .input_delta()
         .pulse(left_key, PulseCount::new(u64::MAX))
@@ -670,6 +714,32 @@ fn upstream_overflow_and_operation_budget_reject_the_complete_graph_atomically()
     );
     assert_eq!(machine.status(), before_status);
     assert_eq!(machine.revision(), before_revision);
+    assert_eq!(machine.now(), before_now);
+    assert_eq!(machine.schedule(), before_schedule);
+
+    let recovered = compiled
+        .input_delta()
+        .pulse(left_key, PulseCount::new(2))
+        .and_then(|builder| builder.pulse(right_key, PulseCount::new(3)))
+        .and_then(|builder| builder.finish())
+        .unwrap_or_else(|failure| panic!("recovery delta must build: {failure}"));
+    let mut recovered_counts = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(1),
+            machine.revision(),
+            recovered,
+        ))
+        .unwrap_or_else(|failure| panic!("reconvergent graph must recover: {failure}"))
+        .output_events()
+        .iter()
+        .map(|event| match event {
+            OutputEvent::Pulsed { count, .. } => *count,
+            OutputEvent::LevelChanged { .. } => panic!("pulse graph must not emit a level"),
+            _ => panic!("pulse graph emitted an unsupported event kind"),
+        })
+        .collect::<Vec<_>>();
+    recovered_counts.sort();
+    assert_eq!(recovered_counts, vec![PulseCount::ONE, PulseCount::new(2)]);
 
     let zero_operation_policy = RuntimePolicy::builder()
         .max_internal_reactions(10)
@@ -686,6 +756,7 @@ fn upstream_overflow_and_operation_budget_reject_the_complete_graph_atomically()
     let mut budgeted = compiled.spawn(zero_operation_policy);
     let before_status = budgeted.status();
     let before_revision = budgeted.revision();
+    let before_now = budgeted.now();
     let failure = budgeted
         .apply(Transaction::initialize(
             Time::from_ticks(0),
@@ -703,6 +774,7 @@ fn upstream_overflow_and_operation_budget_reject_the_complete_graph_atomically()
     );
     assert_eq!(budgeted.status(), before_status);
     assert_eq!(budgeted.revision(), before_revision);
+    assert_eq!(budgeted.now(), before_now);
 }
 
 #[test]

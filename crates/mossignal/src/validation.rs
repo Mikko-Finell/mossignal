@@ -1031,6 +1031,14 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
             let expected_outputs = 1;
             let inputs = node.ports().inputs();
             let outputs = node.ports().outputs();
+            if matches!(node.kind(), NodeKind::Zip) && inputs.is_empty() {
+                // SPEC: docs/specs/contracts/pulse-combinational-expansion.yaml
+                // "structural-validation-and-findings" — Zip has no finite empty law.
+                self.add(
+                    SubjectRef::Node(node.key()),
+                    ProblemEvidence::invalid_variadic_arity(Vec::new(), 1, 0),
+                );
+            }
             if let Some(expected_inputs) = expected_inputs
                 && inputs.len() != expected_inputs
             {
@@ -1160,14 +1168,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 && valid_role_count == inputs.len()
             {
                 let ports = inputs.iter().copied().map(SubjectRef::InPort).collect();
-                if matches!(node.kind(), NodeKind::Zip) && inputs.is_empty() {
-                    // SPEC: docs/specs/contracts/pulse-combinational-expansion.yaml
-                    // "structural-validation-and-findings" — Zip has no finite empty law.
-                    self.add(
-                        SubjectRef::Node(node.key()),
-                        ProblemEvidence::invalid_variadic_arity(ports, 1, 0),
-                    );
-                } else if inputs.is_empty() {
+                if inputs.is_empty() && !matches!(node.kind(), NodeKind::Zip) {
                     self.add(
                         SubjectRef::Node(node.key()),
                         ProblemEvidence::empty_variadic_node(ports),
