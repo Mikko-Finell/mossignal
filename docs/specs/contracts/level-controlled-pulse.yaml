@@ -2,13 +2,11 @@ schema_version: "0.1"
 id: mossignal.node.level_controlled_pulse
 title: Level-controlled pulse primitive family
 kind: family
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: 024c83ad1ea568a92c8d19a2c2392553063e2de6
-  working_tree: dirty
-  modified_spec_paths:
-    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+  commit: 21d678edf8fa87764c75cc227f9aec46083b84a1
+  working_tree: clean
 
 summary: >-
   PulseGate, PulseSelect, and PulseRoute are stateless combinational primitives
@@ -291,6 +289,7 @@ sources:
   restricted-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
+    reviewed_hash: sha256:caf5b1eba334cfc2bca0002c169725fbbaffd1670fd57625ba943c2f487ef8bf
   module-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 55. Module fingerprint]
