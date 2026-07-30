@@ -635,6 +635,12 @@ pub enum NodeKind<D> {
     Coalesce,
     /// A nonempty variadic pulse grouping operation with one pulse output after validation.
     Zip,
+    /// A fixed High-enabled pulse gate with one pulse output after validation.
+    PulseGate,
+    /// A fixed level-controlled pulse selector with one pulse output after validation.
+    PulseSelect,
+    /// A fixed level-controlled pulse router with two pulse outputs after validation.
+    PulseRoute,
     /// A pulse-controlled stored level with one pulse input and one level output.
     Toggle(ToggleConfig),
     /// A temporal pulse reproducer with one pulse input and one pulse output.
@@ -654,6 +660,9 @@ impl<D> Clone for NodeKind<D> {
             Self::Merge => Self::Merge,
             Self::Coalesce => Self::Coalesce,
             Self::Zip => Self::Zip,
+            Self::PulseGate => Self::PulseGate,
+            Self::PulseSelect => Self::PulseSelect,
+            Self::PulseRoute => Self::PulseRoute,
             Self::Toggle(config) => Self::Toggle(*config),
             Self::PulseDelay(config) => Self::PulseDelay(*config),
         }
@@ -671,7 +680,10 @@ impl<D> PartialEq for NodeKind<D> {
             | (Self::Select, Self::Select)
             | (Self::Merge, Self::Merge)
             | (Self::Coalesce, Self::Coalesce)
-            | (Self::Zip, Self::Zip) => true,
+            | (Self::Zip, Self::Zip)
+            | (Self::PulseGate, Self::PulseGate)
+            | (Self::PulseSelect, Self::PulseSelect)
+            | (Self::PulseRoute, Self::PulseRoute) => true,
             (Self::AtLeast(left), Self::AtLeast(right)) => left == right,
             (Self::Toggle(left), Self::Toggle(right)) => left == right,
             (Self::PulseDelay(left), Self::PulseDelay(right)) => left == right,
@@ -695,6 +707,9 @@ impl<D> fmt::Debug for NodeKind<D> {
             Self::Merge => formatter.write_str("Merge"),
             Self::Coalesce => formatter.write_str("Coalesce"),
             Self::Zip => formatter.write_str("Zip"),
+            Self::PulseGate => formatter.write_str("PulseGate"),
+            Self::PulseSelect => formatter.write_str("PulseSelect"),
+            Self::PulseRoute => formatter.write_str("PulseRoute"),
             Self::Toggle(config) => formatter.debug_tuple("Toggle").field(config).finish(),
             Self::PulseDelay(config) => formatter.debug_tuple("PulseDelay").field(config).finish(),
         }
@@ -760,6 +775,24 @@ impl<D> NodeKind<D> {
     #[must_use]
     pub const fn zip() -> Self {
         Self::Zip
+    }
+
+    /// Creates the fixed High-enabled pulse-gate node kind.
+    #[must_use]
+    pub const fn pulse_gate() -> Self {
+        Self::PulseGate
+    }
+
+    /// Creates the fixed level-controlled pulse-selector node kind.
+    #[must_use]
+    pub const fn pulse_select() -> Self {
+        Self::PulseSelect
+    }
+
+    /// Creates the fixed level-controlled pulse-router node kind.
+    #[must_use]
+    pub const fn pulse_route() -> Self {
+        Self::PulseRoute
     }
 
     /// Creates a pulse-controlled Toggle with explicit declared initial state.
@@ -912,6 +945,22 @@ pub enum InputPortRole {
     Toggle,
     /// The pulse input of [`NodeKind::PulseDelay`].
     PulseDelay,
+    /// The pulse batch controlled by a level-controlled pulse primitive.
+    Pulses,
+    /// The High-enabled control of [`NodeKind::PulseGate`].
+    Enable,
+}
+
+/// The semantic role of one output port.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum OutputPortRole {
+    /// The ordinary output of a one-output primitive.
+    Output,
+    /// The [`NodeKind::PulseRoute`] output selected by a Low control.
+    WhenLow,
+    /// The [`NodeKind::PulseRoute`] output selected by a High control.
+    WhenHigh,
 }
 
 /// The claimed typed port identities of one node.
@@ -920,6 +969,7 @@ pub struct NodePorts {
     inputs: Vec<AnyInPortKey>,
     input_roles: Vec<InputPortRole>,
     outputs: Vec<AnyOutPortKey>,
+    output_roles: Vec<OutputPortRole>,
 }
 
 impl NodePorts {
@@ -927,10 +977,12 @@ impl NodePorts {
     #[must_use]
     pub fn new(inputs: Vec<AnyInPortKey>, outputs: Vec<AnyOutPortKey>) -> Self {
         let input_roles = vec![InputPortRole::Input; inputs.len()];
+        let output_roles = vec![OutputPortRole::Output; outputs.len()];
         Self {
             inputs,
             input_roles,
             outputs,
+            output_roles,
         }
     }
 
@@ -944,10 +996,31 @@ impl NodePorts {
         input_roles: Vec<InputPortRole>,
         outputs: Vec<AnyOutPortKey>,
     ) -> Self {
+        let output_roles = vec![OutputPortRole::Output; outputs.len()];
         Self {
             inputs,
             input_roles,
             outputs,
+            output_roles,
+        }
+    }
+
+    /// Creates a port claim with explicit per-input and per-output semantic roles.
+    ///
+    /// Role and port sequences are retained losslessly even when their lengths
+    /// or contents are invalid for the claimed node kind.
+    #[must_use]
+    pub fn with_roles(
+        inputs: Vec<AnyInPortKey>,
+        input_roles: Vec<InputPortRole>,
+        outputs: Vec<AnyOutPortKey>,
+        output_roles: Vec<OutputPortRole>,
+    ) -> Self {
+        Self {
+            inputs,
+            input_roles,
+            outputs,
+            output_roles,
         }
     }
 
@@ -969,10 +1042,28 @@ impl NodePorts {
         &self.outputs
     }
 
+    /// Returns the semantic-role claims corresponding to the output sequence.
+    #[must_use]
+    pub fn output_roles(&self) -> &[OutputPortRole] {
+        &self.output_roles
+    }
+
     /// Consumes the port claim into its input and output sequences.
     #[must_use]
-    pub fn into_parts(self) -> (Vec<AnyInPortKey>, Vec<InputPortRole>, Vec<AnyOutPortKey>) {
-        (self.inputs, self.input_roles, self.outputs)
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<AnyInPortKey>,
+        Vec<InputPortRole>,
+        Vec<AnyOutPortKey>,
+        Vec<OutputPortRole>,
+    ) {
+        (
+            self.inputs,
+            self.input_roles,
+            self.outputs,
+            self.output_roles,
+        )
     }
 }
 

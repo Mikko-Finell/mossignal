@@ -2,7 +2,8 @@
 
 use crate::authored::{
     ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, InputPortRole,
-    ModuleInstanceDef, ModuleInterfaceMapping, NodeDef, NodeKind, NodePorts, UncheckedNetwork,
+    ModuleInstanceDef, ModuleInterfaceMapping, NodeDef, NodeKind, NodePorts, OutputPortRole,
+    UncheckedNetwork,
 };
 use crate::diagnostics::{DiagnosticSet, Report};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
@@ -148,6 +149,21 @@ enum CompiledNodeKind {
     Merge,
     Coalesce,
     Zip,
+    PulseGate {
+        pulses: PortIndex,
+        enable: PortIndex,
+    },
+    PulseSelect {
+        selector: PortIndex,
+        when_low: PortIndex,
+        when_high: PortIndex,
+    },
+    PulseRoute {
+        selector: PortIndex,
+        pulses: PortIndex,
+        when_low: PortIndex,
+        when_high: PortIndex,
+    },
     Toggle {
         input: PortIndex,
         state: ToggleStateIndex,
@@ -236,6 +252,18 @@ pub(crate) enum EvaluationCause {
         node: NodeKey,
         contributions: Vec<PulseEvaluationContribution>,
         result: PulseCount,
+        supporters: Vec<usize>,
+    },
+    PulseRoute {
+        node: NodeKey,
+        control: usize,
+        contribution: PulseEvaluationContribution,
+    },
+    PulseRouteOutput {
+        node: NodeKey,
+        contribution: PulseEvaluationContribution,
+        result: PulseCount,
+        source: usize,
     },
     Toggle {
         node: NodeKey,
@@ -276,6 +304,10 @@ pub(crate) enum EvaluationFailure {
 enum EvaluationValue {
     Level(LogicLevel),
     Pulse(PulseCount),
+    PulseRoute {
+        when_low: PulseCount,
+        when_high: PulseCount,
+    },
 }
 
 impl<D> CompiledNetwork<D> {
@@ -840,6 +872,7 @@ impl<D> CompiledInner<D> {
                                 node: *key,
                                 contributions,
                                 result: total,
+                                supporters: Vec::new(),
                             },
                         )
                     }
@@ -866,6 +899,7 @@ impl<D> CompiledInner<D> {
                                     source: self.input_source(*input)?.0,
                                 }],
                                 result,
+                                supporters: Vec::new(),
                             },
                         )
                     }
@@ -897,6 +931,101 @@ impl<D> CompiledInner<D> {
                                 node: *key,
                                 contributions,
                                 result,
+                                supporters: Vec::new(),
+                            },
+                        )
+                    }
+                    NodeDescriptor {
+                        key,
+                        kind: CompiledNodeKind::PulseGate { pulses, enable },
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/level-controlled-pulse.yaml
+                        // "pulse-gate-law" — the settled current Level controls the complete batch.
+                        let count = self.pulse_input_value(*pulses, &values)?;
+                        let result = if self.level_input_value(*enable, &values)?.is_high() {
+                            count
+                        } else {
+                            PulseCount::ZERO
+                        };
+                        (
+                            EvaluationValue::Pulse(result),
+                            EvaluationCause::PulseCombinational {
+                                node: *key,
+                                contributions: vec![PulseEvaluationContribution {
+                                    port: self.pulse_port_key(*pulses)?,
+                                    count,
+                                    source: self.input_source(*pulses)?.0,
+                                }],
+                                result,
+                                supporters: vec![self.input_source(*enable)?.0],
+                            },
+                        )
+                    }
+                    NodeDescriptor {
+                        key,
+                        kind:
+                            CompiledNodeKind::PulseSelect {
+                                selector,
+                                when_low,
+                                when_high,
+                            },
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/level-controlled-pulse.yaml
+                        // "pulse-select-law" — selection preserves one complete branch count.
+                        let low_count = self.pulse_input_value(*when_low, &values)?;
+                        let high_count = self.pulse_input_value(*when_high, &values)?;
+                        let (selected_port, result) =
+                            if self.level_input_value(*selector, &values)?.is_low() {
+                                (*when_low, low_count)
+                            } else {
+                                (*when_high, high_count)
+                            };
+                        (
+                            EvaluationValue::Pulse(result),
+                            EvaluationCause::PulseCombinational {
+                                node: *key,
+                                contributions: vec![PulseEvaluationContribution {
+                                    port: self.pulse_port_key(selected_port)?,
+                                    count: result,
+                                    source: self.input_source(selected_port)?.0,
+                                }],
+                                result,
+                                supporters: vec![self.input_source(*selector)?.0],
+                            },
+                        )
+                    }
+                    NodeDescriptor {
+                        key,
+                        kind:
+                            CompiledNodeKind::PulseRoute {
+                                selector, pulses, ..
+                            },
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/level-controlled-pulse.yaml
+                        // "pulse-route-law" — exactly one role receives the complete count.
+                        let count = self.pulse_input_value(*pulses, &values)?;
+                        let (when_low, when_high) =
+                            if self.level_input_value(*selector, &values)?.is_low() {
+                                (count, PulseCount::ZERO)
+                            } else {
+                                (PulseCount::ZERO, count)
+                            };
+                        (
+                            EvaluationValue::PulseRoute {
+                                when_low,
+                                when_high,
+                            },
+                            EvaluationCause::PulseRoute {
+                                node: *key,
+                                control: self.input_source(*selector)?.0,
+                                contribution: PulseEvaluationContribution {
+                                    port: self.pulse_port_key(*pulses)?,
+                                    count,
+                                    source: self.input_source(*pulses)?.0,
+                                },
                             },
                         )
                     }
@@ -954,17 +1083,54 @@ impl<D> CompiledInner<D> {
                     let predecessor = self.predecessors[index]
                         .first()
                         .ok_or(EvaluationFailure::Incomplete)?;
-                    let port = self
+                    let port_descriptor = self
                         .ports
                         .get(port.0)
                         .ok_or(EvaluationFailure::Incomplete)?;
-                    if port.direction != PortDirection::Output {
+                    if port_descriptor.direction != PortDirection::Output {
                         return Err(EvaluationFailure::Incomplete);
                     }
-                    (
-                        values[predecessor.0].ok_or(EvaluationFailure::Incomplete)?,
-                        EvaluationCause::Alias(predecessor.0),
-                    )
+                    match values[predecessor.0].ok_or(EvaluationFailure::Incomplete)? {
+                        EvaluationValue::PulseRoute {
+                            when_low,
+                            when_high,
+                        } => {
+                            let node = self
+                                .nodes
+                                .get(port_descriptor.owner.0)
+                                .ok_or(EvaluationFailure::Incomplete)?;
+                            let CompiledNodeKind::PulseRoute {
+                                pulses,
+                                when_low: low_port,
+                                when_high: high_port,
+                                ..
+                            } = node.kind
+                            else {
+                                return Err(EvaluationFailure::Incomplete);
+                            };
+                            let result = if *port == low_port {
+                                when_low
+                            } else if *port == high_port {
+                                when_high
+                            } else {
+                                return Err(EvaluationFailure::Incomplete);
+                            };
+                            (
+                                EvaluationValue::Pulse(result),
+                                EvaluationCause::PulseRouteOutput {
+                                    node: node.key,
+                                    contribution: PulseEvaluationContribution {
+                                        port: self.pulse_port_key(pulses)?,
+                                        count: self.pulse_input_value(pulses, &values)?,
+                                        source: self.input_source(pulses)?.0,
+                                    },
+                                    result,
+                                    source: predecessor.0,
+                                },
+                            )
+                        }
+                        value => (value, EvaluationCause::Alias(predecessor.0)),
+                    }
                 }
                 OperationDescriptor::ExternalOutput(output) => {
                     let descriptor = self
@@ -1028,21 +1194,21 @@ impl<D> CompiledInner<D> {
                 .iter()
                 .filter_map(|value| match value {
                     EvaluationValue::Level(value) => Some(*value),
-                    EvaluationValue::Pulse(_) => None,
+                    EvaluationValue::Pulse(_) | EvaluationValue::PulseRoute { .. } => None,
                 })
                 .collect(),
             operation_levels: complete_values
                 .iter()
                 .map(|value| match value {
                     EvaluationValue::Level(value) => Some(*value),
-                    EvaluationValue::Pulse(_) => None,
+                    EvaluationValue::Pulse(_) | EvaluationValue::PulseRoute { .. } => None,
                 })
                 .collect(),
             operation_pulses: complete_values
                 .iter()
                 .map(|value| match value {
                     EvaluationValue::Pulse(value) => Some(*value),
-                    EvaluationValue::Level(_) => None,
+                    EvaluationValue::Level(_) | EvaluationValue::PulseRoute { .. } => None,
                 })
                 .collect(),
             causes,
@@ -1168,6 +1334,75 @@ impl<D> CompiledInner<D> {
                 NodeKind::Merge => CompiledNodeKind::Merge,
                 NodeKind::Coalesce => CompiledNodeKind::Coalesce,
                 NodeKind::Zip => CompiledNodeKind::Zip,
+                NodeKind::PulseGate => {
+                    let role_port = |role| {
+                        node.ports()
+                            .input_roles()
+                            .iter()
+                            .zip(inputs.iter().copied())
+                            .find_map(|(candidate, port)| (*candidate == role).then_some(port))
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "validated PulseGate descriptor must retain every fixed input role"
+                                )
+                            })
+                    };
+                    CompiledNodeKind::PulseGate {
+                        pulses: role_port(InputPortRole::Pulses),
+                        enable: role_port(InputPortRole::Enable),
+                    }
+                }
+                NodeKind::PulseSelect => {
+                    let role_port = |role| {
+                        node.ports()
+                            .input_roles()
+                            .iter()
+                            .zip(inputs.iter().copied())
+                            .find_map(|(candidate, port)| (*candidate == role).then_some(port))
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "validated PulseSelect descriptor must retain every fixed input role"
+                                )
+                            })
+                    };
+                    CompiledNodeKind::PulseSelect {
+                        selector: role_port(InputPortRole::Selector),
+                        when_low: role_port(InputPortRole::WhenLow),
+                        when_high: role_port(InputPortRole::WhenHigh),
+                    }
+                }
+                NodeKind::PulseRoute => {
+                    let input_role_port = |role| {
+                        node.ports()
+                            .input_roles()
+                            .iter()
+                            .zip(inputs.iter().copied())
+                            .find_map(|(candidate, port)| (*candidate == role).then_some(port))
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "validated PulseRoute descriptor must retain every fixed input role"
+                                )
+                            })
+                    };
+                    let output_role_port = |role| {
+                        node.ports()
+                            .output_roles()
+                            .iter()
+                            .zip(outputs.iter().copied())
+                            .find_map(|(candidate, port)| (*candidate == role).then_some(port))
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "validated PulseRoute descriptor must retain every fixed output role"
+                                )
+                            })
+                    };
+                    CompiledNodeKind::PulseRoute {
+                        selector: input_role_port(InputPortRole::Selector),
+                        pulses: input_role_port(InputPortRole::Pulses),
+                        when_low: output_role_port(OutputPortRole::WhenLow),
+                        when_high: output_role_port(OutputPortRole::WhenHigh),
+                    }
+                }
                 NodeKind::Toggle(config) => {
                     let input = inputs.first().copied().unwrap_or_else(|| {
                         panic!("validated Toggle descriptor must retain its pulse input")
@@ -1338,6 +1573,42 @@ impl<D> CompiledInner<D> {
                 | CompiledNodeKind::Merge => node.outputs.len() == 1,
                 CompiledNodeKind::Coalesce => node.inputs.len() == 1 && node.outputs.len() == 1,
                 CompiledNodeKind::Zip => !node.inputs.is_empty() && node.outputs.len() == 1,
+                CompiledNodeKind::PulseGate { pulses, enable } => {
+                    node.inputs.len() == 2
+                        && node.outputs.len() == 1
+                        && pulses != enable
+                        && node.inputs.contains(&pulses)
+                        && node.inputs.contains(&enable)
+                }
+                CompiledNodeKind::PulseSelect {
+                    selector,
+                    when_low,
+                    when_high,
+                } => {
+                    node.inputs.len() == 3
+                        && node.outputs.len() == 1
+                        && selector != when_low
+                        && selector != when_high
+                        && when_low != when_high
+                        && node.inputs.contains(&selector)
+                        && node.inputs.contains(&when_low)
+                        && node.inputs.contains(&when_high)
+                }
+                CompiledNodeKind::PulseRoute {
+                    selector,
+                    pulses,
+                    when_low,
+                    when_high,
+                } => {
+                    node.inputs.len() == 2
+                        && node.outputs.len() == 2
+                        && selector != pulses
+                        && when_low != when_high
+                        && node.inputs.contains(&selector)
+                        && node.inputs.contains(&pulses)
+                        && node.outputs.contains(&when_low)
+                        && node.outputs.contains(&when_high)
+                }
                 CompiledNodeKind::Toggle { input, state } => {
                     node.inputs.len() == 1
                         && node.outputs.len() == 1
@@ -1368,17 +1639,36 @@ impl<D> CompiledInner<D> {
             if !shape_valid {
                 return Err("compiled descriptor disagrees with node kind");
             }
-            let (input_kind, output_kind) = match node.kind {
-                CompiledNodeKind::Merge | CompiledNodeKind::Coalesce | CompiledNodeKind::Zip => {
-                    (SignalKind::Pulse, SignalKind::Pulse)
-                }
-                CompiledNodeKind::Toggle { .. } => (SignalKind::Pulse, SignalKind::Level),
-                CompiledNodeKind::PulseDelay { .. } => (SignalKind::Pulse, SignalKind::Pulse),
-                _ => (SignalKind::Level, SignalKind::Level),
-            };
             for index in &node.inputs {
                 let Some(port) = self.ports.get(index.0) else {
                     return Err("compiled port reference is out of bounds");
+                };
+                let input_kind = match node.kind {
+                    CompiledNodeKind::Merge
+                    | CompiledNodeKind::Coalesce
+                    | CompiledNodeKind::Zip
+                    | CompiledNodeKind::Toggle { .. }
+                    | CompiledNodeKind::PulseDelay { .. } => SignalKind::Pulse,
+                    CompiledNodeKind::PulseGate { pulses, .. }
+                    | CompiledNodeKind::PulseRoute { pulses, .. } => {
+                        if *index == pulses {
+                            SignalKind::Pulse
+                        } else {
+                            SignalKind::Level
+                        }
+                    }
+                    CompiledNodeKind::PulseSelect {
+                        when_low,
+                        when_high,
+                        ..
+                    } => {
+                        if *index == when_low || *index == when_high {
+                            SignalKind::Pulse
+                        } else {
+                            SignalKind::Level
+                        }
+                    }
+                    _ => SignalKind::Level,
                 };
                 if port.owner != self.node_lookup[&node.key] || port.kind != input_kind {
                     return Err("compiled port disagrees with validated node");
@@ -1387,6 +1677,16 @@ impl<D> CompiledInner<D> {
             for index in &node.outputs {
                 let Some(port) = self.ports.get(index.0) else {
                     return Err("compiled port reference is out of bounds");
+                };
+                let output_kind = match node.kind {
+                    CompiledNodeKind::Merge
+                    | CompiledNodeKind::Coalesce
+                    | CompiledNodeKind::Zip
+                    | CompiledNodeKind::PulseGate { .. }
+                    | CompiledNodeKind::PulseSelect { .. }
+                    | CompiledNodeKind::PulseRoute { .. }
+                    | CompiledNodeKind::PulseDelay { .. } => SignalKind::Pulse,
+                    _ => SignalKind::Level,
                 };
                 if port.owner != self.node_lookup[&node.key] || port.kind != output_kind {
                     return Err("compiled port disagrees with validated node");
@@ -1807,10 +2107,11 @@ impl<'a, D> ModuleLowerer<'a, D> {
             self.nodes.push(NodeDef::new(
                 flat_node,
                 node.kind().clone(),
-                NodePorts::with_input_roles(
+                NodePorts::with_roles(
                     inputs.clone(),
                     node.ports().input_roles().to_vec(),
                     outputs,
+                    node.ports().output_roles().to_vec(),
                 ),
                 node.meta().clone(),
             ));
@@ -2148,16 +2449,20 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
                 NodeKind::Merge => NodeKind::merge(),
                 NodeKind::Coalesce => NodeKind::coalesce(),
                 NodeKind::Zip => NodeKind::zip(),
+                NodeKind::PulseGate => NodeKind::pulse_gate(),
+                NodeKind::PulseSelect => NodeKind::pulse_select(),
+                NodeKind::PulseRoute => NodeKind::pulse_route(),
                 NodeKind::Toggle(config) => NodeKind::toggle(config.initial),
                 NodeKind::PulseDelay(config) => NodeKind::pulse_delay(config.delay),
             };
             crate::authored::NodeDef::new(
                 node.key(),
                 kind,
-                crate::authored::NodePorts::with_input_roles(
+                crate::authored::NodePorts::with_roles(
                     node.ports().inputs().to_vec(),
                     node.ports().input_roles().to_vec(),
                     node.ports().outputs().to_vec(),
+                    node.ports().output_roles().to_vec(),
                 ),
                 node.meta().clone(),
             )

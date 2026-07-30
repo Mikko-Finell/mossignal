@@ -2,11 +2,13 @@ schema_version: "0.1"
 id: mossignal.runtime.reaction_scoped_pulse_foundation
 title: Reaction-scoped pulse foundation
 kind: family
-status: reviewed
+status: draft
 
 source_baseline:
-  commit: 1ef0d331b29eb1fe62364aba1f7721618baf5c0a
+  commit: 024c83ad1ea568a92c8d19a2c2392553063e2de6
   working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   Pulse values are typed, reaction-scoped simultaneous multiplicities that enter
@@ -299,7 +301,6 @@ sources:
   restricted-network-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
-    reviewed_hash: sha256:349f21ba68dfdf5a8fe88c00892cab044b80c359af41aca893b0263a158a6e33
   input-schema-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.3 Input schema fingerprint]

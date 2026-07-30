@@ -1623,6 +1623,7 @@ fn append_evaluation_provenance<D>(
                 node,
                 contributions,
                 result,
+                supporters: cause_supporters,
             } => {
                 let mut grouped = contributions
                     .iter()
@@ -1635,6 +1636,61 @@ fn append_evaluation_provenance<D>(
                 grouped.sort_by(|left, right| left.port.cmp(&right.port));
                 let mut supporters = vec![transaction_cause];
                 supporters.extend(grouped.iter().map(|contribution| contribution.cause));
+                supporters.extend(
+                    cause_supporters
+                        .iter()
+                        .map(|source| operation_cause(&operation_causes, *source)),
+                );
+                supporters.sort();
+                supporters.dedup();
+                push_record(
+                    scope,
+                    records,
+                    ProvenanceRecord::PulseDerived {
+                        subject: provenance_subject(input_causes.compiled, *node),
+                        contributions: grouped,
+                        result: *result,
+                        supporters,
+                    },
+                )
+            }
+            EvaluationCause::PulseRoute {
+                node,
+                control,
+                contribution,
+            } => {
+                let mut supporters = vec![
+                    transaction_cause,
+                    operation_cause(&operation_causes, *control),
+                    operation_cause(&operation_causes, contribution.source),
+                ];
+                supporters.sort();
+                supporters.dedup();
+                push_record(
+                    scope,
+                    records,
+                    ProvenanceRecord::Derived {
+                        subject: provenance_subject(input_causes.compiled, *node),
+                        supporters,
+                    },
+                )
+            }
+            EvaluationCause::PulseRouteOutput {
+                node,
+                contribution,
+                result,
+                source,
+            } => {
+                let grouped = vec![PulseContribution {
+                    port: input_causes.compiled.pulse_port_subject(contribution.port),
+                    count: contribution.count,
+                    cause: operation_cause(&operation_causes, contribution.source),
+                }];
+                let mut supporters = vec![
+                    transaction_cause,
+                    operation_cause(&operation_causes, *source),
+                    grouped[0].cause,
+                ];
                 supporters.sort();
                 supporters.dedup();
                 push_record(

@@ -996,9 +996,9 @@ Semantically equivalent stable-keyed definitions must produce the same fingerpri
 ### 54.2 Restricted network-fingerprint projection version 1
 
 For the restricted foundation containing `Constant`, `Not`, `All`, `Any`,
-`Parity`, `AtLeast`, `Select`, pulse `Merge`, `Coalesce`, and `Zip`, stateful
-`Toggle`, and temporal `PulseDelay`, the exact canonical payload is the
-following record:
+`Parity`, `AtLeast`, `Select`, pulse `Merge`, `Coalesce`, `Zip`, `PulseGate`,
+`PulseSelect`, and `PulseRoute`, stateful `Toggle`, and temporal `PulseDelay`,
+the exact canonical payload is the following record:
 
 ```text
 network_fingerprint_payload_v1 = record {
@@ -1046,6 +1046,9 @@ kind = ["constant", record {
      | ["merge", null]
      | ["coalesce", null]
      | ["zip", null]
+     | ["pulse_gate", null]
+     | ["pulse_select", null]
+     | ["pulse_route", null]
      | ["toggle", record {
             initial,
             state_schema,
@@ -1079,6 +1082,8 @@ semantic_role = ["input", null]
               | ["selector", null]
               | ["when_low", null]
               | ["when_high", null]
+              | ["pulses", null]
+              | ["enable", null]
               | ["toggle", null]
               | ["pulse_delay", null]
               | ["output", null]
@@ -1116,6 +1121,13 @@ external_output = record {
     source,
 }
 ```
+
+`PulseGate` uses the `pulses` and `enable` input roles and the ordinary
+`output` role. `PulseSelect` uses the `selector`, `when_low`, and `when_high`
+input roles and the ordinary `output` role. `PulseRoute` uses the `selector`
+and `pulses` input roles and the distinct `when_low` and `when_high` output
+roles. Roles remain attached to stable typed port keys and are not inferred
+from authored order.
 
 The `selector`, `when_low`, and `when_high` semantic roles apply to the three
 fixed input ports of `Select`; ordinary fixed and variadic level inputs use the

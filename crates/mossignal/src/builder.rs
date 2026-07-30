@@ -3,7 +3,7 @@
 use crate::authored::{
     ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, ModuleBinding,
     ModuleBindingSet, ModuleInputDef, ModuleInstanceDef, ModuleInterfaceMapping, ModuleOutputDef,
-    NodeDef, NodeKind, NodePorts, PulseDelayConfig, ToggleConfig, UncheckedModule,
+    NodeDef, NodeKind, NodePorts, OutputPortRole, PulseDelayConfig, ToggleConfig, UncheckedModule,
     UncheckedNetwork,
 };
 use crate::diagnostics::Report;
@@ -139,6 +139,15 @@ impl<S: SignalType> Signal<S> {
 pub struct AddedNode<O> {
     key: NodeKey,
     outputs: O,
+}
+
+/// The two typed outputs of one [`NodeKind::PulseRoute`] node.
+#[derive(Debug, Clone, Copy)]
+pub struct PulseRouteOutputs {
+    /// The complete routed count when the settled selector is Low.
+    pub when_low: Signal<Pulse>,
+    /// The complete routed count when the settled selector is High.
+    pub when_high: Signal<Pulse>,
 }
 
 /// Builder-scoped outputs of one successfully added module instance.
@@ -1481,6 +1490,307 @@ impl<D> NetworkBuilder<D> {
         })
     }
 
+    /// Adds a High-enabled pulse gate with locally allocated identities.
+    pub fn pulse_gate(
+        &mut self,
+        pulses: Signal<Pulse>,
+        enable: Signal<Level>,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        let key = self.next_node_key();
+        let pulses_port = self.next_pulse_in_port_key();
+        let enable_port = self.next_in_port_key();
+        let output = self.next_pulse_out_port_key();
+        Ok(self
+            .add_pulse_gate_with_ports(
+                key,
+                pulses_port,
+                enable_port,
+                output,
+                pulses,
+                enable,
+                DiagnosticMeta::default(),
+            )?
+            .into_outputs())
+    }
+
+    /// Adds an explicitly keyed pulse gate with locally allocated ports.
+    pub fn add_pulse_gate(
+        &mut self,
+        key: NodeKey,
+        pulses: Signal<Pulse>,
+        enable: Signal<Level>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        let pulses_port = self.next_pulse_in_port_key();
+        let enable_port = self.next_in_port_key();
+        let output = self.next_pulse_out_port_key();
+        self.add_pulse_gate_with_ports(key, pulses_port, enable_port, output, pulses, enable, meta)
+    }
+
+    /// Adds an explicitly keyed pulse gate with exact fixed port identities.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pulse_gate_with_ports(
+        &mut self,
+        key: NodeKey,
+        pulses_port: InPortKey<Pulse>,
+        enable_port: InPortKey<Level>,
+        output: OutPortKey<Pulse>,
+        pulses: Signal<Pulse>,
+        enable: Signal<Level>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.require_local(pulses)?;
+        self.require_local(enable)?;
+        self.insert_mixed_pulse_node_keys(key, [enable_port], [pulses_port], [output])?;
+        self.nodes.push(NodeDef::new(
+            key,
+            NodeKind::pulse_gate(),
+            NodePorts::with_input_roles(
+                vec![pulses_port.into(), enable_port.into()],
+                vec![
+                    crate::authored::InputPortRole::Pulses,
+                    crate::authored::InputPortRole::Enable,
+                ],
+                vec![output.into()],
+            ),
+            meta,
+        ));
+        for (source, target) in [
+            (source_endpoint_pulse(pulses.source), pulses_port.into()),
+            (source_endpoint(enable.source), enable_port.into()),
+        ] {
+            self.connections.push(ConnectionDef::new(
+                self.allocator.connection(),
+                source,
+                ConnectionEndpoint::node_input(target),
+                DiagnosticMeta::default(),
+            ));
+        }
+        Ok(AddedNode {
+            key,
+            outputs: self.signal(SignalSourceKey::NodeOutput(output)),
+        })
+    }
+
+    /// Adds a level-controlled pulse selector with locally allocated identities.
+    pub fn pulse_select(
+        &mut self,
+        selector: Signal<Level>,
+        when_low: Signal<Pulse>,
+        when_high: Signal<Pulse>,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        let key = self.next_node_key();
+        let selector_port = self.next_in_port_key();
+        let when_low_port = self.next_pulse_in_port_key();
+        let when_high_port = self.next_pulse_in_port_key();
+        let output = self.next_pulse_out_port_key();
+        Ok(self
+            .add_pulse_select_with_ports(
+                key,
+                selector_port,
+                when_low_port,
+                when_high_port,
+                output,
+                selector,
+                when_low,
+                when_high,
+                DiagnosticMeta::default(),
+            )?
+            .into_outputs())
+    }
+
+    /// Adds an explicitly keyed pulse selector with locally allocated ports.
+    pub fn add_pulse_select(
+        &mut self,
+        key: NodeKey,
+        selector: Signal<Level>,
+        when_low: Signal<Pulse>,
+        when_high: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        let selector_port = self.next_in_port_key();
+        let when_low_port = self.next_pulse_in_port_key();
+        let when_high_port = self.next_pulse_in_port_key();
+        let output = self.next_pulse_out_port_key();
+        self.add_pulse_select_with_ports(
+            key,
+            selector_port,
+            when_low_port,
+            when_high_port,
+            output,
+            selector,
+            when_low,
+            when_high,
+            meta,
+        )
+    }
+
+    /// Adds an explicitly keyed pulse selector with exact fixed port identities.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pulse_select_with_ports(
+        &mut self,
+        key: NodeKey,
+        selector_port: InPortKey<Level>,
+        when_low_port: InPortKey<Pulse>,
+        when_high_port: InPortKey<Pulse>,
+        output: OutPortKey<Pulse>,
+        selector: Signal<Level>,
+        when_low: Signal<Pulse>,
+        when_high: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.require_local(selector)?;
+        self.require_local(when_low)?;
+        self.require_local(when_high)?;
+        self.insert_mixed_pulse_node_keys(
+            key,
+            [selector_port],
+            [when_low_port, when_high_port],
+            [output],
+        )?;
+        self.nodes.push(NodeDef::new(
+            key,
+            NodeKind::pulse_select(),
+            NodePorts::with_input_roles(
+                vec![
+                    selector_port.into(),
+                    when_low_port.into(),
+                    when_high_port.into(),
+                ],
+                vec![
+                    crate::authored::InputPortRole::Selector,
+                    crate::authored::InputPortRole::WhenLow,
+                    crate::authored::InputPortRole::WhenHigh,
+                ],
+                vec![output.into()],
+            ),
+            meta,
+        ));
+        for (source, target) in [
+            (source_endpoint(selector.source), selector_port.into()),
+            (source_endpoint_pulse(when_low.source), when_low_port.into()),
+            (
+                source_endpoint_pulse(when_high.source),
+                when_high_port.into(),
+            ),
+        ] {
+            self.connections.push(ConnectionDef::new(
+                self.allocator.connection(),
+                source,
+                ConnectionEndpoint::node_input(target),
+                DiagnosticMeta::default(),
+            ));
+        }
+        Ok(AddedNode {
+            key,
+            outputs: self.signal(SignalSourceKey::NodeOutput(output)),
+        })
+    }
+
+    /// Adds a level-controlled pulse router with locally allocated identities.
+    pub fn pulse_route(
+        &mut self,
+        selector: Signal<Level>,
+        pulses: Signal<Pulse>,
+    ) -> Result<PulseRouteOutputs, AuthoringFailure> {
+        let key = self.next_node_key();
+        let selector_port = self.next_in_port_key();
+        let pulses_port = self.next_pulse_in_port_key();
+        let when_low = self.next_pulse_out_port_key();
+        let when_high = self.next_pulse_out_port_key();
+        Ok(self
+            .add_pulse_route_with_ports(
+                key,
+                selector_port,
+                pulses_port,
+                when_low,
+                when_high,
+                selector,
+                pulses,
+                DiagnosticMeta::default(),
+            )?
+            .into_outputs())
+    }
+
+    /// Adds an explicitly keyed pulse router with locally allocated ports.
+    pub fn add_pulse_route(
+        &mut self,
+        key: NodeKey,
+        selector: Signal<Level>,
+        pulses: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<PulseRouteOutputs>, AuthoringFailure> {
+        let selector_port = self.next_in_port_key();
+        let pulses_port = self.next_pulse_in_port_key();
+        let when_low = self.next_pulse_out_port_key();
+        let when_high = self.next_pulse_out_port_key();
+        self.add_pulse_route_with_ports(
+            key,
+            selector_port,
+            pulses_port,
+            when_low,
+            when_high,
+            selector,
+            pulses,
+            meta,
+        )
+    }
+
+    /// Adds an explicitly keyed pulse router with exact fixed port identities.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pulse_route_with_ports(
+        &mut self,
+        key: NodeKey,
+        selector_port: InPortKey<Level>,
+        pulses_port: InPortKey<Pulse>,
+        when_low: OutPortKey<Pulse>,
+        when_high: OutPortKey<Pulse>,
+        selector: Signal<Level>,
+        pulses: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<PulseRouteOutputs>, AuthoringFailure> {
+        self.require_local(selector)?;
+        self.require_local(pulses)?;
+        self.insert_mixed_pulse_node_keys(
+            key,
+            [selector_port],
+            [pulses_port],
+            [when_low, when_high],
+        )?;
+        self.nodes.push(NodeDef::new(
+            key,
+            NodeKind::pulse_route(),
+            NodePorts::with_roles(
+                vec![selector_port.into(), pulses_port.into()],
+                vec![
+                    crate::authored::InputPortRole::Selector,
+                    crate::authored::InputPortRole::Pulses,
+                ],
+                vec![when_low.into(), when_high.into()],
+                vec![OutputPortRole::WhenLow, OutputPortRole::WhenHigh],
+            ),
+            meta,
+        ));
+        for (source, target) in [
+            (source_endpoint(selector.source), selector_port.into()),
+            (source_endpoint_pulse(pulses.source), pulses_port.into()),
+        ] {
+            self.connections.push(ConnectionDef::new(
+                self.allocator.connection(),
+                source,
+                ConnectionEndpoint::node_input(target),
+                DiagnosticMeta::default(),
+            ));
+        }
+        Ok(AddedNode {
+            key,
+            outputs: PulseRouteOutputs {
+                when_low: self.signal(SignalSourceKey::NodeOutput(when_low)),
+                when_high: self.signal(SignalSourceKey::NodeOutput(when_high)),
+            },
+        })
+    }
+
     /// Consumes the builder into the canonical dynamic authored definition.
     #[must_use]
     pub fn into_unchecked(self) -> UncheckedNetwork<D> {
@@ -1782,6 +2092,50 @@ impl<D> NetworkBuilder<D> {
         self.node_keys.insert(key);
         self.pulse_in_port_keys.extend(inputs);
         self.pulse_out_port_keys.insert(output);
+        Ok(())
+    }
+
+    fn insert_mixed_pulse_node_keys<L, P, O>(
+        &mut self,
+        key: NodeKey,
+        level_inputs: L,
+        pulse_inputs: P,
+        pulse_outputs: O,
+    ) -> Result<(), AuthoringFailure>
+    where
+        L: IntoIterator<Item = InPortKey<Level>>,
+        P: IntoIterator<Item = InPortKey<Pulse>>,
+        O: IntoIterator<Item = OutPortKey<Pulse>>,
+    {
+        if self.node_keys.contains(&key) {
+            return Err(AuthoringFailure::DuplicateNodeKey(key));
+        }
+        let level_inputs = level_inputs.into_iter().collect::<Vec<_>>();
+        let pulse_inputs = pulse_inputs.into_iter().collect::<Vec<_>>();
+        let pulse_outputs = pulse_outputs.into_iter().collect::<Vec<_>>();
+        let mut proposed_level_inputs = BTreeSet::new();
+        for input in &level_inputs {
+            if self.in_port_keys.contains(input) || !proposed_level_inputs.insert(*input) {
+                return Err(AuthoringFailure::DuplicateInPortKey(*input));
+            }
+        }
+        let mut proposed_pulse_inputs = BTreeSet::new();
+        for input in &pulse_inputs {
+            if self.pulse_in_port_keys.contains(input) || !proposed_pulse_inputs.insert(*input) {
+                return Err(AuthoringFailure::DuplicatePulseInPortKey(*input));
+            }
+        }
+        let mut proposed_pulse_outputs = BTreeSet::new();
+        for output in &pulse_outputs {
+            if self.pulse_out_port_keys.contains(output) || !proposed_pulse_outputs.insert(*output)
+            {
+                return Err(AuthoringFailure::DuplicatePulseOutPortKey(*output));
+            }
+        }
+        self.node_keys.insert(key);
+        self.in_port_keys.extend(level_inputs);
+        self.pulse_in_port_keys.extend(pulse_inputs);
+        self.pulse_out_port_keys.extend(pulse_outputs);
         Ok(())
     }
 
@@ -2502,6 +2856,168 @@ impl<D> ModuleBuilder<D> {
             selector,
             when_low,
             when_high,
+            meta,
+        )
+    }
+
+    /// Adds a High-enabled pulse gate.
+    pub fn pulse_gate(
+        &mut self,
+        pulses: Signal<Pulse>,
+        enable: Signal<Level>,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        self.graph.require_local(pulses)?;
+        self.graph.require_local(enable)?;
+        self.graph.pulse_gate(pulses, enable)
+    }
+
+    /// Adds an explicitly keyed pulse gate with locally allocated ports.
+    pub fn add_pulse_gate(
+        &mut self,
+        key: NodeKey,
+        pulses: Signal<Pulse>,
+        enable: Signal<Level>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(pulses)?;
+        self.graph.require_local(enable)?;
+        self.require_unused_node_key(key)?;
+        self.graph.add_pulse_gate(key, pulses, enable, meta)
+    }
+
+    /// Adds an explicitly keyed pulse gate with exact fixed ports.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pulse_gate_with_ports(
+        &mut self,
+        key: NodeKey,
+        pulses_port: InPortKey<Pulse>,
+        enable_port: InPortKey<Level>,
+        output: OutPortKey<Pulse>,
+        pulses: Signal<Pulse>,
+        enable: Signal<Level>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(pulses)?;
+        self.graph.require_local(enable)?;
+        self.graph.add_pulse_gate_with_ports(
+            key,
+            pulses_port,
+            enable_port,
+            output,
+            pulses,
+            enable,
+            meta,
+        )
+    }
+
+    /// Adds a level-controlled pulse selector.
+    pub fn pulse_select(
+        &mut self,
+        selector: Signal<Level>,
+        when_low: Signal<Pulse>,
+        when_high: Signal<Pulse>,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        self.graph.require_local(selector)?;
+        self.graph.require_local(when_low)?;
+        self.graph.require_local(when_high)?;
+        self.graph.pulse_select(selector, when_low, when_high)
+    }
+
+    /// Adds an explicitly keyed pulse selector with locally allocated ports.
+    pub fn add_pulse_select(
+        &mut self,
+        key: NodeKey,
+        selector: Signal<Level>,
+        when_low: Signal<Pulse>,
+        when_high: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(selector)?;
+        self.graph.require_local(when_low)?;
+        self.graph.require_local(when_high)?;
+        self.require_unused_node_key(key)?;
+        self.graph
+            .add_pulse_select(key, selector, when_low, when_high, meta)
+    }
+
+    /// Adds an explicitly keyed pulse selector with exact fixed ports.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pulse_select_with_ports(
+        &mut self,
+        key: NodeKey,
+        selector_port: InPortKey<Level>,
+        when_low_port: InPortKey<Pulse>,
+        when_high_port: InPortKey<Pulse>,
+        output: OutPortKey<Pulse>,
+        selector: Signal<Level>,
+        when_low: Signal<Pulse>,
+        when_high: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(selector)?;
+        self.graph.require_local(when_low)?;
+        self.graph.require_local(when_high)?;
+        self.graph.add_pulse_select_with_ports(
+            key,
+            selector_port,
+            when_low_port,
+            when_high_port,
+            output,
+            selector,
+            when_low,
+            when_high,
+            meta,
+        )
+    }
+
+    /// Adds a level-controlled pulse router.
+    pub fn pulse_route(
+        &mut self,
+        selector: Signal<Level>,
+        pulses: Signal<Pulse>,
+    ) -> Result<PulseRouteOutputs, AuthoringFailure> {
+        self.graph.require_local(selector)?;
+        self.graph.require_local(pulses)?;
+        self.graph.pulse_route(selector, pulses)
+    }
+
+    /// Adds an explicitly keyed pulse router with locally allocated ports.
+    pub fn add_pulse_route(
+        &mut self,
+        key: NodeKey,
+        selector: Signal<Level>,
+        pulses: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<PulseRouteOutputs>, AuthoringFailure> {
+        self.graph.require_local(selector)?;
+        self.graph.require_local(pulses)?;
+        self.require_unused_node_key(key)?;
+        self.graph.add_pulse_route(key, selector, pulses, meta)
+    }
+
+    /// Adds an explicitly keyed pulse router with exact fixed ports.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pulse_route_with_ports(
+        &mut self,
+        key: NodeKey,
+        selector_port: InPortKey<Level>,
+        pulses_port: InPortKey<Pulse>,
+        when_low: OutPortKey<Pulse>,
+        when_high: OutPortKey<Pulse>,
+        selector: Signal<Level>,
+        pulses: Signal<Pulse>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<PulseRouteOutputs>, AuthoringFailure> {
+        self.graph.require_local(selector)?;
+        self.graph.require_local(pulses)?;
+        self.graph.add_pulse_route_with_ports(
+            key,
+            selector_port,
+            pulses_port,
+            when_low,
+            when_high,
+            selector,
+            pulses,
             meta,
         )
     }

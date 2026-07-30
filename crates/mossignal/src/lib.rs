@@ -29,7 +29,7 @@ pub use binding::{
 };
 pub use builder::{
     AddedModuleInstance, AddedNode, AddedStandardModule, AuthoringFailure, KeyedModuleInput,
-    ModuleBuilder, ModuleInstanceBuilder, NetworkBuilder, Signal,
+    ModuleBuilder, ModuleInstanceBuilder, NetworkBuilder, PulseRouteOutputs, Signal,
 };
 pub use compile::CompiledNetwork;
 pub use identity::{InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint, TimeDomainId};

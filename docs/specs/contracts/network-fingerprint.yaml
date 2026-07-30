@@ -2,11 +2,13 @@ schema_version: "0.1"
 id: mossignal.identity.network_fingerprint
 title: Network semantic fingerprint
 kind: artifact
-status: reviewed
+status: draft
 
 source_baseline:
-  commit: 1ef0d331b29eb1fe62364aba1f7721618baf5c0a
+  commit: 024c83ad1ea568a92c8d19a2c2392553063e2de6
   working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   NetworkFingerprint is the opaque, domain-separated 256-bit identity of a
@@ -60,13 +62,13 @@ requirements:
       connection, external-input, external-output, source, target, signal-kind,
       direction, semantic-role, node-kind, and logic-level record and variant
       schemas fixed by the persistence specification, including nullary `not`,
-      `all`, `any`, `parity`, `select`, `merge`, `coalesce`, and `zip` variants,
-      the configured `at_least` variant, configured `toggle` initial level and
-      `stored_level` state schema, configured `pulse_delay` delay ticks and
-      `pending_pulse_group` temporal schema, distinct `Select`, `Toggle`, and
-      `PulseDelay` input semantic roles, and the `level` and `pulse` signal-kind
-      variants. Collections use the specified stable semantic order and never
-      Rust layout, discriminants, or debug text.
+      `all`, `any`, `parity`, `select`, `merge`, `coalesce`, `zip`, `pulse_gate`,
+      `pulse_select`, and `pulse_route` variants, the configured `at_least`
+      variant, configured `toggle` initial level and `stored_level` state schema,
+      configured `pulse_delay` delay ticks and `pending_pulse_group` temporal
+      schema, distinct fixed input roles, `PulseRoute` output roles, and the
+      `level` and `pulse` signal-kind variants. Collections use the specified
+      stable semantic order and never Rust layout, discriminants, or debug text.
     sources: [restricted-projection, canonical-ordering, canonical-enums]
 
   - id: pre-stability-projection-policy
@@ -117,6 +119,10 @@ requirements:
       ports, plus `Toggle`'s initial level, `stored_level` state schema, and
       `toggle` Pulse-input role, plus `PulseDelay`'s positive `delay_ticks`,
       `pending_pulse_group` temporal schema, and `pulse_delay` Pulse-input role.
+      It also includes PulseGate's `pulses` and `enable` input roles,
+      PulseSelect's `selector`, `when_low`, and `when_high` input roles, and
+      PulseRoute's `selector` and `pulses` input roles plus distinct `when_low`
+      and `when_high` output roles.
       Changing a represented parameter, state or temporal schema, or role
       changes canonical identity even when stable keys remain unchanged.
     sources: [network-projection, restricted-projection, deterministic-compilation]
@@ -129,7 +135,8 @@ requirements:
       sensitivity to mutable included semantic categories such as `AtLeast`
       thresholds and `Select` input roles. The initial corpus retains complete
       canonical digest-input bytes and expected digests for the restricted
-      minimal, nontrivial, variadic, and remaining level-combinational cases
+      minimal, nontrivial, variadic, remaining level-combinational, pulse-
+      combinational, stateful, temporal, and level-controlled pulse cases
       required by the verification policy.
     sources: [canonical-vectors, digest-scope-verification, deterministic-compilation]
 
@@ -176,7 +183,6 @@ sources:
       - Part VI — Digest and fingerprint suite
       - 54. Network and input-schema fingerprints
       - 54.2 Restricted network-fingerprint projection version 1
-    reviewed_hash: sha256:349f21ba68dfdf5a8fe88c00892cab044b80c359af41aca893b0263a158a6e33
   canonical-ordering:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]

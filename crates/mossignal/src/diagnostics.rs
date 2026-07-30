@@ -3,7 +3,7 @@
 //! The opening catalogue is intentionally small.  Its types are the common
 //! representation used by later graph construction and validation modules.
 
-use crate::authored::InputPortRole;
+use crate::authored::{InputPortRole, OutputPortRole};
 use crate::identity::{ModuleFingerprint, NetworkFingerprint};
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
@@ -285,6 +285,7 @@ pub enum DuplicateClaim {
         inputs: Vec<AnyInPortKey>,
         input_roles: Vec<InputPortRole>,
         outputs: Vec<AnyOutPortKey>,
+        output_roles: Vec<OutputPortRole>,
         origin: Option<OriginRef>,
     },
     InPort {
@@ -343,6 +344,9 @@ pub enum DuplicateNodeKind {
     Merge,
     Coalesce,
     Zip,
+    PulseGate,
+    PulseSelect,
+    PulseRoute,
     Toggle(LogicLevel),
     PulseDelay(u64),
 }
@@ -1788,6 +1792,7 @@ mod tests {
                     inputs: Vec::new(),
                     input_roles: Vec::new(),
                     outputs: Vec::new(),
+                    output_roles: Vec::new(),
                     origin: None,
                 },
                 DuplicateClaim::Node {
@@ -1796,6 +1801,7 @@ mod tests {
                     inputs: Vec::new(),
                     input_roles: Vec::new(),
                     outputs: Vec::new(),
+                    output_roles: Vec::new(),
                     origin: None,
                 },
                 DuplicateClaim::Node {
@@ -1804,6 +1810,7 @@ mod tests {
                     inputs: Vec::new(),
                     input_roles: Vec::new(),
                     outputs: Vec::new(),
+                    output_roles: Vec::new(),
                     origin: None,
                 },
             ],
@@ -1823,6 +1830,7 @@ mod tests {
                         inputs: Vec::new(),
                         input_roles: Vec::new(),
                         outputs: Vec::new(),
+                        output_roles: Vec::new(),
                         origin: None,
                     },
                     DuplicateClaim::Node {
@@ -1831,6 +1839,7 @@ mod tests {
                         inputs: Vec::new(),
                         input_roles: Vec::new(),
                         outputs: Vec::new(),
+                        output_roles: Vec::new(),
                         origin: None,
                     },
                     DuplicateClaim::Node {
@@ -1839,6 +1848,7 @@ mod tests {
                         inputs: Vec::new(),
                         input_roles: Vec::new(),
                         outputs: Vec::new(),
+                        output_roles: Vec::new(),
                         origin: None,
                     },
                 ]

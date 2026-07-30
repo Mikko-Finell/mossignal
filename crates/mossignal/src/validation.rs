@@ -4,7 +4,7 @@
 
 use crate::authored::{
     ConnectionEndpoint, InputPortRole, ModuleInstanceDef, ModuleInterfaceMapping, NodeDef,
-    NodeKind, UncheckedModule, UncheckedNetwork,
+    NodeKind, OutputPortRole, UncheckedModule, UncheckedNetwork,
 };
 use crate::compile::CompiledNetwork;
 use crate::diagnostics::{
@@ -888,6 +888,9 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         NodeKind::Merge => DuplicateNodeKind::Merge,
                         NodeKind::Coalesce => DuplicateNodeKind::Coalesce,
                         NodeKind::Zip => DuplicateNodeKind::Zip,
+                        NodeKind::PulseGate => DuplicateNodeKind::PulseGate,
+                        NodeKind::PulseSelect => DuplicateNodeKind::PulseSelect,
+                        NodeKind::PulseRoute => DuplicateNodeKind::PulseRoute,
                         NodeKind::Toggle(config) => DuplicateNodeKind::Toggle(config.initial),
                         NodeKind::PulseDelay(config) => {
                             DuplicateNodeKind::PulseDelay(config.delay.ticks())
@@ -896,6 +899,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     inputs: node.ports().inputs().to_vec(),
                     input_roles: node.ports().input_roles().to_vec(),
                     outputs: node.ports().outputs().to_vec(),
+                    output_roles: node.ports().output_roles().to_vec(),
                     origin: node.meta().origin.clone(),
                 });
             self.nodes.insert(node.key());
@@ -1015,20 +1019,25 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 NodeKind::Constant(_) => Some(0),
                 NodeKind::Not => Some(1),
                 NodeKind::All | NodeKind::Any | NodeKind::Parity | NodeKind::AtLeast(_) => None,
-                NodeKind::Select => Some(3),
+                NodeKind::Select | NodeKind::PulseSelect => Some(3),
                 NodeKind::Merge | NodeKind::Zip => None,
                 NodeKind::Coalesce => Some(1),
+                NodeKind::PulseGate | NodeKind::PulseRoute => Some(2),
                 NodeKind::Toggle(_) | NodeKind::PulseDelay(_) => Some(1),
             };
-            let (expected_input_kind, expected_output_kind) = match node.kind() {
-                NodeKind::Merge | NodeKind::Coalesce | NodeKind::Zip => {
-                    (SignalKind::Pulse, SignalKind::Pulse)
-                }
-                NodeKind::Toggle(_) => (SignalKind::Pulse, SignalKind::Level),
-                NodeKind::PulseDelay(_) => (SignalKind::Pulse, SignalKind::Pulse),
-                _ => (SignalKind::Level, SignalKind::Level),
+            let expected_output_kind = match node.kind() {
+                NodeKind::Merge | NodeKind::Coalesce | NodeKind::Zip => SignalKind::Pulse,
+                NodeKind::PulseGate
+                | NodeKind::PulseSelect
+                | NodeKind::PulseRoute
+                | NodeKind::PulseDelay(_) => SignalKind::Pulse,
+                _ => SignalKind::Level,
             };
-            let expected_outputs = 1;
+            let expected_outputs = if matches!(node.kind(), NodeKind::PulseRoute) {
+                2
+            } else {
+                1
+            };
             let inputs = node.ports().inputs();
             let outputs = node.ports().outputs();
             if matches!(node.kind(), NodeKind::Zip) && inputs.is_empty() {
@@ -1067,20 +1076,66 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 node.kind(),
                 NodeKind::Not
                     | NodeKind::Select
+                    | NodeKind::PulseGate
+                    | NodeKind::PulseSelect
+                    | NodeKind::PulseRoute
                     | NodeKind::Coalesce
                     | NodeKind::Toggle(_)
                     | NodeKind::PulseDelay(_)
             ) && expected_inputs.is_some_and(|expected| inputs.len() < expected)
             {
+                let expected_kind = match node.kind() {
+                    NodeKind::PulseGate | NodeKind::PulseSelect | NodeKind::PulseRoute => {
+                        SignalKind::Pulse
+                    }
+                    NodeKind::Toggle(_) | NodeKind::Coalesce | NodeKind::PulseDelay(_) => {
+                        SignalKind::Pulse
+                    }
+                    _ => SignalKind::Level,
+                };
                 self.add(
                     SubjectRef::Node(node.key()),
                     ProblemEvidence::missing_required_input(
                         SubjectRef::Node(node.key()),
-                        expected_input_kind,
+                        expected_kind,
                     ),
                 );
             }
-            if inputs.iter().any(|key| key.kind() != expected_input_kind) {
+            let expected_input_kind = |role: InputPortRole| match node.kind() {
+                NodeKind::PulseGate => match role {
+                    InputPortRole::Pulses => Some(SignalKind::Pulse),
+                    InputPortRole::Enable => Some(SignalKind::Level),
+                    _ => None,
+                },
+                NodeKind::PulseSelect => match role {
+                    InputPortRole::Selector => Some(SignalKind::Level),
+                    InputPortRole::WhenLow | InputPortRole::WhenHigh => Some(SignalKind::Pulse),
+                    _ => None,
+                },
+                NodeKind::PulseRoute => match role {
+                    InputPortRole::Selector => Some(SignalKind::Level),
+                    InputPortRole::Pulses => Some(SignalKind::Pulse),
+                    _ => None,
+                },
+                NodeKind::Merge | NodeKind::Coalesce | NodeKind::Zip => {
+                    (role == InputPortRole::Input).then_some(SignalKind::Pulse)
+                }
+                NodeKind::Toggle(_) => (role == InputPortRole::Toggle).then_some(SignalKind::Pulse),
+                NodeKind::PulseDelay(_) => {
+                    (role == InputPortRole::PulseDelay).then_some(SignalKind::Pulse)
+                }
+                NodeKind::Select => matches!(
+                    role,
+                    InputPortRole::Selector | InputPortRole::WhenLow | InputPortRole::WhenHigh
+                )
+                .then_some(SignalKind::Level),
+                _ => (role == InputPortRole::Input).then_some(SignalKind::Level),
+            };
+            let input_kinds_valid = inputs
+                .iter()
+                .zip(node.ports().input_roles())
+                .all(|(key, role)| expected_input_kind(*role) == Some(key.kind()));
+            if !input_kinds_valid {
                 self.add(
                     SubjectRef::Node(node.key()),
                     ProblemEvidence::invalid_fixed_arity(
@@ -1103,44 +1158,37 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 );
             }
             let role_count = node.ports().input_roles().len();
-            let valid_role_count = match node.kind() {
-                NodeKind::Select => {
-                    let required = [
-                        InputPortRole::Selector,
-                        InputPortRole::WhenLow,
-                        InputPortRole::WhenHigh,
-                    ];
-                    required
-                        .iter()
-                        .filter(|role| {
-                            node.ports()
-                                .input_roles()
-                                .iter()
-                                .filter(|candidate| *candidate == *role)
-                                .count()
-                                == 1
-                        })
-                        .count()
+            let required_input_roles = match node.kind() {
+                NodeKind::Select | NodeKind::PulseSelect => vec![
+                    InputPortRole::Selector,
+                    InputPortRole::WhenLow,
+                    InputPortRole::WhenHigh,
+                ],
+                NodeKind::PulseGate => {
+                    vec![InputPortRole::Pulses, InputPortRole::Enable]
                 }
-                NodeKind::Toggle(_) => node
-                    .ports()
-                    .input_roles()
-                    .iter()
-                    .filter(|role| **role == InputPortRole::Toggle)
-                    .count(),
-                NodeKind::PulseDelay(_) => node
-                    .ports()
-                    .input_roles()
-                    .iter()
-                    .filter(|role| **role == InputPortRole::PulseDelay)
-                    .count(),
-                _ => node
-                    .ports()
-                    .input_roles()
-                    .iter()
-                    .filter(|role| **role == InputPortRole::Input)
-                    .count(),
+                NodeKind::PulseRoute => {
+                    vec![InputPortRole::Selector, InputPortRole::Pulses]
+                }
+                NodeKind::Toggle(_) => vec![InputPortRole::Toggle],
+                NodeKind::PulseDelay(_) => vec![InputPortRole::PulseDelay],
+                _ => vec![InputPortRole::Input; inputs.len()],
             };
+            let valid_role_count = required_input_roles
+                .iter()
+                .filter(|role| {
+                    let required_count = required_input_roles
+                        .iter()
+                        .filter(|candidate| *candidate == *role)
+                        .count();
+                    node.ports()
+                        .input_roles()
+                        .iter()
+                        .filter(|candidate| *candidate == *role)
+                        .count()
+                        == required_count
+                })
+                .count();
             let expected_role_count = inputs.len();
             if role_count != expected_role_count || valid_role_count != expected_role_count {
                 self.add(
@@ -1150,6 +1198,38 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         inputs.iter().copied().map(SubjectRef::InPort).collect(),
                         expected_role_count,
                         valid_role_count,
+                    ),
+                );
+            }
+            let required_output_roles = if matches!(node.kind(), NodeKind::PulseRoute) {
+                vec![OutputPortRole::WhenLow, OutputPortRole::WhenHigh]
+            } else {
+                vec![OutputPortRole::Output; outputs.len()]
+            };
+            let output_role_count = node.ports().output_roles().len();
+            let valid_output_role_count = required_output_roles
+                .iter()
+                .filter(|role| {
+                    let required_count = required_output_roles
+                        .iter()
+                        .filter(|candidate| *candidate == *role)
+                        .count();
+                    node.ports()
+                        .output_roles()
+                        .iter()
+                        .filter(|candidate| *candidate == *role)
+                        .count()
+                        == required_count
+                })
+                .count();
+            if output_role_count != outputs.len() || valid_output_role_count != outputs.len() {
+                self.add(
+                    SubjectRef::Node(node.key()),
+                    ProblemEvidence::invalid_fixed_arity(
+                        FixedArityRole::Output,
+                        outputs.iter().copied().map(SubjectRef::OutPort).collect(),
+                        outputs.len(),
+                        valid_output_role_count,
                     ),
                 );
             }
@@ -1163,7 +1243,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     | NodeKind::Zip
             ) && outputs.len() == 1
                 && outputs.iter().all(|key| key.kind() == expected_output_kind)
-                && inputs.iter().all(|key| key.kind() == expected_input_kind)
+                && input_kinds_valid
                 && role_count == inputs.len()
                 && valid_role_count == inputs.len()
             {

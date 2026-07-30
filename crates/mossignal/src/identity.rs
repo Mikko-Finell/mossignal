@@ -2,7 +2,8 @@
 
 use crate::authored::{
     ConnectionDef, ConnectionEndpoint, InputPortRole, ModuleInputDef, ModuleInstanceDef,
-    ModuleInterfaceMapping, ModuleOutputDef, NodeDef, NodeKind, UncheckedModule, UncheckedNetwork,
+    ModuleInterfaceMapping, ModuleOutputDef, NodeDef, NodeKind, OutputPortRole, UncheckedModule,
+    UncheckedNetwork,
 };
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
@@ -250,19 +251,25 @@ fn module_ports<D>(writer: &mut Cbor, nodes: &[NodeDef<D>]) {
                         key.kind(),
                         in_port_key(*key),
                         node.key().as_u128(),
-                        *role,
+                        input_port_role(*role),
                     )
                 }),
         );
-        values.extend(node.ports().outputs().iter().map(|key| {
-            (
-                false,
-                key.kind(),
-                out_port_key(*key),
-                node.key().as_u128(),
-                InputPortRole::Input,
-            )
-        }));
+        values.extend(
+            node.ports()
+                .outputs()
+                .iter()
+                .zip(node.ports().output_roles())
+                .map(|(key, role)| {
+                    (
+                        false,
+                        key.kind(),
+                        out_port_key(*key),
+                        node.key().as_u128(),
+                        output_port_role(*role),
+                    )
+                }),
+        );
     }
     values.sort_by_key(|(input, kind, key, owner, role)| {
         (
@@ -281,9 +288,7 @@ fn module_ports<D>(writer: &mut Cbor, nodes: &[NodeDef<D>]) {
         });
         writer.field("key", |writer| writer.key(key));
         writer.field("owner", |writer| writer.key(owner));
-        writer.field("semantic_role", |writer| {
-            writer.variant_null(port_role(input, role))
-        });
+        writer.field("semantic_role", |writer| writer.variant_null(role));
         writer.field("signal_kind", |writer| signal_kind(writer, kind));
     }
 }
@@ -327,6 +332,9 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
         NodeKind::Merge => writer.variant_null("merge"),
         NodeKind::Coalesce => writer.variant_null("coalesce"),
         NodeKind::Zip => writer.variant_null("zip"),
+        NodeKind::PulseGate => writer.variant_null("pulse_gate"),
+        NodeKind::PulseSelect => writer.variant_null("pulse_select"),
+        NodeKind::PulseRoute => writer.variant_null("pulse_route"),
         NodeKind::Toggle(config) => {
             writer.variant_start("toggle");
             writer.record_start(2);
@@ -344,17 +352,24 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
     }
 }
 
-fn port_role(input: bool, role: InputPortRole) -> &'static str {
-    if !input {
-        return "output";
-    }
+fn input_port_role(role: InputPortRole) -> &'static str {
     match role {
         InputPortRole::Input => "input",
         InputPortRole::Selector => "selector",
         InputPortRole::WhenLow => "when_low",
         InputPortRole::WhenHigh => "when_high",
+        InputPortRole::Pulses => "pulses",
+        InputPortRole::Enable => "enable",
         InputPortRole::Toggle => "toggle",
         InputPortRole::PulseDelay => "pulse_delay",
+    }
+}
+
+fn output_port_role(role: OutputPortRole) -> &'static str {
+    match role {
+        OutputPortRole::Output => "output",
+        OutputPortRole::WhenLow => "when_low",
+        OutputPortRole::WhenHigh => "when_high",
     }
 }
 
@@ -572,6 +587,9 @@ fn nodes<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
             NodeKind::Merge => writer.variant_null("merge"),
             NodeKind::Coalesce => writer.variant_null("coalesce"),
             NodeKind::Zip => writer.variant_null("zip"),
+            NodeKind::PulseGate => writer.variant_null("pulse_gate"),
+            NodeKind::PulseSelect => writer.variant_null("pulse_select"),
+            NodeKind::PulseRoute => writer.variant_null("pulse_route"),
             NodeKind::Toggle(config) => {
                 writer.variant_start("toggle");
                 writer.record_start(2);
@@ -604,19 +622,25 @@ fn ports<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
                         key.kind(),
                         in_port_key(*key),
                         node.key().as_u128(),
-                        *role,
+                        input_port_role(*role),
                     )
                 }),
         );
-        ports.extend(node.ports().outputs().iter().map(|key| {
-            (
-                false,
-                key.kind(),
-                out_port_key(*key),
-                node.key().as_u128(),
-                InputPortRole::Input,
-            )
-        }));
+        ports.extend(
+            node.ports()
+                .outputs()
+                .iter()
+                .zip(node.ports().output_roles())
+                .map(|(key, role)| {
+                    (
+                        false,
+                        key.kind(),
+                        out_port_key(*key),
+                        node.key().as_u128(),
+                        output_port_role(*role),
+                    )
+                }),
+        );
     }
     ports.sort_by_key(|(input, kind, key, _, _)| (signal_kind_tag(*kind), u8::from(!*input), *key));
     writer.array_start(ports.len());
@@ -628,18 +652,7 @@ fn ports<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
         writer.field("key", |writer| writer.key(key));
         writer.field("owner", |writer| writer.key(owner));
         writer.field("semantic_role", |writer| {
-            writer.variant_null(if input {
-                match role {
-                    InputPortRole::Input => "input",
-                    InputPortRole::Selector => "selector",
-                    InputPortRole::WhenLow => "when_low",
-                    InputPortRole::WhenHigh => "when_high",
-                    InputPortRole::Toggle => "toggle",
-                    InputPortRole::PulseDelay => "pulse_delay",
-                }
-            } else {
-                "output"
-            });
+            writer.variant_null(role);
         });
         writer.field("signal_kind", |writer| signal_kind(writer, kind));
     }
@@ -1242,6 +1255,104 @@ mod tests {
         )
     }
 
+    fn golden_level_controlled_pulse() -> UncheckedNetwork<()> {
+        let selector = ExternalInputKey::<Level>::from_u128(10);
+        let first = ExternalInputKey::<Pulse>::from_u128(11);
+        let second = ExternalInputKey::<Pulse>::from_u128(12);
+        let gate_inputs = [
+            InPortKey::<Pulse>::from_u128(20).into(),
+            InPortKey::<Level>::from_u128(21).into(),
+        ];
+        let select_inputs = [
+            InPortKey::<Level>::from_u128(22).into(),
+            InPortKey::<Pulse>::from_u128(23).into(),
+            InPortKey::<Pulse>::from_u128(24).into(),
+        ];
+        let route_inputs = [
+            InPortKey::<Level>::from_u128(25).into(),
+            InPortKey::<Pulse>::from_u128(26).into(),
+        ];
+        let gate_output = OutPortKey::<Pulse>::from_u128(30);
+        let select_output = OutPortKey::<Pulse>::from_u128(31);
+        let route_low = OutPortKey::<Pulse>::from_u128(32);
+        let route_high = OutPortKey::<Pulse>::from_u128(33);
+        let sources = [
+            first.into(),
+            selector.into(),
+            selector.into(),
+            first.into(),
+            second.into(),
+            selector.into(),
+            first.into(),
+        ];
+        let targets = gate_inputs
+            .into_iter()
+            .chain(select_inputs)
+            .chain(route_inputs)
+            .collect::<Vec<_>>();
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![
+                NodeDef::new(
+                    NodeKey::from_u128(2),
+                    NodeKind::pulse_gate(),
+                    NodePorts::with_input_roles(
+                        gate_inputs.to_vec(),
+                        vec![InputPortRole::Pulses, InputPortRole::Enable],
+                        vec![gate_output.into()],
+                    ),
+                    DiagnosticMeta::default(),
+                ),
+                NodeDef::new(
+                    NodeKey::from_u128(3),
+                    NodeKind::pulse_select(),
+                    NodePorts::with_input_roles(
+                        select_inputs.to_vec(),
+                        vec![
+                            InputPortRole::Selector,
+                            InputPortRole::WhenLow,
+                            InputPortRole::WhenHigh,
+                        ],
+                        vec![select_output.into()],
+                    ),
+                    DiagnosticMeta::default(),
+                ),
+                NodeDef::new(
+                    NodeKey::from_u128(4),
+                    NodeKind::pulse_route(),
+                    NodePorts::with_roles(
+                        route_inputs.to_vec(),
+                        vec![InputPortRole::Selector, InputPortRole::Pulses],
+                        vec![route_low.into(), route_high.into()],
+                        vec![OutputPortRole::WhenLow, OutputPortRole::WhenHigh],
+                    ),
+                    DiagnosticMeta::default(),
+                ),
+            ],
+            vec![
+                ExternalInputDef::new(selector.into(), DiagnosticMeta::default()),
+                ExternalInputDef::new(first.into(), DiagnosticMeta::default()),
+                ExternalInputDef::new(second.into(), DiagnosticMeta::default()),
+            ],
+            Vec::new(),
+            sources
+                .into_iter()
+                .zip(targets)
+                .enumerate()
+                .map(|(index, (source, target))| {
+                    ConnectionDef::new(
+                        ConnectionKey::from_u128(50 + index as u128),
+                        source,
+                        target.into(),
+                        DiagnosticMeta::default(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     fn golden_toggle(initial: LogicLevel, role: InputPortRole) -> UncheckedNetwork<()> {
         let external = ExternalInputKey::<Pulse>::from_u128(10);
         let input = InPortKey::<Pulse>::from_u128(20);
@@ -1621,6 +1732,21 @@ mod tests {
             assert_eq!(encoded, expected_bytes);
             assert_eq!(fingerprint.to_string(), expected_fingerprint);
         }
+    }
+
+    #[test]
+    fn level_controlled_pulse_projection_vector_is_exact() {
+        let network = golden_level_controlled_pulse();
+        let (bytes, _) = canonical_inputs(&network);
+        let fingerprint = validated_fingerprints(network).0;
+        assert_eq!(
+            hex(&bytes),
+            "838266646f6d61696e78206d6f737369676e616c2f6e6574776f726b5f66696e6765727072696e742f763182677061796c6f61648982781f6275696c745f696e5f6e6f64655f73656d616e746963735f76657273696f6e01826b636f6e6e656374696f6e73878382636b657950000000000000000000000000000000328266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000b826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000014826b7369676e616c5f6b696e64826570756c7365f68382636b657950000000000000000000000000000000338266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e6482656c6576656cf682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000015826b7369676e616c5f6b696e6482656c6576656cf68382636b657950000000000000000000000000000000348266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e6482656c6576656cf682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000016826b7369676e616c5f6b696e6482656c6576656cf68382636b657950000000000000000000000000000000358266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000b826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000017826b7369676e616c5f6b696e64826570756c7365f68382636b657950000000000000000000000000000000368266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000c826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000018826b7369676e616c5f6b696e64826570756c7365f68382636b657950000000000000000000000000000000378266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e6482656c6576656cf682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000019826b7369676e616c5f6b696e6482656c6576656cf68382636b657950000000000000000000000000000000388266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000b826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b6579500000000000000000000000000000001a826b7369676e616c5f6b696e64826570756c7365f68276636f72655f73656d616e746963735f76657273696f6e01826f65787465726e616c5f696e70757473838282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e6482656c6576656cf68282636b6579500000000000000000000000000000000b826b7369676e616c5f6b696e64826570756c7365f68282636b6579500000000000000000000000000000000c826b7369676e616c5f6b696e64826570756c7365f6827065787465726e616c5f6f75747075747380826b6e6574776f726b5f6b6579500000000000000000000000000000000182656e6f646573838282636b6579500000000000000000000000000000000282646b696e64826a70756c73655f67617465f68282636b6579500000000000000000000000000000000382646b696e64826c70756c73655f73656c656374f68282636b6579500000000000000000000000000000000482646b696e64826b70756c73655f726f757465f68265706f7274738b858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001582656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c658266656e61626c65f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001682656f776e65725000000000000000000000000000000003826d73656d616e7469635f726f6c65826873656c6563746f72f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001982656f776e65725000000000000000000000000000000004826d73656d616e7469635f726f6c65826873656c6563746f72f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001482656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c65826670756c736573f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001782656f776e65725000000000000000000000000000000003826d73656d616e7469635f726f6c6582687768656e5f6c6f77f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001882656f776e65725000000000000000000000000000000003826d73656d616e7469635f726f6c6582697768656e5f68696768f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001a82656f776e65725000000000000000000000000000000004826d73656d616e7469635f726f6c65826670756c736573f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000001e82656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000001f82656f776e65725000000000000000000000000000000003826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000002082656f776e65725000000000000000000000000000000004826d73656d616e7469635f726f6c6582687768656e5f6c6f77f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000002182656f776e65725000000000000000000000000000000004826d73656d616e7469635f726f6c6582697768656e5f68696768f6826b7369676e616c5f6b696e64826570756c7365f6826e74696d655f646f6d61696e5f69645000000000000000000000000000000002826776657273696f6e01"
+        );
+        assert_eq!(
+            fingerprint.to_string(),
+            "f8d82fb9c817dd6ce50c4e998dd11d9b184dce556968e94cec14260822c010c0"
+        );
     }
 
     #[test]
