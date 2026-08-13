@@ -1,0 +1,332 @@
+schema_version: "0.1"
+id: mossignal.node.edge_detector_family
+title: Transition-sensitive edge-detector family
+kind: family
+status: reviewed
+
+source_baseline:
+  commit: 0f4e5140e43b4e026b7003cd3a40b36ab4a99d3e
+  working_tree: dirty
+
+summary: >-
+  RisingEdge, FallingEdge, and AnyEdge are fixed-shape Level-to-Pulse stateful
+  primitives that compare one settled current level with a shared remembered
+  observation schema, emit zero or one pulse under distinct transition laws,
+  and remember the current level for the next reaction.
+
+scope:
+  includes:
+    - family port shape, initialization policy, observation state, and transition laws
+    - typed and dynamic authoring, validation, compilation, and evaluation
+    - current-reaction causality, committed-state inspection, provenance, and conformance
+    - pre-stability network- and module-fingerprint extension boundary
+  excludes:
+    - debounce, temporal filtering, retained pulse history, and arbitrary callbacks
+    - latches, Toggle, SampleHold, counters, and temporal primitives
+    - general state-slot ownership and atomic successor commitment
+    - snapshot encoding, restoration, replay, and topology migration
+
+known_uncovered:
+  - Canonical snapshot encoding and restoration validation for remembered observations
+  - Compatible same-kind and cross-kind topology migration of established observations
+  - Complete current-support and why-not explanation rendering for non-emitting reactions
+
+aliases:
+  - RisingEdge
+  - FallingEdge
+  - AnyEdge
+  - EdgeConfig
+  - EdgeInitialization
+  - previous observation
+
+requirements:
+  - id: fixed-shape-and-shared-observation-schema
+    kind: semantic
+    statement: >-
+      Each detector has exactly one Level input, one Pulse output, and one
+      remembered-observation state cell whose closed values are unestablished,
+      established Low, and established High. All three kinds use EdgeConfig
+      with an explicit EdgeInitialization of Baseline or Assume(LogicLevel);
+      there is no hidden initialization default.
+    sources: [edge-initialization, rising-edge, falling-edge, any-edge, concrete-config, persistence-state-schema]
+
+  - id: exact-transition-and-successor-laws
+    kind: semantic
+    statement: >-
+      On every reaction, the detector compares its previous observation with
+      the complete settled current input, emits a PulseCount of one exactly for
+      its named transition and zero otherwise, and proposes the current input
+      as the next established observation. RisingEdge emits only for Low to
+      High, FallingEdge only for High to Low, and AnyEdge for either unequal
+      established pair; an unestablished previous observation never emits.
+    sources: [edge-initialization, rising-edge, falling-edge, any-edge, api-edge-detection]
+
+  - id: explicit-first-reaction-policy
+    kind: lifecycle
+    statement: >-
+      Baseline begins with an unestablished previous observation, so the first
+      settled input only establishes memory. Assume(level) begins with that
+      configured level as the previous observation, so the ordinary detector
+      law applies during initialization and may emit. A successful first
+      reaction proposes and atomically commits its current input through the
+      ordinary stateful transaction model.
+    sources: [transducer-model, machine-initialization, edge-initialization, runtime-edge-initialization]
+
+  - id: immediate-dependency-and-glitch-free-visibility
+    kind: semantic
+    statement: >-
+      Every detector has a conservative current Level-input to Pulse-output
+      dependency. It observes only the fully settled current input, exposes its
+      zero-or-one result to downstream operations in the same reaction, and
+      never observes evaluator intermediates; only the previous observation,
+      not the proposed successor, is available to its current law.
+    sources: [transducer-model, glitch-freedom, dependency-signatures, runtime-glitch-freedom]
+
+  - id: typed-and-dynamic-authoring
+    kind: public_surface
+    statement: >-
+      NetworkBuilder and ModuleBuilder provide rising_edge, falling_edge, and
+      any_edge conveniences accepting Signal<Level> and EdgeConfig, together
+      with explicit keyed add_* forms exposing stable NodeKey and metadata.
+      Dynamic definitions use the three corresponding closed NodeKind variants
+      with stable typed fixed-shape ports.
+    sources: [rising-edge, falling-edge, any-edge, builder-keyed, constructor-family, module-builder, dynamic-node-kind, dynamic-ports]
+
+  - id: validation-compilation-and-family-state
+    kind: semantic
+    statement: >-
+      Structural validation enforces each detector's one-Level-input and
+      one-Pulse-output shape and retains the immediate dependency for cycle
+      analysis. The compiled representation preserves stable subject
+      correspondence and enough kind, configuration, dependency, and state-cell
+      information to execute the detector law; every descriptor and port must
+      agree with its validated kind, and dense identity remains private.
+    sources: [api-ports, api-stateful-nodes, api-validation-coverage, dependency-signatures, runtime-compilation, runtime-compiled-invariants]
+
+  - id: observation-inspection-and-pulse-provenance
+    kind: system_effect
+    statement: >-
+      Before initialization, structural inspection exposes the declared
+      initialization policy. After initialization, node inspection exposes the
+      committed remembered observation separately from current port values and
+      reaction-scoped pulse activity. Every emitted edge pulse retains acyclic
+      causal support from the current settled observation and the remembered
+      prior observation; non-emission does not create retained pulse state.
+    sources: [api-pulse, node-inspection, causal-provenance, runtime-derivation, runtime-causal-order, runtime-current-support]
+    basis: derived
+
+  - id: pre-stability-identity-extension
+    kind: compatibility
+    statement: >-
+      NetworkFingerprint and ModuleFingerprint distinguish all three detector
+      kinds and represent their stable typed port incidence, explicit
+      initialization policy including an assumed level, and closed remembered
+      observation schema. Before an explicit frozen baseline, the accepted
+      implementation may extend the provisional version-1 network projection
+      in place, but the authoritative projection, implementation, applicable
+      contract evidence, and every affected exact golden vector remain
+      synchronized in one revision.
+    sources: [network-fingerprint, restricted-fingerprint, module-fingerprint, fingerprint-versions]
+    basis: derived
+
+  - id: edge-family-conformance
+    kind: verification
+    statement: >-
+      Reusable conformance covers both initialization policies and assumed
+      levels; every previous-observation condition crossed with both current
+      levels; the applicable common-matrix fields for ports, dependency,
+      output, successor state, inspection, explanation, and transition
+      causality; and current-state isolation. Because the detector domain is
+      finite and small, accepted core coverage exhaustively enumerates its
+      transition cases. Focused glitch and stateful-chain cases confirm that
+      only settled inputs can emit and that an emitted pulse is visible
+      downstream in the same reaction.
+    sources: [testing-edge-initialization, testing-glitch-freedom, testing-current-state, testing-conformance, testing-exhaustive, testing-stateful-chain, testing-bounded-exploration, testing-new-builtins]
+    basis: derived
+
+recommendations:
+  - id: semantic-family-storage
+    statement: >-
+      Runtime storage should group detector observations in an edge-detector
+      semantic family rather than allocate one heap object per node; exact
+      descriptors, tables, and layouts remain provisional.
+    sources: [runtime-family-storage]
+
+implementation_freedom:
+  - Fixed-port key derivation, exact keyed argument grouping, shared private detector-kind representation, descriptor fields, and edge-family state-slot layout are free when stable identity and the complete laws are preserved.
+  - Choose the smallest deterministic detector variants, initialization encoding, observation-schema spelling, and port-role spelling for the synchronized provisional version-1 fingerprint projection, then record them in authority, implementation, contract evidence, and golden vectors.
+  - A focused owned edge-detector inspection result may precede the broader generic inspection-query, subscription, snapshot, and migration systems.
+
+open_questions: []
+
+sources:
+  transducer-model:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 5. Synchronous transducer model]
+    reviewed_hash: sha256:46df1ec2d023eb21458fa24b6c8fc69f0b56c46ebeaf7195c56b4787bf5f57ec
+  glitch-freedom:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 6. Glitch-free semantics]
+    reviewed_hash: sha256:91f969dee3cc65b8a49880921c7d2edb26dd0a4cdfb73c6c7e09d4a3ddbf1c39
+  dependency-signatures:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
+  machine-initialization:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 13. Machine and node initialization]
+    reviewed_hash: sha256:9fef8b08457ff277136cf9fb3e6c9d5311de22c3f95bb086257bd89d4019e887
+  edge-initialization:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 38. Edge initialization]
+    reviewed_hash: sha256:3ac9c014f741f866d7721bb68b1ff1687e0f48f70d7ab0ba235d6f86aa8be50f
+  rising-edge:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 39. `RisingEdge`]
+    reviewed_hash: sha256:ffb9322fbf4785ee26f4274565e97e6a9fc9a26edfd6b7dd95ecba98e2938b6f
+  falling-edge:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 40. `FallingEdge`]
+    reviewed_hash: sha256:0443e18833611730e9699e3bf93d8b52a08b66dde09e78a25269a2b58ff68e3d
+  any-edge:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 41. `AnyEdge`]
+    reviewed_hash: sha256:f1f80c5f0955300b0b90e80f79d3192b65afc3f5ef9ddfffad94e4979e0bc98f
+  node-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path:
+      - Part VIII — Inspection, explanation, and migration obligations
+      - 61. Node inspection
+    reviewed_hash: sha256:109589c8402f33c1ea69f83627b4d39073bd3e3f37fc24e0494f8daaf2c5c88d
+  api-edge-detection:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VII — Stateful and temporal semantics, 35. Edge detection]
+    reviewed_hash: sha256:7e7aa756231610880440ad53f7a7690c4781a72453693a5ffb12a818a298f10b
+  api-pulse:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 5. Signal kinds, 5.2 Pulse]
+    reviewed_hash: sha256:5f40ffb50a2b7ce46271026003bbee20c6a3cf26c437d9966a54a58b02416b18
+  api-ports:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 7. Ports and connections]
+    reviewed_hash: sha256:c30b22ff5539f17f253f589aff78f5cb40afd98f76ed72558cebef88922979df
+  api-stateful-nodes:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 6. Nodes, 6.2 Stateful nodes]
+    reviewed_hash: sha256:118a1b19e6cb19c57748a76682f204a25a1b8c7e827eef6c37357ec17ebfac43
+  api-validation-coverage:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VIII — Diagnostics, 46. Required validation coverage]
+    reviewed_hash: sha256:4b67b4241f37763437a7523a4c99a3c729c9b9c4d72a2824b73e4b88b67cfc38
+  causal-provenance:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 53. Causal provenance]
+    reviewed_hash: sha256:9a55ead387cffd6833521d6efa179e653027358990c73721faf8e258eb064574
+  builder-keyed:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 28. Explicit keyed primitive construction]
+    reviewed_hash: sha256:eebf1d5f4f29d91da4e1483f86545fa1ed80b3aa7abb514939fd3dd2a7f8efdf
+  concrete-config:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 29. Built-in configuration values]
+    reviewed_hash: sha256:b989b03bf932e65581c5878a208b6d619f3667762f9a547c2daa6366db6abc84
+  constructor-family:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  module-builder:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+    reviewed_hash: sha256:de8ed7d677513f9268ea2aa34ab57661a9153405ab31ae41e8e3a95ed5203ca4
+  dynamic-node-kind:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
+  dynamic-ports:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 38. Dynamic ports and connections]
+    reviewed_hash: sha256:5fbea1f67eb6eea247e70168f60b4b3c3c348da10d98ab75e5b30406712e01ca
+  runtime-edge-initialization:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part II — Initialization, 9. Edge-detector initialization]
+    reviewed_hash: sha256:39665e238b9b1e5f51e371e43c3299714dce9ac646fc27120bd349b63df3c498
+  runtime-compilation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 21. Compilation responsibilities]
+    reviewed_hash: sha256:f086a8575e9ed012b3a9aca9d4b8b193a323040e8b58b341c77d9de835db2237
+  runtime-compiled-invariants:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 22. Compiled invariants]
+    reviewed_hash: sha256:746554b068081f15488f90197bf4c03ad4b384836a2fca010cd0c90eb81e56fe
+  runtime-family-storage:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part V — Runtime storage, 24. Storage by semantic family]
+    reviewed_hash: sha256:1a617b381c940086fb932cd2e87c7075e8e1adf5caf0e9d4494da702cc60c3f4
+  runtime-glitch-freedom:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VI — Reaction evaluation, 32. Glitch freedom]
+    reviewed_hash: sha256:5e497703203dd236303204e3d58726b76af3a0d88150bb265b01f0faeae5af8e
+  runtime-derivation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 63. Derivation structure]
+    reviewed_hash: sha256:bb1973d9aea76fb8f7e039c7f9713ad91418c3f68c0968605819de55ca0a2c37
+  runtime-causal-order:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 64. Causal order]
+    reviewed_hash: sha256:fe3199f5d66e4d27a982954372a012f701f5e39948fb997e88cc909638eda3d4
+  runtime-current-support:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 65. Current support and transition cause]
+    reviewed_hash: sha256:5d08e732804e9aad13ba3e00ed410d86020e8c126a8dcf318ab7359b3c6cee14
+  network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.1 Network fingerprint]
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  restricted-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
+    reviewed_hash: sha256:caf5b1eba334cfc2bca0002c169725fbbaffd1670fd57625ba943c2f487ef8bf
+  module-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 55. Module fingerprint]
+    reviewed_hash: sha256:6b41a847681a35c84fbb36310dd608fd9d5342f48c02e14ee1681f01ec0380d0
+  fingerprint-versions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 15. Version representation]
+    reviewed_hash: sha256:a59d0cb9deab2c9b183e95c55b2e4df660b7927c8c6cc074defe68bee36c68b1
+  persistence-state-schema:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 91. Built-in state schemas]
+    reviewed_hash: sha256:bcd3acfcc57b21fe48ea8ee2a94094339138c900cf3f9fc1ff65ed4676c492a8
+  testing-edge-initialization:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VI — Initialization verification, 27. Edge-detector initialization]
+    reviewed_hash: sha256:f4cfef0d3727b2a84868fb87fec8f1de85ffbde14c681d50b461cff438da31e5
+  testing-glitch-freedom:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 33. Glitch freedom]
+    reviewed_hash: sha256:08db88081ab0905a1bb4e88fcde96d9a16beaaea2cf7166d40467e790b39a97c
+  testing-current-state:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 36. Current-state isolation]
+    reviewed_hash: sha256:4b26150e2f39bd5e89b72ecb0f36aa0c321a6d1a0f5f109ad110dc91611b69b8
+  testing-conformance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 38. Common conformance matrix]
+    reviewed_hash: sha256:d37d3539bb2e78723780838aede84b7ec5b6c3539db83d92e769e935022d1942
+  testing-exhaustive:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 39. Exhaustive primitive testing]
+    reviewed_hash: sha256:c67d2593f52b5536672661e3cdb833b44716d657c7a9d23dabb0f698adcdb3de
+  testing-stateful-chain:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 40. Stateful chain testing]
+    reviewed_hash: sha256:b83754e36e34c9cbfe974203926f6761f76ac2b38268564b2eb3a8db0709da4e
+  testing-bounded-exploration:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XVIII — Bounded exhaustive exploration and model checking, 98. Required bounded exploration]
+    reviewed_hash: sha256:9b116f39742b32bcb526e33dcef8e1b1f57f15d94135e57fae4cdbd2e665f434
+  testing-new-builtins:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XXIII — Requirements for future features, 119. New built-in nodes]
+    reviewed_hash: sha256:bad41da0b21434795c1375cbe8ac2026604f77518df32f6e40a515187442a6f0
