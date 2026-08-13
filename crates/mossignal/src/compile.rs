@@ -1,9 +1,9 @@
 //! Immutable dense execution topology for validated restricted networks.
 
 use crate::authored::{
-    ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, InputPortRole,
-    ModuleInstanceDef, ModuleInterfaceMapping, NodeDef, NodeKind, NodePorts, OutputPortRole,
-    UncheckedNetwork,
+    ConnectionDef, ConnectionEndpoint, EdgeDetectorKind, EdgeObservation, ExternalInputDef,
+    ExternalOutputDef, InputPortRole, ModuleInstanceDef, ModuleInterfaceMapping, NodeDef, NodeKind,
+    NodePorts, OutputPortRole, UncheckedNetwork,
 };
 use crate::diagnostics::{DiagnosticSet, Report};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
@@ -64,6 +64,7 @@ struct CompiledInner<D> {
     external_input_lookup: BTreeMap<AnyExternalInputKey, ExternalInputIndex>,
     external_output_lookup: BTreeMap<AnyExternalOutputKey, ExternalOutputIndex>,
     operation_lookup: BTreeMap<ReactionVertex, OperationIndex>,
+    edge_initial_observations: Vec<EdgeObservation>,
     toggle_initial_states: Vec<LogicLevel>,
     qualified_node_lookup: BTreeMap<QualifiedNodeRef, NodeKey>,
     qualified_node_reverse: BTreeMap<NodeKey, QualifiedNodeRef>,
@@ -125,6 +126,15 @@ impl ToggleStateIndex {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct EdgeStateIndex(usize);
+
+impl EdgeStateIndex {
+    pub(crate) const fn value(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Debug)]
 struct NodeDescriptor {
     key: NodeKey,
@@ -163,6 +173,11 @@ enum CompiledNodeKind {
         pulses: PortIndex,
         when_low: PortIndex,
         when_high: PortIndex,
+    },
+    EdgeDetector {
+        detector: EdgeDetectorKind,
+        input: PortIndex,
+        state: EdgeStateIndex,
     },
     Toggle {
         input: PortIndex,
@@ -224,6 +239,7 @@ pub(crate) struct FullEvaluation {
     pub(crate) causes: Vec<EvaluationCause>,
     pub(crate) external_outputs: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     pub(crate) pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
+    pub(crate) proposed_edge_observations: Vec<EdgeObservation>,
     pub(crate) proposed_toggle_states: Vec<LogicLevel>,
     pub(crate) toggle_inversions: BTreeMap<NodeKey, usize>,
     pub(crate) pulse_delay_proposals: Vec<PulseDelayProposal>,
@@ -264,6 +280,13 @@ pub(crate) enum EvaluationCause {
         contribution: PulseEvaluationContribution,
         result: PulseCount,
         source: usize,
+    },
+    EdgeDetector {
+        node: NodeKey,
+        input: usize,
+        previous: EdgeObservation,
+        current: LogicLevel,
+        emitted: bool,
     },
     Toggle {
         node: NodeKey,
@@ -443,6 +466,7 @@ impl<D> CompiledNetwork<D> {
             .evaluate_reaction(
                 external_inputs,
                 &BTreeMap::new(),
+                &self.inner.edge_initial_observations,
                 &self.inner.toggle_initial_states,
             )
             .ok()
@@ -457,6 +481,7 @@ impl<D> CompiledNetwork<D> {
         self.inner.evaluate_reaction(
             external_levels,
             external_pulses,
+            &self.inner.edge_initial_observations,
             &self.inner.toggle_initial_states,
         )
     }
@@ -465,22 +490,29 @@ impl<D> CompiledNetwork<D> {
         &self,
         external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+        previous_edge_observations: &[EdgeObservation],
         previous_toggle_states: &[LogicLevel],
     ) -> Result<FullEvaluation, EvaluationFailure> {
-        self.inner
-            .evaluate_reaction(external_levels, external_pulses, previous_toggle_states)
+        self.inner.evaluate_reaction(
+            external_levels,
+            external_pulses,
+            previous_edge_observations,
+            previous_toggle_states,
+        )
     }
 
     pub(crate) fn evaluate_temporal_reaction(
         &self,
         external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+        previous_edge_observations: &[EdgeObservation],
         previous_toggle_states: &[LogicLevel],
         due_pulses: &BTreeMap<NodeKey, PulseCount>,
     ) -> Result<FullEvaluation, EvaluationFailure> {
         self.inner.evaluate_reaction_with_due(
             external_levels,
             external_pulses,
+            previous_edge_observations,
             previous_toggle_states,
             due_pulses,
         )
@@ -492,6 +524,35 @@ impl<D> CompiledNetwork<D> {
 
     pub(crate) fn initial_toggle_states(&self) -> Vec<LogicLevel> {
         self.inner.toggle_initial_states.clone()
+    }
+
+    pub(crate) fn initial_edge_observations(&self) -> Vec<EdgeObservation> {
+        self.inner.edge_initial_observations.clone()
+    }
+
+    pub(crate) fn edge_state_slot(
+        &self,
+        node: NodeKey,
+    ) -> Option<(EdgeStateIndex, EdgeDetectorKind, EdgeObservation)> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        match descriptor.kind {
+            CompiledNodeKind::EdgeDetector {
+                detector, state, ..
+            } => Some((
+                state,
+                detector,
+                self.inner.edge_initial_observations[state.0],
+            )),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn edge_input_operation(&self, node: NodeKey) -> Option<usize> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        let CompiledNodeKind::EdgeDetector { input, .. } = descriptor.kind else {
+            return None;
+        };
+        Some(self.inner.input_source(input).ok()?.0)
     }
 
     pub(crate) fn toggle_state_slot(
@@ -607,11 +668,13 @@ impl<D> CompiledInner<D> {
         &self,
         external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+        previous_edge_observations: &[EdgeObservation],
         previous_toggle_states: &[LogicLevel],
     ) -> Result<FullEvaluation, EvaluationFailure> {
         self.evaluate_reaction_with_due(
             external_levels,
             external_pulses,
+            previous_edge_observations,
             previous_toggle_states,
             &BTreeMap::new(),
         )
@@ -621,16 +684,20 @@ impl<D> CompiledInner<D> {
         &self,
         external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+        previous_edge_observations: &[EdgeObservation],
         previous_toggle_states: &[LogicLevel],
         due_pulses: &BTreeMap<NodeKey, PulseCount>,
     ) -> Result<FullEvaluation, EvaluationFailure> {
-        if previous_toggle_states.len() != self.toggle_initial_states.len() {
+        if previous_edge_observations.len() != self.edge_initial_observations.len()
+            || previous_toggle_states.len() != self.toggle_initial_states.len()
+        {
             return Err(EvaluationFailure::Incomplete);
         }
         let mut values = vec![None; self.operations.len()];
         let mut causes = Vec::with_capacity(self.operations.len());
         let mut external_outputs = BTreeMap::new();
         let mut pulse_outputs = BTreeMap::new();
+        let mut proposed_edge_observations = previous_edge_observations.to_vec();
         let mut proposed_toggle_states = previous_toggle_states.to_vec();
         let mut toggle_inversions = BTreeMap::new();
         let mut pulse_delay_proposals = Vec::new();
@@ -1031,6 +1098,41 @@ impl<D> CompiledInner<D> {
                     }
                     NodeDescriptor {
                         key,
+                        kind:
+                            CompiledNodeKind::EdgeDetector {
+                                detector,
+                                input,
+                                state,
+                            },
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/edge-detector-family.yaml
+                        // "exact-transition-and-successor-laws" — read previous state once,
+                        // emit from the settled current input, and only stage its successor.
+                        let previous = previous_edge_observations
+                            .get(state.0)
+                            .copied()
+                            .ok_or(EvaluationFailure::Incomplete)?;
+                        let current = self.level_input_value(*input, &values)?;
+                        let emitted = detector.emits(previous, current);
+                        proposed_edge_observations[state.0] = EdgeObservation::Established(current);
+                        (
+                            EvaluationValue::Pulse(if emitted {
+                                PulseCount::ONE
+                            } else {
+                                PulseCount::ZERO
+                            }),
+                            EvaluationCause::EdgeDetector {
+                                node: *key,
+                                input: self.input_source(*input)?.0,
+                                previous,
+                                current,
+                                emitted,
+                            },
+                        )
+                    }
+                    NodeDescriptor {
+                        key,
                         kind: CompiledNodeKind::Toggle { input, state },
                         ..
                     } => {
@@ -1214,6 +1316,7 @@ impl<D> CompiledInner<D> {
             causes,
             external_outputs,
             pulse_outputs,
+            proposed_edge_observations,
             proposed_toggle_states,
             toggle_inversions,
             pulse_delay_proposals,
@@ -1276,6 +1379,7 @@ impl<D> CompiledInner<D> {
         let mut node_lookup = BTreeMap::new();
         let mut input_port_lookup = BTreeMap::new();
         let mut output_port_lookup = BTreeMap::new();
+        let mut edge_initial_observations = Vec::new();
         let mut toggle_initial_states = Vec::new();
 
         let mut authored_nodes: Vec<_> = definition.nodes().iter().collect();
@@ -1401,6 +1505,26 @@ impl<D> CompiledInner<D> {
                         pulses: input_role_port(InputPortRole::Pulses),
                         when_low: output_role_port(OutputPortRole::WhenLow),
                         when_high: output_role_port(OutputPortRole::WhenHigh),
+                    }
+                }
+                NodeKind::RisingEdge(config)
+                | NodeKind::FallingEdge(config)
+                | NodeKind::AnyEdge(config) => {
+                    let Some(input) = inputs.first().copied() else {
+                        panic!("validated edge detector must retain its level input");
+                    };
+                    let detector = match node.kind() {
+                        NodeKind::RisingEdge(_) => EdgeDetectorKind::Rising,
+                        NodeKind::FallingEdge(_) => EdgeDetectorKind::Falling,
+                        NodeKind::AnyEdge(_) => EdgeDetectorKind::Any,
+                        _ => panic!("matched edge-detector family must retain its detector kind"),
+                    };
+                    let state = EdgeStateIndex(edge_initial_observations.len());
+                    edge_initial_observations.push(config.initialization.observation());
+                    CompiledNodeKind::EdgeDetector {
+                        detector,
+                        input,
+                        state,
                     }
                 }
                 NodeKind::Toggle(config) => {
@@ -1535,6 +1659,7 @@ impl<D> CompiledInner<D> {
             external_input_lookup,
             external_output_lookup,
             operation_lookup,
+            edge_initial_observations,
             toggle_initial_states,
             qualified_node_lookup: metadata.qualified_node_lookup,
             qualified_node_reverse: metadata.qualified_node_reverse,
@@ -1608,6 +1733,12 @@ impl<D> CompiledInner<D> {
                         && node.inputs.contains(&pulses)
                         && node.outputs.contains(&when_low)
                         && node.outputs.contains(&when_high)
+                }
+                CompiledNodeKind::EdgeDetector { input, state, .. } => {
+                    node.inputs.len() == 1
+                        && node.outputs.len() == 1
+                        && node.inputs[0] == input
+                        && state.0 < self.edge_initial_observations.len()
                 }
                 CompiledNodeKind::Toggle { input, state } => {
                     node.inputs.len() == 1
@@ -1685,6 +1816,7 @@ impl<D> CompiledInner<D> {
                     | CompiledNodeKind::PulseGate { .. }
                     | CompiledNodeKind::PulseSelect { .. }
                     | CompiledNodeKind::PulseRoute { .. }
+                    | CompiledNodeKind::EdgeDetector { .. }
                     | CompiledNodeKind::PulseDelay { .. } => SignalKind::Pulse,
                     _ => SignalKind::Level,
                 };
@@ -2452,6 +2584,9 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
                 NodeKind::PulseGate => NodeKind::pulse_gate(),
                 NodeKind::PulseSelect => NodeKind::pulse_select(),
                 NodeKind::PulseRoute => NodeKind::pulse_route(),
+                NodeKind::RisingEdge(config) => NodeKind::rising_edge(*config),
+                NodeKind::FallingEdge(config) => NodeKind::falling_edge(*config),
+                NodeKind::AnyEdge(config) => NodeKind::any_edge(*config),
                 NodeKind::Toggle(config) => NodeKind::toggle(config.initial),
                 NodeKind::PulseDelay(config) => NodeKind::pulse_delay(config.delay),
             };

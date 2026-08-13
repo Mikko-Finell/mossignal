@@ -1,6 +1,6 @@
 //! Mutable machine lifecycle over an immutable compiled topology.
 
-use crate::authored::NodeKind;
+use crate::authored::{EdgeDetectorKind, EdgeInitialization, EdgeObservation, NodeKind};
 use crate::compile::CompiledNetwork;
 use crate::identity::{ModuleFingerprint, NetworkFingerprint};
 use crate::key::{
@@ -322,6 +322,8 @@ pub struct ModuleNodeInspection<D> {
     level: Option<LogicLevel>,
     pulse: Option<PulseCount>,
     cause: Option<CauseRef>,
+    edge_observation: Option<EdgeObservation>,
+    edge_observation_cause: Option<CauseRef>,
     toggle_state: Option<LogicLevel>,
     toggle_inversion: Option<CauseRef>,
     pending: Vec<ModulePendingPulseDelayInspection<D>>,
@@ -354,6 +356,16 @@ impl<D> ModuleNodeInspection<D> {
     #[must_use]
     pub const fn cause(&self) -> Option<CauseRef> {
         self.cause
+    }
+    /// Returns the committed remembered observation for an edge detector.
+    #[must_use]
+    pub const fn edge_observation(&self) -> Option<EdgeObservation> {
+        self.edge_observation
+    }
+    /// Returns the retained cause of that committed observation.
+    #[must_use]
+    pub const fn edge_observation_cause(&self) -> Option<CauseRef> {
+        self.edge_observation_cause
     }
     #[must_use]
     pub const fn toggle_state(&self) -> Option<LogicLevel> {
@@ -561,6 +573,8 @@ pub(crate) struct MachineStore<D> {
     pub(crate) input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
     pub(crate) output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     pub(crate) provenance: Option<ProvenanceView<D>>,
+    pub(crate) edge_observations: Vec<EdgeObservation>,
+    pub(crate) edge_observation_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) toggle_states: Vec<LogicLevel>,
     pub(crate) toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) pending_pulse_delays: BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
@@ -581,6 +595,8 @@ impl<D> Clone for MachineStore<D> {
             input_causes: self.input_causes.clone(),
             output_causes: self.output_causes.clone(),
             provenance: self.provenance.clone(),
+            edge_observations: self.edge_observations.clone(),
+            edge_observation_causes: self.edge_observation_causes.clone(),
             toggle_states: self.toggle_states.clone(),
             toggle_inversion_causes: self.toggle_inversion_causes.clone(),
             pending_pulse_delays: self.pending_pulse_delays.clone(),
@@ -610,6 +626,103 @@ pub struct Machine<D> {
     // SPEC: docs/specs/processor_and_runtime_architecture.md §6 "Machine lifecycle states"
     // Absence before initialization is lifecycle state, never fabricated Low values.
     pub(crate) store: MachineStore<D>,
+}
+
+/// Structural information available for one compiled edge detector in every lifecycle phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EdgeDetectorDefinitionInspection {
+    node: NodeKey,
+    detector: EdgeDetectorKind,
+    initialization: EdgeInitialization,
+}
+
+impl EdgeDetectorDefinitionInspection {
+    /// Returns the detector's stable node identity.
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+
+    /// Returns which transition law this node applies.
+    #[must_use]
+    pub const fn detector(&self) -> EdgeDetectorKind {
+        self.detector
+    }
+
+    /// Returns the explicit first-reaction observation policy.
+    #[must_use]
+    pub const fn initialization(&self) -> EdgeInitialization {
+        self.initialization
+    }
+}
+
+/// One owned observation of an initialized edge detector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EdgeDetectorInspection<D> {
+    node: NodeKey,
+    detector: EdgeDetectorKind,
+    initialization: EdgeInitialization,
+    committed: EdgeObservation,
+    input: LogicLevel,
+    output: PulseCount,
+    observation_cause: CauseRef,
+    revision: NetworkRevision,
+    at: Time<D>,
+}
+
+impl<D> EdgeDetectorInspection<D> {
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+    #[must_use]
+    pub const fn detector(&self) -> EdgeDetectorKind {
+        self.detector
+    }
+    #[must_use]
+    pub const fn initialization(&self) -> EdgeInitialization {
+        self.initialization
+    }
+    /// Returns the currently committed remembered observation.
+    #[must_use]
+    pub const fn committed(&self) -> EdgeObservation {
+        self.committed
+    }
+    /// Returns the settled current Level input from the committed reaction.
+    #[must_use]
+    pub const fn input(&self) -> LogicLevel {
+        self.input
+    }
+    /// Returns the retained reaction-scoped current Pulse output.
+    #[must_use]
+    pub const fn output(&self) -> PulseCount {
+        self.output
+    }
+    /// Returns the retained cause of the committed observation.
+    #[must_use]
+    pub const fn observation_cause(&self) -> CauseRef {
+        self.observation_cause
+    }
+    #[must_use]
+    pub const fn revision(&self) -> NetworkRevision {
+        self.revision
+    }
+    #[must_use]
+    pub const fn at(&self) -> Time<D> {
+        self.at
+    }
+}
+
+/// A structural or lifecycle failure to inspect one node as an edge detector.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeDetectorInspectionFailure {
+    /// The requested stable node key is absent from this topology.
+    UnknownNode(NodeKey),
+    /// The requested stable node exists but is not an edge detector.
+    NotEdgeDetector(NodeKey),
+    /// Runtime state was requested before initialization committed.
+    NotInitialized,
 }
 
 /// Structural information available for one compiled Toggle in every lifecycle phase.
@@ -691,6 +804,7 @@ pub enum ToggleInspectionFailure {
 
 impl<D> Machine<D> {
     pub(crate) fn new(compiled: CompiledNetwork<D>, policy: RuntimePolicy) -> Self {
+        let edge_observations = compiled.initial_edge_observations();
         let toggle_states = compiled.initial_toggle_states();
         Self {
             compiled,
@@ -707,6 +821,8 @@ impl<D> Machine<D> {
                 input_causes: BTreeMap::new(),
                 output_causes: BTreeMap::new(),
                 provenance: None,
+                edge_observations,
+                edge_observation_causes: BTreeMap::new(),
                 toggle_states,
                 toggle_inversion_causes: BTreeMap::new(),
                 pending_pulse_delays: BTreeMap::new(),
@@ -906,6 +1022,12 @@ impl<D> Machine<D> {
             else {
                 panic!("compiled qualified node must retain its module-local definition");
             };
+            let edge_observation = self
+                .compiled
+                .edge_state_slot(flat)
+                .and_then(|(slot, _, _)| self.store.edge_observations.get(slot.value()).copied())
+                .filter(|_| self.is_initialized());
+            let edge_observation_cause = self.store.edge_observation_causes.get(&flat).copied();
             let toggle_state = self
                 .compiled
                 .toggle_state_slot(flat)
@@ -946,6 +1068,8 @@ impl<D> Machine<D> {
                     .node_operation(flat)
                     .and_then(|index| self.store.operation_causes.get(index))
                     .copied(),
+                edge_observation,
+                edge_observation_cause,
                 toggle_state,
                 toggle_inversion,
                 pending,
@@ -1068,6 +1192,84 @@ impl<D> Machine<D> {
             return None;
         }
         self.store.output_causes.get(&output).copied()
+    }
+
+    /// Returns an edge detector's immutable definition in either lifecycle phase.
+    pub fn inspect_edge_detector_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<EdgeDetectorDefinitionInspection, EdgeDetectorInspectionFailure> {
+        if self.compiled.qualified_node(node).is_some() {
+            return Err(EdgeDetectorInspectionFailure::UnknownNode(node));
+        }
+        let Some((_, detector, initial)) = self.compiled.edge_state_slot(node) else {
+            return Err(if self.compiled.contains_node(node) {
+                EdgeDetectorInspectionFailure::NotEdgeDetector(node)
+            } else {
+                EdgeDetectorInspectionFailure::UnknownNode(node)
+            });
+        };
+        let initialization = match initial {
+            EdgeObservation::Unestablished => EdgeInitialization::Baseline,
+            EdgeObservation::Established(level) => EdgeInitialization::Assume(level),
+        };
+        Ok(EdgeDetectorDefinitionInspection {
+            node,
+            detector,
+            initialization,
+        })
+    }
+
+    /// Returns committed state, current ports, and retained provenance for one edge detector.
+    pub fn inspect_edge_detector(
+        &self,
+        node: NodeKey,
+    ) -> Result<EdgeDetectorInspection<D>, EdgeDetectorInspectionFailure> {
+        let definition = self.inspect_edge_detector_definition(node)?;
+        let MachineStatus::Ready { now } = self.store.status else {
+            return Err(EdgeDetectorInspectionFailure::NotInitialized);
+        };
+        let (slot, _, _) = self
+            .compiled
+            .edge_state_slot(node)
+            .ok_or(EdgeDetectorInspectionFailure::NotEdgeDetector(node))?;
+        let committed = self
+            .store
+            .edge_observations
+            .get(slot.value())
+            .copied()
+            .ok_or(EdgeDetectorInspectionFailure::NotEdgeDetector(node))?;
+        let input = self
+            .compiled
+            .edge_input_operation(node)
+            .and_then(|index| self.store.operation_levels.get(index))
+            .copied()
+            .flatten()
+            .ok_or(EdgeDetectorInspectionFailure::NotEdgeDetector(node))?;
+        let output = self
+            .compiled
+            .node_operation(node)
+            .and_then(|index| self.store.operation_pulses.get(index))
+            .copied()
+            .flatten()
+            .ok_or(EdgeDetectorInspectionFailure::NotEdgeDetector(node))?;
+        let observation_cause = self
+            .store
+            .edge_observation_causes
+            .get(&node)
+            .copied()
+            .ok_or(EdgeDetectorInspectionFailure::NotEdgeDetector(node))?;
+        Ok(EdgeDetectorInspection {
+            node,
+            detector: definition.detector,
+            initialization: definition.initialization,
+            committed,
+            input,
+            output,
+            observation_cause,
+            revision: self.store.revision,
+            at: now,
+        })
     }
 
     /// Returns declared Toggle state without requiring runtime initialization.

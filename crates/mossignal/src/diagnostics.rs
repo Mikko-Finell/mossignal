@@ -3,7 +3,7 @@
 //! The opening catalogue is intentionally small.  Its types are the common
 //! representation used by later graph construction and validation modules.
 
-use crate::authored::{InputPortRole, OutputPortRole};
+use crate::authored::{EdgeInitialization, InputPortRole, OutputPortRole};
 use crate::identity::{ModuleFingerprint, NetworkFingerprint};
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
@@ -347,6 +347,9 @@ pub enum DuplicateNodeKind {
     PulseGate,
     PulseSelect,
     PulseRoute,
+    RisingEdge(EdgeInitialization),
+    FallingEdge(EdgeInitialization),
+    AnyEdge(EdgeInitialization),
     Toggle(LogicLevel),
     PulseDelay(u64),
 }

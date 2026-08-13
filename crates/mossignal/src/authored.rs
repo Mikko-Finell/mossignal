@@ -641,6 +641,12 @@ pub enum NodeKind<D> {
     PulseSelect,
     /// A fixed level-controlled pulse router with two pulse outputs after validation.
     PulseRoute,
+    /// A Low-to-High transition detector with one level input and one pulse output.
+    RisingEdge(EdgeConfig),
+    /// A High-to-Low transition detector with one level input and one pulse output.
+    FallingEdge(EdgeConfig),
+    /// An either-direction transition detector with one level input and one pulse output.
+    AnyEdge(EdgeConfig),
     /// A pulse-controlled stored level with one pulse input and one level output.
     Toggle(ToggleConfig),
     /// A temporal pulse reproducer with one pulse input and one pulse output.
@@ -663,6 +669,9 @@ impl<D> Clone for NodeKind<D> {
             Self::PulseGate => Self::PulseGate,
             Self::PulseSelect => Self::PulseSelect,
             Self::PulseRoute => Self::PulseRoute,
+            Self::RisingEdge(config) => Self::RisingEdge(*config),
+            Self::FallingEdge(config) => Self::FallingEdge(*config),
+            Self::AnyEdge(config) => Self::AnyEdge(*config),
             Self::Toggle(config) => Self::Toggle(*config),
             Self::PulseDelay(config) => Self::PulseDelay(*config),
         }
@@ -685,6 +694,9 @@ impl<D> PartialEq for NodeKind<D> {
             | (Self::PulseSelect, Self::PulseSelect)
             | (Self::PulseRoute, Self::PulseRoute) => true,
             (Self::AtLeast(left), Self::AtLeast(right)) => left == right,
+            (Self::RisingEdge(left), Self::RisingEdge(right))
+            | (Self::FallingEdge(left), Self::FallingEdge(right))
+            | (Self::AnyEdge(left), Self::AnyEdge(right)) => left == right,
             (Self::Toggle(left), Self::Toggle(right)) => left == right,
             (Self::PulseDelay(left), Self::PulseDelay(right)) => left == right,
             _ => false,
@@ -710,6 +722,11 @@ impl<D> fmt::Debug for NodeKind<D> {
             Self::PulseGate => formatter.write_str("PulseGate"),
             Self::PulseSelect => formatter.write_str("PulseSelect"),
             Self::PulseRoute => formatter.write_str("PulseRoute"),
+            Self::RisingEdge(config) => formatter.debug_tuple("RisingEdge").field(config).finish(),
+            Self::FallingEdge(config) => {
+                formatter.debug_tuple("FallingEdge").field(config).finish()
+            }
+            Self::AnyEdge(config) => formatter.debug_tuple("AnyEdge").field(config).finish(),
             Self::Toggle(config) => formatter.debug_tuple("Toggle").field(config).finish(),
             Self::PulseDelay(config) => formatter.debug_tuple("PulseDelay").field(config).finish(),
         }
@@ -795,6 +812,24 @@ impl<D> NodeKind<D> {
         Self::PulseRoute
     }
 
+    /// Creates a rising-edge detector with an explicit initialization policy.
+    #[must_use]
+    pub const fn rising_edge(config: EdgeConfig) -> Self {
+        Self::RisingEdge(config)
+    }
+
+    /// Creates a falling-edge detector with an explicit initialization policy.
+    #[must_use]
+    pub const fn falling_edge(config: EdgeConfig) -> Self {
+        Self::FallingEdge(config)
+    }
+
+    /// Creates an any-edge detector with an explicit initialization policy.
+    #[must_use]
+    pub const fn any_edge(config: EdgeConfig) -> Self {
+        Self::AnyEdge(config)
+    }
+
     /// Creates a pulse-controlled Toggle with explicit declared initial state.
     #[must_use]
     pub const fn toggle(initial: LogicLevel) -> Self {
@@ -859,6 +894,79 @@ impl<D> ConstantConfig<D> {
 pub struct AtLeastConfig {
     /// The number of High input ports required for a High result.
     pub threshold: u64,
+}
+
+/// The explicit previous-observation policy of an edge detector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum EdgeInitialization {
+    /// The first settled input establishes the observation without emitting.
+    Baseline,
+    /// The configured level is compared with the first settled input normally.
+    Assume(LogicLevel),
+}
+
+/// The semantic configuration shared by the edge-detector family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct EdgeConfig {
+    /// The detector's explicit first-reaction observation policy.
+    pub initialization: EdgeInitialization,
+}
+
+impl EdgeConfig {
+    /// Creates an edge-detector configuration with no hidden default policy.
+    #[must_use]
+    pub const fn new(initialization: EdgeInitialization) -> Self {
+        Self { initialization }
+    }
+}
+
+/// The three transition laws in the edge-detector family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum EdgeDetectorKind {
+    /// Emit only for a Low-to-High transition.
+    Rising,
+    /// Emit only for a High-to-Low transition.
+    Falling,
+    /// Emit for either transition between unequal established levels.
+    Any,
+}
+
+/// One edge detector's remembered previous observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum EdgeObservation {
+    /// No level has been established yet under [`EdgeInitialization::Baseline`].
+    Unestablished,
+    /// A previous settled level has been established.
+    Established(LogicLevel),
+}
+
+impl EdgeInitialization {
+    /// Returns the declared previous observation read by the first reaction.
+    #[must_use]
+    pub const fn observation(self) -> EdgeObservation {
+        match self {
+            Self::Baseline => EdgeObservation::Unestablished,
+            Self::Assume(level) => EdgeObservation::Established(level),
+        }
+    }
+}
+
+impl EdgeDetectorKind {
+    /// Returns whether this law emits for an established transition.
+    #[must_use]
+    pub const fn emits(self, previous: EdgeObservation, current: LogicLevel) -> bool {
+        let EdgeObservation::Established(previous) = previous else {
+            return false;
+        };
+        match self {
+            Self::Rising => previous.is_low() && current.is_high(),
+            Self::Falling => previous.is_high() && current.is_low(),
+            Self::Any => matches!(
+                (previous, current),
+                (LogicLevel::Low, LogicLevel::High) | (LogicLevel::High, LogicLevel::Low)
+            ),
+        }
+    }
 }
 
 impl AtLeastConfig {

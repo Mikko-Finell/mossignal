@@ -1,5 +1,6 @@
 //! Restricted initialization and ready-machine Level and Pulse transactions.
 
+use crate::authored::EdgeObservation;
 use crate::compile::{EvaluationCause, EvaluationFailure, FullEvaluation};
 use crate::diagnostics::{Responsibility, Severity};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
@@ -369,6 +370,7 @@ struct ProvenanceBuild<D> {
     input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
     output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     pulse_output_causes: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
+    edge_observation_causes: BTreeMap<NodeKey, CauseRef>,
     toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
     pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
 }
@@ -383,6 +385,11 @@ struct EvaluationProvenanceInputs<'a, D> {
 struct PreviousLevelOutputs<'a> {
     causes: &'a BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     baselines: &'a BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+}
+
+struct PreviousStateCauses<'a> {
+    edge_observations: &'a BTreeMap<NodeKey, CauseRef>,
+    toggle_inversions: &'a BTreeMap<NodeKey, CauseRef>,
 }
 
 impl<D> Clone for ProvenanceView<D> {
@@ -684,14 +691,20 @@ impl<D> Machine<D> {
         enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, 1)?;
         let revision = self.store.revision;
         let (levels, pulses) = input.into_parts();
-        let evaluation =
-            evaluate_reaction::<D>(&self.compiled, &levels, &pulses, &self.store.toggle_states)?;
+        let evaluation = evaluate_reaction::<D>(
+            &self.compiled,
+            &levels,
+            &pulses,
+            &self.store.edge_observations,
+            &self.store.toggle_states,
+        )?;
         let ProvenanceBuild {
             mut provenance,
             operation_causes,
             input_causes,
             output_causes,
             pulse_output_causes,
+            edge_observation_causes,
             toggle_inversion_causes,
             pulse_delay_schedules,
         } = build_initialization_provenance(
@@ -758,6 +771,7 @@ impl<D> Machine<D> {
                 output_causes,
                 provenance,
                 operation_causes,
+                edge_observation_causes,
                 toggle_inversion_causes,
                 pending_pulse_delays,
                 next_pending_event_serial,
@@ -798,10 +812,12 @@ impl<D> Machine<D> {
         let mut levels = self.store.external_levels.clone();
         let mut pending_pulse_delays = self.store.pending_pulse_delays.clone();
         let mut next_pending_event_serial = self.store.next_pending_event_serial;
+        let mut edge_observations = self.store.edge_observations.clone();
         let mut toggle_states = self.store.toggle_states.clone();
         let mut output_baselines = self.store.output_baselines.clone();
         let mut input_causes = self.store.input_causes.clone();
         let mut output_causes = self.store.output_causes.clone();
+        let mut edge_observation_causes = self.store.edge_observation_causes.clone();
         let mut toggle_inversion_causes = self.store.toggle_inversion_causes.clone();
         let mut provenance = match self.store.provenance.as_ref() {
             Some(provenance) => provenance.clone(),
@@ -830,7 +846,13 @@ impl<D> Machine<D> {
             let due = aggregate_due::<D>(&self.compiled, batch)?;
             let internal = self
                 .compiled
-                .evaluate_temporal_reaction(&levels, &empty_pulses, &toggle_states, &due.counts)
+                .evaluate_temporal_reaction(
+                    &levels,
+                    &empty_pulses,
+                    &edge_observations,
+                    &toggle_states,
+                    &due.counts,
+                )
                 .map_err(|failure| evaluation_failure(&self.compiled, failure))?;
             reaction_count = reaction_count.saturating_add(1);
             enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, reaction_count)?;
@@ -849,6 +871,7 @@ impl<D> Machine<D> {
                 &input_causes,
                 &output_causes,
                 &output_baselines,
+                &edge_observation_causes,
                 &toggle_inversion_causes,
                 &due.causes,
             );
@@ -867,7 +890,9 @@ impl<D> Machine<D> {
 
             input_causes = built.input_causes;
             output_causes = built.output_causes;
+            edge_observation_causes = built.edge_observation_causes;
             toggle_inversion_causes = built.toggle_inversion_causes;
+            edge_observations = internal.proposed_edge_observations.clone();
             toggle_states = internal.proposed_toggle_states.clone();
             output_baselines = internal.external_outputs.clone();
             schedule_pulse_delays(
@@ -907,7 +932,13 @@ impl<D> Machine<D> {
             .unwrap_or_default();
         let evaluation = self
             .compiled
-            .evaluate_temporal_reaction(&levels, &pulses, &toggle_states, &due.counts)
+            .evaluate_temporal_reaction(
+                &levels,
+                &pulses,
+                &edge_observations,
+                &toggle_states,
+                &due.counts,
+            )
             .map_err(|failure| evaluation_failure(&self.compiled, failure))?;
         reaction_count = reaction_count.saturating_add(1);
         enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, reaction_count)?;
@@ -926,6 +957,7 @@ impl<D> Machine<D> {
             &input_causes,
             &output_causes,
             &output_baselines,
+            &edge_observation_causes,
             &toggle_inversion_causes,
             &due.causes,
         );
@@ -985,6 +1017,7 @@ impl<D> Machine<D> {
                 output_causes: built.output_causes,
                 provenance: built.provenance,
                 operation_causes: built.operation_causes,
+                edge_observation_causes: built.edge_observation_causes,
                 toggle_inversion_causes: built.toggle_inversion_causes,
                 pending_pulse_delays,
                 next_pending_event_serial,
@@ -1070,9 +1103,15 @@ fn evaluate_reaction<D>(
     compiled: &crate::CompiledNetwork<D>,
     levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+    previous_edge_observations: &[EdgeObservation],
     previous_toggle_states: &[LogicLevel],
 ) -> Result<FullEvaluation, RuntimeFailure<D>> {
-    match compiled.evaluate_reaction_with_state(levels, pulses, previous_toggle_states) {
+    match compiled.evaluate_reaction_with_state(
+        levels,
+        pulses,
+        previous_edge_observations,
+        previous_toggle_states,
+    ) {
         Ok(evaluation) => Ok(evaluation),
         Err(EvaluationFailure::PulseCountOverflow { node }) => Err(RuntimeFailure::new(
             RuntimeFailureEvidence::PulseCountOverflow {
@@ -1283,6 +1322,7 @@ struct PublishedCandidate<D> {
     output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     provenance: ProvenanceView<D>,
     operation_causes: Vec<CauseRef>,
+    edge_observation_causes: BTreeMap<NodeKey, CauseRef>,
     toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
     pending_pulse_delays: BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
     next_pending_event_serial: u64,
@@ -1297,6 +1337,7 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
         output_causes,
         provenance,
         operation_causes,
+        edge_observation_causes,
         toggle_inversion_causes,
         pending_pulse_delays,
         next_pending_event_serial,
@@ -1314,6 +1355,8 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     candidate.input_causes = input_causes;
     candidate.output_causes = output_causes;
     candidate.provenance = Some(provenance);
+    candidate.edge_observations = evaluation.proposed_edge_observations;
+    candidate.edge_observation_causes = edge_observation_causes;
     candidate.toggle_states = evaluation.proposed_toggle_states;
     candidate.toggle_inversion_causes = toggle_inversion_causes;
     candidate.pending_pulse_delays = pending_pulse_delays;
@@ -1455,6 +1498,7 @@ fn build_initialization_provenance<D>(
         input_causes,
         output_causes: evaluation_causes.level_outputs,
         pulse_output_causes: evaluation_causes.pulse_outputs,
+        edge_observation_causes: evaluation_causes.edge_observations,
         toggle_inversion_causes: evaluation_causes.toggle_inversions,
         pulse_delay_schedules: evaluation_causes.pulse_delay_schedules,
     }
@@ -1475,6 +1519,7 @@ fn build_ready_provenance<D>(
     previous_input_causes: &BTreeMap<ExternalInputKey<Level>, CauseRef>,
     previous_output_causes: &BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     previous_output_baselines: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+    previous_edge_observation_causes: &BTreeMap<NodeKey, CauseRef>,
     previous_toggle_inversion_causes: &BTreeMap<NodeKey, CauseRef>,
     due_pulse_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
 ) -> ProvenanceBuild<D> {
@@ -1537,7 +1582,10 @@ fn build_ready_provenance<D>(
             causes: &remapped_output_causes,
             baselines: previous_output_baselines,
         }),
-        Some(previous_toggle_inversion_causes),
+        Some(PreviousStateCauses {
+            edge_observations: previous_edge_observation_causes,
+            toggle_inversions: previous_toggle_inversion_causes,
+        }),
     );
 
     ProvenanceBuild {
@@ -1549,6 +1597,7 @@ fn build_ready_provenance<D>(
         input_causes,
         output_causes: evaluation_causes.level_outputs,
         pulse_output_causes: evaluation_causes.pulse_outputs,
+        edge_observation_causes: evaluation_causes.edge_observations,
         toggle_inversion_causes: evaluation_causes.toggle_inversions,
         pulse_delay_schedules: evaluation_causes.pulse_delay_schedules,
     }
@@ -1558,6 +1607,7 @@ struct EvaluationCauseMaps {
     operation_causes: Vec<CauseRef>,
     level_outputs: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
     pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
+    edge_observations: BTreeMap<NodeKey, CauseRef>,
     toggle_inversions: BTreeMap<NodeKey, CauseRef>,
     pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
 }
@@ -1569,16 +1619,23 @@ fn append_evaluation_provenance<D>(
     evaluation: &FullEvaluation,
     input_causes: EvaluationProvenanceInputs<'_, D>,
     previous_outputs: Option<PreviousLevelOutputs<'_>>,
-    previous_toggle_inversions: Option<&BTreeMap<NodeKey, CauseRef>>,
+    previous_state: Option<PreviousStateCauses<'_>>,
 ) -> EvaluationCauseMaps {
     let previous_output_causes = previous_outputs.as_ref().map(|previous| previous.causes);
     let previous_output_baselines = previous_outputs.as_ref().map(|previous| previous.baselines);
     let mut operation_causes = Vec::with_capacity(evaluation.causes.len());
     let mut output_causes = BTreeMap::new();
     let mut pulse_output_causes = BTreeMap::new();
-    let mut toggle_inversion_causes = previous_toggle_inversions
+    let mut edge_observation_causes = previous_state
+        .as_ref()
         .into_iter()
-        .flat_map(|causes| causes.iter())
+        .flat_map(|previous| previous.edge_observations.iter())
+        .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
+        .collect::<BTreeMap<_, _>>();
+    let mut toggle_inversion_causes = previous_state
+        .as_ref()
+        .into_iter()
+        .flat_map(|previous| previous.toggle_inversions.iter())
         .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
         .collect::<BTreeMap<_, _>>();
 
@@ -1703,6 +1760,38 @@ fn append_evaluation_provenance<D>(
                         supporters,
                     },
                 )
+            }
+            EvaluationCause::EdgeDetector {
+                node,
+                input,
+                previous,
+                current: _,
+                emitted: _,
+            } => {
+                let mut supporters = vec![
+                    transaction_cause,
+                    operation_cause(&operation_causes, *input),
+                ];
+                if matches!(previous, EdgeObservation::Established(_)) && previous_state.is_some() {
+                    let Some(previous_cause) = edge_observation_causes.get(node).copied() else {
+                        panic!(
+                            "ready edge detector must retain the cause of its previous observation"
+                        );
+                    };
+                    supporters.push(previous_cause);
+                }
+                supporters.sort();
+                supporters.dedup();
+                let reference = push_record(
+                    scope,
+                    records,
+                    ProvenanceRecord::Derived {
+                        subject: provenance_subject(input_causes.compiled, *node),
+                        supporters,
+                    },
+                );
+                edge_observation_causes.insert(*node, reference);
+                reference
             }
             EvaluationCause::Toggle {
                 node,
@@ -1829,6 +1918,7 @@ fn append_evaluation_provenance<D>(
         operation_causes,
         level_outputs: output_causes,
         pulse_outputs: pulse_output_causes,
+        edge_observations: edge_observation_causes,
         toggle_inversions: toggle_inversion_causes,
         pulse_delay_schedules,
     }

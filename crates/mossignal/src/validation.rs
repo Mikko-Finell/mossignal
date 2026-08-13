@@ -891,6 +891,15 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         NodeKind::PulseGate => DuplicateNodeKind::PulseGate,
                         NodeKind::PulseSelect => DuplicateNodeKind::PulseSelect,
                         NodeKind::PulseRoute => DuplicateNodeKind::PulseRoute,
+                        NodeKind::RisingEdge(config) => {
+                            DuplicateNodeKind::RisingEdge(config.initialization)
+                        }
+                        NodeKind::FallingEdge(config) => {
+                            DuplicateNodeKind::FallingEdge(config.initialization)
+                        }
+                        NodeKind::AnyEdge(config) => {
+                            DuplicateNodeKind::AnyEdge(config.initialization)
+                        }
                         NodeKind::Toggle(config) => DuplicateNodeKind::Toggle(config.initial),
                         NodeKind::PulseDelay(config) => {
                             DuplicateNodeKind::PulseDelay(config.delay.ticks())
@@ -1023,13 +1032,20 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 NodeKind::Merge | NodeKind::Zip => None,
                 NodeKind::Coalesce => Some(1),
                 NodeKind::PulseGate | NodeKind::PulseRoute => Some(2),
-                NodeKind::Toggle(_) | NodeKind::PulseDelay(_) => Some(1),
+                NodeKind::RisingEdge(_)
+                | NodeKind::FallingEdge(_)
+                | NodeKind::AnyEdge(_)
+                | NodeKind::Toggle(_)
+                | NodeKind::PulseDelay(_) => Some(1),
             };
             let expected_output_kind = match node.kind() {
                 NodeKind::Merge | NodeKind::Coalesce | NodeKind::Zip => SignalKind::Pulse,
                 NodeKind::PulseGate
                 | NodeKind::PulseSelect
                 | NodeKind::PulseRoute
+                | NodeKind::RisingEdge(_)
+                | NodeKind::FallingEdge(_)
+                | NodeKind::AnyEdge(_)
                 | NodeKind::PulseDelay(_) => SignalKind::Pulse,
                 _ => SignalKind::Level,
             };
@@ -1095,6 +1111,9 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 NodeKind::PulseDelay(_) => {
                     (role == InputPortRole::PulseDelay).then_some(SignalKind::Pulse)
                 }
+                NodeKind::RisingEdge(_) | NodeKind::FallingEdge(_) | NodeKind::AnyEdge(_) => {
+                    (role == InputPortRole::Input).then_some(SignalKind::Level)
+                }
                 NodeKind::Select => matches!(
                     role,
                     InputPortRole::Selector | InputPortRole::WhenLow | InputPortRole::WhenHigh
@@ -1117,6 +1136,9 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     vec![InputPortRole::Selector, InputPortRole::Pulses]
                 }
                 NodeKind::Coalesce => vec![InputPortRole::Input],
+                NodeKind::RisingEdge(_) | NodeKind::FallingEdge(_) | NodeKind::AnyEdge(_) => {
+                    vec![InputPortRole::Input]
+                }
                 NodeKind::Toggle(_) => vec![InputPortRole::Toggle],
                 NodeKind::PulseDelay(_) => vec![InputPortRole::PulseDelay],
                 NodeKind::All

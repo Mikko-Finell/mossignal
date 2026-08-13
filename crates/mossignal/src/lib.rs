@@ -20,7 +20,8 @@ mod transaction;
 mod validation;
 
 pub use authored::{
-    ModuleBinding, ModuleBindingSet, ModuleInstanceDef, PulseDelayConfig, ToggleConfig,
+    EdgeConfig, EdgeDetectorKind, EdgeInitialization, EdgeObservation, ModuleBinding,
+    ModuleBindingSet, ModuleInstanceDef, PulseDelayConfig, ToggleConfig,
 };
 pub use binding::{
     BindingFailure, BindingSet, BindingSetBuilder, BoundApplyFailure, BoundMachine,
@@ -37,6 +38,7 @@ pub use input::{
     InputBuildFailure, InputDelta, InputDeltaBuilder, InputSnapshot, InputSnapshotBuilder,
 };
 pub use machine::{
+    EdgeDetectorDefinitionInspection, EdgeDetectorInspection, EdgeDetectorInspectionFailure,
     Machine, MachineStatus, ModuleInputInspection, ModuleInspection, ModuleInspectionFailure,
     ModuleNodeInspection, ModuleOutputInspection, ModulePendingPulseDelayInspection,
     NetworkRevision, PendingEventKey, PendingPulseDelayInspection, PulseDelayDefinitionInspection,

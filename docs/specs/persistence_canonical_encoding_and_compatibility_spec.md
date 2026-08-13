@@ -997,8 +997,9 @@ Semantically equivalent stable-keyed definitions must produce the same fingerpri
 
 For the restricted foundation containing `Constant`, `Not`, `All`, `Any`,
 `Parity`, `AtLeast`, `Select`, pulse `Merge`, `Coalesce`, `Zip`, `PulseGate`,
-`PulseSelect`, and `PulseRoute`, stateful `Toggle`, and temporal `PulseDelay`,
-the exact canonical payload is the following record:
+`PulseSelect`, and `PulseRoute`, transition-sensitive `RisingEdge`, `FallingEdge`,
+and `AnyEdge`, stateful `Toggle`, and temporal `PulseDelay`, the exact canonical
+payload is the following record:
 
 ```text
 network_fingerprint_payload_v1 = record {
@@ -1049,6 +1050,18 @@ kind = ["constant", record {
      | ["pulse_gate", null]
      | ["pulse_select", null]
      | ["pulse_route", null]
+     | ["rising_edge", record {
+            initialization,
+            state_schema,
+        }]
+     | ["falling_edge", record {
+            initialization,
+            state_schema,
+        }]
+     | ["any_edge", record {
+            initialization,
+            state_schema,
+        }]
      | ["toggle", record {
             initial,
             state_schema,
@@ -1063,7 +1076,11 @@ value = ["low", null]
 
 threshold = unsigned integer
 
+initialization = ["baseline", null]
+               | ["assume", value]
+
 state_schema = ["stored_level", null]
+             | ["edge_observation", null]
 
 delay_ticks = unsigned integer
 
@@ -1140,6 +1157,10 @@ independently of the stable port key. `AtLeast` encodes its `u64` threshold as
 the canonical unsigned integer above. `PulseDelay` uses the `pulse_delay` role
 for its Pulse input and `output` for its Pulse output. Its kind record includes
 the positive delay in ticks and the closed `pending_pulse_group` temporal schema.
+Each edge-detector kind uses the ordinary `input` role for its Level input and
+`output` for its Pulse output. Its kind record includes either the closed
+`baseline` initialization policy or the closed `assume` policy carrying the
+assumed level, plus the closed one-cell `edge_observation` state schema.
 
 Every `key` and `owner` field is the applicable 16-byte stable structural key.
 Node collections are ordered by `NodeKey`; connection collections by

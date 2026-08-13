@@ -1,10 +1,10 @@
 //! Typed authoring for the restricted Level and Pulse network foundation.
 
 use crate::authored::{
-    ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, ModuleBinding,
-    ModuleBindingSet, ModuleInputDef, ModuleInstanceDef, ModuleInterfaceMapping, ModuleOutputDef,
-    NodeDef, NodeKind, NodePorts, OutputPortRole, PulseDelayConfig, ToggleConfig, UncheckedModule,
-    UncheckedNetwork,
+    ConnectionDef, ConnectionEndpoint, EdgeConfig, ExternalInputDef, ExternalOutputDef,
+    ModuleBinding, ModuleBindingSet, ModuleInputDef, ModuleInstanceDef, ModuleInterfaceMapping,
+    ModuleOutputDef, NodeDef, NodeKind, NodePorts, OutputPortRole, PulseDelayConfig, ToggleConfig,
+    UncheckedModule, UncheckedNetwork,
 };
 use crate::diagnostics::Report;
 use crate::identity::TimeDomainId;
@@ -37,6 +37,23 @@ enum VariadicNodeKind {
 enum PulseVariadicNodeKind {
     Merge,
     Zip,
+}
+
+#[derive(Clone, Copy)]
+enum EdgeNodeKind {
+    Rising,
+    Falling,
+    Any,
+}
+
+impl EdgeNodeKind {
+    fn authored<D>(self, config: EdgeConfig) -> NodeKind<D> {
+        match self {
+            Self::Rising => NodeKind::rising_edge(config),
+            Self::Falling => NodeKind::falling_edge(config),
+            Self::Any => NodeKind::any_edge(config),
+        }
+    }
 }
 
 impl PulseVariadicNodeKind {
@@ -1023,6 +1040,206 @@ impl<D> NetworkBuilder<D> {
         I: IntoIterator<Item = (InPortKey<Pulse>, Signal<Pulse>)>,
     {
         self.add_pulse_variadic_with_ports(key, output, inputs, meta, PulseVariadicNodeKind::Zip)
+    }
+
+    /// Adds a rising-edge detector with locally allocated stable identities.
+    pub fn rising_edge(
+        &mut self,
+        input: Signal<Level>,
+        config: EdgeConfig,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        self.edge_detector(input, config, EdgeNodeKind::Rising)
+    }
+
+    /// Adds an explicitly keyed rising-edge detector with locally allocated ports.
+    pub fn add_rising_edge(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.add_edge_detector(key, input, config, meta, EdgeNodeKind::Rising)
+    }
+
+    /// Adds an explicitly keyed rising-edge detector with exact fixed ports.
+    pub fn add_rising_edge_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Level>,
+        output_port: OutPortKey<Pulse>,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.add_edge_detector_with_ports(
+            key,
+            input_port,
+            output_port,
+            input,
+            config,
+            meta,
+            EdgeNodeKind::Rising,
+        )
+    }
+
+    /// Adds a falling-edge detector with locally allocated stable identities.
+    pub fn falling_edge(
+        &mut self,
+        input: Signal<Level>,
+        config: EdgeConfig,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        self.edge_detector(input, config, EdgeNodeKind::Falling)
+    }
+
+    /// Adds an explicitly keyed falling-edge detector with locally allocated ports.
+    pub fn add_falling_edge(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.add_edge_detector(key, input, config, meta, EdgeNodeKind::Falling)
+    }
+
+    /// Adds an explicitly keyed falling-edge detector with exact fixed ports.
+    pub fn add_falling_edge_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Level>,
+        output_port: OutPortKey<Pulse>,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.add_edge_detector_with_ports(
+            key,
+            input_port,
+            output_port,
+            input,
+            config,
+            meta,
+            EdgeNodeKind::Falling,
+        )
+    }
+
+    /// Adds an any-edge detector with locally allocated stable identities.
+    pub fn any_edge(
+        &mut self,
+        input: Signal<Level>,
+        config: EdgeConfig,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        self.edge_detector(input, config, EdgeNodeKind::Any)
+    }
+
+    /// Adds an explicitly keyed any-edge detector with locally allocated ports.
+    pub fn add_any_edge(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.add_edge_detector(key, input, config, meta, EdgeNodeKind::Any)
+    }
+
+    /// Adds an explicitly keyed any-edge detector with exact fixed ports.
+    pub fn add_any_edge_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Level>,
+        output_port: OutPortKey<Pulse>,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.add_edge_detector_with_ports(
+            key,
+            input_port,
+            output_port,
+            input,
+            config,
+            meta,
+            EdgeNodeKind::Any,
+        )
+    }
+
+    fn edge_detector(
+        &mut self,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        kind: EdgeNodeKind,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        let key = self.next_node_key();
+        let input_port = self.next_in_port_key();
+        let output_port = self.next_pulse_out_port_key();
+        Ok(self
+            .add_edge_detector_with_ports(
+                key,
+                input_port,
+                output_port,
+                input,
+                config,
+                DiagnosticMeta::default(),
+                kind,
+            )?
+            .into_outputs())
+    }
+
+    fn add_edge_detector(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+        kind: EdgeNodeKind,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        let input_port = self.next_in_port_key();
+        let output_port = self.next_pulse_out_port_key();
+        self.add_edge_detector_with_ports(key, input_port, output_port, input, config, meta, kind)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_edge_detector_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Level>,
+        output_port: OutPortKey<Pulse>,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+        kind: EdgeNodeKind,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.require_local(input)?;
+        if self.node_keys.contains(&key) {
+            return Err(AuthoringFailure::DuplicateNodeKey(key));
+        }
+        if self.in_port_keys.contains(&input_port) {
+            return Err(AuthoringFailure::DuplicateInPortKey(input_port));
+        }
+        if self.pulse_out_port_keys.contains(&output_port) {
+            return Err(AuthoringFailure::DuplicatePulseOutPortKey(output_port));
+        }
+        self.node_keys.insert(key);
+        self.in_port_keys.insert(input_port);
+        self.pulse_out_port_keys.insert(output_port);
+        self.nodes.push(NodeDef::new(
+            key,
+            kind.authored(config),
+            NodePorts::new(vec![input_port.into()], vec![output_port.into()]),
+            meta,
+        ));
+        self.connections.push(ConnectionDef::new(
+            self.allocator.connection(),
+            source_endpoint(input.source),
+            ConnectionEndpoint::node_input(input_port.into()),
+            DiagnosticMeta::default(),
+        ));
+        Ok(AddedNode {
+            key,
+            outputs: self.signal(SignalSourceKey::NodeOutput(output_port)),
+        })
     }
 
     /// Adds a pulse-controlled Toggle with locally allocated stable identities.
@@ -3140,6 +3357,120 @@ impl<D> ModuleBuilder<D> {
             self.graph.require_local(*input)?;
         }
         self.graph.add_zip_with_ports(key, output, inputs, meta)
+    }
+
+    /// Adds a rising-edge detector.
+    pub fn rising_edge(
+        &mut self,
+        input: Signal<Level>,
+        config: EdgeConfig,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph.rising_edge(input, config)
+    }
+
+    /// Adds an explicitly keyed rising-edge detector with locally allocated ports.
+    pub fn add_rising_edge(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.require_unused_node_key(key)?;
+        self.graph.add_rising_edge(key, input, config, meta)
+    }
+
+    /// Adds an explicitly keyed rising-edge detector with exact ports.
+    pub fn add_rising_edge_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Level>,
+        output_port: OutPortKey<Pulse>,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph
+            .add_rising_edge_with_ports(key, input_port, output_port, input, config, meta)
+    }
+
+    /// Adds a falling-edge detector.
+    pub fn falling_edge(
+        &mut self,
+        input: Signal<Level>,
+        config: EdgeConfig,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph.falling_edge(input, config)
+    }
+
+    /// Adds an explicitly keyed falling-edge detector with locally allocated ports.
+    pub fn add_falling_edge(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.require_unused_node_key(key)?;
+        self.graph.add_falling_edge(key, input, config, meta)
+    }
+
+    /// Adds an explicitly keyed falling-edge detector with exact ports.
+    pub fn add_falling_edge_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Level>,
+        output_port: OutPortKey<Pulse>,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph
+            .add_falling_edge_with_ports(key, input_port, output_port, input, config, meta)
+    }
+
+    /// Adds an any-edge detector.
+    pub fn any_edge(
+        &mut self,
+        input: Signal<Level>,
+        config: EdgeConfig,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph.any_edge(input, config)
+    }
+
+    /// Adds an explicitly keyed any-edge detector with locally allocated ports.
+    pub fn add_any_edge(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.require_unused_node_key(key)?;
+        self.graph.add_any_edge(key, input, config, meta)
+    }
+
+    /// Adds an explicitly keyed any-edge detector with exact ports.
+    pub fn add_any_edge_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Level>,
+        output_port: OutPortKey<Pulse>,
+        input: Signal<Level>,
+        config: EdgeConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph
+            .add_any_edge_with_ports(key, input_port, output_port, input, config, meta)
     }
 
     /// Adds a pulse-controlled Toggle.

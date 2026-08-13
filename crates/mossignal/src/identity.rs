@@ -1,9 +1,9 @@
 //! Stable time-domain and semantic fingerprint identities.
 
 use crate::authored::{
-    ConnectionDef, ConnectionEndpoint, InputPortRole, ModuleInputDef, ModuleInstanceDef,
-    ModuleInterfaceMapping, ModuleOutputDef, NodeDef, NodeKind, OutputPortRole, UncheckedModule,
-    UncheckedNetwork,
+    ConnectionDef, ConnectionEndpoint, EdgeInitialization, InputPortRole, ModuleInputDef,
+    ModuleInstanceDef, ModuleInterfaceMapping, ModuleOutputDef, NodeDef, NodeKind, OutputPortRole,
+    UncheckedModule, UncheckedNetwork,
 };
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
@@ -335,6 +335,9 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
         NodeKind::PulseGate => writer.variant_null("pulse_gate"),
         NodeKind::PulseSelect => writer.variant_null("pulse_select"),
         NodeKind::PulseRoute => writer.variant_null("pulse_route"),
+        NodeKind::RisingEdge(config) => edge_detector_kind(writer, "rising_edge", *config),
+        NodeKind::FallingEdge(config) => edge_detector_kind(writer, "falling_edge", *config),
+        NodeKind::AnyEdge(config) => edge_detector_kind(writer, "any_edge", *config),
         NodeKind::Toggle(config) => {
             writer.variant_start("toggle");
             writer.record_start(2);
@@ -348,6 +351,29 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
             writer.field("temporal_schema", |writer| {
                 writer.variant_null("pending_pulse_group")
             });
+        }
+    }
+}
+
+fn edge_detector_kind(writer: &mut Cbor, variant: &str, config: crate::authored::EdgeConfig) {
+    // SPEC: docs/specs/contracts/edge-detector-family.yaml "pre-stability-identity-extension"
+    // Kind, initialization, and the closed observation schema are semantic identity.
+    writer.variant_start(variant);
+    writer.record_start(2);
+    writer.field("initialization", |writer| {
+        edge_initialization(writer, config.initialization)
+    });
+    writer.field("state_schema", |writer| {
+        writer.variant_null("edge_observation")
+    });
+}
+
+fn edge_initialization(writer: &mut Cbor, initialization: EdgeInitialization) {
+    match initialization {
+        EdgeInitialization::Baseline => writer.variant_null("baseline"),
+        EdgeInitialization::Assume(level) => {
+            writer.variant_start("assume");
+            logic_level(writer, level);
         }
     }
 }
@@ -568,43 +594,7 @@ fn nodes<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
     for node in nodes {
         writer.record_start(2);
         writer.field("key", |writer| writer.key(node.key().as_u128()));
-        writer.field("kind", |writer| match node.kind() {
-            NodeKind::Constant(config) => {
-                writer.variant_start("constant");
-                writer.record_start(1);
-                writer.field("value", |writer| logic_level(writer, config.value()));
-            }
-            NodeKind::Not => writer.variant_null("not"),
-            NodeKind::All => writer.variant_null("all"),
-            NodeKind::Any => writer.variant_null("any"),
-            NodeKind::Parity => writer.variant_null("parity"),
-            NodeKind::AtLeast(config) => {
-                writer.variant_start("at_least");
-                writer.record_start(1);
-                writer.field("threshold", |writer| writer.uint(config.threshold));
-            }
-            NodeKind::Select => writer.variant_null("select"),
-            NodeKind::Merge => writer.variant_null("merge"),
-            NodeKind::Coalesce => writer.variant_null("coalesce"),
-            NodeKind::Zip => writer.variant_null("zip"),
-            NodeKind::PulseGate => writer.variant_null("pulse_gate"),
-            NodeKind::PulseSelect => writer.variant_null("pulse_select"),
-            NodeKind::PulseRoute => writer.variant_null("pulse_route"),
-            NodeKind::Toggle(config) => {
-                writer.variant_start("toggle");
-                writer.record_start(2);
-                writer.field("initial", |writer| logic_level(writer, config.initial));
-                writer.field("state_schema", |writer| writer.variant_null("stored_level"));
-            }
-            NodeKind::PulseDelay(config) => {
-                writer.variant_start("pulse_delay");
-                writer.record_start(2);
-                writer.field("delay_ticks", |writer| writer.uint(config.delay.ticks()));
-                writer.field("temporal_schema", |writer| {
-                    writer.variant_null("pending_pulse_group")
-                });
-            }
-        });
+        writer.field("kind", |writer| node_kind(writer, node.kind()));
     }
 }
 
@@ -1391,6 +1381,38 @@ mod tests {
         )
     }
 
+    fn golden_edge(kind: NodeKind<()>) -> UncheckedNetwork<()> {
+        let external = ExternalInputKey::<Level>::from_u128(10);
+        let input = InPortKey::<Level>::from_u128(20);
+        let output = OutPortKey::<Pulse>::from_u128(30);
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(2),
+                kind,
+                NodePorts::new(vec![input.into()], vec![output.into()]),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                external.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Pulse>::from_u128(40).into(),
+                SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(50),
+                external.into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )],
+        )
+    }
+
     fn golden_pulse_delay(delay_ticks: u64) -> UncheckedNetwork<()> {
         let external = ExternalInputKey::<Pulse>::from_u128(10);
         let input = InPortKey::<Pulse>::from_u128(20);
@@ -1784,6 +1806,53 @@ mod tests {
             validated_fingerprints(toggle_pair(false)),
             validated_fingerprints(toggle_pair(true)),
             "multiple Toggle claims must ignore insertion order"
+        );
+    }
+
+    #[test]
+    fn edge_projection_vector_and_semantic_sensitivity() {
+        let config = crate::authored::EdgeConfig::new(EdgeInitialization::Baseline);
+        let baseline = golden_edge(NodeKind::rising_edge(config));
+        let (network_bytes, input_bytes) = canonical_inputs(&baseline);
+        let fingerprints = validated_fingerprints(baseline);
+        assert_eq!(
+            hex(&network_bytes),
+            "838266646f6d61696e78206d6f737369676e616c2f6e6574776f726b5f66696e6765727072696e742f763182677061796c6f61648982781f6275696c745f696e5f6e6f64655f73656d616e746963735f76657273696f6e01826b636f6e6e656374696f6e73818382636b657950000000000000000000000000000000328266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e6482656c6576656cf682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000014826b7369676e616c5f6b696e6482656c6576656cf68276636f72655f73656d616e746963735f76657273696f6e01826f65787465726e616c5f696e70757473818282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e6482656c6576656cf6827065787465726e616c5f6f757470757473818382636b65795000000000000000000000000000000028826b7369676e616c5f6b696e64826570756c7365f68266736f7572636582686f75745f706f72748282636b6579500000000000000000000000000000001e826b7369676e616c5f6b696e64826570756c7365f6826b6e6574776f726b5f6b6579500000000000000000000000000000000182656e6f646573818282636b6579500000000000000000000000000000000282646b696e64826b726973696e675f6564676582826e696e697469616c697a6174696f6e8268626173656c696e65f6826c73746174655f736368656d618270656467655f6f62736572766174696f6ef68265706f72747382858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001482656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c658265696e707574f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000001e82656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e64826570756c7365f6826e74696d655f646f6d61696e5f69645000000000000000000000000000000002826776657273696f6e01"
+        );
+        assert_eq!(
+            hex(&input_bytes),
+            "838266646f6d61696e78256d6f737369676e616c2f696e7075745f736368656d615f66696e6765727072696e742f763182677061796c6f6164818266696e707574738183826d65737461626c6973686d656e7482687265717569726564f682636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e6482656c6576656cf6826776657273696f6e01"
+        );
+        assert_eq!(
+            fingerprints.0.to_string(),
+            "b80627a4dded064f83191a7d4c20231a5bb27635faa5d9456d6bf353ac8bc4f1"
+        );
+        assert_eq!(
+            fingerprints.1.to_string(),
+            "566114acb5b4f9774254e8c9739f1657b437b59a0e94eb17524b0bfd4bd54fb3"
+        );
+
+        let assume_low =
+            crate::authored::EdgeConfig::new(EdgeInitialization::Assume(LogicLevel::Low));
+        let assume_high =
+            crate::authored::EdgeConfig::new(EdgeInitialization::Assume(LogicLevel::High));
+        let rising = validated_fingerprints(golden_edge(NodeKind::rising_edge(assume_low))).0;
+        let falling = validated_fingerprints(golden_edge(NodeKind::falling_edge(assume_low))).0;
+        let any = validated_fingerprints(golden_edge(NodeKind::any_edge(assume_low))).0;
+        assert_ne!(
+            rising, falling,
+            "the detector kind participates in identity"
+        );
+        assert_ne!(rising, any, "the detector kind participates in identity");
+        assert_ne!(falling, any, "the detector kind participates in identity");
+        assert_ne!(
+            rising,
+            validated_fingerprints(golden_edge(NodeKind::rising_edge(assume_high))).0,
+            "the assumed level participates in identity"
+        );
+        assert_ne!(
+            rising, fingerprints.0,
+            "the initialization policy participates in identity"
         );
     }
 

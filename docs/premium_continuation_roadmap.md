@@ -464,7 +464,7 @@ Explicitly exclude:
 
 ---
 
-## 43. [IN PROGRESS] Transition-sensitive edge-detector family
+## 43. [DONE] Transition-sensitive edge-detector family
 
 Extend the stateful foundation with:
 
