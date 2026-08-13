@@ -5,8 +5,10 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: 21d678edf8fa87764c75cc227f9aec46083b84a1
-  working_tree: clean
+  commit: 5ffde87853fd17dc5e094bfd8f645d79db3ebda0
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   NetworkFingerprint is the opaque, domain-separated 256-bit identity of a
@@ -62,11 +64,14 @@ requirements:
       schemas fixed by the persistence specification, including nullary `not`,
       `all`, `any`, `parity`, `select`, `merge`, `coalesce`, `zip`, `pulse_gate`,
       `pulse_select`, and `pulse_route` variants, the configured `at_least`
-      variant, configured `toggle` initial level and `stored_level` state schema,
-      configured `pulse_delay` delay ticks and `pending_pulse_group` temporal
-      schema, distinct fixed input roles, `PulseRoute` output roles, and the
-      `level` and `pulse` signal-kind variants. Collections use the specified
-      stable semantic order and never Rust layout, discriminants, or debug text.
+      variant, configured `rising_edge`, `falling_edge`, and `any_edge` variants
+      with closed `baseline` or level-carrying `assume` initialization and the
+      `edge_observation` state schema, configured `toggle` initial level and
+      `stored_level` state schema, configured `pulse_delay` delay ticks and
+      `pending_pulse_group` temporal schema, distinct fixed input roles,
+      `PulseRoute` output roles, and the `level` and `pulse` signal-kind
+      variants. Collections use the specified stable semantic order and never
+      Rust layout, discriminants, or debug text.
     sources: [restricted-projection, canonical-ordering, canonical-enums]
 
   - id: pre-stability-projection-policy
@@ -114,13 +119,15 @@ requirements:
     statement: >-
       The restricted projection includes `AtLeast`'s unsigned threshold and the
       `selector`, `when_low`, and `when_high` semantic roles of `Select` input
-      ports, plus `Toggle`'s initial level, `stored_level` state schema, and
-      `toggle` Pulse-input role, plus `PulseDelay`'s positive `delay_ticks`,
-      `pending_pulse_group` temporal schema, and `pulse_delay` Pulse-input role.
-      It also includes PulseGate's `pulses` and `enable` input roles,
-      PulseSelect's `selector`, `when_low`, and `when_high` input roles, and
-      PulseRoute's `selector` and `pulses` input roles plus distinct `when_low`
-      and `when_high` output roles.
+      ports, plus each edge detector's distinct kind, initialization policy,
+      assumed level when present, `edge_observation` state schema, and ordinary
+      Level `input` and Pulse `output` roles, plus `Toggle`'s initial level,
+      `stored_level` state schema, and `toggle` Pulse-input role, plus
+      `PulseDelay`'s positive `delay_ticks`, `pending_pulse_group` temporal
+      schema, and `pulse_delay` Pulse-input role. It also includes PulseGate's
+      `pulses` and `enable` input roles, PulseSelect's `selector`, `when_low`,
+      and `when_high` input roles, and PulseRoute's `selector` and `pulses`
+      input roles plus distinct `when_low` and `when_high` output roles.
       Changing a represented parameter, state or temporal schema, or role
       changes canonical identity even when stable keys remain unchanged.
     sources: [network-projection, restricted-projection, deterministic-compilation]
@@ -134,8 +141,8 @@ requirements:
       thresholds and `Select` input roles. The initial corpus retains complete
       canonical digest-input bytes and expected digests for the restricted
       minimal, nontrivial, variadic, remaining level-combinational, pulse-
-      combinational, stateful, temporal, and level-controlled pulse cases
-      required by the verification policy.
+      combinational, edge-detector, stateful, temporal, and level-controlled
+      pulse cases required by the verification policy.
     sources: [canonical-vectors, digest-scope-verification, deterministic-compilation]
 
 recommendations:
@@ -181,7 +188,7 @@ sources:
       - Part VI — Digest and fingerprint suite
       - 54. Network and input-schema fingerprints
       - 54.2 Restricted network-fingerprint projection version 1
-    reviewed_hash: sha256:caf5b1eba334cfc2bca0002c169725fbbaffd1670fd57625ba943c2f487ef8bf
+    reviewed_hash: sha256:8de603729bcf0b4382a357e08d48b35e12803f7165333f21113bfed49bce77f9
   canonical-ordering:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]

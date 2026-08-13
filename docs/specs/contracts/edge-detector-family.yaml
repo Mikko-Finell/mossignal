@@ -5,8 +5,10 @@ kind: family
 status: reviewed
 
 source_baseline:
-  commit: 0f4e5140e43b4e026b7003cd3a40b36ab4a99d3e
+  commit: 5ffde87853fd17dc5e094bfd8f645d79db3ebda0
   working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   RisingEdge, FallingEdge, and AnyEdge are fixed-shape Level-to-Pulse stateful
@@ -123,9 +125,10 @@ requirements:
       initialization policy including an assumed level, and closed remembered
       observation schema. Before an explicit frozen baseline, the accepted
       implementation may extend the provisional version-1 network projection
-      in place, but the authoritative projection, implementation, applicable
-      contract evidence, and every affected exact golden vector remain
-      synchronized in one revision.
+      in place. The network projection follows its exact authoritative schema;
+      the authoritative projection, implementation, applicable contract
+      evidence, and every affected exact golden vector remain synchronized in
+      one revision.
     sources: [network-fingerprint, restricted-fingerprint, module-fingerprint, fingerprint-versions]
     basis: derived
 
@@ -154,7 +157,7 @@ recommendations:
 
 implementation_freedom:
   - Fixed-port key derivation, exact keyed argument grouping, shared private detector-kind representation, descriptor fields, and edge-family state-slot layout are free when stable identity and the complete laws are preserved.
-  - Choose the smallest deterministic detector variants, initialization encoding, observation-schema spelling, and port-role spelling for the synchronized provisional version-1 fingerprint projection, then record them in authority, implementation, contract evidence, and golden vectors.
+  - Private canonical-encoder helper decomposition and reuse remain free; NetworkFingerprint follows its exact authoritative projection, while ModuleFingerprint follows its separately governed semantic inclusion and ordering rules.
   - A focused owned edge-detector inspection result may precede the broader generic inspection-query, subscription, snapshot, and migration systems.
 
 open_questions: []
@@ -285,7 +288,7 @@ sources:
   restricted-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
-    reviewed_hash: sha256:caf5b1eba334cfc2bca0002c169725fbbaffd1670fd57625ba943c2f487ef8bf
+    reviewed_hash: sha256:8de603729bcf0b4382a357e08d48b35e12803f7165333f21113bfed49bce77f9
   module-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 55. Module fingerprint]
