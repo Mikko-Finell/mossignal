@@ -276,6 +276,8 @@ fn merge_overflow_rejects_the_transaction_atomically() {
         failure.evidence(),
         &RuntimeFailureEvidence::PulseCountOverflow {
             node: NodeSubject::Node(node),
+            left: PulseCount::ONE,
+            right: PulseCount::new(u64::MAX),
         }
     );
     assert_eq!(machine.status(), before_status);

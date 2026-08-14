@@ -543,6 +543,7 @@ fn module_merge_overflow_reports_qualified_owner_and_is_atomic() {
         failure.evidence(),
         RuntimeFailureEvidence::PulseCountOverflow {
             node: NodeSubject::Qualified(node),
+            ..
         } if node.instances() == [instance] && node.node() == merge_node
     ));
     assert!(!machine.is_initialized());

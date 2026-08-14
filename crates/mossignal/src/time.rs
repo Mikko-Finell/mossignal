@@ -1,5 +1,9 @@
 //! Exact logical-time values for caller-defined discrete time domains.
 
+use crate::diagnostics::{
+    DiagnosticCode, OperationSubjectRef, ParameterEvidence, Problem, ProblemEvidence,
+    Responsibility, Severity, SubjectRef, TimeEvidence, TimeOperation,
+};
 use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -313,6 +317,57 @@ impl TimeArithmeticError {
     pub const fn kind(self) -> TimeArithmeticErrorKind {
         self.kind
     }
+
+    /// Returns the catalogue code represented by this arithmetic rejection.
+    #[must_use]
+    pub fn code(self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+
+    /// Returns the catalogue-fixed severity.
+    #[must_use]
+    pub fn severity(self) -> Severity {
+        self.code().severity()
+    }
+
+    /// Returns the catalogue-fixed responsibility.
+    #[must_use]
+    pub fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+
+    /// Projects this arithmetic leaf into the common problem model.
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        let operation = match self.operation {
+            TimeArithmeticOperation::TimeAddition => TimeOperation::TimeAddition,
+            TimeArithmeticOperation::NonZeroTimeAddition => TimeOperation::NonZeroTimeAddition,
+            TimeArithmeticOperation::SpanAddition => TimeOperation::SpanAddition,
+            TimeArithmeticOperation::DurationSubtraction => TimeOperation::DurationSubtraction,
+        };
+        let evidence = TimeEvidence {
+            owner: None,
+            operation,
+            left_ticks: self.left,
+            right_ticks: self.right,
+        };
+        Problem::new(
+            SubjectRef::Operation(OperationSubjectRef::LogicalTime),
+            Vec::new(),
+            match self.kind {
+                TimeArithmeticErrorKind::Overflow => ProblemEvidence::RuntimeTimeOverflow {
+                    evidence,
+                    marker: PhantomData,
+                },
+                TimeArithmeticErrorKind::InvalidSubtraction => {
+                    ProblemEvidence::RuntimeInvalidTimeSubtraction {
+                        evidence,
+                        marker: PhantomData,
+                    }
+                }
+            },
+        )
+    }
 }
 
 impl fmt::Display for TimeArithmeticError {
@@ -338,6 +393,43 @@ pub struct ZeroSpanError {
 impl ZeroSpanError {
     const fn new() -> Self {
         Self { private: () }
+    }
+
+    /// Returns the catalogue code represented by this construction rejection.
+    #[must_use]
+    pub const fn code(self) -> DiagnosticCode {
+        DiagnosticCode::RuntimeZeroSpanNotAllowed
+    }
+
+    /// Returns the catalogue-fixed severity.
+    #[must_use]
+    pub const fn severity(self) -> Severity {
+        self.code().severity()
+    }
+
+    /// Returns the catalogue-fixed responsibility.
+    #[must_use]
+    pub const fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+
+    /// Projects this construction leaf into the common problem model.
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        Problem::new(
+            SubjectRef::Operation(OperationSubjectRef::LogicalTime),
+            Vec::new(),
+            ProblemEvidence::RuntimeZeroSpanNotAllowed {
+                evidence: ParameterEvidence {
+                    owner: None,
+                    parameter: "ticks",
+                    expected_domain: "positive u64",
+                    encountered: Some(0),
+                    operands: Vec::new(),
+                },
+                marker: PhantomData,
+            },
+        )
     }
 }
 
@@ -586,9 +678,19 @@ mod tests {
         assert_ne!(overflow, invalid);
         assert!(overflow.to_string().contains("overflow"));
         assert!(invalid.to_string().contains("duration"));
+        for error in [overflow, invalid] {
+            let problem = error.problem::<UncooperativeDomain>();
+            assert_eq!(problem.code(), error.code());
+            assert_eq!(problem.evidence().code(), error.code());
+            assert_eq!(error.severity(), error.code().severity());
+            assert_eq!(error.responsibility(), error.code().responsibility());
+        }
 
         let zero =
             NonZeroSpan::<UncooperativeDomain>::from_ticks(0).expect_err("zero must be rejected");
         assert!(zero.to_string().contains("zero"));
+        let problem = zero.problem::<UncooperativeDomain>();
+        assert_eq!(problem.code(), DiagnosticCode::RuntimeZeroSpanNotAllowed);
+        assert_eq!(problem.evidence().code(), problem.code());
     }
 }

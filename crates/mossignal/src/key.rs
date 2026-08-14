@@ -55,6 +55,10 @@
 //! let _duplicate = allocator.clone();
 //! ```
 
+use crate::diagnostics::{
+    DiagnosticCode, InspectionEvidence, InspectionSubjectKind, OperationSubjectRef, Problem,
+    ProblemEvidence, Responsibility, Severity, SubjectRef,
+};
 use crate::signal::{Level, Pulse, SignalKind, SignalType};
 use core::cmp::Ordering;
 use core::fmt;
@@ -681,6 +685,41 @@ impl KeyKindMismatch {
     pub const fn actual(self) -> SignalKind {
         self.actual
     }
+
+    /// Returns the catalogue code represented by this typed projection failure.
+    #[must_use]
+    pub const fn code(self) -> DiagnosticCode {
+        DiagnosticCode::InspectionWrongSubjectKind
+    }
+
+    #[must_use]
+    pub const fn severity(self) -> Severity {
+        self.code().severity()
+    }
+
+    #[must_use]
+    pub const fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+
+    /// Projects this leaf into the common catalogue-backed problem model.
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        let requested = SubjectRef::Operation(OperationSubjectRef::KeyProjection);
+        Problem::new(
+            requested,
+            Vec::new(),
+            ProblemEvidence::InspectionWrongSubjectKind {
+                evidence: InspectionEvidence {
+                    requested,
+                    qualified_path: Vec::new(),
+                    expected: InspectionSubjectKind::SignalKind(self.expected),
+                    actual: Some(InspectionSubjectKind::SignalKind(self.actual)),
+                },
+                marker: PhantomData,
+            },
+        )
+    }
 }
 
 impl fmt::Display for KeyKindMismatch {
@@ -1306,6 +1345,10 @@ mod tests {
         assert_eq!(error.expected(), SignalKind::Level);
         assert_eq!(error.actual(), SignalKind::Pulse);
         assert!(!error.to_string().is_empty());
+        let problem = error.problem::<()>();
+        assert_eq!(error.code(), DiagnosticCode::InspectionWrongSubjectKind);
+        assert_eq!(problem.code(), error.code());
+        assert_eq!(problem.evidence().code(), error.code());
         let copied = error;
         assert_eq!(hash_input(&error), hash_input(&copied));
     }

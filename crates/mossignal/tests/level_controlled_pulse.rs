@@ -815,6 +815,8 @@ fn upstream_overflow_and_operation_budget_reject_all_three_nodes_atomically() {
         failure.evidence(),
         &RuntimeFailureEvidence::PulseCountOverflow {
             node: mossignal::NodeSubject::Node(merge_node),
+            left: PulseCount::new(u64::MAX),
+            right: PulseCount::ONE,
         }
     );
     assert_eq!(

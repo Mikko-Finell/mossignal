@@ -84,20 +84,26 @@ fn catalogue_discovery_and_dynamic_failures_are_structured() {
         StandardModuleSemanticVersion::new(1).unwrap(),
         StandardModuleExpansionVersion::new(1).unwrap(),
     );
-    assert!(matches!(
-        catalogue.descriptor(&unknown),
-        Err(mossignal::CatalogueFailure::UnknownId(_))
-    ));
+    assert_eq!(
+        catalogue
+            .descriptor(&unknown)
+            .err()
+            .map(|failure| failure.code()),
+        Some(DiagnosticCode::StandardModuleUnknownId)
+    );
 
     let unsupported = StandardModuleRef::new(
         StandardModuleRef::exactly().id().clone(),
         StandardModuleSemanticVersion::new(2).unwrap(),
         StandardModuleExpansionVersion::new(1).unwrap(),
     );
-    assert!(matches!(
-        catalogue.descriptor(&unsupported),
-        Err(mossignal::CatalogueFailure::UnsupportedVersion(_))
-    ));
+    assert_eq!(
+        catalogue
+            .descriptor(&unsupported)
+            .err()
+            .map(|failure| failure.code()),
+        Some(DiagnosticCode::StandardModuleUnsupportedVersion)
+    );
 
     let missing = catalogue.build(StandardModuleRequest::new(StandardModuleRef::exactly()));
     assert!(missing.artifact().is_none());

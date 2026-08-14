@@ -2,7 +2,11 @@
 
 use crate::authored::EdgeObservation;
 use crate::compile::{EvaluationCause, EvaluationFailure, FullEvaluation};
-use crate::diagnostics::{Responsibility, Severity};
+use crate::diagnostics::{
+    BudgetEvidence, DiagnosticCode, InputSchemaEvidence, LifecycleEvidence, NodeEvidence,
+    OperationSubjectRef, ParameterEvidence, Problem, ProblemEvidence, ProvenanceEvidence,
+    Responsibility, RevisionMismatchEvidence, Severity, SubjectRef, TimeEvidence, TimeOperation,
+};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
 use crate::input::{InputDelta, InputSnapshot};
 use crate::key::{ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey};
@@ -129,6 +133,8 @@ pub enum RuntimeFailureEvidence {
     },
     PulseCountOverflow {
         node: NodeSubject,
+        left: PulseCount,
+        right: PulseCount,
     },
     TimeOverflow {
         node: NodeSubject,
@@ -137,17 +143,165 @@ pub enum RuntimeFailureEvidence {
     },
 }
 
+impl RuntimeFailureEvidence {
+    /// Returns the catalogue code paired with this exact evidence leaf.
+    #[must_use]
+    pub fn code(&self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+
+    #[must_use]
+    pub fn severity(&self) -> Severity {
+        self.code().severity()
+    }
+
+    #[must_use]
+    pub fn responsibility(&self) -> Responsibility {
+        self.code().responsibility()
+    }
+
+    /// Projects this runtime leaf into the common catalogue-backed problem model.
+    #[must_use]
+    pub fn problem<D>(&self) -> Problem<D> {
+        let primary = SubjectRef::Operation(OperationSubjectRef::MachineTransaction);
+        let evidence = match self {
+            Self::AlreadyInitialized => ProblemEvidence::LifecycleAlreadyInitialized {
+                evidence: LifecycleEvidence {
+                    operation: OperationSubjectRef::MachineTransaction,
+                    current_time_ticks: None,
+                },
+                marker: PhantomData,
+            },
+            Self::DeltaBeforeInitialization => {
+                ProblemEvidence::LifecycleDeltaBeforeInitialization {
+                    evidence: LifecycleEvidence {
+                        operation: OperationSubjectRef::MachineTransaction,
+                        current_time_ticks: None,
+                    },
+                    marker: PhantomData,
+                }
+            }
+            Self::TimeNotStrictlyIncreasing {
+                current_ticks,
+                requested_ticks,
+            } => ProblemEvidence::RuntimeTimeNotStrictlyIncreasing {
+                evidence: TimeEvidence {
+                    owner: None,
+                    operation: TimeOperation::TransactionAdvance,
+                    left_ticks: *current_ticks,
+                    right_ticks: *requested_ticks,
+                },
+                marker: PhantomData,
+            },
+            Self::StaleRevision { expected, actual } => ProblemEvidence::RuntimeStaleRevision {
+                evidence: RevisionMismatchEvidence {
+                    expected: *expected,
+                    actual: *actual,
+                },
+                marker: PhantomData,
+            },
+            Self::WrongNetwork {
+                expected_key,
+                actual_key,
+                expected_fingerprint,
+                actual_fingerprint,
+            } => ProblemEvidence::InputWrongNetwork {
+                evidence: InputSchemaEvidence {
+                    expected_network: Some(*expected_key),
+                    actual_network: Some(*actual_key),
+                    expected_fingerprint: Some(*expected_fingerprint),
+                    actual_fingerprint: Some(*actual_fingerprint),
+                    expected_schema: None,
+                    actual_schema: None,
+                },
+                marker: PhantomData,
+            },
+            Self::ForeignInputSchema { expected, actual } => ProblemEvidence::InputForeignSchema {
+                evidence: InputSchemaEvidence {
+                    expected_network: None,
+                    actual_network: None,
+                    expected_fingerprint: None,
+                    actual_fingerprint: None,
+                    expected_schema: Some(*expected),
+                    actual_schema: Some(*actual),
+                },
+                marker: PhantomData,
+            },
+            Self::StaleInputSchema { expected, actual } => ProblemEvidence::InputStaleSchema {
+                evidence: InputSchemaEvidence {
+                    expected_network: None,
+                    actual_network: None,
+                    expected_fingerprint: None,
+                    actual_fingerprint: None,
+                    expected_schema: Some(*expected),
+                    actual_schema: Some(*actual),
+                },
+                marker: PhantomData,
+            },
+            Self::BudgetExceeded {
+                budget,
+                limit,
+                consumed,
+            } => ProblemEvidence::RuntimeBudgetExceeded {
+                evidence: BudgetEvidence {
+                    budget: budget.parameter_key(),
+                    limit: *limit,
+                    consumed: *consumed,
+                },
+                marker: PhantomData,
+            },
+            Self::PulseCountOverflow { node, left, right } => {
+                ProblemEvidence::RuntimePulseCountOverflow {
+                    evidence: ParameterEvidence {
+                        owner: Some(node_evidence(node)),
+                        parameter: "pulse_count_sum",
+                        expected_domain: "u64 sum",
+                        encountered: None,
+                        operands: vec![left.get(), right.get()],
+                    },
+                    marker: PhantomData,
+                }
+            }
+            Self::TimeOverflow {
+                node,
+                origin_ticks,
+                delay_ticks,
+            } => ProblemEvidence::RuntimeTimeOverflow {
+                evidence: TimeEvidence {
+                    owner: Some(node_evidence(node)),
+                    operation: TimeOperation::PulseDelayDeadline,
+                    left_ticks: *origin_ticks,
+                    right_ticks: *delay_ticks,
+                },
+                marker: PhantomData,
+            },
+        };
+        Problem::new(primary, Vec::new(), evidence)
+    }
+}
+
+fn node_evidence(subject: &NodeSubject) -> NodeEvidence {
+    match subject {
+        NodeSubject::Node(node) => NodeEvidence::Node(*node),
+        NodeSubject::Qualified(node) => NodeEvidence::Qualified {
+            instances: node.instances().to_vec(),
+            node: node.node(),
+        },
+    }
+}
+
 /// A structured rejection of one runtime transaction.
 pub struct RuntimeFailure<D> {
-    evidence: RuntimeFailureEvidence,
-    domain: PhantomData<fn() -> D>,
+    evidence: Box<RuntimeFailureEvidence>,
+    problem: Box<Problem<D>>,
 }
 
 impl<D> RuntimeFailure<D> {
     fn new(evidence: RuntimeFailureEvidence) -> Self {
+        let problem = Box::new(evidence.problem());
         Self {
-            evidence,
-            domain: PhantomData,
+            evidence: Box::new(evidence),
+            problem,
         }
     }
 
@@ -159,48 +313,26 @@ impl<D> RuntimeFailure<D> {
 
     /// Returns the exact catalogue code represented by this rejection.
     #[must_use]
-    pub const fn code(&self) -> &'static str {
-        match self.evidence {
-            RuntimeFailureEvidence::AlreadyInitialized => "lifecycle.already_initialized",
-            RuntimeFailureEvidence::DeltaBeforeInitialization => {
-                "lifecycle.delta_before_initialization"
-            }
-            RuntimeFailureEvidence::TimeNotStrictlyIncreasing { .. } => {
-                "runtime.time_not_strictly_increasing"
-            }
-            RuntimeFailureEvidence::StaleRevision { .. } => "runtime.stale_revision",
-            RuntimeFailureEvidence::WrongNetwork { .. } => "input.wrong_network",
-            RuntimeFailureEvidence::ForeignInputSchema { .. } => "input.foreign_schema",
-            RuntimeFailureEvidence::StaleInputSchema { .. } => "input.stale_schema",
-            RuntimeFailureEvidence::BudgetExceeded { .. } => "runtime.budget_exceeded",
-            RuntimeFailureEvidence::PulseCountOverflow { .. } => "runtime.pulse_count_overflow",
-            RuntimeFailureEvidence::TimeOverflow { .. } => "runtime.time_overflow",
-        }
+    pub const fn code(&self) -> DiagnosticCode {
+        self.problem.code()
     }
 
     /// Returns the catalogue severity for this rejection.
     #[must_use]
     pub const fn severity(&self) -> Severity {
-        Severity::Error
+        self.problem.severity()
     }
 
     /// Returns the catalogue responsibility for this rejection.
     #[must_use]
     pub const fn responsibility(&self) -> Responsibility {
-        match self.evidence {
-            RuntimeFailureEvidence::AlreadyInitialized
-            | RuntimeFailureEvidence::DeltaBeforeInitialization
-            | RuntimeFailureEvidence::TimeNotStrictlyIncreasing { .. } => {
-                Responsibility::CallerInput
-            }
-            RuntimeFailureEvidence::StaleRevision { .. }
-            | RuntimeFailureEvidence::WrongNetwork { .. }
-            | RuntimeFailureEvidence::ForeignInputSchema { .. }
-            | RuntimeFailureEvidence::StaleInputSchema { .. } => Responsibility::Compatibility,
-            RuntimeFailureEvidence::BudgetExceeded { .. } => Responsibility::ResourceLimit,
-            RuntimeFailureEvidence::PulseCountOverflow { .. }
-            | RuntimeFailureEvidence::TimeOverflow { .. } => Responsibility::SemanticRejection,
-        }
+        self.problem.responsibility()
+    }
+
+    /// Returns the complete common problem retained by this runtime rejection.
+    #[must_use]
+    pub const fn problem(&self) -> &Problem<D> {
+        &self.problem
     }
 }
 
@@ -216,7 +348,11 @@ impl<D> fmt::Debug for RuntimeFailure<D> {
 
 impl<D> fmt::Display for RuntimeFailure<D> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "transaction rejected with {}", self.code())
+        write!(
+            formatter,
+            "transaction rejected with {}",
+            self.code().as_str()
+        )
     }
 }
 
@@ -349,12 +485,77 @@ pub enum CauseInspection<'a, D> {
 }
 
 /// Failure to resolve a cause through the owning result's provenance view.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CauseLookupFailure;
+pub enum CauseLookupFailure {
+    /// The reference belongs to a different immutable provenance view.
+    ForeignCause {
+        expected_scope: [u8; 32],
+        actual_scope: [u8; 32],
+        ordinal: u32,
+    },
+    /// The reference belongs to this view but its ordinal is not valid.
+    InvalidCause { scope: [u8; 32], ordinal: u32 },
+}
+
+impl CauseLookupFailure {
+    #[must_use]
+    pub const fn code(self) -> DiagnosticCode {
+        match self {
+            Self::ForeignCause { .. } => DiagnosticCode::ExplanationForeignCause,
+            Self::InvalidCause { .. } => DiagnosticCode::ExplanationInvalidCause,
+        }
+    }
+    #[must_use]
+    pub const fn severity(self) -> Severity {
+        self.code().severity()
+    }
+    #[must_use]
+    pub const fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        let evidence = match self {
+            Self::ForeignCause {
+                expected_scope,
+                actual_scope,
+                ordinal,
+            } => ProblemEvidence::ExplanationForeignCause {
+                evidence: ProvenanceEvidence {
+                    expected_scope,
+                    actual_scope,
+                    ordinal,
+                },
+                marker: PhantomData,
+            },
+            Self::InvalidCause { scope, ordinal } => ProblemEvidence::ExplanationInvalidCause {
+                evidence: ProvenanceEvidence {
+                    expected_scope: scope,
+                    actual_scope: scope,
+                    ordinal,
+                },
+                marker: PhantomData,
+            },
+        };
+        Problem::new(
+            SubjectRef::Operation(OperationSubjectRef::ProvenanceView),
+            Vec::new(),
+            evidence,
+        )
+    }
+}
 
 impl fmt::Display for CauseLookupFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("cause reference does not belong to this provenance view")
+        match self {
+            Self::ForeignCause { .. } => {
+                formatter.write_str("cause reference belongs to another provenance view")
+            }
+            Self::InvalidCause { .. } => {
+                formatter.write_str("cause reference does not resolve in its provenance view")
+            }
+        }
     }
 }
 
@@ -407,10 +608,17 @@ impl<D> ProvenanceView<D> {
     /// Resolves one result-scoped reference to structured immutable evidence.
     pub fn inspect(&self, cause: CauseRef) -> Result<CauseInspection<'_, D>, CauseLookupFailure> {
         if cause.scope != self.scope {
-            return Err(CauseLookupFailure);
+            return Err(CauseLookupFailure::ForeignCause {
+                expected_scope: self.scope,
+                actual_scope: cause.scope,
+                ordinal: cause.ordinal,
+            });
         }
         let Some(record) = self.records.get(cause.ordinal as usize) else {
-            return Err(CauseLookupFailure);
+            return Err(CauseLookupFailure::InvalidCause {
+                scope: self.scope,
+                ordinal: cause.ordinal,
+            });
         };
         Ok(match record {
             ProvenanceRecord::InitializationTransaction { at, revision } => {
@@ -1120,11 +1328,13 @@ fn evaluate_reaction<D>(
         previous_toggle_states,
     ) {
         Ok(evaluation) => Ok(evaluation),
-        Err(EvaluationFailure::PulseCountOverflow { node }) => Err(RuntimeFailure::new(
-            RuntimeFailureEvidence::PulseCountOverflow {
+        Err(EvaluationFailure::PulseCountOverflow { node, left, right }) => Err(
+            RuntimeFailure::new(RuntimeFailureEvidence::PulseCountOverflow {
                 node: compiled.node_subject(node),
-            },
-        )),
+                left,
+                right,
+            }),
+        ),
         Err(EvaluationFailure::Incomplete) => {
             panic!("validated topology and exact-bound inputs must evaluate completely")
         }
@@ -1136,9 +1346,11 @@ fn evaluation_failure<D>(
     failure: EvaluationFailure,
 ) -> RuntimeFailure<D> {
     match failure {
-        EvaluationFailure::PulseCountOverflow { node } => {
+        EvaluationFailure::PulseCountOverflow { node, left, right } => {
             RuntimeFailure::new(RuntimeFailureEvidence::PulseCountOverflow {
                 node: compiled.node_subject(node),
+                left,
+                right,
             })
         }
         EvaluationFailure::Incomplete => {
@@ -1174,6 +1386,8 @@ fn aggregate_due<D>(
         let combined = previous.checked_add(event.count).map_err(|_| {
             RuntimeFailure::new(RuntimeFailureEvidence::PulseCountOverflow {
                 node: compiled.node_subject(event.node),
+                left: previous,
+                right: event.count,
             })
         })?;
         due.counts.insert(event.node, combined);
@@ -2308,7 +2522,7 @@ mod tests {
         ConnectionDef, ExternalInputDef, ExternalOutputDef, InputPortRole, NodeDef, NodeKind,
         NodePorts, UncheckedNetwork,
     };
-    use crate::diagnostics::{Responsibility, Severity};
+    use crate::diagnostics::{DiagnosticCode, Responsibility, Severity};
     use crate::key::{
         ConnectionKey, ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey,
         OutPortKey, SignalSourceKey,
@@ -2316,8 +2530,8 @@ mod tests {
     use crate::metadata::DiagnosticMeta;
     use crate::signal::{Level, LogicLevel, Pulse, PulseCount};
     use crate::{
-        CauseInspection, CauseRef, MachineStatus, NetworkRevision, NodeSubject, OutputEvent,
-        ProvenanceSubject, ProvenanceView, RuntimeFailureEvidence, RuntimePolicy,
+        CauseInspection, CauseLookupFailure, CauseRef, MachineStatus, NetworkRevision, NodeSubject,
+        OutputEvent, ProvenanceSubject, ProvenanceView, RuntimeFailureEvidence, RuntimePolicy,
         RuntimePolicyLimit, TimeDomainId, Transaction,
     };
     use std::collections::BTreeSet;
@@ -2691,6 +2905,94 @@ mod tests {
     }
 
     #[test]
+    fn every_runtime_leaf_projects_one_registry_backed_problem() {
+        let first = compiled_with_input(1, 2, 3);
+        let second = compiled_with_input(4, 5, 6);
+        let cases = vec![
+            (
+                RuntimeFailureEvidence::AlreadyInitialized,
+                DiagnosticCode::LifecycleAlreadyInitialized,
+            ),
+            (
+                RuntimeFailureEvidence::DeltaBeforeInitialization,
+                DiagnosticCode::LifecycleDeltaBeforeInitialization,
+            ),
+            (
+                RuntimeFailureEvidence::TimeNotStrictlyIncreasing {
+                    current_ticks: 7,
+                    requested_ticks: 7,
+                },
+                DiagnosticCode::RuntimeTimeNotStrictlyIncreasing,
+            ),
+            (
+                RuntimeFailureEvidence::StaleRevision {
+                    expected: NetworkRevision::from_value(1),
+                    actual: NetworkRevision::from_value(2),
+                },
+                DiagnosticCode::RuntimeStaleRevision,
+            ),
+            (
+                RuntimeFailureEvidence::WrongNetwork {
+                    expected_key: first.network_key(),
+                    actual_key: second.network_key(),
+                    expected_fingerprint: first.fingerprint(),
+                    actual_fingerprint: second.fingerprint(),
+                },
+                DiagnosticCode::InputWrongNetwork,
+            ),
+            (
+                RuntimeFailureEvidence::ForeignInputSchema {
+                    expected: first.input_schema_fingerprint(),
+                    actual: second.input_schema_fingerprint(),
+                },
+                DiagnosticCode::InputForeignSchema,
+            ),
+            (
+                RuntimeFailureEvidence::StaleInputSchema {
+                    expected: first.input_schema_fingerprint(),
+                    actual: second.input_schema_fingerprint(),
+                },
+                DiagnosticCode::InputStaleSchema,
+            ),
+            (
+                RuntimeFailureEvidence::BudgetExceeded {
+                    budget: RuntimePolicyLimit::MaxPendingEvents,
+                    limit: 2,
+                    consumed: 3,
+                },
+                DiagnosticCode::RuntimeBudgetExceeded,
+            ),
+            (
+                RuntimeFailureEvidence::PulseCountOverflow {
+                    node: NodeSubject::Node(NodeKey::from_u128(8)),
+                    left: PulseCount::new(u64::MAX),
+                    right: PulseCount::ONE,
+                },
+                DiagnosticCode::RuntimePulseCountOverflow,
+            ),
+            (
+                RuntimeFailureEvidence::TimeOverflow {
+                    node: NodeSubject::Node(NodeKey::from_u128(9)),
+                    origin_ticks: u64::MAX,
+                    delay_ticks: 1,
+                },
+                DiagnosticCode::RuntimeTimeOverflow,
+            ),
+        ];
+        for (evidence, expected) in cases {
+            let problem = evidence.problem::<()>();
+            assert_eq!(evidence.code(), expected);
+            assert_eq!(problem.code(), expected);
+            assert_eq!(problem.evidence().code(), expected);
+            assert_eq!(evidence.severity(), expected.severity());
+            assert_eq!(evidence.responsibility(), expected.responsibility());
+            assert!(
+                expected.allows_delivery(crate::diagnostics::ProblemDelivery::OperationFailure)
+            );
+        }
+    }
+
+    #[test]
     fn provenance_views_reject_causes_from_different_converged_histories() {
         let compiled = compiled(100, 200);
         let mut first = initialized_machine(&compiled, LogicLevel::Low);
@@ -2762,8 +3064,19 @@ mod tests {
         );
         assert!(first_result.provenance().inspect(first_cause).is_ok());
         assert!(second_result.provenance().inspect(second_cause).is_ok());
-        assert!(first_result.provenance().inspect(second_cause).is_err());
-        assert!(second_result.provenance().inspect(first_cause).is_err());
+        let foreign = first_result
+            .provenance()
+            .inspect(second_cause)
+            .err()
+            .unwrap_or_else(|| panic!("foreign cause must fail"));
+        assert!(matches!(foreign, CauseLookupFailure::ForeignCause { .. }));
+        assert_eq!(foreign.code(), DiagnosticCode::ExplanationForeignCause);
+        assert_eq!(foreign.responsibility(), Responsibility::Compatibility);
+        assert_eq!(foreign.problem::<()>().evidence().code(), foreign.code());
+        assert!(matches!(
+            second_result.provenance().inspect(first_cause),
+            Err(CauseLookupFailure::ForeignCause { .. })
+        ));
 
         let first_supporter = match first_result.provenance().inspect(first_cause) {
             Ok(CauseInspection::Derived { supporters, .. }) => match supporters.first() {
@@ -2773,13 +3086,24 @@ mod tests {
             _ => panic!("changed output cause must resolve to a derived record"),
         };
         assert!(first_result.provenance().inspect(first_supporter).is_ok());
-        assert!(second_result.provenance().inspect(first_supporter).is_err());
+        assert!(matches!(
+            second_result.provenance().inspect(first_supporter),
+            Err(CauseLookupFailure::ForeignCause { .. })
+        ));
 
         let out_of_range = CauseRef {
             scope: first_cause.scope,
             ordinal: u32::MAX,
         };
-        assert!(first_result.provenance().inspect(out_of_range).is_err());
+        let invalid = first_result
+            .provenance()
+            .inspect(out_of_range)
+            .err()
+            .unwrap_or_else(|| panic!("out-of-range cause must fail"));
+        assert!(matches!(invalid, CauseLookupFailure::InvalidCause { .. }));
+        assert_eq!(invalid.code(), DiagnosticCode::ExplanationInvalidCause);
+        assert_eq!(invalid.responsibility(), Responsibility::CallerInput);
+        assert_eq!(invalid.problem::<()>().evidence().code(), invalid.code());
 
         let shared_view = first_result.provenance().clone();
         assert!(shared_view.inspect(first_cause).is_ok());
@@ -3926,7 +4250,7 @@ mod tests {
                         .unwrap_or_else(|_| panic!("snapshot must build")),
                 ))
                 .unwrap_err();
-            assert_eq!(failure.code(), "runtime.budget_exceeded");
+            assert_eq!(failure.code(), DiagnosticCode::RuntimeBudgetExceeded);
             assert_eq!(failure.severity(), Severity::Error);
             assert_eq!(failure.responsibility(), Responsibility::ResourceLimit);
             assert_eq!(
@@ -3991,7 +4315,10 @@ mod tests {
         let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
         let before = observe(&machine);
         let failure = machine.apply(advance).unwrap_err();
-        assert_eq!(failure.code(), "lifecycle.delta_before_initialization");
+        assert_eq!(
+            failure.code(),
+            DiagnosticCode::LifecycleDeltaBeforeInitialization
+        );
         assert!(matches!(
             failure.evidence(),
             RuntimeFailureEvidence::DeltaBeforeInitialization
@@ -4196,7 +4523,10 @@ mod tests {
                         .unwrap_or_else(|_| panic!("delta must build")),
                 ))
                 .unwrap_err();
-            assert_eq!(failure.code(), "runtime.time_not_strictly_increasing");
+            assert_eq!(
+                failure.code(),
+                DiagnosticCode::RuntimeTimeNotStrictlyIncreasing
+            );
             assert!(matches!(
                 failure.evidence(),
                 RuntimeFailureEvidence::TimeNotStrictlyIncreasing { .. }
@@ -4256,7 +4586,7 @@ mod tests {
                     .unwrap_or_else(|_| panic!("delta must build")),
             ))
             .unwrap_err();
-        assert_eq!(failure.code(), "input.stale_schema");
+        assert_eq!(failure.code(), DiagnosticCode::InputStaleSchema);
         assert!(matches!(
             failure.evidence(),
             RuntimeFailureEvidence::StaleInputSchema { .. }
@@ -4277,7 +4607,7 @@ mod tests {
                 mixed,
             ))
             .unwrap_err();
-        assert_eq!(failure.code(), "input.foreign_schema");
+        assert_eq!(failure.code(), DiagnosticCode::InputForeignSchema);
         assert!(matches!(
             failure.evidence(),
             RuntimeFailureEvidence::ForeignInputSchema { .. }
@@ -4332,6 +4662,8 @@ mod tests {
             failure.evidence(),
             &RuntimeFailureEvidence::PulseCountOverflow {
                 node: NodeSubject::Node(NodeKey::from_u128(10)),
+                left: PulseCount::new(u64::MAX),
+                right: PulseCount::ONE,
             }
         );
         assert_eq!(observe(&machine), before);

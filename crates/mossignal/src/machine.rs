@@ -2,6 +2,10 @@
 
 use crate::authored::{EdgeDetectorKind, EdgeInitialization, EdgeObservation, NodeKind};
 use crate::compile::CompiledNetwork;
+use crate::diagnostics::{
+    DiagnosticCode, InspectionEvidence, InspectionSubjectKind, LifecycleEvidence,
+    OperationSubjectRef, Problem, ProblemEvidence, Responsibility, Severity, SubjectRef,
+};
 use crate::identity::{ModuleFingerprint, NetworkFingerprint};
 use crate::key::{
     AnyModuleInputKey, AnyModuleOutputKey, ExternalInputKey, ExternalOutputKey, ModuleInstanceKey,
@@ -17,6 +21,7 @@ use crate::standard::{
 use crate::time::{NonZeroSpan, Time};
 use crate::transaction::{CauseRef, ProvenanceView};
 use core::fmt;
+use core::marker::PhantomData;
 use std::collections::BTreeMap;
 
 /// The opaque machine-local revision of the currently installed topology.
@@ -81,6 +86,25 @@ impl<D> fmt::Debug for Schedule<D> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScheduleFailure {
     NotInitialized,
+}
+
+impl ScheduleFailure {
+    #[must_use]
+    pub const fn code(self) -> DiagnosticCode {
+        DiagnosticCode::LifecycleNotInitialized
+    }
+    #[must_use]
+    pub const fn severity(self) -> Severity {
+        self.code().severity()
+    }
+    #[must_use]
+    pub const fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        lifecycle_not_initialized(OperationSubjectRef::MachineLifecycle)
+    }
 }
 
 impl fmt::Display for ScheduleFailure {
@@ -226,6 +250,33 @@ pub enum PulseDelayInspectionFailure {
     UnknownNode(NodeKey),
     NotPulseDelay(NodeKey),
     NotInitialized,
+}
+
+impl PulseDelayInspectionFailure {
+    #[must_use]
+    pub fn code(self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+    #[must_use]
+    pub fn severity(self) -> Severity {
+        self.code().severity()
+    }
+    #[must_use]
+    pub fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        match self {
+            Self::UnknownNode(node) => inspection_unknown(node, InspectionSubjectKind::PulseDelay),
+            Self::NotPulseDelay(node) => {
+                inspection_wrong_kind(node, InspectionSubjectKind::PulseDelay)
+            }
+            Self::NotInitialized => {
+                lifecycle_not_initialized(OperationSubjectRef::MachineLifecycle)
+            }
+        }
+    }
 }
 
 /// One public module input and its committed Level value, when applicable.
@@ -479,6 +530,45 @@ pub enum ModuleInspectionFailure {
     UnknownModule(QualifiedModuleRef),
     /// Current module runtime facts are unavailable before initialization.
     NotInitialized,
+}
+
+impl ModuleInspectionFailure {
+    #[must_use]
+    pub fn code(&self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+    #[must_use]
+    pub fn severity(&self) -> Severity {
+        self.code().severity()
+    }
+    #[must_use]
+    pub fn responsibility(&self) -> Responsibility {
+        self.code().responsibility()
+    }
+    #[must_use]
+    pub fn problem<D>(&self) -> Problem<D> {
+        match self {
+            Self::UnknownModule(module) => {
+                let requested = SubjectRef::ModuleInstance(module.instance());
+                Problem::new(
+                    requested,
+                    Vec::new(),
+                    ProblemEvidence::InspectionUnknownSubject {
+                        evidence: InspectionEvidence {
+                            requested,
+                            qualified_path: module.instances().to_vec(),
+                            expected: InspectionSubjectKind::Module,
+                            actual: None,
+                        },
+                        marker: PhantomData,
+                    },
+                )
+            }
+            Self::NotInitialized => {
+                lifecycle_not_initialized(OperationSubjectRef::MachineLifecycle)
+            }
+        }
+    }
 }
 
 impl ModuleInspectionFailure {
@@ -741,6 +831,35 @@ pub enum EdgeDetectorInspectionFailure {
     NotInitialized,
 }
 
+impl EdgeDetectorInspectionFailure {
+    #[must_use]
+    pub fn code(self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+    #[must_use]
+    pub fn severity(self) -> Severity {
+        self.code().severity()
+    }
+    #[must_use]
+    pub fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        match self {
+            Self::UnknownNode(node) => {
+                inspection_unknown(node, InspectionSubjectKind::EdgeDetector)
+            }
+            Self::NotEdgeDetector(node) => {
+                inspection_wrong_kind(node, InspectionSubjectKind::EdgeDetector)
+            }
+            Self::NotInitialized => {
+                lifecycle_not_initialized(OperationSubjectRef::MachineLifecycle)
+            }
+        }
+    }
+}
+
 /// Structural information available for one compiled Toggle in every lifecycle phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToggleDefinitionInspection {
@@ -816,6 +935,79 @@ pub enum ToggleInspectionFailure {
     NotToggle(NodeKey),
     /// Runtime state was requested before initialization committed.
     NotInitialized,
+}
+
+impl ToggleInspectionFailure {
+    #[must_use]
+    pub fn code(self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+    #[must_use]
+    pub fn severity(self) -> Severity {
+        self.code().severity()
+    }
+    #[must_use]
+    pub fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        match self {
+            Self::UnknownNode(node) => inspection_unknown(node, InspectionSubjectKind::Toggle),
+            Self::NotToggle(node) => inspection_wrong_kind(node, InspectionSubjectKind::Toggle),
+            Self::NotInitialized => {
+                lifecycle_not_initialized(OperationSubjectRef::MachineLifecycle)
+            }
+        }
+    }
+}
+
+fn lifecycle_not_initialized<D>(operation: OperationSubjectRef) -> Problem<D> {
+    Problem::new(
+        SubjectRef::Operation(operation),
+        Vec::new(),
+        ProblemEvidence::LifecycleNotInitialized {
+            evidence: LifecycleEvidence {
+                operation,
+                current_time_ticks: None,
+            },
+            marker: PhantomData,
+        },
+    )
+}
+
+fn inspection_unknown<D>(node: NodeKey, expected: InspectionSubjectKind) -> Problem<D> {
+    let requested = SubjectRef::Node(node);
+    Problem::new(
+        requested,
+        Vec::new(),
+        ProblemEvidence::InspectionUnknownSubject {
+            evidence: InspectionEvidence {
+                requested,
+                qualified_path: Vec::new(),
+                expected,
+                actual: None,
+            },
+            marker: PhantomData,
+        },
+    )
+}
+
+fn inspection_wrong_kind<D>(node: NodeKey, expected: InspectionSubjectKind) -> Problem<D> {
+    let requested = SubjectRef::Node(node);
+    Problem::new(
+        requested,
+        Vec::new(),
+        ProblemEvidence::InspectionWrongSubjectKind {
+            evidence: InspectionEvidence {
+                requested,
+                qualified_path: Vec::new(),
+                expected,
+                actual: Some(InspectionSubjectKind::Node),
+            },
+            marker: PhantomData,
+        },
+    )
 }
 
 impl<D> Machine<D> {
@@ -1432,5 +1624,51 @@ mod tests {
             second.compiled().evaluate_full(&BTreeMap::new()),
             expected_evaluation
         );
+    }
+
+    #[test]
+    fn scheduling_and_inspection_leaves_share_the_problem_kernel() {
+        fn assert_problem(code: DiagnosticCode, problem: Problem<()>) {
+            assert_eq!(problem.code(), code);
+            assert_eq!(problem.evidence().code(), code);
+            assert_eq!(problem.severity(), code.severity());
+            assert_eq!(problem.responsibility(), code.responsibility());
+            assert!(code.allows_delivery(crate::diagnostics::ProblemDelivery::OperationFailure));
+        }
+
+        let node = NodeKey::from_u128(7);
+        assert_problem(
+            DiagnosticCode::LifecycleNotInitialized,
+            ScheduleFailure::NotInitialized.problem(),
+        );
+        for failure in [
+            PulseDelayInspectionFailure::UnknownNode(node),
+            PulseDelayInspectionFailure::NotPulseDelay(node),
+            PulseDelayInspectionFailure::NotInitialized,
+        ] {
+            assert_problem(failure.code(), failure.problem());
+        }
+        let module = QualifiedModuleRef::from_instances(vec![ModuleInstanceKey::from_u128(8)])
+            .unwrap_or_else(|| panic!("non-empty qualified module path must construct"));
+        for failure in [
+            ModuleInspectionFailure::UnknownModule(module),
+            ModuleInspectionFailure::NotInitialized,
+        ] {
+            assert_problem(failure.code(), failure.problem());
+        }
+        for failure in [
+            EdgeDetectorInspectionFailure::UnknownNode(node),
+            EdgeDetectorInspectionFailure::NotEdgeDetector(node),
+            EdgeDetectorInspectionFailure::NotInitialized,
+        ] {
+            assert_problem(failure.code(), failure.problem());
+        }
+        for failure in [
+            ToggleInspectionFailure::UnknownNode(node),
+            ToggleInspectionFailure::NotToggle(node),
+            ToggleInspectionFailure::NotInitialized,
+        ] {
+            assert_problem(failure.code(), failure.problem());
+        }
     }
 }

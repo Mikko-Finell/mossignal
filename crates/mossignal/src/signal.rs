@@ -1,6 +1,11 @@
 //! Fundamental types for Mossignal's closed signal-kind universe.
 
+use crate::diagnostics::{
+    DiagnosticCode, OperationSubjectRef, ParameterEvidence, Problem, ProblemEvidence,
+    Responsibility, Severity, SubjectRef,
+};
 use core::fmt;
+use core::marker::PhantomData;
 use core::ops::Not;
 
 /// A type-level marker for persistent binary level signals.
@@ -182,6 +187,45 @@ pub struct PulseCountOverflow {
     right: PulseCount,
 }
 
+impl PulseCountOverflow {
+    /// Returns the catalogue code represented by this checked rejection.
+    #[must_use]
+    pub const fn code(self) -> DiagnosticCode {
+        DiagnosticCode::RuntimePulseCountOverflow
+    }
+
+    /// Returns the catalogue-fixed severity.
+    #[must_use]
+    pub const fn severity(self) -> Severity {
+        self.code().severity()
+    }
+
+    /// Returns the catalogue-fixed responsibility.
+    #[must_use]
+    pub const fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+
+    /// Projects this arithmetic leaf into the common problem model.
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        Problem::new(
+            SubjectRef::Operation(OperationSubjectRef::PulseCount),
+            Vec::new(),
+            ProblemEvidence::RuntimePulseCountOverflow {
+                evidence: ParameterEvidence {
+                    owner: None,
+                    parameter: "pulse_count_sum",
+                    expected_domain: "u64 sum",
+                    encountered: None,
+                    operands: vec![self.left.0, self.right.0],
+                },
+                marker: PhantomData,
+            },
+        )
+    }
+}
+
 impl fmt::Display for PulseCountOverflow {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("pulse count addition overflowed the representable u64 range")
@@ -286,5 +330,10 @@ mod tests {
             .expect_err("the maximum pulse count plus one must overflow");
         assert!(error.to_string().contains("pulse count"));
         assert!(error.to_string().contains("overflow"));
+        let problem = error.problem::<()>();
+        assert_eq!(problem.code(), DiagnosticCode::RuntimePulseCountOverflow);
+        assert_eq!(problem.evidence().code(), problem.code());
+        assert_eq!(error.severity(), problem.severity());
+        assert_eq!(error.responsibility(), problem.responsibility());
     }
 }

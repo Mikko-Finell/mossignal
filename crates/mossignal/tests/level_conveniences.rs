@@ -450,7 +450,10 @@ fn assert_foreign_failures(
 }
 
 fn assert_foreign(result: Result<Signal<Level>, AuthoringFailure>) {
-    assert!(matches!(result, Err(AuthoringFailure::ForeignSignal)));
+    assert!(matches!(
+        result,
+        Err(AuthoringFailure::ForeignSignal { .. })
+    ));
 }
 
 fn assert_canonical_level_provenance(

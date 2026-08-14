@@ -710,6 +710,8 @@ fn upstream_overflow_and_operation_budget_reject_the_complete_graph_atomically()
         failure.evidence(),
         &RuntimeFailureEvidence::PulseCountOverflow {
             node: NodeSubject::Node(merge_node),
+            left: PulseCount::new(u64::MAX),
+            right: PulseCount::ONE,
         }
     );
     assert_eq!(machine.status(), before_status);

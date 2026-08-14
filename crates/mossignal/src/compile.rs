@@ -439,7 +439,11 @@ pub(crate) struct PulseEvaluationContribution {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EvaluationFailure {
     Incomplete,
-    PulseCountOverflow { node: NodeKey },
+    PulseCountOverflow {
+        node: NodeKey,
+        left: PulseCount,
+        right: PulseCount,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1044,7 +1048,11 @@ impl<D> CompiledInner<D> {
                         for input in inputs {
                             let count = self.pulse_input_value(*input, &values)?;
                             total = total.checked_add(count).map_err(|_| {
-                                EvaluationFailure::PulseCountOverflow { node: *key }
+                                EvaluationFailure::PulseCountOverflow {
+                                    node: *key,
+                                    left: total,
+                                    right: count,
+                                }
                             })?;
                             contributions.push(PulseEvaluationContribution {
                                 port: self.pulse_port_key(*input)?,

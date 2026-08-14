@@ -7,6 +7,10 @@ use crate::authored::{
     UncheckedModule, UncheckedNetwork,
 };
 use crate::diagnostics::Report;
+use crate::diagnostics::{
+    DiagnosticCode, Problem, ProblemEvidence, RelatedSubject, RelatedSubjectRole, Responsibility,
+    Severity, SubjectRef,
+};
 use crate::identity::TimeDomainId;
 use crate::key::{
     AnyExternalInputKey, AnyModuleInputKey, AnyModuleOutputKey, ExternalInputKey,
@@ -20,6 +24,7 @@ use crate::standard::{
     StandardParameterValue, all_equal_result_key, at_most_result_key, exactly_result_key,
 };
 use crate::{ModuleDef, ValidatedNetwork};
+use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::collections::BTreeSet;
 
@@ -79,10 +84,13 @@ impl VariadicNodeKind {
 /// A structured failure detected while authoring through [`NetworkBuilder`] or
 /// [`ModuleBuilder`].
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthoringFailure {
     /// A signal belongs to another live builder scope.
-    ForeignSignal,
+    ForeignSignal {
+        expected_builder: u64,
+        actual_builder: u64,
+    },
     /// An explicit external input key is already present in this builder.
     DuplicateExternalInputKey(ExternalInputKey<Level>),
     /// An explicit external output key is already present in this builder.
@@ -112,17 +120,157 @@ pub enum AuthoringFailure {
     /// An explicit module-instance key is already present in this builder.
     DuplicateModuleInstanceKey(ModuleInstanceKey),
     /// A binding names no public input of the selected module.
-    UnknownModuleInput(AnyModuleInputKey),
+    UnknownModuleInput(ModuleInstanceKey, AnyModuleInputKey),
     /// A public module input was bound more than once.
-    DuplicateModuleBinding(AnyModuleInputKey),
+    DuplicateModuleBinding(ModuleInstanceKey, AnyModuleInputKey),
     /// Module-instance completion is missing one required public input.
-    MissingModuleBinding(AnyModuleInputKey),
+    MissingModuleBinding(ModuleInstanceKey, AnyModuleInputKey),
     /// An output request names no same-kind public output of the instance.
-    UnknownModuleOutput(AnyModuleOutputKey),
+    UnknownModuleOutput(ModuleInstanceKey, AnyModuleOutputKey),
     /// A requested containment parent is not present in the owning builder.
-    UnknownModuleParent(ModuleInstanceKey),
+    UnknownModuleParent(ModuleInstanceKey, ModuleInstanceKey),
     /// A typed standard-module request unexpectedly failed catalogue validation.
-    StandardModuleConstruction,
+    StandardModuleConstruction(StandardModuleRef),
+}
+
+impl AuthoringFailure {
+    /// Returns the catalogue code represented by this authoring leaf.
+    #[must_use]
+    pub fn code(&self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+
+    /// Returns the catalogue-fixed severity.
+    #[must_use]
+    pub fn severity(&self) -> Severity {
+        self.code().severity()
+    }
+
+    /// Returns the catalogue-fixed responsibility.
+    #[must_use]
+    pub fn responsibility(&self) -> Responsibility {
+        self.code().responsibility()
+    }
+
+    /// Projects this leaf into the common catalogue-backed problem model.
+    #[must_use]
+    pub fn problem<D>(&self) -> Problem<D> {
+        if let Some(subject) = self.duplicate_subject() {
+            return Problem::new(
+                subject,
+                Vec::new(),
+                ProblemEvidence::ValidationDuplicateKey {
+                    key: subject,
+                    claims: Vec::new(),
+                    marker: PhantomData,
+                },
+            );
+        }
+        match self {
+            Self::ForeignSignal {
+                expected_builder,
+                actual_builder,
+            } => Problem::new(
+                SubjectRef::Operation(crate::diagnostics::OperationSubjectRef::Authoring),
+                Vec::new(),
+                ProblemEvidence::AuthoringForeignSignal {
+                    expected_builder: *expected_builder,
+                    actual_builder: *actual_builder,
+                    marker: PhantomData,
+                },
+            ),
+            Self::UnknownModuleInput(instance, input) => Problem::new(
+                SubjectRef::ModuleInstanceInput(*instance, *input),
+                Vec::new(),
+                ProblemEvidence::ValidationMissingEndpoint {
+                    missing: SubjectRef::ModuleInput(*input),
+                    expected_kind: input.kind(),
+                    marker: PhantomData,
+                },
+            ),
+            Self::UnknownModuleOutput(instance, output) => Problem::new(
+                SubjectRef::ModuleInstanceOutput(*instance, *output),
+                Vec::new(),
+                ProblemEvidence::ValidationMissingEndpoint {
+                    missing: SubjectRef::ModuleOutput(*output),
+                    expected_kind: output.kind(),
+                    marker: PhantomData,
+                },
+            ),
+            Self::DuplicateModuleBinding(instance, input) => Problem::new(
+                SubjectRef::ModuleInstanceInput(*instance, *input),
+                Vec::new(),
+                ProblemEvidence::ValidationInvalidModuleBinding {
+                    instance: *instance,
+                    input: *input,
+                    issue: crate::diagnostics::ModuleBindingIssue::Duplicate,
+                    sources: Vec::new(),
+                    marker: PhantomData,
+                },
+            ),
+            Self::MissingModuleBinding(instance, input) => Problem::new(
+                SubjectRef::ModuleInstanceInput(*instance, *input),
+                Vec::new(),
+                ProblemEvidence::ValidationInvalidModuleBinding {
+                    instance: *instance,
+                    input: *input,
+                    issue: crate::diagnostics::ModuleBindingIssue::Missing,
+                    sources: Vec::new(),
+                    marker: PhantomData,
+                },
+            ),
+            Self::UnknownModuleParent(instance, parent) => Problem::new(
+                SubjectRef::ModuleInstance(*instance),
+                vec![RelatedSubject {
+                    role: RelatedSubjectRole::MissingReference,
+                    subject: SubjectRef::ModuleInstance(*parent),
+                }],
+                ProblemEvidence::ValidationMalformedHierarchy {
+                    instance: *instance,
+                    parent: *parent,
+                    marker: PhantomData,
+                },
+            ),
+            Self::StandardModuleConstruction(module_ref) => Problem::new(
+                SubjectRef::StandardCatalogue,
+                Vec::new(),
+                ProblemEvidence::StandardModuleCatalogueInvariant {
+                    module_ref: module_ref.clone(),
+                    detail: "typed convenience construction produced no artifact".to_owned(),
+                    marker: PhantomData,
+                },
+            ),
+            _ => unreachable!("duplicate authoring variants were handled above"),
+        }
+    }
+
+    fn duplicate_subject(&self) -> Option<SubjectRef> {
+        match self {
+            Self::DuplicateExternalInputKey(key) => Some(SubjectRef::ExternalInput((*key).into())),
+            Self::DuplicateExternalOutputKey(key) => {
+                Some(SubjectRef::ExternalOutput((*key).into()))
+            }
+            Self::DuplicatePulseExternalInputKey(key) => {
+                Some(SubjectRef::ExternalInput((*key).into()))
+            }
+            Self::DuplicatePulseExternalOutputKey(key) => {
+                Some(SubjectRef::ExternalOutput((*key).into()))
+            }
+            Self::DuplicateModuleInputKey(key) => Some(SubjectRef::ModuleInput((*key).into())),
+            Self::DuplicateModuleOutputKey(key) => Some(SubjectRef::ModuleOutput((*key).into())),
+            Self::DuplicatePulseModuleInputKey(key) => Some(SubjectRef::ModuleInput((*key).into())),
+            Self::DuplicatePulseModuleOutputKey(key) => {
+                Some(SubjectRef::ModuleOutput((*key).into()))
+            }
+            Self::DuplicateNodeKey(key) => Some(SubjectRef::Node(*key)),
+            Self::DuplicateInPortKey(key) => Some(SubjectRef::InPort((*key).into())),
+            Self::DuplicateOutPortKey(key) => Some(SubjectRef::OutPort((*key).into())),
+            Self::DuplicatePulseInPortKey(key) => Some(SubjectRef::InPort((*key).into())),
+            Self::DuplicatePulseOutPortKey(key) => Some(SubjectRef::OutPort((*key).into())),
+            Self::DuplicateModuleInstanceKey(key) => Some(SubjectRef::ModuleInstance(*key)),
+            _ => None,
+        }
+    }
 }
 
 /// A typed, builder-scoped reference to one authored signal source.
@@ -227,7 +375,10 @@ impl AddedModuleInstance {
         output: ModuleOutputKey<Level>,
     ) -> Result<Signal<Level>, AuthoringFailure> {
         if !self.level_outputs.contains(&output) {
-            return Err(AuthoringFailure::UnknownModuleOutput(output.into()));
+            return Err(AuthoringFailure::UnknownModuleOutput(
+                self.key,
+                output.into(),
+            ));
         }
         Ok(Signal {
             builder_id: self.builder_id,
@@ -244,7 +395,10 @@ impl AddedModuleInstance {
         output: ModuleOutputKey<Pulse>,
     ) -> Result<Signal<Pulse>, AuthoringFailure> {
         if !self.pulse_outputs.contains(&output) {
-            return Err(AuthoringFailure::UnknownModuleOutput(output.into()));
+            return Err(AuthoringFailure::UnknownModuleOutput(
+                self.key,
+                output.into(),
+            ));
         }
         Ok(Signal {
             builder_id: self.builder_id,
@@ -300,7 +454,7 @@ impl<'a, D> ModuleInstanceBuilder<'a, D> {
     /// Places the instance beneath an already-authored instance in this definition.
     pub fn parent(mut self, parent: ModuleInstanceKey) -> Result<Self, AuthoringFailure> {
         if !self.owner.module_instance_keys.contains(&parent) {
-            return Err(AuthoringFailure::UnknownModuleParent(parent));
+            return Err(AuthoringFailure::UnknownModuleParent(self.key, parent));
         }
         self.parent = Some(parent);
         Ok(self)
@@ -313,13 +467,16 @@ impl<'a, D> ModuleInstanceBuilder<'a, D> {
         builder_id: u64,
     ) -> Result<(), AuthoringFailure> {
         if builder_id != self.owner.builder_id {
-            return Err(AuthoringFailure::ForeignSignal);
+            return Err(AuthoringFailure::ForeignSignal {
+                expected_builder: self.owner.builder_id,
+                actual_builder: builder_id,
+            });
         }
         if !self.required_inputs.contains(&input) {
-            return Err(AuthoringFailure::UnknownModuleInput(input));
+            return Err(AuthoringFailure::UnknownModuleInput(self.key, input));
         }
         if !self.bound_inputs.insert(input) {
-            return Err(AuthoringFailure::DuplicateModuleBinding(input));
+            return Err(AuthoringFailure::DuplicateModuleBinding(self.key, input));
         }
         self.bindings.push(ModuleBinding::new(input, source));
         Ok(())
@@ -332,7 +489,7 @@ impl<'a, D> ModuleInstanceBuilder<'a, D> {
             .iter()
             .find(|input| !self.bound_inputs.contains(input))
         {
-            return Err(AuthoringFailure::MissingModuleBinding(*missing));
+            return Err(AuthoringFailure::MissingModuleBinding(self.key, *missing));
         }
         let mut level_outputs = BTreeSet::new();
         let mut pulse_outputs = BTreeSet::new();
@@ -652,7 +809,7 @@ impl<D> NetworkBuilder<D> {
         }
         let (module, _) = StandardCatalogue::current().build(request).into_parts();
         let Some(module) = module else {
-            return Err(AuthoringFailure::StandardModuleConstruction);
+            return Err(AuthoringFailure::StandardModuleConstruction(module_ref));
         };
         let mut instance = self.instantiate(&module, key, meta)?;
         for input in inputs {
@@ -2043,7 +2200,10 @@ impl<D> NetworkBuilder<D> {
         if signal.builder_id == self.builder_id {
             Ok(())
         } else {
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal {
+                expected_builder: self.builder_id,
+                actual_builder: signal.builder_id,
+            })
         }
     }
 
@@ -3784,7 +3944,7 @@ mod tests {
         let mut right = NetworkBuilder::<()>::new(domain);
         assert!(matches!(
             right.not(foreign),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         let local = right.level_input("local").1;
         assert!(right.not(local).is_ok());
@@ -3799,7 +3959,7 @@ mod tests {
         let local = builder.level_input("local").1;
         assert!(matches!(
             builder.all([local, foreign]),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
 
         let duplicate = InPortKey::from_u128(10);
@@ -5033,23 +5193,23 @@ mod tests {
         let output = OutPortKey::from_u128(102);
         assert!(matches!(
             receiver.not(foreign),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_not(node, foreign, DiagnosticMeta::default()),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_not_with_ports(node, input, output, foreign, DiagnosticMeta::default(),),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.all([foreign]),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_all(node, [foreign], DiagnosticMeta::default()),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_all_with_ports(
@@ -5058,15 +5218,15 @@ mod tests {
                 [(input, foreign)],
                 DiagnosticMeta::default(),
             ),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.any([foreign]),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_any(node, [foreign], DiagnosticMeta::default()),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_any_with_ports(
@@ -5075,15 +5235,15 @@ mod tests {
                 [(input, foreign)],
                 DiagnosticMeta::default(),
             ),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.parity([foreign]),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_parity(node, [foreign], DiagnosticMeta::default()),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_parity_with_ports(
@@ -5092,15 +5252,15 @@ mod tests {
                 [(input, foreign)],
                 DiagnosticMeta::default(),
             ),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.at_least(1, [foreign]),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_at_least(node, 1, [foreign], DiagnosticMeta::default()),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_at_least_with_ports(
@@ -5110,15 +5270,15 @@ mod tests {
                 [(input, foreign)],
                 DiagnosticMeta::default(),
             ),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.select(foreign, foreign, foreign),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_select(node, foreign, foreign, foreign, DiagnosticMeta::default(),),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_select_with_ports(
@@ -5132,20 +5292,20 @@ mod tests {
                 foreign,
                 DiagnosticMeta::default(),
             ),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
-        assert_eq!(
+        assert!(matches!(
             receiver.level_output("foreign", foreign),
-            Err(AuthoringFailure::ForeignSignal)
-        );
-        assert_eq!(
+            Err(AuthoringFailure::ForeignSignal { .. })
+        ));
+        assert!(matches!(
             receiver.add_level_output(
                 ModuleOutputKey::from_u128(105),
                 foreign,
                 DiagnosticMeta::default(),
             ),
-            Err(AuthoringFailure::ForeignSignal)
-        );
+            Err(AuthoringFailure::ForeignSignal { .. })
+        ));
     }
 
     fn exercise_foreign_pulse_calls(receiver: &mut ModuleBuilder<()>, foreign: Signal<Pulse>) {
@@ -5154,11 +5314,11 @@ mod tests {
         let output = OutPortKey::from_u128(202);
         assert!(matches!(
             receiver.merge([foreign]),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_merge(node, [foreign], DiagnosticMeta::default()),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_merge_with_ports(
@@ -5167,11 +5327,11 @@ mod tests {
                 [(input, foreign)],
                 DiagnosticMeta::default(),
             ),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.toggle(foreign, ToggleConfig::new(LogicLevel::Low)),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_toggle(
@@ -5180,7 +5340,7 @@ mod tests {
                 ToggleConfig::new(LogicLevel::Low),
                 DiagnosticMeta::default(),
             ),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_toggle_with_ports(
@@ -5191,12 +5351,12 @@ mod tests {
                 ToggleConfig::new(LogicLevel::Low),
                 DiagnosticMeta::default(),
             ),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         let delay = crate::time::NonZeroSpan::from_ticks(1).unwrap();
         assert!(matches!(
             receiver.pulse_delay(foreign, PulseDelayConfig::new(delay)),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_pulse_delay(
@@ -5205,7 +5365,7 @@ mod tests {
                 PulseDelayConfig::new(delay),
                 DiagnosticMeta::default(),
             ),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
         assert!(matches!(
             receiver.add_pulse_delay_with_ports(
@@ -5216,20 +5376,20 @@ mod tests {
                 PulseDelayConfig::new(delay),
                 DiagnosticMeta::default(),
             ),
-            Err(AuthoringFailure::ForeignSignal)
+            Err(AuthoringFailure::ForeignSignal { .. })
         ));
-        assert_eq!(
+        assert!(matches!(
             receiver.pulse_output("foreign", foreign),
-            Err(AuthoringFailure::ForeignSignal)
-        );
-        assert_eq!(
+            Err(AuthoringFailure::ForeignSignal { .. })
+        ));
+        assert!(matches!(
             receiver.add_pulse_output(
                 ModuleOutputKey::from_u128(204),
                 foreign,
                 DiagnosticMeta::default(),
             ),
-            Err(AuthoringFailure::ForeignSignal)
-        );
+            Err(AuthoringFailure::ForeignSignal { .. })
+        ));
     }
 
     #[test]
@@ -5253,5 +5413,57 @@ mod tests {
         assert!(lowered.mappings().is_empty());
         assert!(lowered.nodes().is_empty());
         assert!(lowered.connections().is_empty());
+    }
+
+    #[test]
+    fn authoring_leaf_categories_project_exact_registry_problems() {
+        let instance = ModuleInstanceKey::from_u128(1);
+        let input = AnyModuleInputKey::from(ModuleInputKey::<Level>::from_u128(2));
+        let output = AnyModuleOutputKey::from(ModuleOutputKey::<Level>::from_u128(3));
+        let cases = vec![
+            (
+                AuthoringFailure::ForeignSignal {
+                    expected_builder: 4,
+                    actual_builder: 5,
+                },
+                DiagnosticCode::AuthoringForeignSignal,
+            ),
+            (
+                AuthoringFailure::DuplicateNodeKey(NodeKey::from_u128(6)),
+                DiagnosticCode::ValidationDuplicateKey,
+            ),
+            (
+                AuthoringFailure::UnknownModuleInput(instance, input),
+                DiagnosticCode::ValidationMissingEndpoint,
+            ),
+            (
+                AuthoringFailure::DuplicateModuleBinding(instance, input),
+                DiagnosticCode::ValidationInvalidModuleBinding,
+            ),
+            (
+                AuthoringFailure::MissingModuleBinding(instance, input),
+                DiagnosticCode::ValidationInvalidModuleBinding,
+            ),
+            (
+                AuthoringFailure::UnknownModuleOutput(instance, output),
+                DiagnosticCode::ValidationMissingEndpoint,
+            ),
+            (
+                AuthoringFailure::UnknownModuleParent(instance, ModuleInstanceKey::from_u128(7)),
+                DiagnosticCode::ValidationMalformedHierarchy,
+            ),
+            (
+                AuthoringFailure::StandardModuleConstruction(StandardModuleRef::exactly()),
+                DiagnosticCode::StandardModuleCatalogueInvariant,
+            ),
+        ];
+        for (failure, expected) in cases {
+            let problem = failure.problem::<()>();
+            assert_eq!(failure.code(), expected);
+            assert_eq!(problem.code(), expected);
+            assert_eq!(problem.evidence().code(), expected);
+            assert_eq!(failure.severity(), expected.severity());
+            assert_eq!(failure.responsibility(), expected.responsibility());
+        }
     }
 }

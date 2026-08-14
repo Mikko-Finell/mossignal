@@ -1,7 +1,12 @@
 //! Immutable runtime-policy construction and semantic identity.
 
+use crate::diagnostics::{
+    DiagnosticCode, OperationSubjectRef, ParameterEvidence, Problem, ProblemEvidence,
+    Responsibility, Severity, SubjectRef,
+};
 use crate::identity::Cbor;
 use core::fmt;
+use core::marker::PhantomData;
 
 const RUNTIME_POLICY_DOMAIN: &str = "mossignal/runtime_policy_id/v1";
 
@@ -17,7 +22,7 @@ pub enum RuntimePolicyLimit {
 }
 
 impl RuntimePolicyLimit {
-    const fn parameter_key(self) -> &'static str {
+    pub(crate) const fn parameter_key(self) -> &'static str {
         match self {
             Self::MaxInternalReactions => "max_internal_reactions",
             Self::MaxEvaluatedOperations => "max_evaluated_operations",
@@ -56,11 +61,58 @@ pub enum PolicyFailure {
 impl PolicyFailure {
     /// Returns the catalogue code represented by this construction failure.
     #[must_use]
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::MissingLimit { .. } => "runtime.policy_missing_limit",
-            Self::InvalidLimit { .. } => "runtime.policy_invalid_limit",
-        }
+    pub fn code(self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+
+    /// Returns the catalogue-fixed severity.
+    #[must_use]
+    pub fn severity(self) -> Severity {
+        self.code().severity()
+    }
+
+    /// Returns the catalogue-fixed responsibility.
+    #[must_use]
+    pub fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+
+    /// Projects this leaf into the common catalogue-backed problem model.
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        let evidence = match self {
+            Self::MissingLimit { limit } => {
+                let parameter = limit.parameter_key();
+                ProblemEvidence::RuntimePolicyMissingLimit {
+                    evidence: ParameterEvidence {
+                        owner: None,
+                        parameter,
+                        expected_domain: "required u64",
+                        encountered: None,
+                        operands: Vec::new(),
+                    },
+                    marker: PhantomData,
+                }
+            }
+            Self::InvalidLimit { limit, value } => {
+                let parameter = limit.parameter_key();
+                ProblemEvidence::RuntimePolicyInvalidLimit {
+                    evidence: ParameterEvidence {
+                        owner: None,
+                        parameter,
+                        expected_domain: "declared runtime-policy limit domain",
+                        encountered: Some(value),
+                        operands: Vec::new(),
+                    },
+                    marker: PhantomData,
+                }
+            }
+        };
+        Problem::new(
+            SubjectRef::Operation(OperationSubjectRef::RuntimePolicy),
+            Vec::new(),
+            evidence,
+        )
     }
 
     /// Returns the policy parameter involved in this failure.
@@ -421,8 +473,15 @@ mod tests {
             limit: RuntimePolicyLimit::MaxPendingEvents,
             value: 0,
         };
-        assert_eq!(missing.code(), "runtime.policy_missing_limit");
-        assert_eq!(invalid.code(), "runtime.policy_invalid_limit");
+        assert_eq!(missing.code(), DiagnosticCode::RuntimePolicyMissingLimit);
+        assert_eq!(invalid.code(), DiagnosticCode::RuntimePolicyInvalidLimit);
+        for failure in [missing, invalid] {
+            let problem = failure.problem::<()>();
+            assert_eq!(problem.code(), failure.code());
+            assert_eq!(problem.evidence().code(), failure.code());
+            assert_eq!(failure.severity(), problem.severity());
+            assert_eq!(failure.responsibility(), problem.responsibility());
+        }
     }
 
     #[test]

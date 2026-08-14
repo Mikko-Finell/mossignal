@@ -5,7 +5,10 @@ use crate::authored::{
     ConnectionDef, ConnectionEndpoint, ModuleInputDef, ModuleInterfaceMapping, ModuleOutputDef,
     NodeDef, NodeKind, NodePorts, UncheckedModule,
 };
-use crate::diagnostics::{Diagnostic, DiagnosticSet, Problem, ProblemEvidence, Report, SubjectRef};
+use crate::diagnostics::{
+    Diagnostic, DiagnosticCode, DiagnosticSet, OperationSubjectRef, Problem, ProblemEvidence,
+    Report, Responsibility, Severity, SubjectRef,
+};
 use crate::key::{
     AnyModuleInputKey, AnyModuleOutputKey, ConnectionKey, InPortKey, ModuleInputKey,
     ModuleOutputKey, NodeKey, OutPortKey,
@@ -65,7 +68,36 @@ version_value!(
 
 /// Failure to construct a reserved standard-module identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StandardModuleIdError;
+pub struct StandardModuleIdError {
+    value: String,
+}
+
+impl StandardModuleIdError {
+    #[must_use]
+    pub const fn code(&self) -> DiagnosticCode {
+        DiagnosticCode::ValidationInvalidParameter
+    }
+    #[must_use]
+    pub const fn severity(&self) -> Severity {
+        self.code().severity()
+    }
+    #[must_use]
+    pub const fn responsibility(&self) -> Responsibility {
+        self.code().responsibility()
+    }
+    #[must_use]
+    pub fn problem<D>(&self) -> Problem<D> {
+        Problem::new(
+            SubjectRef::Operation(OperationSubjectRef::StandardModuleIdentifier),
+            Vec::new(),
+            ProblemEvidence::ValidationInvalidParameter {
+                parameter: "standard_module_id",
+                encountered: self.value.clone(),
+                marker: PhantomData,
+            },
+        )
+    }
+}
 
 impl fmt::Display for StandardModuleIdError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -84,7 +116,7 @@ impl StandardModuleId {
     pub fn new(value: impl Into<String>) -> Result<Self, StandardModuleIdError> {
         let value = value.into();
         let Some(suffix) = value.strip_prefix("mossignal.standard.") else {
-            return Err(StandardModuleIdError);
+            return Err(StandardModuleIdError { value });
         };
         if suffix.is_empty()
             || suffix.split('.').any(|segment| {
@@ -93,7 +125,7 @@ impl StandardModuleId {
                     || chars.any(|character| !matches!(character, 'a'..='z' | '0'..='9' | '_'))
             })
         {
-            return Err(StandardModuleIdError);
+            return Err(StandardModuleIdError { value });
         }
         Ok(Self(value))
     }
@@ -855,33 +887,43 @@ impl<D> StandardModuleRequest<D> {
 }
 
 /// Structured exact-lookup failure.
-#[non_exhaustive]
-pub enum CatalogueFailure<D> {
-    UnknownId(Problem<D>),
-    UnsupportedVersion(Problem<D>),
+///
+/// The contained problem is private so safe callers cannot pair an ergonomic
+/// lookup category with evidence for a different catalogue code.
+pub struct CatalogueFailure<D> {
+    problem: Problem<D>,
 }
 
 impl<D> CatalogueFailure<D> {
+    fn new(problem: Problem<D>) -> Self {
+        Self { problem }
+    }
+
     #[must_use]
     pub const fn problem(&self) -> &Problem<D> {
-        match self {
-            Self::UnknownId(problem) | Self::UnsupportedVersion(problem) => problem,
-        }
+        &self.problem
+    }
+    #[must_use]
+    pub const fn code(&self) -> DiagnosticCode {
+        self.problem().code()
+    }
+    #[must_use]
+    pub const fn severity(&self) -> Severity {
+        self.problem().severity()
+    }
+    #[must_use]
+    pub const fn responsibility(&self) -> Responsibility {
+        self.problem().responsibility()
     }
     fn into_problem(self) -> Problem<D> {
-        match self {
-            Self::UnknownId(problem) | Self::UnsupportedVersion(problem) => problem,
-        }
+        self.problem
     }
 }
 
 impl<D> fmt::Debug for CatalogueFailure<D> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct(match self {
-                Self::UnknownId(_) => "UnknownId",
-                Self::UnsupportedVersion(_) => "UnsupportedVersion",
-            })
+            .debug_struct("CatalogueFailure")
             .field("code", &self.problem().code())
             .finish()
     }
@@ -969,15 +1011,7 @@ impl<D> StandardCatalogue<D> {
                 ProblemEvidence::standard_module_unknown_id(module_ref.clone()),
             )
         };
-        if self
-            .descriptors
-            .iter()
-            .any(|descriptor| descriptor.module_ref.id == module_ref.id)
-        {
-            Err(CatalogueFailure::UnsupportedVersion(problem))
-        } else {
-            Err(CatalogueFailure::UnknownId(problem))
-        }
+        Err(CatalogueFailure::new(problem))
     }
 
     #[allow(clippy::result_large_err)]
@@ -998,7 +1032,7 @@ impl<D> StandardCatalogue<D> {
             StandardModuleSemanticVersion::one(),
             StandardModuleExpansionVersion::one(),
         );
-        Err(CatalogueFailure::UnknownId(Problem::new(
+        Err(CatalogueFailure::new(Problem::new(
             SubjectRef::StandardCatalogue,
             Vec::new(),
             ProblemEvidence::standard_module_unknown_id(requested),
@@ -1244,8 +1278,9 @@ fn insert_evidence<D: PartialEq>(diagnostics: &mut DiagnosticSet<D>, evidence: P
 }
 
 fn insert_problem<D: PartialEq>(diagnostics: &mut DiagnosticSet<D>, problem: Problem<D>) {
-    if let Ok(diagnostic) = Diagnostic::new(problem) {
-        diagnostics.insert(diagnostic);
+    match Diagnostic::new(problem) {
+        Ok(diagnostic) => diagnostics.insert(diagnostic),
+        Err(problem) => diagnostics.insert_internal_defect(*problem),
     }
 }
 
@@ -2118,5 +2153,39 @@ mod tests {
 
         assert_ne!(original_expansion, changed_expansion);
         assert_ne!(module.fingerprint(), changed.fingerprint());
+    }
+
+    #[test]
+    fn identifier_and_catalogue_failures_expose_exact_common_problems() {
+        let invalid = StandardModuleId::new("not-reserved").unwrap_err();
+        let invalid_problem = invalid.problem::<()>();
+        assert_eq!(invalid.code(), DiagnosticCode::ValidationInvalidParameter);
+        assert_eq!(invalid_problem.evidence().code(), invalid.code());
+
+        let unknown_id = StandardModuleId::new("mossignal.standard.unknown")
+            .unwrap_or_else(|failure| panic!("test id must be valid: {failure}"));
+        let version = StandardModuleSemanticVersion::new(1)
+            .unwrap_or_else(|| panic!("one is a valid semantic version"));
+        let expansion = StandardModuleExpansionVersion::new(1)
+            .unwrap_or_else(|| panic!("one is a valid expansion version"));
+        let unknown = StandardCatalogue::<()>::current()
+            .descriptor(&StandardModuleRef::new(unknown_id, version, expansion))
+            .unwrap_err();
+        assert_eq!(unknown.code(), DiagnosticCode::StandardModuleUnknownId);
+        assert_eq!(unknown.problem().evidence().code(), unknown.code());
+
+        let unsupported = StandardCatalogue::<()>::current()
+            .descriptor(&StandardModuleRef::new(
+                StandardModuleId::exactly(),
+                StandardModuleSemanticVersion::new(2)
+                    .unwrap_or_else(|| panic!("two is a valid semantic version")),
+                expansion,
+            ))
+            .unwrap_err();
+        assert_eq!(
+            unsupported.code(),
+            DiagnosticCode::StandardModuleUnsupportedVersion
+        );
+        assert_eq!(unsupported.problem().evidence().code(), unsupported.code());
     }
 }

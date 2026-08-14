@@ -1,5 +1,9 @@
 //! Complete and incremental external Level and Pulse input artifacts.
 
+use crate::diagnostics::{
+    DiagnosticCode, InputObservationEvidence, InputObservationValue, OperationSubjectRef, Problem,
+    ProblemEvidence, RelatedSubject, RelatedSubjectRole, Responsibility, Severity, SubjectRef,
+};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
 use crate::key::{AnyExternalInputKey, ExternalInputKey, NetworkKey};
 use crate::signal::{Level, LogicLevel, Pulse, PulseCount, SignalKind};
@@ -465,6 +469,193 @@ impl fmt::Display for InputBuildFailure {
     }
 }
 
+impl InputBuildFailure {
+    /// Returns the catalogue code represented by this construction leaf.
+    #[must_use]
+    pub fn code(&self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+
+    /// Returns the catalogue-fixed severity.
+    #[must_use]
+    pub fn severity(&self) -> Severity {
+        self.code().severity()
+    }
+
+    /// Returns the catalogue-fixed responsibility.
+    #[must_use]
+    pub fn responsibility(&self) -> Responsibility {
+        self.code().responsibility()
+    }
+
+    /// Projects this leaf into the common catalogue-backed problem model.
+    #[must_use]
+    pub fn problem<D>(&self) -> Problem<D> {
+        let empty = || InputObservationEvidence {
+            endpoint: None,
+            expected_kind: None,
+            actual_kind: None,
+            observations: Vec::new(),
+            missing: Vec::new(),
+        };
+        let (primary, related, evidence) = match self {
+            Self::UnknownInput { input } => {
+                let endpoint = AnyExternalInputKey::from(*input);
+                let mut detail = empty();
+                detail.endpoint = Some(endpoint);
+                detail.expected_kind = Some(SignalKind::Level);
+                (
+                    SubjectRef::ExternalInput(endpoint),
+                    Vec::new(),
+                    ProblemEvidence::InputUnknownEndpoint {
+                        evidence: detail,
+                        marker: PhantomData,
+                    },
+                )
+            }
+            Self::UnknownPulseInput { input } => {
+                let endpoint = AnyExternalInputKey::from(*input);
+                let mut detail = empty();
+                detail.endpoint = Some(endpoint);
+                detail.expected_kind = Some(SignalKind::Pulse);
+                (
+                    SubjectRef::ExternalInput(endpoint),
+                    Vec::new(),
+                    ProblemEvidence::InputUnknownEndpoint {
+                        evidence: detail,
+                        marker: PhantomData,
+                    },
+                )
+            }
+            Self::WrongSignalKind {
+                input,
+                expected,
+                actual,
+            } => {
+                let mut detail = empty();
+                detail.endpoint = Some(*input);
+                detail.expected_kind = Some(*expected);
+                detail.actual_kind = Some(*actual);
+                (
+                    SubjectRef::ExternalInput(*input),
+                    Vec::new(),
+                    ProblemEvidence::InputWrongSignalKind {
+                        evidence: detail,
+                        marker: PhantomData,
+                    },
+                )
+            }
+            Self::DuplicateObservation { input, value } => {
+                let endpoint = AnyExternalInputKey::from(*input);
+                let mut detail = empty();
+                detail.endpoint = Some(endpoint);
+                detail.expected_kind = Some(SignalKind::Level);
+                detail.observations = vec![
+                    InputObservationValue::Level(*value),
+                    InputObservationValue::Level(*value),
+                ];
+                (
+                    SubjectRef::ExternalInput(endpoint),
+                    Vec::new(),
+                    ProblemEvidence::InputDuplicateObservation {
+                        evidence: detail,
+                        marker: PhantomData,
+                    },
+                )
+            }
+            Self::ConflictingObservation {
+                input,
+                first,
+                second,
+            } => {
+                let endpoint = AnyExternalInputKey::from(*input);
+                let mut detail = empty();
+                detail.endpoint = Some(endpoint);
+                detail.expected_kind = Some(SignalKind::Level);
+                detail.observations = vec![
+                    InputObservationValue::Level(*first),
+                    InputObservationValue::Level(*second),
+                ];
+                (
+                    SubjectRef::ExternalInput(endpoint),
+                    Vec::new(),
+                    ProblemEvidence::InputConflictingObservation {
+                        evidence: detail,
+                        marker: PhantomData,
+                    },
+                )
+            }
+            Self::DuplicatePulseObservation { input, count } => {
+                let endpoint = AnyExternalInputKey::from(*input);
+                let mut detail = empty();
+                detail.endpoint = Some(endpoint);
+                detail.expected_kind = Some(SignalKind::Pulse);
+                detail.observations = vec![
+                    InputObservationValue::Pulse(*count),
+                    InputObservationValue::Pulse(*count),
+                ];
+                (
+                    SubjectRef::ExternalInput(endpoint),
+                    Vec::new(),
+                    ProblemEvidence::InputDuplicateObservation {
+                        evidence: detail,
+                        marker: PhantomData,
+                    },
+                )
+            }
+            Self::ConflictingPulseObservation {
+                input,
+                first,
+                second,
+            } => {
+                let endpoint = AnyExternalInputKey::from(*input);
+                let mut detail = empty();
+                detail.endpoint = Some(endpoint);
+                detail.expected_kind = Some(SignalKind::Pulse);
+                detail.observations = vec![
+                    InputObservationValue::Pulse(*first),
+                    InputObservationValue::Pulse(*second),
+                ];
+                (
+                    SubjectRef::ExternalInput(endpoint),
+                    Vec::new(),
+                    ProblemEvidence::InputConflictingObservation {
+                        evidence: detail,
+                        marker: PhantomData,
+                    },
+                )
+            }
+            Self::MissingRequiredLevels { missing } => {
+                let missing = missing
+                    .iter()
+                    .copied()
+                    .map(AnyExternalInputKey::from)
+                    .collect::<Vec<_>>();
+                let related = missing
+                    .iter()
+                    .copied()
+                    .map(|input| RelatedSubject {
+                        role: RelatedSubjectRole::MissingReference,
+                        subject: SubjectRef::ExternalInput(input),
+                    })
+                    .collect();
+                let mut detail = empty();
+                detail.expected_kind = Some(SignalKind::Level);
+                detail.missing = missing;
+                (
+                    SubjectRef::Operation(OperationSubjectRef::InputConstruction),
+                    related,
+                    ProblemEvidence::InputMissingRequiredLevel {
+                        evidence: detail,
+                        marker: PhantomData,
+                    },
+                )
+            }
+        };
+        Problem::new(primary, related, evidence)
+    }
+}
+
 impl std::error::Error for InputBuildFailure {}
 
 #[cfg(test)]
@@ -790,5 +981,76 @@ mod tests {
             .unwrap_or_else(|_| panic!("delta must build"));
 
         assert_eq!(default_delta, annotated_delta);
+    }
+
+    #[test]
+    fn every_input_build_leaf_projects_exact_registry_evidence() {
+        let level = ExternalInputKey::<Level>::from_u128(1);
+        let pulse = ExternalInputKey::<Pulse>::from_u128(2);
+        let cases = vec![
+            (
+                InputBuildFailure::UnknownInput { input: level },
+                DiagnosticCode::InputUnknownEndpoint,
+            ),
+            (
+                InputBuildFailure::UnknownPulseInput { input: pulse },
+                DiagnosticCode::InputUnknownEndpoint,
+            ),
+            (
+                InputBuildFailure::WrongSignalKind {
+                    input: level.into(),
+                    expected: SignalKind::Pulse,
+                    actual: SignalKind::Level,
+                },
+                DiagnosticCode::InputWrongSignalKind,
+            ),
+            (
+                InputBuildFailure::DuplicateObservation {
+                    input: level,
+                    value: LogicLevel::Low,
+                },
+                DiagnosticCode::InputDuplicateObservation,
+            ),
+            (
+                InputBuildFailure::ConflictingObservation {
+                    input: level,
+                    first: LogicLevel::Low,
+                    second: LogicLevel::High,
+                },
+                DiagnosticCode::InputConflictingObservation,
+            ),
+            (
+                InputBuildFailure::DuplicatePulseObservation {
+                    input: pulse,
+                    count: PulseCount::new(2),
+                },
+                DiagnosticCode::InputDuplicateObservation,
+            ),
+            (
+                InputBuildFailure::ConflictingPulseObservation {
+                    input: pulse,
+                    first: PulseCount::new(2),
+                    second: PulseCount::new(3),
+                },
+                DiagnosticCode::InputConflictingObservation,
+            ),
+            (
+                InputBuildFailure::MissingRequiredLevels {
+                    missing: vec![level],
+                },
+                DiagnosticCode::InputMissingRequiredLevel,
+            ),
+        ];
+        for (failure, expected) in cases {
+            let problem = failure.problem::<()>();
+            assert_eq!(failure.code(), expected);
+            assert_eq!(problem.code(), expected);
+            assert_eq!(problem.evidence().code(), expected);
+            assert_eq!(failure.severity(), expected.severity());
+            assert_eq!(failure.responsibility(), expected.responsibility());
+            assert!(
+                expected.allows_delivery(crate::diagnostics::ProblemDelivery::OperationFailure)
+            );
+        }
     }
 }

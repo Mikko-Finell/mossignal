@@ -2,8 +2,9 @@
 
 use crate::CompiledNetwork;
 use crate::diagnostics::{
-    BindingEvidence, BindingSubjectRef, DiagnosticCode, Problem, ProblemEvidence, RelatedSubject,
-    RelatedSubjectRole, Responsibility, Severity, SubjectRef,
+    BindingEvidence, BindingSubjectRef, DiagnosticCode, InputObservationEvidence,
+    InspectionEvidence, InspectionSubjectKind, LifecycleEvidence, OperationSubjectRef, Problem,
+    ProblemEvidence, RelatedSubject, RelatedSubjectRole, Responsibility, Severity, SubjectRef,
 };
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
 use crate::input::{InputBuildFailure, InputDelta, InputSnapshot};
@@ -398,6 +399,59 @@ impl<I> From<InputBuildFailure> for InputProjectionFailure<I> {
     }
 }
 
+impl<I> InputProjectionFailure<I> {
+    #[must_use]
+    pub fn code(&self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+    #[must_use]
+    pub fn severity(&self) -> Severity {
+        self.code().severity()
+    }
+    #[must_use]
+    pub fn responsibility(&self) -> Responsibility {
+        self.code().responsibility()
+    }
+    /// Preserves an underlying input-build problem and otherwise projects the
+    /// caller-key boundary leaf without treating the opaque caller key as core identity.
+    #[must_use]
+    pub fn problem<D>(&self) -> Problem<D> {
+        match self {
+            Self::InputBuild(failure) => failure.problem(),
+            Self::UnknownExternalKey { .. } => Problem::new(
+                SubjectRef::Operation(OperationSubjectRef::InputProjection),
+                Vec::new(),
+                ProblemEvidence::InputUnknownEndpoint {
+                    evidence: InputObservationEvidence {
+                        endpoint: None,
+                        expected_kind: None,
+                        actual_kind: None,
+                        observations: Vec::new(),
+                        missing: Vec::new(),
+                    },
+                    marker: PhantomData,
+                },
+            ),
+            Self::WrongSignalKind {
+                expected, actual, ..
+            } => Problem::new(
+                SubjectRef::Operation(OperationSubjectRef::InputProjection),
+                Vec::new(),
+                ProblemEvidence::InputWrongSignalKind {
+                    evidence: InputObservationEvidence {
+                        endpoint: None,
+                        expected_kind: Some(*expected),
+                        actual_kind: Some(*actual),
+                        observations: Vec::new(),
+                        missing: Vec::new(),
+                    },
+                    marker: PhantomData,
+                },
+            ),
+        }
+    }
+}
+
 /// An immutable network-bound adapter from caller observations to canonical input artifacts.
 pub struct InputProjector<D, I> {
     compiled: CompiledNetwork<D>,
@@ -617,6 +671,34 @@ pub enum BoundApplyFailure<D, I> {
     Binding(BindingFailure),
 }
 
+impl<D, I> BoundApplyFailure<D, I> {
+    #[must_use]
+    pub fn code(&self) -> DiagnosticCode {
+        match self {
+            Self::Projection(failure) => failure.code(),
+            Self::Runtime(failure) => failure.code(),
+            Self::Binding(failure) => failure.code(),
+        }
+    }
+    #[must_use]
+    pub fn severity(&self) -> Severity {
+        self.code().severity()
+    }
+    #[must_use]
+    pub fn responsibility(&self) -> Responsibility {
+        self.code().responsibility()
+    }
+    /// Returns an exact owned projection of the delegated source problem.
+    #[must_use]
+    pub fn problem(&self) -> Problem<D> {
+        match self {
+            Self::Projection(failure) => failure.problem(),
+            Self::Runtime(failure) => failure.evidence().problem(),
+            Self::Binding(failure) => failure.problem(),
+        }
+    }
+}
+
 /// A minimal ergonomic façade over one ordinary semantic machine.
 pub struct BoundMachine<D, I, O> {
     machine: Machine<D>,
@@ -750,6 +832,53 @@ pub enum BoundOutputFailure {
     UnknownExternalKey,
     WrongSignalKind,
     NotInitialized,
+}
+
+impl BoundOutputFailure {
+    #[must_use]
+    pub fn code(self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+    #[must_use]
+    pub fn severity(self) -> Severity {
+        self.code().severity()
+    }
+    #[must_use]
+    pub fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        let requested = SubjectRef::Operation(OperationSubjectRef::OutputProjection);
+        let evidence = match self {
+            Self::UnknownExternalKey => ProblemEvidence::InspectionUnknownSubject {
+                evidence: InspectionEvidence {
+                    requested,
+                    qualified_path: Vec::new(),
+                    expected: InspectionSubjectKind::LevelOutput,
+                    actual: None,
+                },
+                marker: PhantomData,
+            },
+            Self::WrongSignalKind => ProblemEvidence::InspectionWrongSubjectKind {
+                evidence: InspectionEvidence {
+                    requested,
+                    qualified_path: Vec::new(),
+                    expected: InspectionSubjectKind::SignalKind(SignalKind::Level),
+                    actual: Some(InspectionSubjectKind::SignalKind(SignalKind::Pulse)),
+                },
+                marker: PhantomData,
+            },
+            Self::NotInitialized => ProblemEvidence::LifecycleNotInitialized {
+                evidence: LifecycleEvidence {
+                    operation: OperationSubjectRef::OutputProjection,
+                    current_time_ticks: None,
+                },
+                marker: PhantomData,
+            },
+        };
+        Problem::new(requested, Vec::new(), evidence)
+    }
 }
 
 fn context<D>(compiled: &CompiledNetwork<D>) -> BindingContext {

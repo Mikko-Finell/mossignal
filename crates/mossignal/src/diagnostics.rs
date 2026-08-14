@@ -4,14 +4,14 @@
 //! representation used by later graph construction and validation modules.
 
 use crate::authored::{EdgeInitialization, InputPortRole, OutputPortRole};
-use crate::identity::{ModuleFingerprint, NetworkFingerprint};
+use crate::identity::{InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint};
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
     AnyOutPortKey, ConnectionKey, ModuleInputKey, ModuleInstanceKey, NetworkKey, NodeKey,
 };
 use crate::machine::NetworkRevision;
 use crate::metadata::OriginRef;
-use crate::signal::{LogicLevel, SignalKind};
+use crate::signal::{LogicLevel, PulseCount, SignalKind};
 use crate::standard::{StandardModuleRef, StandardParameterKey, StandardParameterKind};
 use core::cmp::Ordering;
 use core::marker::PhantomData;
@@ -50,6 +50,26 @@ pub enum SubjectRef {
     ExternalOutput(AnyExternalOutputKey),
     /// One compiled-network-bound application binding slot.
     Binding(BindingSubjectRef),
+    /// One non-structural operation boundary with no durable graph key.
+    Operation(OperationSubjectRef),
+}
+
+/// Stable semantic identity for an operation boundary that has no structural key.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum OperationSubjectRef {
+    Authoring,
+    InputConstruction,
+    InputProjection,
+    OutputProjection,
+    KeyProjection,
+    LogicalTime,
+    PulseCount,
+    RuntimePolicy,
+    MachineLifecycle,
+    MachineTransaction,
+    ProvenanceView,
+    StandardModuleIdentifier,
 }
 
 /// Stable identity for one non-structural application binding slot.
@@ -116,6 +136,7 @@ impl SubjectRef {
             Self::ExternalInput(key) => (14, SubjectPayload::ExternalInput(*key)),
             Self::ExternalOutput(key) => (15, SubjectPayload::ExternalOutput(*key)),
             Self::Binding(binding) => (16, SubjectPayload::Binding(*binding)),
+            Self::Operation(operation) => (17, SubjectPayload::Operation(*operation)),
         }
     }
 
@@ -137,6 +158,7 @@ enum SubjectPayload {
     ExternalInput(AnyExternalInputKey),
     ExternalOutput(AnyExternalOutputKey),
     Binding(BindingSubjectRef),
+    Operation(OperationSubjectRef),
 }
 
 /// The severity fixed by a catalogue entry.
@@ -179,16 +201,46 @@ pub enum ProblemDelivery {
     InternalDefect,
 }
 
+/// The catalogue evidence family fixed for one diagnostic code.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceSchema {
+    ForeignArtifact,
+    KeyConflict,
+    MissingReference,
+    Direction,
+    KindMismatch,
+    DriverConflict,
+    Arity,
+    Parameter,
+    StaticQuality,
+    CurrentReactionCycle,
+    ModuleSchema,
+    Hierarchy,
+    StandardModule,
+    Binding,
+    Lifecycle,
+    RevisionMismatch,
+    Time,
+    Budget,
+    InputObservation,
+    InputSchema,
+    Provenance,
+    InternalInvariant,
+}
+
 /// The opening catalogue's structured identifiers.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DiagnosticCode {
+    AuthoringForeignSignal,
     ValidationDuplicateKey,
     ValidationMissingNode,
     ValidationMissingPort,
     ValidationMissingEndpoint,
     ValidationInvalidDirection,
     ValidationSignalKindMismatch,
+    ValidationInvalidParameter,
     ValidationUnsupportedMultipleDrivers,
     ValidationMissingRequiredInput,
     ValidationInvalidFixedArity,
@@ -223,6 +275,30 @@ pub enum DiagnosticCode {
     BindingMissingRequiredBinding,
     BindingWrongNetwork,
     BindingStaleSchema,
+    LifecycleNotInitialized,
+    LifecycleAlreadyInitialized,
+    LifecycleDeltaBeforeInitialization,
+    RuntimeStaleRevision,
+    RuntimeTimeNotStrictlyIncreasing,
+    RuntimeTimeOverflow,
+    RuntimeInvalidTimeSubtraction,
+    RuntimeZeroSpanNotAllowed,
+    RuntimePulseCountOverflow,
+    RuntimePolicyMissingLimit,
+    RuntimePolicyInvalidLimit,
+    RuntimeBudgetExceeded,
+    InputUnknownEndpoint,
+    InputWrongSignalKind,
+    InputDuplicateObservation,
+    InputConflictingObservation,
+    InputMissingRequiredLevel,
+    InputWrongNetwork,
+    InputForeignSchema,
+    InputStaleSchema,
+    InspectionUnknownSubject,
+    InspectionWrongSubjectKind,
+    ExplanationForeignCause,
+    ExplanationInvalidCause,
     InternalDiagnosticEvidenceConflict,
 }
 
@@ -231,7 +307,15 @@ struct CodeSpecification {
     code: &'static str,
     severity: Severity,
     responsibility: Responsibility,
+    evidence_schema: EvidenceSchema,
+    delivery: DeliverySet,
+}
+
+#[derive(Clone, Copy)]
+struct DeliverySet {
     report_finding: bool,
+    operation_failure: bool,
+    internal_defect: bool,
 }
 
 /// Why a related semantic subject is included in a problem.
@@ -364,6 +448,15 @@ pub enum RequiredInputRef {
     Role(InputPortRole),
 }
 
+/// The exact public-interface defect represented by module-binding evidence.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleBindingIssue {
+    Missing,
+    Duplicate,
+    Invalid,
+}
+
 /// A safe, machine-readable correction.  The opening validation catalogue has
 /// no unambiguous automatic correction, so no constructors are exposed yet.
 #[non_exhaustive]
@@ -382,10 +475,138 @@ pub struct BindingEvidence {
     pub expected_kind: Option<SignalKind>,
 }
 
+/// Evidence shared by lifecycle operation failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LifecycleEvidence {
+    pub operation: OperationSubjectRef,
+    pub current_time_ticks: Option<u64>,
+}
+
+/// A stable node identity retained without private runtime positions.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeEvidence {
+    Node(NodeKey),
+    Qualified {
+        instances: Vec<ModuleInstanceKey>,
+        node: NodeKey,
+    },
+}
+
+/// The checked logical-time operation represented by [`TimeEvidence`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeOperation {
+    TimeAddition,
+    NonZeroTimeAddition,
+    SpanAddition,
+    DurationSubtraction,
+    TransactionAdvance,
+    PulseDelayDeadline,
+}
+
+/// Exact operands and relation for a logical-time condition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimeEvidence {
+    pub owner: Option<NodeEvidence>,
+    pub operation: TimeOperation,
+    pub left_ticks: u64,
+    pub right_ticks: u64,
+}
+
+/// Evidence for a runtime-policy or scalar-domain parameter condition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParameterEvidence {
+    pub owner: Option<NodeEvidence>,
+    pub parameter: &'static str,
+    pub expected_domain: &'static str,
+    pub encountered: Option<u64>,
+    pub operands: Vec<u64>,
+}
+
+/// One exact value supplied as an external input observation.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputObservationValue {
+    Level(LogicLevel),
+    Pulse(PulseCount),
+}
+
+/// Evidence shared by input-construction and input-projection conditions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputObservationEvidence {
+    pub endpoint: Option<AnyExternalInputKey>,
+    pub expected_kind: Option<SignalKind>,
+    pub actual_kind: Option<SignalKind>,
+    pub observations: Vec<InputObservationValue>,
+    pub missing: Vec<AnyExternalInputKey>,
+}
+
+/// Evidence for use of an input artifact against the wrong schema context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputSchemaEvidence {
+    pub expected_network: Option<NetworkKey>,
+    pub actual_network: Option<NetworkKey>,
+    pub expected_fingerprint: Option<NetworkFingerprint>,
+    pub actual_fingerprint: Option<NetworkFingerprint>,
+    pub expected_schema: Option<InputSchemaFingerprint>,
+    pub actual_schema: Option<InputSchemaFingerprint>,
+}
+
+/// The closed subject category required by an inspection projection.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectionSubjectKind {
+    Node,
+    PulseDelay,
+    EdgeDetector,
+    Toggle,
+    Module,
+    LevelOutput,
+    SignalKind(SignalKind),
+}
+
+/// Evidence for a missing or wrong-kind inspected subject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectionEvidence {
+    pub requested: SubjectRef,
+    pub qualified_path: Vec<ModuleInstanceKey>,
+    pub expected: InspectionSubjectKind,
+    pub actual: Option<InspectionSubjectKind>,
+}
+
+/// Evidence for resolving one opaque cause through a provenance view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProvenanceEvidence {
+    pub expected_scope: [u8; 32],
+    pub actual_scope: [u8; 32],
+    pub ordinal: u32,
+}
+
+/// Evidence for a topology-revision compatibility rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RevisionMismatchEvidence {
+    pub expected: NetworkRevision,
+    pub actual: NetworkRevision,
+}
+
+/// Evidence for a named runtime budget rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BudgetEvidence {
+    pub budget: &'static str,
+    pub limit: u64,
+    pub consumed: u64,
+}
+
 /// Structured evidence for one exact opening catalogue code.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProblemEvidence<D> {
+    AuthoringForeignSignal {
+        expected_builder: u64,
+        actual_builder: u64,
+        marker: PhantomData<fn() -> D>,
+    },
     ValidationDuplicateKey {
         key: SubjectRef,
         claims: Vec<DuplicateClaim>,
@@ -415,6 +636,11 @@ pub enum ProblemEvidence<D> {
         target: SubjectRef,
         source_kind: SignalKind,
         target_kind: SignalKind,
+        marker: PhantomData<fn() -> D>,
+    },
+    ValidationInvalidParameter {
+        parameter: &'static str,
+        encountered: String,
         marker: PhantomData<fn() -> D>,
     },
     ValidationUnsupportedMultipleDrivers {
@@ -465,6 +691,7 @@ pub enum ProblemEvidence<D> {
     ValidationInvalidModuleBinding {
         instance: ModuleInstanceKey,
         input: AnyModuleInputKey,
+        issue: ModuleBindingIssue,
         sources: Vec<SubjectRef>,
         marker: PhantomData<fn() -> D>,
     },
@@ -579,6 +806,102 @@ pub enum ProblemEvidence<D> {
     },
     BindingStaleSchema {
         evidence: BindingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    LifecycleNotInitialized {
+        evidence: LifecycleEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    LifecycleAlreadyInitialized {
+        evidence: LifecycleEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    LifecycleDeltaBeforeInitialization {
+        evidence: LifecycleEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimeStaleRevision {
+        evidence: RevisionMismatchEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimeTimeNotStrictlyIncreasing {
+        evidence: TimeEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimeTimeOverflow {
+        evidence: TimeEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimeInvalidTimeSubtraction {
+        evidence: TimeEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimeZeroSpanNotAllowed {
+        evidence: ParameterEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimePulseCountOverflow {
+        evidence: ParameterEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimePolicyMissingLimit {
+        evidence: ParameterEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimePolicyInvalidLimit {
+        evidence: ParameterEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimeBudgetExceeded {
+        evidence: BudgetEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    InputUnknownEndpoint {
+        evidence: InputObservationEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    InputWrongSignalKind {
+        evidence: InputObservationEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    InputDuplicateObservation {
+        evidence: InputObservationEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    InputConflictingObservation {
+        evidence: InputObservationEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    InputMissingRequiredLevel {
+        evidence: InputObservationEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    InputWrongNetwork {
+        evidence: InputSchemaEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    InputForeignSchema {
+        evidence: InputSchemaEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    InputStaleSchema {
+        evidence: InputSchemaEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    InspectionUnknownSubject {
+        evidence: InspectionEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    InspectionWrongSubjectKind {
+        evidence: InspectionEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ExplanationForeignCause {
+        evidence: ProvenanceEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ExplanationInvalidCause {
+        evidence: ProvenanceEvidence,
         marker: PhantomData<fn() -> D>,
     },
     InternalDiagnosticEvidenceConflict {
@@ -929,9 +1252,17 @@ impl<D> ProblemEvidence<D> {
         input: AnyModuleInputKey,
         sources: Vec<SubjectRef>,
     ) -> Self {
+        let issue = if sources.is_empty() {
+            ModuleBindingIssue::Missing
+        } else if sources.len() > 1 {
+            ModuleBindingIssue::Duplicate
+        } else {
+            ModuleBindingIssue::Invalid
+        };
         Self::ValidationInvalidModuleBinding {
             instance,
             input,
+            issue,
             sources,
             marker: PhantomData,
         }
@@ -991,6 +1322,10 @@ impl<D> ProblemEvidence<D> {
                 inputs.sort();
                 inputs.dedup();
             }
+            Self::InputMissingRequiredLevel { evidence, .. } => {
+                evidence.missing.sort();
+                evidence.missing.dedup();
+            }
             _ => {}
         }
     }
@@ -1000,8 +1335,11 @@ impl<D> ProblemEvidence<D> {
 // "authoritative-registry" — code spelling, classification, delivery, and
 // evidence association are declared together so they cannot drift apart.
 macro_rules! opening_diagnostic_registry {
-    ($( $code:ident, $evidence:pat, $spelling:literal, $severity:ident, $responsibility:ident, $report_finding:expr; )+) => {
+    ($( $code:ident, $evidence:pat, $spelling:literal, $severity:ident, $responsibility:ident, $schema:ident, $report_finding:expr, $operation_failure:expr, $internal_defect:expr; )+) => {
         impl DiagnosticCode {
+            /// Every code implemented by the current catalogue slice.
+            pub const ALL: &'static [Self] = &[$(Self::$code,)+];
+
             /// Returns the stable dotted spelling of this catalogue entry.
             #[must_use]
             pub const fn as_str(self) -> &'static str {
@@ -1020,20 +1358,44 @@ macro_rules! opening_diagnostic_registry {
                 self.specification().responsibility
             }
 
+            /// Returns the exact evidence family fixed by the catalogue.
+            #[must_use]
+            pub const fn evidence_schema(self) -> EvidenceSchema {
+                self.specification().evidence_schema
+            }
+
+            /// Returns whether the catalogue permits this delivery form.
+            #[must_use]
+            pub const fn allows_delivery(self, delivery: ProblemDelivery) -> bool {
+                let allowed = self.specification().delivery;
+                match delivery {
+                    ProblemDelivery::ReportFinding => allowed.report_finding,
+                    ProblemDelivery::OperationFailure => allowed.operation_failure,
+                    ProblemDelivery::InternalDefect => allowed.internal_defect,
+                }
+            }
+
             const fn specification(self) -> CodeSpecification {
                 match self {
                     $(Self::$code => CodeSpecification {
                         code: $spelling,
                         severity: Severity::$severity,
                         responsibility: Responsibility::$responsibility,
-                        report_finding: $report_finding,
+                        evidence_schema: EvidenceSchema::$schema,
+                        delivery: DeliverySet {
+                            report_finding: $report_finding,
+                            operation_failure: $operation_failure,
+                            internal_defect: $internal_defect,
+                        },
                     },)+
                 }
             }
         }
 
         impl<D> ProblemEvidence<D> {
-            fn code(&self) -> DiagnosticCode {
+            /// Returns the one catalogue code paired with this exact evidence variant.
+            #[must_use]
+            pub const fn code(&self) -> DiagnosticCode {
                 match self {
                     $($evidence => DiagnosticCode::$code,)+
                 }
@@ -1043,47 +1405,73 @@ macro_rules! opening_diagnostic_registry {
 }
 
 opening_diagnostic_registry! {
-    ValidationDuplicateKey, Self::ValidationDuplicateKey { .. }, "validation.duplicate_key", Error, CallerInput, true;
-    ValidationMissingNode, Self::ValidationMissingNode { .. }, "validation.missing_node", Error, CallerInput, true;
-    ValidationMissingPort, Self::ValidationMissingPort { .. }, "validation.missing_port", Error, CallerInput, true;
-    ValidationMissingEndpoint, Self::ValidationMissingEndpoint { .. }, "validation.missing_endpoint", Error, CallerInput, true;
-    ValidationInvalidDirection, Self::ValidationInvalidDirection { .. }, "validation.invalid_direction", Error, CallerInput, true;
-    ValidationSignalKindMismatch, Self::ValidationSignalKindMismatch { .. }, "validation.signal_kind_mismatch", Error, CallerInput, true;
-    ValidationUnsupportedMultipleDrivers, Self::ValidationUnsupportedMultipleDrivers { .. }, "validation.unsupported_multiple_drivers", Error, CallerInput, true;
-    ValidationMissingRequiredInput, Self::ValidationMissingRequiredInput { .. }, "validation.missing_required_input", Error, CallerInput, true;
-    ValidationInvalidFixedArity, Self::ValidationInvalidFixedArity { .. }, "validation.invalid_fixed_arity", Error, CallerInput, true;
-    ValidationInvalidVariadicArity, Self::ValidationInvalidVariadicArity { .. }, "validation.invalid_variadic_arity", Error, CallerInput, true;
-    ValidationDuplicateSource, Self::ValidationDuplicateSource { .. }, "validation.duplicate_source", Warning, CallerInput, true;
-    ValidationEmptyVariadicNode, Self::ValidationEmptyVariadicNode { .. }, "validation.empty_variadic_node", Warning, Advisory, true;
-    ValidationUnaryDegenerateNode, Self::ValidationUnaryDegenerateNode { .. }, "validation.unary_degenerate_node", Warning, Advisory, true;
-    ValidationConstantResultNode, Self::ValidationConstantResultNode { .. }, "validation.constant_result_node", Warning, Advisory, true;
-    ValidationCurrentReactionCycle, Self::ValidationCurrentReactionCycle { .. }, "validation.current_reaction_cycle", Error, CallerInput, true;
-    ValidationInvalidModuleBinding, Self::ValidationInvalidModuleBinding { .. }, "validation.invalid_module_binding", Error, CallerInput, true;
-    ValidationMalformedHierarchy, Self::ValidationMalformedHierarchy { .. }, "validation.malformed_hierarchy", Error, CallerInput, true;
-    ValidationHierarchyCycle, Self::ValidationHierarchyCycle { .. }, "validation.hierarchy_cycle", Error, CallerInput, true;
-    StandardModuleUnknownId, Self::StandardModuleUnknownId { .. }, "standard_module.unknown_id", Error, UnsupportedFeature, true;
-    StandardModuleUnsupportedVersion, Self::StandardModuleUnsupportedVersion { .. }, "standard_module.unsupported_version", Error, Compatibility, true;
-    StandardModuleMissingParameter, Self::StandardModuleMissingParameter { .. }, "standard_module.missing_parameter", Error, CallerInput, true;
-    StandardModuleUnexpectedParameter, Self::StandardModuleUnexpectedParameter { .. }, "standard_module.unexpected_parameter", Error, CallerInput, true;
-    StandardModuleParameterKindMismatch, Self::StandardModuleParameterKindMismatch { .. }, "standard_module.parameter_kind_mismatch", Error, CallerInput, true;
-    StandardModuleInvalidParameter, Self::StandardModuleInvalidParameter { .. }, "standard_module.invalid_parameter", Error, CallerInput, true;
-    StandardModuleInterfaceMismatch, Self::StandardModuleInterfaceMismatch { .. }, "standard_module.interface_mismatch", Error, CallerInput, true;
-    StandardModuleInternalKeyCollision, Self::StandardModuleInternalKeyCollision { .. }, "standard_module.internal_key_collision", Error, LibraryDefect, true;
-    StandardModuleCatalogueInvariant, Self::StandardModuleCatalogueInvariant { .. }, "standard_module.catalogue_invariant", Error, LibraryDefect, true;
-    StandardModuleEmptyVariadic, Self::StandardModuleEmptyVariadic { .. }, "standard_module.empty_variadic", Warning, Advisory, true;
-    StandardModuleUnaryDegenerate, Self::StandardModuleUnaryDegenerate { .. }, "standard_module.unary_degenerate", Warning, Advisory, true;
-    StandardModuleImpossibleThreshold, Self::StandardModuleImpossibleThreshold { .. }, "standard_module.impossible_threshold", Warning, Advisory, true;
-    StandardModuleConstantResult, Self::StandardModuleConstantResult { .. }, "standard_module.constant_result", Warning, Advisory, true;
-    StandardModuleDuplicateSource, Self::StandardModuleDuplicateSource { .. }, "standard_module.duplicate_source", Warning, CallerInput, true;
-    BindingUnknownEndpoint, Self::BindingUnknownEndpoint { .. }, "binding.unknown_endpoint", Error, CallerInput, true;
-    BindingWrongSignalKind, Self::BindingWrongSignalKind { .. }, "binding.wrong_signal_kind", Error, CallerInput, true;
-    BindingDuplicateEndpoint, Self::BindingDuplicateEndpoint { .. }, "binding.duplicate_endpoint", Error, CallerInput, true;
-    BindingDuplicateExternalKey, Self::BindingDuplicateExternalKey { .. }, "binding.duplicate_external_key", Error, CallerInput, true;
-    BindingAmbiguousExternalKey, Self::BindingAmbiguousExternalKey { .. }, "binding.ambiguous_external_key", Error, CallerInput, true;
-    BindingMissingRequiredBinding, Self::BindingMissingRequiredBinding { .. }, "binding.missing_required_binding", Error, CallerInput, true;
-    BindingWrongNetwork, Self::BindingWrongNetwork { .. }, "binding.wrong_network", Error, Compatibility, false;
-    BindingStaleSchema, Self::BindingStaleSchema { .. }, "binding.stale_schema", Error, Compatibility, false;
-    InternalDiagnosticEvidenceConflict, Self::InternalDiagnosticEvidenceConflict { .. }, "internal.diagnostic_evidence_conflict", Error, LibraryDefect, false;
+    AuthoringForeignSignal, Self::AuthoringForeignSignal { .. }, "authoring.foreign_signal", Error, CallerInput, ForeignArtifact, false, true, false;
+    ValidationDuplicateKey, Self::ValidationDuplicateKey { .. }, "validation.duplicate_key", Error, CallerInput, KeyConflict, true, true, false;
+    ValidationMissingNode, Self::ValidationMissingNode { .. }, "validation.missing_node", Error, CallerInput, MissingReference, true, false, false;
+    ValidationMissingPort, Self::ValidationMissingPort { .. }, "validation.missing_port", Error, CallerInput, MissingReference, true, false, false;
+    ValidationMissingEndpoint, Self::ValidationMissingEndpoint { .. }, "validation.missing_endpoint", Error, CallerInput, MissingReference, true, true, false;
+    ValidationInvalidDirection, Self::ValidationInvalidDirection { .. }, "validation.invalid_direction", Error, CallerInput, Direction, true, true, false;
+    ValidationSignalKindMismatch, Self::ValidationSignalKindMismatch { .. }, "validation.signal_kind_mismatch", Error, CallerInput, KindMismatch, true, true, false;
+    ValidationInvalidParameter, Self::ValidationInvalidParameter { .. }, "validation.invalid_parameter", Error, CallerInput, Parameter, true, true, false;
+    ValidationUnsupportedMultipleDrivers, Self::ValidationUnsupportedMultipleDrivers { .. }, "validation.unsupported_multiple_drivers", Error, CallerInput, DriverConflict, true, false, false;
+    ValidationMissingRequiredInput, Self::ValidationMissingRequiredInput { .. }, "validation.missing_required_input", Error, CallerInput, MissingReference, true, false, false;
+    ValidationInvalidFixedArity, Self::ValidationInvalidFixedArity { .. }, "validation.invalid_fixed_arity", Error, CallerInput, Arity, true, false, false;
+    ValidationInvalidVariadicArity, Self::ValidationInvalidVariadicArity { .. }, "validation.invalid_variadic_arity", Error, CallerInput, Arity, true, false, false;
+    ValidationDuplicateSource, Self::ValidationDuplicateSource { .. }, "validation.duplicate_source", Warning, CallerInput, StaticQuality, true, false, false;
+    ValidationEmptyVariadicNode, Self::ValidationEmptyVariadicNode { .. }, "validation.empty_variadic_node", Warning, Advisory, StaticQuality, true, false, false;
+    ValidationUnaryDegenerateNode, Self::ValidationUnaryDegenerateNode { .. }, "validation.unary_degenerate_node", Warning, Advisory, StaticQuality, true, false, false;
+    ValidationConstantResultNode, Self::ValidationConstantResultNode { .. }, "validation.constant_result_node", Warning, Advisory, StaticQuality, true, false, false;
+    ValidationCurrentReactionCycle, Self::ValidationCurrentReactionCycle { .. }, "validation.current_reaction_cycle", Error, CallerInput, CurrentReactionCycle, true, false, false;
+    ValidationInvalidModuleBinding, Self::ValidationInvalidModuleBinding { .. }, "validation.invalid_module_binding", Error, CallerInput, ModuleSchema, true, true, false;
+    ValidationMalformedHierarchy, Self::ValidationMalformedHierarchy { .. }, "validation.malformed_hierarchy", Error, CallerInput, Hierarchy, true, true, false;
+    ValidationHierarchyCycle, Self::ValidationHierarchyCycle { .. }, "validation.hierarchy_cycle", Error, CallerInput, Hierarchy, true, false, false;
+    StandardModuleUnknownId, Self::StandardModuleUnknownId { .. }, "standard_module.unknown_id", Error, UnsupportedFeature, StandardModule, true, true, false;
+    StandardModuleUnsupportedVersion, Self::StandardModuleUnsupportedVersion { .. }, "standard_module.unsupported_version", Error, Compatibility, StandardModule, true, true, false;
+    StandardModuleMissingParameter, Self::StandardModuleMissingParameter { .. }, "standard_module.missing_parameter", Error, CallerInput, StandardModule, true, true, false;
+    StandardModuleUnexpectedParameter, Self::StandardModuleUnexpectedParameter { .. }, "standard_module.unexpected_parameter", Error, CallerInput, StandardModule, true, true, false;
+    StandardModuleParameterKindMismatch, Self::StandardModuleParameterKindMismatch { .. }, "standard_module.parameter_kind_mismatch", Error, CallerInput, StandardModule, true, true, false;
+    StandardModuleInvalidParameter, Self::StandardModuleInvalidParameter { .. }, "standard_module.invalid_parameter", Error, CallerInput, StandardModule, true, true, false;
+    StandardModuleInterfaceMismatch, Self::StandardModuleInterfaceMismatch { .. }, "standard_module.interface_mismatch", Error, CallerInput, StandardModule, true, true, false;
+    StandardModuleInternalKeyCollision, Self::StandardModuleInternalKeyCollision { .. }, "standard_module.internal_key_collision", Error, LibraryDefect, StandardModule, false, true, true;
+    StandardModuleCatalogueInvariant, Self::StandardModuleCatalogueInvariant { .. }, "standard_module.catalogue_invariant", Error, LibraryDefect, StandardModule, false, true, true;
+    StandardModuleEmptyVariadic, Self::StandardModuleEmptyVariadic { .. }, "standard_module.empty_variadic", Warning, Advisory, StandardModule, true, false, false;
+    StandardModuleUnaryDegenerate, Self::StandardModuleUnaryDegenerate { .. }, "standard_module.unary_degenerate", Warning, Advisory, StandardModule, true, false, false;
+    StandardModuleImpossibleThreshold, Self::StandardModuleImpossibleThreshold { .. }, "standard_module.impossible_threshold", Warning, Advisory, StandardModule, true, false, false;
+    StandardModuleConstantResult, Self::StandardModuleConstantResult { .. }, "standard_module.constant_result", Warning, Advisory, StandardModule, true, false, false;
+    StandardModuleDuplicateSource, Self::StandardModuleDuplicateSource { .. }, "standard_module.duplicate_source", Warning, CallerInput, StandardModule, true, false, false;
+    BindingUnknownEndpoint, Self::BindingUnknownEndpoint { .. }, "binding.unknown_endpoint", Error, CallerInput, Binding, true, true, false;
+    BindingWrongSignalKind, Self::BindingWrongSignalKind { .. }, "binding.wrong_signal_kind", Error, CallerInput, Binding, true, true, false;
+    BindingDuplicateEndpoint, Self::BindingDuplicateEndpoint { .. }, "binding.duplicate_endpoint", Error, CallerInput, Binding, true, true, false;
+    BindingDuplicateExternalKey, Self::BindingDuplicateExternalKey { .. }, "binding.duplicate_external_key", Error, CallerInput, Binding, true, true, false;
+    BindingAmbiguousExternalKey, Self::BindingAmbiguousExternalKey { .. }, "binding.ambiguous_external_key", Error, CallerInput, Binding, true, true, false;
+    BindingMissingRequiredBinding, Self::BindingMissingRequiredBinding { .. }, "binding.missing_required_binding", Error, CallerInput, Binding, true, true, false;
+    BindingWrongNetwork, Self::BindingWrongNetwork { .. }, "binding.wrong_network", Error, Compatibility, Binding, false, true, false;
+    BindingStaleSchema, Self::BindingStaleSchema { .. }, "binding.stale_schema", Error, Compatibility, Binding, false, true, false;
+    LifecycleNotInitialized, Self::LifecycleNotInitialized { .. }, "lifecycle.not_initialized", Error, CallerInput, Lifecycle, false, true, false;
+    LifecycleAlreadyInitialized, Self::LifecycleAlreadyInitialized { .. }, "lifecycle.already_initialized", Error, CallerInput, Lifecycle, false, true, false;
+    LifecycleDeltaBeforeInitialization, Self::LifecycleDeltaBeforeInitialization { .. }, "lifecycle.delta_before_initialization", Error, CallerInput, Lifecycle, false, true, false;
+    RuntimeStaleRevision, Self::RuntimeStaleRevision { .. }, "runtime.stale_revision", Error, Compatibility, RevisionMismatch, false, true, false;
+    RuntimeTimeNotStrictlyIncreasing, Self::RuntimeTimeNotStrictlyIncreasing { .. }, "runtime.time_not_strictly_increasing", Error, CallerInput, Time, false, true, false;
+    RuntimeTimeOverflow, Self::RuntimeTimeOverflow { .. }, "runtime.time_overflow", Error, SemanticRejection, Time, false, true, false;
+    RuntimeInvalidTimeSubtraction, Self::RuntimeInvalidTimeSubtraction { .. }, "runtime.invalid_time_subtraction", Error, CallerInput, Time, false, true, false;
+    RuntimeZeroSpanNotAllowed, Self::RuntimeZeroSpanNotAllowed { .. }, "runtime.zero_span_not_allowed", Error, CallerInput, Parameter, false, true, false;
+    RuntimePulseCountOverflow, Self::RuntimePulseCountOverflow { .. }, "runtime.pulse_count_overflow", Error, SemanticRejection, Parameter, false, true, false;
+    RuntimePolicyMissingLimit, Self::RuntimePolicyMissingLimit { .. }, "runtime.policy_missing_limit", Error, CallerInput, Parameter, false, true, false;
+    RuntimePolicyInvalidLimit, Self::RuntimePolicyInvalidLimit { .. }, "runtime.policy_invalid_limit", Error, CallerInput, Parameter, false, true, false;
+    RuntimeBudgetExceeded, Self::RuntimeBudgetExceeded { .. }, "runtime.budget_exceeded", Error, ResourceLimit, Budget, false, true, false;
+    InputUnknownEndpoint, Self::InputUnknownEndpoint { .. }, "input.unknown_endpoint", Error, CallerInput, InputObservation, false, true, false;
+    InputWrongSignalKind, Self::InputWrongSignalKind { .. }, "input.wrong_signal_kind", Error, CallerInput, InputObservation, false, true, false;
+    InputDuplicateObservation, Self::InputDuplicateObservation { .. }, "input.duplicate_observation", Error, CallerInput, InputObservation, false, true, false;
+    InputConflictingObservation, Self::InputConflictingObservation { .. }, "input.conflicting_observation", Error, CallerInput, InputObservation, false, true, false;
+    InputMissingRequiredLevel, Self::InputMissingRequiredLevel { .. }, "input.missing_required_level", Error, CallerInput, InputObservation, false, true, false;
+    InputWrongNetwork, Self::InputWrongNetwork { .. }, "input.wrong_network", Error, Compatibility, InputSchema, false, true, false;
+    InputForeignSchema, Self::InputForeignSchema { .. }, "input.foreign_schema", Error, Compatibility, InputSchema, false, true, false;
+    InputStaleSchema, Self::InputStaleSchema { .. }, "input.stale_schema", Error, Compatibility, InputSchema, false, true, false;
+    InspectionUnknownSubject, Self::InspectionUnknownSubject { .. }, "inspection.unknown_subject", Error, CallerInput, MissingReference, false, true, false;
+    InspectionWrongSubjectKind, Self::InspectionWrongSubjectKind { .. }, "inspection.wrong_subject_kind", Error, CallerInput, KindMismatch, false, true, false;
+    ExplanationForeignCause, Self::ExplanationForeignCause { .. }, "explanation.foreign_cause", Error, Compatibility, Provenance, false, true, false;
+    ExplanationInvalidCause, Self::ExplanationInvalidCause { .. }, "explanation.invalid_cause", Error, CallerInput, Provenance, false, true, false;
+    InternalDiagnosticEvidenceConflict, Self::InternalDiagnosticEvidenceConflict { .. }, "internal.diagnostic_evidence_conflict", Error, LibraryDefect, InternalInvariant, false, false, true;
 }
 
 /// One structured, catalogue-valid problem record.
@@ -1100,10 +1488,16 @@ impl<D> Problem<D> {
     /// Creates a problem only when its code and evidence are the catalogue pair.
     pub(crate) fn new(
         primary: SubjectRef,
-        related: Vec<RelatedSubject>,
+        mut related: Vec<RelatedSubject>,
         mut evidence: ProblemEvidence<D>,
     ) -> Self {
         evidence.canonicalize();
+        related.sort_by(|left, right| {
+            left.role
+                .cmp(&right.role)
+                .then_with(|| left.subject.cmp_canonical(&right.subject))
+        });
+        related.dedup_by(|left, right| left.role == right.role && left.subject == right.subject);
         Self {
             code: evidence.code(),
             primary,
@@ -1166,7 +1560,7 @@ pub struct Diagnostic<D> {
 impl<D> Diagnostic<D> {
     /// Converts a catalogue-valid report problem into a report finding.
     pub fn new(problem: Problem<D>) -> Result<Self, Box<Problem<D>>> {
-        if problem.code.specification().report_finding {
+        if problem.code.allows_delivery(ProblemDelivery::ReportFinding) {
             Ok(Self { problem })
         } else {
             Err(Box::new(problem))
@@ -1250,6 +1644,20 @@ impl<D> DiagnosticSet<D> {
         self.findings.sort_by(compare_diagnostics);
     }
 
+    pub(crate) fn insert_internal_defect(&mut self, problem: Problem<D>) {
+        if problem
+            .code()
+            .allows_delivery(ProblemDelivery::InternalDefect)
+        {
+            self.internal_defects.push(problem);
+            self.internal_defects.sort_by(|left, right| {
+                left.primary
+                    .cmp_canonical(&right.primary)
+                    .then_with(|| left.code.as_str().cmp(right.code.as_str()))
+            });
+        }
+    }
+
     fn record_evidence_conflict(&mut self, code: DiagnosticCode, primary: SubjectRef) {
         if self.internal_defects.iter().any(|defect| {
             defect.code == DiagnosticCode::InternalDiagnosticEvidenceConflict
@@ -1309,10 +1717,16 @@ enum ConditionDiscriminator {
     StandardSource(StandardModuleRef, SubjectRef),
     StandardDetail(StandardModuleRef, String),
     Binding(DiagnosticCode, Option<BindingSubjectRef>),
+    ModuleBinding(ModuleInstanceKey, AnyModuleInputKey, ModuleBindingIssue),
+    Text(&'static str, String),
+    Operation(DiagnosticCode),
 }
 
 fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscriminator {
     match evidence {
+        ProblemEvidence::AuthoringForeignSignal { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::AuthoringForeignSignal)
+        }
         ProblemEvidence::ValidationDuplicateKey { key, .. } => {
             ConditionDiscriminator::Subject(*key)
         }
@@ -1336,6 +1750,11 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         | ProblemEvidence::ValidationUnsupportedMultipleDrivers { .. } => {
             ConditionDiscriminator::Empty
         }
+        ProblemEvidence::ValidationInvalidParameter {
+            parameter,
+            encountered,
+            ..
+        } => ConditionDiscriminator::Text(parameter, encountered.clone()),
         ProblemEvidence::ValidationMissingRequiredInput {
             required,
             expected_kind,
@@ -1368,8 +1787,11 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
             ConditionDiscriminator::Cycle(members.clone())
         }
         ProblemEvidence::ValidationInvalidModuleBinding {
-            instance, input, ..
-        } => ConditionDiscriminator::Subject(SubjectRef::ModuleInstanceInput(*instance, *input)),
+            instance,
+            input,
+            issue,
+            ..
+        } => ConditionDiscriminator::ModuleBinding(*instance, *input, *issue),
         ProblemEvidence::ValidationMalformedHierarchy {
             instance, parent, ..
         } => ConditionDiscriminator::Subjects(
@@ -1477,6 +1899,78 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         ProblemEvidence::BindingStaleSchema { evidence, .. } => {
             ConditionDiscriminator::Binding(DiagnosticCode::BindingStaleSchema, evidence.endpoint)
         }
+        ProblemEvidence::LifecycleNotInitialized { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::LifecycleNotInitialized)
+        }
+        ProblemEvidence::LifecycleAlreadyInitialized { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::LifecycleAlreadyInitialized)
+        }
+        ProblemEvidence::LifecycleDeltaBeforeInitialization { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::LifecycleDeltaBeforeInitialization)
+        }
+        ProblemEvidence::RuntimeStaleRevision { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimeStaleRevision)
+        }
+        ProblemEvidence::RuntimeTimeNotStrictlyIncreasing { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimeTimeNotStrictlyIncreasing)
+        }
+        ProblemEvidence::RuntimeTimeOverflow { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimeTimeOverflow)
+        }
+        ProblemEvidence::RuntimeInvalidTimeSubtraction { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimeInvalidTimeSubtraction)
+        }
+        ProblemEvidence::RuntimeZeroSpanNotAllowed { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimeZeroSpanNotAllowed)
+        }
+        ProblemEvidence::RuntimePulseCountOverflow { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimePulseCountOverflow)
+        }
+        ProblemEvidence::RuntimePolicyMissingLimit { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimePolicyMissingLimit)
+        }
+        ProblemEvidence::RuntimePolicyInvalidLimit { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimePolicyInvalidLimit)
+        }
+        ProblemEvidence::RuntimeBudgetExceeded { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimeBudgetExceeded)
+        }
+        ProblemEvidence::InputUnknownEndpoint { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::InputUnknownEndpoint)
+        }
+        ProblemEvidence::InputWrongSignalKind { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::InputWrongSignalKind)
+        }
+        ProblemEvidence::InputDuplicateObservation { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::InputDuplicateObservation)
+        }
+        ProblemEvidence::InputConflictingObservation { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::InputConflictingObservation)
+        }
+        ProblemEvidence::InputMissingRequiredLevel { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::InputMissingRequiredLevel)
+        }
+        ProblemEvidence::InputWrongNetwork { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::InputWrongNetwork)
+        }
+        ProblemEvidence::InputForeignSchema { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::InputForeignSchema)
+        }
+        ProblemEvidence::InputStaleSchema { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::InputStaleSchema)
+        }
+        ProblemEvidence::InspectionUnknownSubject { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::InspectionUnknownSubject)
+        }
+        ProblemEvidence::InspectionWrongSubjectKind { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::InspectionWrongSubjectKind)
+        }
+        ProblemEvidence::ExplanationForeignCause { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::ExplanationForeignCause)
+        }
+        ProblemEvidence::ExplanationInvalidCause { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::ExplanationInvalidCause)
+        }
         ProblemEvidence::InternalDiagnosticEvidenceConflict {
             conflicting_code,
             conflicting_primary,
@@ -1581,6 +2075,9 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
             ConditionDiscriminator::StandardSource(_, _) => 16,
             ConditionDiscriminator::StandardDetail(_, _) => 17,
             ConditionDiscriminator::Binding(_, _) => 18,
+            ConditionDiscriminator::Text(_, _) => 19,
+            ConditionDiscriminator::Operation(_) => 20,
+            ConditionDiscriminator::ModuleBinding(_, _, _) => 21,
         }
     }
     tag(&left)
@@ -1671,8 +2168,36 @@ fn compare_discriminators(left: ConditionDiscriminator, right: ConditionDiscrimi
                 ConditionDiscriminator::Binding(left_code, left_subject),
                 ConditionDiscriminator::Binding(right_code, right_subject),
             ) => (left_code, left_subject).cmp(&(right_code, right_subject)),
+            (
+                ConditionDiscriminator::Text(left_key, left_value),
+                ConditionDiscriminator::Text(right_key, right_value),
+            ) => (left_key, left_value).cmp(&(right_key, right_value)),
+            (ConditionDiscriminator::Operation(left), ConditionDiscriminator::Operation(right)) => {
+                left.cmp(&right)
+            }
+            (
+                ConditionDiscriminator::ModuleBinding(left_instance, left_input, left_issue),
+                ConditionDiscriminator::ModuleBinding(right_instance, right_input, right_issue),
+            ) => (
+                left_instance,
+                left_input,
+                module_binding_issue_tag(left_issue),
+            )
+                .cmp(&(
+                    right_instance,
+                    right_input,
+                    module_binding_issue_tag(right_issue),
+                )),
             _ => Ordering::Equal,
         })
+}
+
+const fn module_binding_issue_tag(issue: ModuleBindingIssue) -> u8 {
+    match issue {
+        ModuleBindingIssue::Missing => 0,
+        ModuleBindingIssue::Duplicate => 1,
+        ModuleBindingIssue::Invalid => 2,
+    }
 }
 
 fn compare_required_inputs(left: RequiredInputRef, right: RequiredInputRef) -> Ordering {
@@ -1756,6 +2281,60 @@ mod tests {
     use super::*;
     use crate::key::{AnyInPortKey, InPortKey};
     use crate::signal::Level;
+    use std::collections::BTreeSet;
+    use std::fmt::Write as _;
+
+    #[test]
+    fn implemented_catalogue_matches_the_reviewable_golden_registry() {
+        let mut spellings = BTreeSet::new();
+        let mut rendered = String::new();
+        for code in DiagnosticCode::ALL {
+            assert!(
+                spellings.insert(code.as_str()),
+                "duplicate catalogue spelling"
+            );
+            writeln!(
+                rendered,
+                "{}|{:?}|{:?}|{:?}|{}|{}|{}",
+                code.as_str(),
+                code.severity(),
+                code.responsibility(),
+                code.evidence_schema(),
+                code.allows_delivery(ProblemDelivery::ReportFinding),
+                code.allows_delivery(ProblemDelivery::OperationFailure),
+                code.allows_delivery(ProblemDelivery::InternalDefect),
+            )
+            .unwrap_or_else(|_| unreachable!("writing to String cannot fail"));
+        }
+        assert_eq!(
+            rendered,
+            include_str!("../tests/golden/diagnostic_catalogue.txt")
+        );
+    }
+
+    #[test]
+    fn public_failure_leaf_inventory_is_unique_complete_and_operation_backed() {
+        let mut leaves = BTreeSet::new();
+        for line in include_str!("../tests/golden/public_failure_inventory.txt").lines() {
+            let Some((leaf, mapping)) = line.split_once('|') else {
+                panic!("failure inventory row must contain one separator: {line}");
+            };
+            assert!(leaves.insert(leaf), "duplicate public failure leaf: {leaf}");
+            if mapping == "delegate" || mapping == "aggregate" {
+                continue;
+            }
+            let code = DiagnosticCode::ALL
+                .iter()
+                .copied()
+                .find(|code| code.as_str() == mapping)
+                .unwrap_or_else(|| panic!("unregistered failure code: {mapping}"));
+            assert!(
+                code.allows_delivery(ProblemDelivery::OperationFailure),
+                "public failure leaf uses a code that forbids failure delivery: {leaf}"
+            );
+        }
+        assert_eq!(leaves.len(), 81);
+    }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {
         Diagnostic::new(Problem::new(

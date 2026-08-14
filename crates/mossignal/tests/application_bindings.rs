@@ -250,6 +250,24 @@ fn construction_and_compatibility_failures_use_binding_catalogue_codes() {
         .err()
         .unwrap_or_else(|| panic!("changed topology under the same network key must fail"));
     assert_eq!(stale_schema.code(), DiagnosticCode::BindingStaleSchema);
+
+    for failure in [
+        &unknown,
+        &wrong_kind,
+        &wrong_output_kind,
+        &duplicate,
+        &duplicate_external,
+        &missing,
+        &missing_output,
+        &wrong_network,
+        &stale_schema,
+    ] {
+        let problem = failure.problem::<Domain>();
+        assert_eq!(problem.code(), failure.code());
+        assert_eq!(problem.evidence().code(), failure.code());
+        assert_eq!(problem.severity(), failure.severity());
+        assert_eq!(problem.responsibility(), failure.responsibility());
+    }
 }
 
 #[test]
@@ -789,4 +807,39 @@ fn bound_and_direct_budget_failures_are_equivalent_and_atomic() {
         ),
         bound_before
     );
+}
+
+#[test]
+fn projection_and_bound_wrappers_preserve_the_underlying_problem() {
+    let input = ExternalInputKey::<Level>::from_u128(99);
+    let root = InputBuildFailure::UnknownInput { input };
+    let projection = InputProjectionFailure::<InputId>::InputBuild(root.clone());
+    assert_eq!(projection.code(), root.code());
+    assert_eq!(projection.problem::<Domain>(), root.problem::<Domain>());
+    assert_eq!(projection.severity(), root.severity());
+    assert_eq!(projection.responsibility(), root.responsibility());
+
+    let bound = BoundApplyFailure::<Domain, InputId>::Projection(projection);
+    assert_eq!(bound.code(), root.code());
+    assert_eq!(bound.problem(), root.problem::<Domain>());
+
+    for (failure, expected) in [
+        (
+            BoundOutputFailure::UnknownExternalKey,
+            DiagnosticCode::InspectionUnknownSubject,
+        ),
+        (
+            BoundOutputFailure::WrongSignalKind,
+            DiagnosticCode::InspectionWrongSubjectKind,
+        ),
+        (
+            BoundOutputFailure::NotInitialized,
+            DiagnosticCode::LifecycleNotInitialized,
+        ),
+    ] {
+        let problem = failure.problem::<Domain>();
+        assert_eq!(failure.code(), expected);
+        assert_eq!(problem.code(), expected);
+        assert_eq!(problem.evidence().code(), expected);
+    }
 }
