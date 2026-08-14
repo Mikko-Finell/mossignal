@@ -4,7 +4,7 @@
 
 use crate::authored::{
     ConnectionEndpoint, InputPortRole, ModuleInstanceDef, ModuleInterfaceMapping, NodeDef,
-    NodeKind, OutputPortRole, UncheckedModule, UncheckedNetwork,
+    NodeKind, UncheckedModule, UncheckedNetwork,
 };
 use crate::compile::CompiledNetwork;
 use crate::diagnostics::{
@@ -16,6 +16,7 @@ use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
     AnyOutPortKey, AnySignalSourceKey, ConnectionKey, ModuleInstanceKey, NodeKey, SignalSourceKey,
 };
+use crate::node_schema::node_schema;
 use crate::signal::{LogicLevel, SignalKind};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -202,7 +203,7 @@ impl ReactionDependencyGraph {
         let network = candidate.network();
         let mut vertices = BTreeSet::new();
         let mut dependencies = BTreeSet::new();
-        let mut input_owners = BTreeMap::new();
+        let input_owners = current_input_owners(network.nodes());
 
         for input in network.external_inputs() {
             vertices.insert(ReactionVertex::ExternalInput(input.key()));
@@ -211,9 +212,6 @@ impl ReactionDependencyGraph {
         for node in network.nodes() {
             let operation = ReactionVertex::NodeOperation(node.key());
             vertices.insert(operation);
-            for input in node.ports().inputs() {
-                input_owners.insert(*input, node.key());
-            }
             for output in node.ports().outputs() {
                 let output = ReactionVertex::NodeOutput(*output);
                 vertices.insert(output);
@@ -229,16 +227,10 @@ impl ReactionDependencyGraph {
             let ConnectionEndpoint::NodeInput(input) = connection.to() else {
                 continue;
             };
-            let Some(&owner) = input_owners.get(&input) else {
+            let Some(&(owner, contributes_current_dependency)) = input_owners.get(&input) else {
                 continue;
             };
-            // SPEC: docs/specs/contracts/pulse-delay.yaml "temporal-causality-barrier"
-            // Current PulseDelay input schedules later work and never feeds its current output.
-            if network
-                .nodes()
-                .iter()
-                .any(|node| node.key() == owner && matches!(node.kind(), NodeKind::PulseDelay(_)))
-            {
+            if !contributes_current_dependency {
                 continue;
             }
             let Some(source) = reaction_source(connection.from()) else {
@@ -275,7 +267,7 @@ impl ReactionDependencyGraph {
     pub(crate) fn from_module<D>(module: &UncheckedModule<D>) -> Self {
         let mut vertices = BTreeSet::new();
         let mut dependencies = BTreeSet::new();
-        let mut input_owners = BTreeMap::new();
+        let input_owners = current_input_owners(module.nodes());
 
         for input in module.inputs() {
             vertices.insert(ReactionVertex::ModuleInput(input.key()));
@@ -283,9 +275,6 @@ impl ReactionDependencyGraph {
         for node in module.nodes() {
             let operation = ReactionVertex::NodeOperation(node.key());
             vertices.insert(operation);
-            for input in node.ports().inputs() {
-                input_owners.insert(*input, node.key());
-            }
             for output in node.ports().outputs() {
                 let output = ReactionVertex::NodeOutput(*output);
                 vertices.insert(output);
@@ -300,14 +289,10 @@ impl ReactionDependencyGraph {
             let ConnectionEndpoint::NodeInput(input) = connection.to() else {
                 continue;
             };
-            let Some(&owner) = input_owners.get(&input) else {
+            let Some(&(owner, contributes_current_dependency)) = input_owners.get(&input) else {
                 continue;
             };
-            if module
-                .nodes()
-                .iter()
-                .any(|node| node.key() == owner && matches!(node.kind(), NodeKind::PulseDelay(_)))
-            {
+            if !contributes_current_dependency {
                 continue;
             }
             let Some(source) = reaction_source(connection.from()) else {
@@ -325,12 +310,11 @@ impl ReactionDependencyGraph {
                     let ConnectionEndpoint::NodeInput(target) = target else {
                         continue;
                     };
-                    let Some(&owner) = input_owners.get(&target) else {
+                    let Some(&(owner, contributes_current_dependency)) = input_owners.get(&target)
+                    else {
                         continue;
                     };
-                    if module.nodes().iter().any(|node| {
-                        node.key() == owner && matches!(node.kind(), NodeKind::PulseDelay(_))
-                    }) {
+                    if !contributes_current_dependency {
                         continue;
                     }
                     dependencies.insert(ReactionDependency {
@@ -481,6 +465,19 @@ impl ReactionDependencyGraph {
         }
         order
     }
+}
+
+fn current_input_owners<D>(nodes: &[NodeDef<D>]) -> BTreeMap<AnyInPortKey, (NodeKey, bool)> {
+    let mut owners = BTreeMap::new();
+    for node in nodes {
+        let schema = node_schema(node.kind());
+        for (input, role) in node.ports().inputs().iter().zip(node.ports().input_roles()) {
+            let contributes_current_dependency =
+                schema.input_affects_any_current_output(*role, node.ports().output_roles());
+            owners.insert(*input, (node.key(), contributes_current_dependency));
+        }
+    }
+    owners
 }
 
 fn add_instance_dependencies<D>(
@@ -1024,44 +1021,21 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
 
     fn validate_node_shapes(&mut self) {
         for node in self.network.nodes() {
-            let expected_inputs = match node.kind() {
-                NodeKind::Constant(_) => Some(0),
-                NodeKind::Not => Some(1),
-                NodeKind::All | NodeKind::Any | NodeKind::Parity | NodeKind::AtLeast(_) => None,
-                NodeKind::Select | NodeKind::PulseSelect => Some(3),
-                NodeKind::Merge | NodeKind::Zip => None,
-                NodeKind::Coalesce => Some(1),
-                NodeKind::PulseGate | NodeKind::PulseRoute => Some(2),
-                NodeKind::RisingEdge(_)
-                | NodeKind::FallingEdge(_)
-                | NodeKind::AnyEdge(_)
-                | NodeKind::Toggle(_)
-                | NodeKind::PulseDelay(_) => Some(1),
-            };
-            let expected_output_kind = match node.kind() {
-                NodeKind::Merge | NodeKind::Coalesce | NodeKind::Zip => SignalKind::Pulse,
-                NodeKind::PulseGate
-                | NodeKind::PulseSelect
-                | NodeKind::PulseRoute
-                | NodeKind::RisingEdge(_)
-                | NodeKind::FallingEdge(_)
-                | NodeKind::AnyEdge(_)
-                | NodeKind::PulseDelay(_) => SignalKind::Pulse,
-                _ => SignalKind::Level,
-            };
-            let expected_outputs = if matches!(node.kind(), NodeKind::PulseRoute) {
-                2
-            } else {
-                1
-            };
+            let schema = node_schema(node.kind());
+            let expected_inputs = schema.expected_input_count();
+            let expected_outputs = schema.expected_output_count();
             let inputs = node.ports().inputs();
             let outputs = node.ports().outputs();
-            if matches!(node.kind(), NodeKind::Zip) && inputs.is_empty() {
+            if expected_inputs.is_none() && inputs.len() < schema.minimum_input_count() {
                 // SPEC: docs/specs/contracts/pulse-combinational-expansion.yaml
                 // "structural-validation-and-findings" — Zip has no finite empty law.
                 self.add(
                     SubjectRef::Node(node.key()),
-                    ProblemEvidence::invalid_variadic_arity(Vec::new(), 1, 0),
+                    ProblemEvidence::invalid_variadic_arity(
+                        inputs.iter().copied().map(SubjectRef::InPort).collect(),
+                        schema.minimum_input_count(),
+                        inputs.len(),
+                    ),
                 );
             }
             if let Some(expected_inputs) = expected_inputs
@@ -1088,66 +1062,8 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ),
                 );
             }
-            let expected_input_kind = |role: InputPortRole| match node.kind() {
-                NodeKind::PulseGate => match role {
-                    InputPortRole::Pulses => Some(SignalKind::Pulse),
-                    InputPortRole::Enable => Some(SignalKind::Level),
-                    _ => None,
-                },
-                NodeKind::PulseSelect => match role {
-                    InputPortRole::Selector => Some(SignalKind::Level),
-                    InputPortRole::WhenLow | InputPortRole::WhenHigh => Some(SignalKind::Pulse),
-                    _ => None,
-                },
-                NodeKind::PulseRoute => match role {
-                    InputPortRole::Selector => Some(SignalKind::Level),
-                    InputPortRole::Pulses => Some(SignalKind::Pulse),
-                    _ => None,
-                },
-                NodeKind::Merge | NodeKind::Coalesce | NodeKind::Zip => {
-                    (role == InputPortRole::Input).then_some(SignalKind::Pulse)
-                }
-                NodeKind::Toggle(_) => (role == InputPortRole::Toggle).then_some(SignalKind::Pulse),
-                NodeKind::PulseDelay(_) => {
-                    (role == InputPortRole::PulseDelay).then_some(SignalKind::Pulse)
-                }
-                NodeKind::RisingEdge(_) | NodeKind::FallingEdge(_) | NodeKind::AnyEdge(_) => {
-                    (role == InputPortRole::Input).then_some(SignalKind::Level)
-                }
-                NodeKind::Select => matches!(
-                    role,
-                    InputPortRole::Selector | InputPortRole::WhenLow | InputPortRole::WhenHigh
-                )
-                .then_some(SignalKind::Level),
-                _ => (role == InputPortRole::Input).then_some(SignalKind::Level),
-            };
-            let required_input_roles = match node.kind() {
-                NodeKind::Constant(_) => Vec::new(),
-                NodeKind::Not => vec![InputPortRole::Input],
-                NodeKind::Select | NodeKind::PulseSelect => vec![
-                    InputPortRole::Selector,
-                    InputPortRole::WhenLow,
-                    InputPortRole::WhenHigh,
-                ],
-                NodeKind::PulseGate => {
-                    vec![InputPortRole::Pulses, InputPortRole::Enable]
-                }
-                NodeKind::PulseRoute => {
-                    vec![InputPortRole::Selector, InputPortRole::Pulses]
-                }
-                NodeKind::Coalesce => vec![InputPortRole::Input],
-                NodeKind::RisingEdge(_) | NodeKind::FallingEdge(_) | NodeKind::AnyEdge(_) => {
-                    vec![InputPortRole::Input]
-                }
-                NodeKind::Toggle(_) => vec![InputPortRole::Toggle],
-                NodeKind::PulseDelay(_) => vec![InputPortRole::PulseDelay],
-                NodeKind::All
-                | NodeKind::Any
-                | NodeKind::Parity
-                | NodeKind::AtLeast(_)
-                | NodeKind::Merge
-                | NodeKind::Zip => vec![InputPortRole::Input; inputs.len()],
-            };
+            let expected_input_kind = |role: InputPortRole| schema.input_kind(role);
+            let required_input_roles = schema.required_input_roles(inputs.len());
             if expected_inputs.is_some() {
                 for required in &required_input_roles {
                     let attached_count = inputs
@@ -1184,7 +1100,10 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ),
                 );
             }
-            if outputs.iter().any(|key| key.kind() != expected_output_kind) {
+            let output_kinds_valid = outputs
+                .iter()
+                .all(|key| schema.accepts_output_kind(key.kind()));
+            if !output_kinds_valid {
                 self.add(
                     SubjectRef::Node(node.key()),
                     ProblemEvidence::invalid_fixed_arity(
@@ -1223,11 +1142,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ),
                 );
             }
-            let required_output_roles = if matches!(node.kind(), NodeKind::PulseRoute) {
-                vec![OutputPortRole::WhenLow, OutputPortRole::WhenHigh]
-            } else {
-                vec![OutputPortRole::Output; outputs.len()]
-            };
+            let required_output_roles = schema.required_output_roles(outputs.len());
             let output_role_count = node.ports().output_roles().len();
             let valid_output_role_count = required_output_roles
                 .iter()
@@ -1255,22 +1170,15 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                     ),
                 );
             }
-            if matches!(
-                node.kind(),
-                NodeKind::All
-                    | NodeKind::Any
-                    | NodeKind::Parity
-                    | NodeKind::AtLeast(_)
-                    | NodeKind::Merge
-                    | NodeKind::Zip
-            ) && outputs.len() == 1
-                && outputs.iter().all(|key| key.kind() == expected_output_kind)
+            if schema.is_variadic()
+                && outputs.len() == expected_outputs
+                && output_kinds_valid
                 && input_kinds_valid
                 && role_count == inputs.len()
                 && valid_role_count == inputs.len()
             {
                 let ports = inputs.iter().copied().map(SubjectRef::InPort).collect();
-                if inputs.is_empty() && !matches!(node.kind(), NodeKind::Zip) {
+                if inputs.is_empty() && schema.minimum_input_count() == 0 {
                     self.add(
                         SubjectRef::Node(node.key()),
                         ProblemEvidence::empty_variadic_node(ports),

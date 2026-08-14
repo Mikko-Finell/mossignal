@@ -9,6 +9,7 @@ use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
     AnyOutPortKey, AnySignalSourceKey, SignalSourceKey,
 };
+use crate::node_schema::node_schema;
 use crate::signal::{LogicLevel, SignalKind};
 use core::fmt;
 
@@ -313,39 +314,39 @@ fn module_connections(writer: &mut Cbor, connections: &[ConnectionDef]) {
 }
 
 fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
+    let identity_tag = node_schema(kind).semantic_kind().identity_tag();
     match kind {
         NodeKind::Constant(config) => {
-            writer.variant_start("constant");
+            writer.variant_start(identity_tag);
             writer.record_start(1);
             writer.field("value", |writer| logic_level(writer, config.value()));
         }
-        NodeKind::Not => writer.variant_null("not"),
-        NodeKind::All => writer.variant_null("all"),
-        NodeKind::Any => writer.variant_null("any"),
-        NodeKind::Parity => writer.variant_null("parity"),
+        NodeKind::Not | NodeKind::All | NodeKind::Any | NodeKind::Parity => {
+            writer.variant_null(identity_tag)
+        }
         NodeKind::AtLeast(config) => {
-            writer.variant_start("at_least");
+            writer.variant_start(identity_tag);
             writer.record_start(1);
             writer.field("threshold", |writer| writer.uint(config.threshold));
         }
-        NodeKind::Select => writer.variant_null("select"),
-        NodeKind::Merge => writer.variant_null("merge"),
-        NodeKind::Coalesce => writer.variant_null("coalesce"),
-        NodeKind::Zip => writer.variant_null("zip"),
-        NodeKind::PulseGate => writer.variant_null("pulse_gate"),
-        NodeKind::PulseSelect => writer.variant_null("pulse_select"),
-        NodeKind::PulseRoute => writer.variant_null("pulse_route"),
-        NodeKind::RisingEdge(config) => edge_detector_kind(writer, "rising_edge", *config),
-        NodeKind::FallingEdge(config) => edge_detector_kind(writer, "falling_edge", *config),
-        NodeKind::AnyEdge(config) => edge_detector_kind(writer, "any_edge", *config),
+        NodeKind::Select
+        | NodeKind::Merge
+        | NodeKind::Coalesce
+        | NodeKind::Zip
+        | NodeKind::PulseGate
+        | NodeKind::PulseSelect
+        | NodeKind::PulseRoute => writer.variant_null(identity_tag),
+        NodeKind::RisingEdge(config)
+        | NodeKind::FallingEdge(config)
+        | NodeKind::AnyEdge(config) => edge_detector_kind(writer, identity_tag, *config),
         NodeKind::Toggle(config) => {
-            writer.variant_start("toggle");
+            writer.variant_start(identity_tag);
             writer.record_start(2);
             writer.field("initial", |writer| logic_level(writer, config.initial));
             writer.field("state_schema", |writer| writer.variant_null("stored_level"));
         }
         NodeKind::PulseDelay(config) => {
-            writer.variant_start("pulse_delay");
+            writer.variant_start(identity_tag);
             writer.record_start(2);
             writer.field("delay_ticks", |writer| writer.uint(config.delay.ticks()));
             writer.field("temporal_schema", |writer| {

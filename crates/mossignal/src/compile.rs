@@ -18,6 +18,7 @@ use crate::module::{
     ModuleDef, NodeSubject, PulsePortSubject, QualifiedConnectionRef, QualifiedInPortRef,
     QualifiedModuleRef, QualifiedNodeRef,
 };
+use crate::node_schema::{SemanticNodeKind, StateFamily, TemporalFamily, schema_for_kind};
 use crate::policy::RuntimePolicy;
 use crate::signal::{Level, LogicLevel, Pulse, PulseCount, SignalKind};
 use crate::time::NonZeroSpan;
@@ -187,6 +188,125 @@ enum CompiledNodeKind {
         input: PortIndex,
         delay_ticks: u64,
     },
+}
+
+impl CompiledNodeKind {
+    const fn semantic_kind(self) -> SemanticNodeKind {
+        match self {
+            Self::Constant(_) => SemanticNodeKind::Constant,
+            Self::Not => SemanticNodeKind::Not,
+            Self::All => SemanticNodeKind::All,
+            Self::Any => SemanticNodeKind::Any,
+            Self::Parity => SemanticNodeKind::Parity,
+            Self::AtLeast(_) => SemanticNodeKind::AtLeast,
+            Self::Select { .. } => SemanticNodeKind::Select,
+            Self::Merge => SemanticNodeKind::Merge,
+            Self::Coalesce => SemanticNodeKind::Coalesce,
+            Self::Zip => SemanticNodeKind::Zip,
+            Self::PulseGate { .. } => SemanticNodeKind::PulseGate,
+            Self::PulseSelect { .. } => SemanticNodeKind::PulseSelect,
+            Self::PulseRoute { .. } => SemanticNodeKind::PulseRoute,
+            Self::EdgeDetector { detector, .. } => match detector {
+                EdgeDetectorKind::Rising => SemanticNodeKind::RisingEdge,
+                EdgeDetectorKind::Falling => SemanticNodeKind::FallingEdge,
+                EdgeDetectorKind::Any => SemanticNodeKind::AnyEdge,
+            },
+            Self::Toggle { .. } => SemanticNodeKind::Toggle,
+            Self::PulseDelay { .. } => SemanticNodeKind::PulseDelay,
+        }
+    }
+
+    fn input_role(self, port: PortIndex) -> Option<InputPortRole> {
+        match self {
+            Self::Constant(_) => None,
+            Self::Not
+            | Self::All
+            | Self::Any
+            | Self::Parity
+            | Self::AtLeast(_)
+            | Self::Merge
+            | Self::Coalesce
+            | Self::Zip => Some(InputPortRole::Input),
+            Self::Select {
+                selector,
+                when_low,
+                when_high,
+            }
+            | Self::PulseSelect {
+                selector,
+                when_low,
+                when_high,
+            } => {
+                if port == selector {
+                    Some(InputPortRole::Selector)
+                } else if port == when_low {
+                    Some(InputPortRole::WhenLow)
+                } else if port == when_high {
+                    Some(InputPortRole::WhenHigh)
+                } else {
+                    None
+                }
+            }
+            Self::PulseGate { pulses, enable } => {
+                if port == pulses {
+                    Some(InputPortRole::Pulses)
+                } else if port == enable {
+                    Some(InputPortRole::Enable)
+                } else {
+                    None
+                }
+            }
+            Self::PulseRoute {
+                selector, pulses, ..
+            } => {
+                if port == selector {
+                    Some(InputPortRole::Selector)
+                } else if port == pulses {
+                    Some(InputPortRole::Pulses)
+                } else {
+                    None
+                }
+            }
+            Self::EdgeDetector { input, .. } if port == input => Some(InputPortRole::Input),
+            Self::Toggle { input, .. } if port == input => Some(InputPortRole::Toggle),
+            Self::PulseDelay { input, .. } if port == input => Some(InputPortRole::PulseDelay),
+            Self::EdgeDetector { .. } | Self::Toggle { .. } | Self::PulseDelay { .. } => None,
+        }
+    }
+
+    fn output_role(self, port: PortIndex) -> Option<OutputPortRole> {
+        match self {
+            Self::PulseRoute {
+                when_low,
+                when_high,
+                ..
+            } => {
+                if port == when_low {
+                    Some(OutputPortRole::WhenLow)
+                } else if port == when_high {
+                    Some(OutputPortRole::WhenHigh)
+                } else {
+                    None
+                }
+            }
+            _ => Some(OutputPortRole::Output),
+        }
+    }
+
+    const fn state_family(self) -> Option<StateFamily> {
+        match self {
+            Self::EdgeDetector { .. } => Some(StateFamily::EdgeObservation),
+            Self::Toggle { .. } => Some(StateFamily::StoredLevel),
+            _ => None,
+        }
+    }
+
+    const fn temporal_family(self) -> Option<TemporalFamily> {
+        match self {
+            Self::PulseDelay { .. } => Some(TemporalFamily::PendingPulseGroup),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1688,20 +1808,19 @@ impl<D> CompiledInner<D> {
             }
         }
         for node in &self.nodes {
-            let shape_valid = match node.kind {
-                CompiledNodeKind::Constant(_) => node.inputs.is_empty() && node.outputs.len() == 1,
-                CompiledNodeKind::Not => node.inputs.len() == 1 && node.outputs.len() == 1,
-                CompiledNodeKind::All
+            let schema = schema_for_kind(node.kind.semantic_kind());
+            let descriptor_details_valid = match node.kind {
+                CompiledNodeKind::Constant(_)
+                | CompiledNodeKind::Not
+                | CompiledNodeKind::All
                 | CompiledNodeKind::Any
                 | CompiledNodeKind::Parity
                 | CompiledNodeKind::AtLeast(_)
-                | CompiledNodeKind::Merge => node.outputs.len() == 1,
-                CompiledNodeKind::Coalesce => node.inputs.len() == 1 && node.outputs.len() == 1,
-                CompiledNodeKind::Zip => !node.inputs.is_empty() && node.outputs.len() == 1,
+                | CompiledNodeKind::Merge
+                | CompiledNodeKind::Coalesce
+                | CompiledNodeKind::Zip => true,
                 CompiledNodeKind::PulseGate { pulses, enable } => {
-                    node.inputs.len() == 2
-                        && node.outputs.len() == 1
-                        && pulses != enable
+                    pulses != enable
                         && node.inputs.contains(&pulses)
                         && node.inputs.contains(&enable)
                 }
@@ -1710,9 +1829,7 @@ impl<D> CompiledInner<D> {
                     when_low,
                     when_high,
                 } => {
-                    node.inputs.len() == 3
-                        && node.outputs.len() == 1
-                        && selector != when_low
+                    selector != when_low
                         && selector != when_high
                         && when_low != when_high
                         && node.inputs.contains(&selector)
@@ -1725,9 +1842,7 @@ impl<D> CompiledInner<D> {
                     when_low,
                     when_high,
                 } => {
-                    node.inputs.len() == 2
-                        && node.outputs.len() == 2
-                        && selector != pulses
+                    selector != pulses
                         && when_low != when_high
                         && node.inputs.contains(&selector)
                         && node.inputs.contains(&pulses)
@@ -1735,31 +1850,20 @@ impl<D> CompiledInner<D> {
                         && node.outputs.contains(&when_high)
                 }
                 CompiledNodeKind::EdgeDetector { input, state, .. } => {
-                    node.inputs.len() == 1
-                        && node.outputs.len() == 1
-                        && node.inputs[0] == input
-                        && state.0 < self.edge_initial_observations.len()
+                    node.inputs.contains(&input) && state.0 < self.edge_initial_observations.len()
                 }
                 CompiledNodeKind::Toggle { input, state } => {
-                    node.inputs.len() == 1
-                        && node.outputs.len() == 1
-                        && node.inputs[0] == input
-                        && state.0 < self.toggle_initial_states.len()
+                    node.inputs.contains(&input) && state.0 < self.toggle_initial_states.len()
                 }
                 CompiledNodeKind::PulseDelay { input, delay_ticks } => {
-                    node.inputs.len() == 1
-                        && node.outputs.len() == 1
-                        && node.inputs[0] == input
-                        && delay_ticks > 0
+                    node.inputs.contains(&input) && delay_ticks > 0
                 }
                 CompiledNodeKind::Select {
                     selector,
                     when_low,
                     when_high,
                 } => {
-                    node.inputs.len() == 3
-                        && node.outputs.len() == 1
-                        && selector != when_low
+                    selector != when_low
                         && selector != when_high
                         && when_low != when_high
                         && node.inputs.contains(&selector)
@@ -1767,6 +1871,11 @@ impl<D> CompiledInner<D> {
                         && node.inputs.contains(&when_high)
                 }
             };
+            let shape_valid = schema.accepts_input_count(node.inputs.len())
+                && node.outputs.len() == schema.expected_output_count()
+                && schema.state_family() == node.kind.state_family()
+                && schema.temporal_family() == node.kind.temporal_family()
+                && descriptor_details_valid;
             if !shape_valid {
                 return Err("compiled descriptor disagrees with node kind");
             }
@@ -1774,32 +1883,12 @@ impl<D> CompiledInner<D> {
                 let Some(port) = self.ports.get(index.0) else {
                     return Err("compiled port reference is out of bounds");
                 };
-                let input_kind = match node.kind {
-                    CompiledNodeKind::Merge
-                    | CompiledNodeKind::Coalesce
-                    | CompiledNodeKind::Zip
-                    | CompiledNodeKind::Toggle { .. }
-                    | CompiledNodeKind::PulseDelay { .. } => SignalKind::Pulse,
-                    CompiledNodeKind::PulseGate { pulses, .. }
-                    | CompiledNodeKind::PulseRoute { pulses, .. } => {
-                        if *index == pulses {
-                            SignalKind::Pulse
-                        } else {
-                            SignalKind::Level
-                        }
-                    }
-                    CompiledNodeKind::PulseSelect {
-                        when_low,
-                        when_high,
-                        ..
-                    } => {
-                        if *index == when_low || *index == when_high {
-                            SignalKind::Pulse
-                        } else {
-                            SignalKind::Level
-                        }
-                    }
-                    _ => SignalKind::Level,
+                let Some(input_kind) = node
+                    .kind
+                    .input_role(*index)
+                    .and_then(|role| schema.input_kind(role))
+                else {
+                    return Err("compiled input port has no node-schema role");
                 };
                 if port.owner != self.node_lookup[&node.key] || port.kind != input_kind {
                     return Err("compiled port disagrees with validated node");
@@ -1809,16 +1898,12 @@ impl<D> CompiledInner<D> {
                 let Some(port) = self.ports.get(index.0) else {
                     return Err("compiled port reference is out of bounds");
                 };
-                let output_kind = match node.kind {
-                    CompiledNodeKind::Merge
-                    | CompiledNodeKind::Coalesce
-                    | CompiledNodeKind::Zip
-                    | CompiledNodeKind::PulseGate { .. }
-                    | CompiledNodeKind::PulseSelect { .. }
-                    | CompiledNodeKind::PulseRoute { .. }
-                    | CompiledNodeKind::EdgeDetector { .. }
-                    | CompiledNodeKind::PulseDelay { .. } => SignalKind::Pulse,
-                    _ => SignalKind::Level,
+                let Some(output_kind) = node
+                    .kind
+                    .output_role(*index)
+                    .and_then(|role| schema.output_kind(role))
+                else {
+                    return Err("compiled output port has no node-schema role");
                 };
                 if port.owner != self.node_lookup[&node.key] || port.kind != output_kind {
                     return Err("compiled port disagrees with validated node");

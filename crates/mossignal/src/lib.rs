@@ -11,6 +11,7 @@ pub mod key;
 mod machine;
 pub mod metadata;
 mod module;
+mod node_schema;
 mod policy;
 pub mod signal;
 pub mod standard;
