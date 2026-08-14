@@ -18,7 +18,9 @@ use core::marker::PhantomData;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-const PROVENANCE_SCOPE_DOMAIN: &[u8] = b"mossignal/transaction_provenance_scope/v1";
+const PROVENANCE_VIEW_SCOPE_DOMAIN: &[u8] = b"mossignal/provenance_view_scope/v1";
+type ProvenanceScope = [u8; 32];
+const UNFINALIZED_PROVENANCE_SCOPE: ProvenanceScope = [0; 32];
 
 enum TransactionKind<D> {
     Initialize(InputSnapshot<D>),
@@ -223,7 +225,7 @@ impl<D> std::error::Error for RuntimeFailure<D> {}
 /// An opaque result-scoped reference to one immutable provenance record.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CauseRef {
-    scope: [u8; 16],
+    scope: ProvenanceScope,
     ordinal: u32,
 }
 
@@ -360,7 +362,7 @@ impl std::error::Error for CauseLookupFailure {}
 
 /// An immutable result-owned view of initialization derivations.
 pub struct ProvenanceView<D> {
-    scope: [u8; 16],
+    scope: ProvenanceScope,
     records: Arc<Vec<ProvenanceRecord<D>>>,
 }
 
@@ -698,16 +700,7 @@ impl<D> Machine<D> {
             &self.store.edge_observations,
             &self.store.toggle_states,
         )?;
-        let ProvenanceBuild {
-            mut provenance,
-            operation_causes,
-            input_causes,
-            output_causes,
-            pulse_output_causes,
-            edge_observation_causes,
-            toggle_inversion_causes,
-            pulse_delay_schedules,
-        } = build_initialization_provenance(
+        let mut built = build_initialization_provenance(
             &self.compiled,
             revision,
             at,
@@ -728,23 +721,29 @@ impl<D> Machine<D> {
             at,
             revision,
             &evaluation,
-            &pulse_delay_schedules,
-            &mut provenance,
+            &built.pulse_delay_schedules,
+            &mut built.provenance,
             &self.policy,
         )?;
+        finalize_provenance_build(
+            &mut built,
+            self.compiled.network_key(),
+            self.compiled.fingerprint(),
+        );
+        remap_pending_causes(&mut pending_pulse_delays, built.provenance.scope);
         enforce_budget::<D>(
             &self.policy,
             RuntimePolicyLimit::MaxRequiredProvenanceGrowth,
-            count_as_u64(provenance.len()),
+            count_as_u64(built.provenance.len()),
         )?;
 
         let output_events = initialization_events(
             at,
             revision,
             &evaluation.external_outputs,
-            &output_causes,
+            &built.output_causes,
             &evaluation.pulse_outputs,
-            &pulse_output_causes,
+            &built.pulse_output_causes,
         );
         enforce_created_event_budget::<D>(
             &self.policy,
@@ -758,7 +757,7 @@ impl<D> Machine<D> {
             after_revision: revision,
             output_events,
             schedule,
-            provenance: provenance.clone(),
+            provenance: built.provenance.clone(),
         };
 
         publish_candidate(
@@ -767,12 +766,12 @@ impl<D> Machine<D> {
                 at,
                 levels,
                 evaluation,
-                input_causes,
-                output_causes,
-                provenance,
-                operation_causes,
-                edge_observation_causes,
-                toggle_inversion_causes,
+                input_causes: built.input_causes,
+                output_causes: built.output_causes,
+                provenance: built.provenance,
+                operation_causes: built.operation_causes,
+                edge_observation_causes: built.edge_observation_causes,
+                toggle_inversion_causes: built.toggle_inversion_causes,
                 pending_pulse_delays,
                 next_pending_event_serial,
             },
@@ -859,11 +858,8 @@ impl<D> Machine<D> {
 
             let mut built = build_ready_provenance(
                 &self.compiled,
-                self.compiled.network_key(),
-                self.compiled.fingerprint(),
                 revision,
                 deadline,
-                &levels,
                 &empty_levels,
                 &empty_pulses,
                 &internal,
@@ -888,10 +884,6 @@ impl<D> Machine<D> {
             );
             output_events.append(&mut reaction_events);
 
-            input_causes = built.input_causes;
-            output_causes = built.output_causes;
-            edge_observation_causes = built.edge_observation_causes;
-            toggle_inversion_causes = built.toggle_inversion_causes;
             edge_observations = internal.proposed_edge_observations.clone();
             toggle_states = internal.proposed_toggle_states.clone();
             output_baselines = internal.external_outputs.clone();
@@ -909,6 +901,17 @@ impl<D> Machine<D> {
                 &mut built.provenance,
                 &self.policy,
             )?;
+            finalize_provenance_build(
+                &mut built,
+                self.compiled.network_key(),
+                self.compiled.fingerprint(),
+            );
+            remap_pending_causes(&mut pending_pulse_delays, built.provenance.scope);
+            remap_output_event_causes(&mut output_events, built.provenance.scope);
+            input_causes = built.input_causes;
+            output_causes = built.output_causes;
+            edge_observation_causes = built.edge_observation_causes;
+            toggle_inversion_causes = built.toggle_inversion_causes;
             provenance = built.provenance;
             enforce_created_event_budget::<D>(
                 &self.policy,
@@ -945,11 +948,8 @@ impl<D> Machine<D> {
 
         let mut built = build_ready_provenance(
             &self.compiled,
-            self.compiled.network_key(),
-            self.compiled.fingerprint(),
             revision,
             at,
-            &levels,
             &explicit_levels,
             &pulses,
             &evaluation,
@@ -987,6 +987,13 @@ impl<D> Machine<D> {
             &mut built.provenance,
             &self.policy,
         )?;
+        finalize_provenance_build(
+            &mut built,
+            self.compiled.network_key(),
+            self.compiled.fingerprint(),
+        );
+        remap_pending_causes(&mut pending_pulse_delays, built.provenance.scope);
+        remap_output_event_causes(&mut output_events, built.provenance.scope);
         enforce_created_event_budget::<D>(
             &self.policy,
             created_pending_events,
@@ -1296,14 +1303,14 @@ fn schedule_from_pending<D>(pending: &BTreeMap<Time<D>, Vec<PendingPulseDelay<D>
 
 fn remap_pending_causes<D>(
     pending: &mut BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
-    scope: [u8; 16],
+    scope: ProvenanceScope,
 ) {
     for event in pending.values_mut().flatten() {
         event.cause = remap_cause(event.cause, scope);
     }
 }
 
-fn remap_output_event_causes<D>(events: &mut [OutputEvent<D>], scope: [u8; 16]) {
+fn remap_output_event_causes<D>(events: &mut [OutputEvent<D>], scope: ProvenanceScope) {
     for event in events {
         let cause = match event {
             OutputEvent::LevelEstablished { cause, .. }
@@ -1394,34 +1401,169 @@ fn enforce_budget<D>(
     Ok(())
 }
 
-fn provenance_scope<D>(
+fn hash_cause(hasher: &mut blake3::Hasher, cause: CauseRef) {
+    hasher.update(&cause.ordinal.to_be_bytes());
+}
+
+fn hash_causes(hasher: &mut blake3::Hasher, causes: &[CauseRef]) {
+    hasher.update(&count_as_u64(causes.len()).to_be_bytes());
+    for cause in causes {
+        hash_cause(hasher, *cause);
+    }
+}
+
+fn hash_node_subject(hasher: &mut blake3::Hasher, subject: &NodeSubject) {
+    match subject {
+        NodeSubject::Node(node) => {
+            hasher.update(&[0]);
+            hasher.update(&node.as_u128().to_be_bytes());
+        }
+        NodeSubject::Qualified(node) => {
+            hasher.update(&[1]);
+            hasher.update(&count_as_u64(node.instances().len()).to_be_bytes());
+            for instance in node.instances() {
+                hasher.update(&instance.as_u128().to_be_bytes());
+            }
+            hasher.update(&node.node().as_u128().to_be_bytes());
+        }
+    }
+}
+
+fn hash_provenance_subject(hasher: &mut blake3::Hasher, subject: &ProvenanceSubject) {
+    match subject {
+        ProvenanceSubject::Node(node) => {
+            hasher.update(&[0]);
+            hasher.update(&node.as_u128().to_be_bytes());
+        }
+        ProvenanceSubject::QualifiedNode(node) => {
+            hasher.update(&[1]);
+            hasher.update(&count_as_u64(node.instances().len()).to_be_bytes());
+            for instance in node.instances() {
+                hasher.update(&instance.as_u128().to_be_bytes());
+            }
+            hasher.update(&node.node().as_u128().to_be_bytes());
+        }
+        ProvenanceSubject::ExternalOutput(output) => {
+            hasher.update(&[2]);
+            hasher.update(&output.as_u128().to_be_bytes());
+        }
+        ProvenanceSubject::PulseExternalOutput(output) => {
+            hasher.update(&[3]);
+            hasher.update(&output.as_u128().to_be_bytes());
+        }
+    }
+}
+
+fn hash_pulse_port_subject(hasher: &mut blake3::Hasher, subject: &PulsePortSubject) {
+    match subject {
+        PulsePortSubject::Port(port) => {
+            hasher.update(&[0]);
+            hasher.update(&port.as_u128().to_be_bytes());
+        }
+        PulsePortSubject::Qualified(port) => {
+            hasher.update(&[1]);
+            hasher.update(&count_as_u64(port.instances().len()).to_be_bytes());
+            for instance in port.instances() {
+                hasher.update(&instance.as_u128().to_be_bytes());
+            }
+            match port.port() {
+                crate::key::AnyInPortKey::Level(key) => {
+                    hasher.update(&[0]);
+                    hasher.update(&key.as_u128().to_be_bytes());
+                }
+                crate::key::AnyInPortKey::Pulse(key) => {
+                    hasher.update(&[1]);
+                    hasher.update(&key.as_u128().to_be_bytes());
+                }
+            }
+        }
+    }
+}
+
+fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRecord<D>) {
+    match record {
+        ProvenanceRecord::InitializationTransaction { at, revision } => {
+            hasher.update(&[0]);
+            hasher.update(&at.ticks().to_be_bytes());
+            hasher.update(&revision.value().to_be_bytes());
+        }
+        ProvenanceRecord::ReadyTransaction { at, revision } => {
+            hasher.update(&[1]);
+            hasher.update(&at.ticks().to_be_bytes());
+            hasher.update(&revision.value().to_be_bytes());
+        }
+        ProvenanceRecord::ExternalObservation { input, value } => {
+            hasher.update(&[2]);
+            hasher.update(&input.as_u128().to_be_bytes());
+            hasher.update(&[u8::from(value.is_high())]);
+        }
+        ProvenanceRecord::ExternalPulseObservation { input, count } => {
+            hasher.update(&[3]);
+            hasher.update(&input.as_u128().to_be_bytes());
+            hasher.update(&count.get().to_be_bytes());
+        }
+        ProvenanceRecord::PendingPulseDelay {
+            event,
+            owner,
+            origin,
+            deadline,
+            count,
+            revision,
+            supporters,
+        } => {
+            hasher.update(&[4]);
+            hasher.update(&event.value().to_be_bytes());
+            hash_node_subject(hasher, owner);
+            hasher.update(&origin.ticks().to_be_bytes());
+            hasher.update(&deadline.ticks().to_be_bytes());
+            hasher.update(&count.get().to_be_bytes());
+            hasher.update(&revision.value().to_be_bytes());
+            hash_causes(hasher, supporters);
+        }
+        ProvenanceRecord::Derived {
+            subject,
+            supporters,
+        } => {
+            hasher.update(&[5]);
+            hash_provenance_subject(hasher, subject);
+            hash_causes(hasher, supporters);
+        }
+        ProvenanceRecord::PulseDerived {
+            subject,
+            contributions,
+            result,
+            supporters,
+        } => {
+            hasher.update(&[6]);
+            hash_provenance_subject(hasher, subject);
+            hasher.update(&count_as_u64(contributions.len()).to_be_bytes());
+            for contribution in contributions {
+                hash_pulse_port_subject(hasher, &contribution.port);
+                hasher.update(&contribution.count.get().to_be_bytes());
+                hash_cause(hasher, contribution.cause);
+            }
+            hasher.update(&result.get().to_be_bytes());
+            hash_causes(hasher, supporters);
+        }
+    }
+}
+
+fn provenance_view_scope<D>(
     network_key: NetworkKey,
     fingerprint: NetworkFingerprint,
-    revision: NetworkRevision,
-    at: Time<D>,
-    levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
-    pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
-) -> [u8; 16] {
+    records: &[ProvenanceRecord<D>],
+) -> ProvenanceScope {
+    // SPEC: docs/specs/contracts/ready-level-transaction.yaml "resolvable-ready-causes"
+    // The lookup authority commits to scope-neutral graph content, not transaction coordinates.
     let mut hasher = blake3::Hasher::new();
-    hasher.update(PROVENANCE_SCOPE_DOMAIN);
+    hasher.update(PROVENANCE_VIEW_SCOPE_DOMAIN);
     hasher.update(&network_key.as_u128().to_be_bytes());
     hasher.update(&fingerprint.as_bytes());
-    hasher.update(&revision.value().to_be_bytes());
-    hasher.update(&at.ticks().to_be_bytes());
-    for (input, value) in levels {
-        hasher.update(&[0]);
-        hasher.update(&input.as_u128().to_be_bytes());
-        hasher.update(&[u8::from(value.is_high())]);
+    hasher.update(&count_as_u64(records.len()).to_be_bytes());
+    for record in records {
+        hash_provenance_record(&mut hasher, record);
     }
-    for (input, count) in pulses {
-        hasher.update(&[1]);
-        hasher.update(&input.as_u128().to_be_bytes());
-        hasher.update(&count.get().to_be_bytes());
-    }
-    let digest = hasher.finalize();
-    let mut scope = [0_u8; 16];
-    scope.copy_from_slice(&digest.as_bytes()[..16]);
-    scope
+    *hasher.finalize().as_bytes()
 }
 
 fn build_initialization_provenance<D>(
@@ -1432,14 +1574,7 @@ fn build_initialization_provenance<D>(
     pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     evaluation: &FullEvaluation,
 ) -> ProvenanceBuild<D> {
-    let scope = provenance_scope(
-        compiled.network_key(),
-        compiled.fingerprint(),
-        revision,
-        at,
-        levels,
-        pulses,
-    );
+    let scope = UNFINALIZED_PROVENANCE_SCOPE;
     let mut records = Vec::new();
     let transaction_cause = push_record(
         scope,
@@ -1507,11 +1642,8 @@ fn build_initialization_provenance<D>(
 #[allow(clippy::too_many_arguments)]
 fn build_ready_provenance<D>(
     compiled: &crate::CompiledNetwork<D>,
-    network_key: NetworkKey,
-    fingerprint: NetworkFingerprint,
     revision: NetworkRevision,
     at: Time<D>,
-    levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     explicit_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     evaluation: &FullEvaluation,
@@ -1523,7 +1655,7 @@ fn build_ready_provenance<D>(
     previous_toggle_inversion_causes: &BTreeMap<NodeKey, CauseRef>,
     due_pulse_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
 ) -> ProvenanceBuild<D> {
-    let scope = provenance_scope(network_key, fingerprint, revision, at, levels, pulses);
+    let scope = UNFINALIZED_PROVENANCE_SCOPE;
     let mut records = previous
         .records
         .iter()
@@ -1613,7 +1745,7 @@ struct EvaluationCauseMaps {
 }
 
 fn append_evaluation_provenance<D>(
-    scope: [u8; 16],
+    scope: ProvenanceScope,
     records: &mut Vec<ProvenanceRecord<D>>,
     transaction_cause: CauseRef,
     evaluation: &FullEvaluation,
@@ -1931,14 +2063,50 @@ fn provenance_subject<D>(compiled: &crate::CompiledNetwork<D>, node: NodeKey) ->
     }
 }
 
-fn remap_cause(cause: CauseRef, scope: [u8; 16]) -> CauseRef {
+fn remap_cause(cause: CauseRef, scope: ProvenanceScope) -> CauseRef {
     CauseRef {
         scope,
         ordinal: cause.ordinal,
     }
 }
 
-fn remap_record<D>(record: &ProvenanceRecord<D>, scope: [u8; 16]) -> ProvenanceRecord<D> {
+fn finalize_provenance_build<D>(
+    build: &mut ProvenanceBuild<D>,
+    network_key: NetworkKey,
+    fingerprint: NetworkFingerprint,
+) {
+    let scope = provenance_view_scope(network_key, fingerprint, build.provenance.records.as_ref());
+    let Some(records) = Arc::get_mut(&mut build.provenance.records) else {
+        panic!("unpublished transaction provenance must be uniquely owned during finalization");
+    };
+    for record in records {
+        *record = remap_record(record, scope);
+    }
+    build.provenance.scope = scope;
+    for cause in &mut build.operation_causes {
+        *cause = remap_cause(*cause, scope);
+    }
+    for cause in build.input_causes.values_mut() {
+        *cause = remap_cause(*cause, scope);
+    }
+    for cause in build.output_causes.values_mut() {
+        *cause = remap_cause(*cause, scope);
+    }
+    for cause in build.pulse_output_causes.values_mut() {
+        *cause = remap_cause(*cause, scope);
+    }
+    for cause in build.edge_observation_causes.values_mut() {
+        *cause = remap_cause(*cause, scope);
+    }
+    for cause in build.toggle_inversion_causes.values_mut() {
+        *cause = remap_cause(*cause, scope);
+    }
+    for cause in build.pulse_delay_schedules.values_mut() {
+        *cause = remap_cause(*cause, scope);
+    }
+}
+
+fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> ProvenanceRecord<D> {
     match record {
         ProvenanceRecord::InitializationTransaction { at, revision } => {
             ProvenanceRecord::InitializationTransaction {
@@ -2017,7 +2185,7 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: [u8; 16]) -> ProvenanceR
 }
 
 fn push_record<D>(
-    scope: [u8; 16],
+    scope: ProvenanceScope,
     records: &mut Vec<ProvenanceRecord<D>>,
     record: ProvenanceRecord<D>,
 ) -> CauseRef {
@@ -2521,6 +2689,101 @@ mod tests {
         machine
     }
 
+    #[test]
+    fn provenance_views_reject_causes_from_different_converged_histories() {
+        let compiled = compiled(100, 200);
+        let mut first = initialized_machine(&compiled, LogicLevel::Low);
+        let mut second = initialized_machine(&compiled, LogicLevel::Low);
+
+        for (machine, at) in [(&mut first, 11_u64), (&mut second, 12_u64)] {
+            let delta = compiled
+                .input_delta()
+                .set(ExternalInputKey::from_u128(1), LogicLevel::High)
+                .and_then(crate::InputDeltaBuilder::finish)
+                .unwrap_or_else(|_| panic!("history delta must build"));
+            machine
+                .apply(Transaction::advance(
+                    crate::time::Time::from_ticks(at),
+                    machine.revision(),
+                    delta,
+                ))
+                .unwrap_or_else(|failure| panic!("history advance must succeed: {failure}"));
+        }
+        assert_ne!(first.status(), second.status());
+
+        let finish = |machine: &mut crate::Machine<()>| {
+            let delta = compiled
+                .input_delta()
+                .set(ExternalInputKey::from_u128(1), LogicLevel::Low)
+                .and_then(crate::InputDeltaBuilder::finish)
+                .unwrap_or_else(|_| panic!("converging delta must build"));
+            machine
+                .apply(Transaction::advance(
+                    crate::time::Time::from_ticks(20),
+                    machine.revision(),
+                    delta,
+                ))
+                .unwrap_or_else(|failure| panic!("converging advance must succeed: {failure}"))
+        };
+        let first_result = finish(&mut first);
+        let second_result = finish(&mut second);
+        assert_eq!(first.status(), second.status());
+        assert_eq!(first.revision(), second.revision());
+        assert_eq!(
+            first_result.requested_time(),
+            second_result.requested_time()
+        );
+        assert_eq!(first.store.external_levels, second.store.external_levels);
+        let [
+            OutputEvent::LevelChanged {
+                cause: first_cause, ..
+            },
+        ] = first_result.output_events()
+        else {
+            panic!("first converged history must publish one changed output");
+        };
+        let [
+            OutputEvent::LevelChanged {
+                cause: second_cause,
+                ..
+            },
+        ] = second_result.output_events()
+        else {
+            panic!("second converged history must publish one changed output");
+        };
+        let first_cause = *first_cause;
+        let second_cause = *second_cause;
+
+        assert_eq!(first_cause.ordinal, second_cause.ordinal);
+        assert_eq!(
+            first_result.provenance().len(),
+            second_result.provenance().len()
+        );
+        assert!(first_result.provenance().inspect(first_cause).is_ok());
+        assert!(second_result.provenance().inspect(second_cause).is_ok());
+        assert!(first_result.provenance().inspect(second_cause).is_err());
+        assert!(second_result.provenance().inspect(first_cause).is_err());
+
+        let first_supporter = match first_result.provenance().inspect(first_cause) {
+            Ok(CauseInspection::Derived { supporters, .. }) => match supporters.first() {
+                Some(cause) => *cause,
+                None => panic!("changed output provenance must retain a supporter"),
+            },
+            _ => panic!("changed output cause must resolve to a derived record"),
+        };
+        assert!(first_result.provenance().inspect(first_supporter).is_ok());
+        assert!(second_result.provenance().inspect(first_supporter).is_err());
+
+        let out_of_range = CauseRef {
+            scope: first_cause.scope,
+            ordinal: u32::MAX,
+        };
+        assert!(first_result.provenance().inspect(out_of_range).is_err());
+
+        let shared_view = first_result.provenance().clone();
+        assert!(shared_view.inspect(first_cause).is_ok());
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct MachineObservation {
         network_key: NetworkKey,
@@ -2534,7 +2797,7 @@ mod tests {
         output_baselines: std::collections::BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
         input_causes: std::collections::BTreeMap<ExternalInputKey<Level>, CauseRef>,
         output_causes: std::collections::BTreeMap<ExternalOutputKey<Level>, CauseRef>,
-        provenance: Option<([u8; 16], usize, usize)>,
+        provenance: Option<([u8; 32], usize, usize)>,
         toggle_states: Vec<LogicLevel>,
         toggle_inversion_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
         pending_pulse_delays: std::collections::BTreeMap<
