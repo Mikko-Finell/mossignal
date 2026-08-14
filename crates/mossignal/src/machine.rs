@@ -228,12 +228,22 @@ pub enum PulseDelayInspectionFailure {
     NotInitialized,
 }
 
-/// One public module input and its retained committed Level value, when applicable.
+/// One public module input and its committed Level value, when applicable.
+///
+/// Pulse activity is reaction-scoped and is published through transaction
+/// results rather than retained by module inspection.
+///
+/// ```compile_fail
+/// use mossignal::ModuleInputInspection;
+///
+/// fn retained_pulse(inspection: &ModuleInputInspection) {
+///     let _ = inspection.pulse();
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModuleInputInspection {
     key: AnyModuleInputKey,
     level: Option<LogicLevel>,
-    pulse: Option<PulseCount>,
 }
 
 impl ModuleInputInspection {
@@ -247,20 +257,24 @@ impl ModuleInputInspection {
     pub const fn level(&self) -> Option<LogicLevel> {
         self.level
     }
-
-    /// Returns the retained current-reaction Pulse count, or `None` for Level ports.
-    #[must_use]
-    pub const fn pulse(&self) -> Option<PulseCount> {
-        self.pulse
-    }
 }
 
-/// One public module output and its retained committed Level value, when applicable.
+/// One public module output and its committed Level value, when applicable.
+///
+/// Pulse activity is reaction-scoped and is published through transaction
+/// results rather than retained by module inspection.
+///
+/// ```compile_fail
+/// use mossignal::ModuleOutputInspection;
+///
+/// fn retained_pulse(inspection: &ModuleOutputInspection) {
+///     let _ = inspection.pulse();
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModuleOutputInspection {
     key: AnyModuleOutputKey,
     level: Option<LogicLevel>,
-    pulse: Option<PulseCount>,
 }
 
 impl ModuleOutputInspection {
@@ -273,12 +287,6 @@ impl ModuleOutputInspection {
     #[must_use]
     pub const fn level(&self) -> Option<LogicLevel> {
         self.level
-    }
-
-    /// Returns the retained current-reaction Pulse count, or `None` for Level ports.
-    #[must_use]
-    pub const fn pulse(&self) -> Option<PulseCount> {
-        self.pulse
     }
 }
 
@@ -314,13 +322,23 @@ impl<D> ModulePendingPulseDelayInspection<D> {
     }
 }
 
-/// Owned runtime facts for one expanded module-local primitive occurrence.
+/// Owned persistent runtime facts for one expanded module-local primitive occurrence.
+///
+/// Reaction-scoped Pulse outputs are not retained by this inspection. Observe
+/// externally published pulse activity through the owning transaction result.
+///
+/// ```compile_fail
+/// use mossignal::ModuleNodeInspection;
+///
+/// fn retained_pulse<D>(inspection: &ModuleNodeInspection<D>) {
+///     let _ = inspection.pulse();
+/// }
+/// ```
 pub struct ModuleNodeInspection<D> {
     node: QualifiedNodeRef,
     standard_role: Option<String>,
     kind: NodeKind<D>,
     level: Option<LogicLevel>,
-    pulse: Option<PulseCount>,
     cause: Option<CauseRef>,
     edge_observation: Option<EdgeObservation>,
     edge_observation_cause: Option<CauseRef>,
@@ -346,11 +364,6 @@ impl<D> ModuleNodeInspection<D> {
     #[must_use]
     pub const fn level(&self) -> Option<LogicLevel> {
         self.level
-    }
-    /// Returns the retained current-reaction Pulse output, or `None` for Level nodes.
-    #[must_use]
-    pub const fn pulse(&self) -> Option<PulseCount> {
-        self.pulse
     }
     /// Returns the current causal support for this primitive occurrence.
     #[must_use]
@@ -567,7 +580,6 @@ pub(crate) struct MachineStore<D> {
     pub(crate) external_levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     pub(crate) settled_levels: Vec<LogicLevel>,
     pub(crate) operation_levels: Vec<Option<LogicLevel>>,
-    pub(crate) operation_pulses: Vec<Option<PulseCount>>,
     pub(crate) operation_causes: Vec<CauseRef>,
     pub(crate) output_baselines: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     pub(crate) input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
@@ -589,7 +601,6 @@ impl<D> Clone for MachineStore<D> {
             external_levels: self.external_levels.clone(),
             settled_levels: self.settled_levels.clone(),
             operation_levels: self.operation_levels.clone(),
-            operation_pulses: self.operation_pulses.clone(),
             operation_causes: self.operation_causes.clone(),
             output_baselines: self.output_baselines.clone(),
             input_causes: self.input_causes.clone(),
@@ -656,7 +667,18 @@ impl EdgeDetectorDefinitionInspection {
     }
 }
 
-/// One owned observation of an initialized edge detector.
+/// One owned observation of an initialized edge detector's persistent facts.
+///
+/// An emitted edge Pulse is reaction-scoped and appears only in the committed
+/// transaction result; it is not retained as a current node output.
+///
+/// ```compile_fail
+/// use mossignal::EdgeDetectorInspection;
+///
+/// fn retained_output<D>(inspection: &EdgeDetectorInspection<D>) {
+///     let _ = inspection.output();
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeDetectorInspection<D> {
     node: NodeKey,
@@ -664,7 +686,6 @@ pub struct EdgeDetectorInspection<D> {
     initialization: EdgeInitialization,
     committed: EdgeObservation,
     input: LogicLevel,
-    output: PulseCount,
     observation_cause: CauseRef,
     revision: NetworkRevision,
     at: Time<D>,
@@ -692,11 +713,6 @@ impl<D> EdgeDetectorInspection<D> {
     #[must_use]
     pub const fn input(&self) -> LogicLevel {
         self.input
-    }
-    /// Returns the retained reaction-scoped current Pulse output.
-    #[must_use]
-    pub const fn output(&self) -> PulseCount {
-        self.output
     }
     /// Returns the retained cause of the committed observation.
     #[must_use]
@@ -815,7 +831,6 @@ impl<D> Machine<D> {
                 external_levels: BTreeMap::new(),
                 settled_levels: Vec::new(),
                 operation_levels: Vec::new(),
-                operation_pulses: Vec::new(),
                 operation_causes: Vec::new(),
                 output_baselines: BTreeMap::new(),
                 input_causes: BTreeMap::new(),
@@ -982,18 +997,11 @@ impl<D> Machine<D> {
                 .copied()
                 .flatten()
         };
-        let pulse_at = |operation: Option<usize>| {
-            operation
-                .and_then(|index| self.store.operation_pulses.get(index))
-                .copied()
-                .flatten()
-        };
         let inputs: Vec<ModuleInputInspection> = definition
             .inputs()
             .map(|input| ModuleInputInspection {
                 key: input.key(),
                 level: level_at(self.compiled.module_input_operation(&module, input.key())),
-                pulse: pulse_at(self.compiled.module_input_operation(&module, input.key())),
             })
             .collect();
         let outputs: Vec<ModuleOutputInspection> = definition
@@ -1001,7 +1009,6 @@ impl<D> Machine<D> {
             .map(|output| ModuleOutputInspection {
                 key: output.key(),
                 level: level_at(self.compiled.module_output_operation(&module, output.key())),
-                pulse: pulse_at(self.compiled.module_output_operation(&module, output.key())),
             })
             .collect();
         let mut nodes = Vec::new();
@@ -1062,7 +1069,6 @@ impl<D> Machine<D> {
                 }),
                 kind,
                 level: level_at(self.compiled.node_operation(flat)),
-                pulse: pulse_at(self.compiled.node_operation(flat)),
                 cause: self
                     .compiled
                     .node_operation(flat)
@@ -1220,7 +1226,7 @@ impl<D> Machine<D> {
         })
     }
 
-    /// Returns committed state, current ports, and retained provenance for one edge detector.
+    /// Returns committed state, the current Level input, and retained provenance.
     pub fn inspect_edge_detector(
         &self,
         node: NodeKey,
@@ -1246,13 +1252,6 @@ impl<D> Machine<D> {
             .copied()
             .flatten()
             .ok_or(EdgeDetectorInspectionFailure::NotEdgeDetector(node))?;
-        let output = self
-            .compiled
-            .node_operation(node)
-            .and_then(|index| self.store.operation_pulses.get(index))
-            .copied()
-            .flatten()
-            .ok_or(EdgeDetectorInspectionFailure::NotEdgeDetector(node))?;
         let observation_cause = self
             .store
             .edge_observation_causes
@@ -1265,7 +1264,6 @@ impl<D> Machine<D> {
             initialization: definition.initialization,
             committed,
             input,
-            output,
             observation_cause,
             revision: self.store.revision,
             at: now,

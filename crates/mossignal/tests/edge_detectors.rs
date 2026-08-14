@@ -164,7 +164,6 @@ fn family_exhausts_previous_observations_current_levels_and_successors() {
                 .unwrap_or_else(|failure| panic!("initialized edge must inspect: {failure:?}"));
             assert_eq!(inspected.committed(), EdgeObservation::Established(first));
             assert_eq!(inspected.input(), first);
-            assert_eq!(inspected.output(), PulseCount::ZERO);
 
             for (step, current) in [LogicLevel::Low, LogicLevel::High].into_iter().enumerate() {
                 let previous = machine
@@ -183,14 +182,6 @@ fn family_exhausts_previous_observations_current_levels_and_successors() {
                 let inspected = machine.inspect_edge_detector(fixture.node).unwrap();
                 assert_eq!(inspected.committed(), EdgeObservation::Established(current));
                 assert_eq!(inspected.input(), current);
-                assert_eq!(
-                    inspected.output(),
-                    if emitted {
-                        PulseCount::ONE
-                    } else {
-                        PulseCount::ZERO
-                    }
-                );
                 assert!(
                     result
                         .provenance()
@@ -200,6 +191,72 @@ fn family_exhausts_previous_observations_current_levels_and_successors() {
             }
         }
     }
+}
+
+#[test]
+fn edge_pulse_activity_is_result_owned_while_remembered_state_remains_inspectable() {
+    let fixture = edge_fixture(
+        EdgeDetectorKind::Rising,
+        EdgeConfig::new(EdgeInitialization::Baseline),
+    );
+    let mut machine = fixture.compiled.spawn(policy(10_000));
+    machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            snapshot(&fixture, LogicLevel::Low),
+        ))
+        .unwrap_or_else(|failure| panic!("edge baseline must initialize: {failure}"));
+
+    let emitted = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(1),
+            machine.revision(),
+            delta(&fixture, LogicLevel::High),
+        ))
+        .unwrap_or_else(|failure| panic!("rising edge must advance: {failure}"));
+    let [
+        OutputEvent::Pulsed {
+            output,
+            count,
+            at,
+            cause,
+            revision,
+        },
+    ] = emitted.output_events()
+    else {
+        panic!("the rising edge must publish exactly one pulse event");
+    };
+    assert_eq!(*output, fixture.output);
+    assert_eq!(*count, PulseCount::ONE);
+    assert_eq!(*at, Time::from_ticks(1));
+    assert_eq!(*revision, machine.revision());
+    assert!(emitted.provenance().inspect(*cause).is_ok());
+
+    let later = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(2),
+            machine.revision(),
+            delta(&fixture, LogicLevel::High),
+        ))
+        .unwrap_or_else(|failure| panic!("steady input must advance: {failure}"));
+    assert!(later.output_events().is_empty());
+    let inspected = machine
+        .inspect_edge_detector(fixture.node)
+        .unwrap_or_else(|failure| panic!("remembered edge state must inspect: {failure:?}"));
+    assert_eq!(
+        inspected.committed(),
+        EdgeObservation::Established(LogicLevel::High)
+    );
+    assert_eq!(inspected.input(), LogicLevel::High);
+    assert_eq!(inspected.at(), Time::from_ticks(2));
+    assert!(
+        later
+            .provenance()
+            .inspect(inspected.observation_cause())
+            .is_ok()
+    );
+    assert!(emitted.provenance().inspect(*cause).is_ok());
 }
 
 #[test]
@@ -251,14 +308,6 @@ fn assume_policy_compares_the_first_observation_normally() {
                     EdgeObservation::Established(next)
                 );
                 assert_eq!(ready_inspection.input(), next);
-                assert_eq!(
-                    ready_inspection.output(),
-                    if ready_emitted {
-                        PulseCount::ONE
-                    } else {
-                        PulseCount::ZERO
-                    }
-                );
                 assert!(
                     ready
                         .provenance()

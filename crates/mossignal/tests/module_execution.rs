@@ -305,16 +305,18 @@ fn nested_instances_keep_state_pending_work_and_provenance_independent() {
     let first = machine.inspect_module(first_instance).unwrap();
     let second = machine.inspect_module(second_instance).unwrap();
     assert_eq!(first.modules().len(), 1);
-    assert_eq!(first.inputs()[0].pulse(), Some(PulseCount::ONE));
-    assert_eq!(second.inputs()[0].pulse(), Some(PulseCount::ZERO));
+    assert_eq!(first.inputs()[0].key(), outer_input.into());
+    assert_eq!(second.inputs()[0].key(), outer_input.into());
+    assert_eq!(first.inputs()[0].level(), None);
+    assert_eq!(second.inputs()[0].level(), None);
     assert_eq!(
         first
             .outputs()
             .iter()
             .find(|output| output.key() == outer_delay.into())
             .unwrap()
-            .pulse(),
-        Some(PulseCount::ZERO)
+            .level(),
+        None
     );
     let first_toggle_node = first
         .nodes()
@@ -347,7 +349,7 @@ fn nested_instances_keep_state_pending_work_and_provenance_independent() {
         .find(|node| node.node().node() == leaf.delay_node)
         .unwrap();
     assert_eq!(first_delay_node.pending().len(), 1);
-    assert_eq!(first_delay_node.pulse(), Some(PulseCount::ZERO));
+    assert_eq!(first_delay_node.level(), None);
     let CauseInspection::Derived {
         subject: ProvenanceSubject::QualifiedNode(node),
         ..
@@ -412,6 +414,11 @@ fn nested_instances_keep_state_pending_work_and_provenance_independent() {
             (second_delay, PulseCount::ONE, 4),
         ]
     );
+    for event in result.output_events() {
+        if let OutputEvent::Pulsed { cause, .. } = event {
+            assert!(result.provenance().inspect(*cause).is_ok());
+        }
+    }
     assert_eq!(result.schedule(), Schedule::Dormant);
 }
 

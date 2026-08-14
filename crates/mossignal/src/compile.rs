@@ -355,7 +355,6 @@ enum OperationDescriptor {
 pub(crate) struct FullEvaluation {
     pub(crate) values: Vec<LogicLevel>,
     pub(crate) operation_levels: Vec<Option<LogicLevel>>,
-    pub(crate) operation_pulses: Vec<Option<PulseCount>>,
     pub(crate) causes: Vec<EvaluationCause>,
     pub(crate) external_outputs: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     pub(crate) pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
@@ -1424,13 +1423,6 @@ impl<D> CompiledInner<D> {
                 .map(|value| match value {
                     EvaluationValue::Level(value) => Some(*value),
                     EvaluationValue::Pulse(_) | EvaluationValue::PulseRoute { .. } => None,
-                })
-                .collect(),
-            operation_pulses: complete_values
-                .iter()
-                .map(|value| match value {
-                    EvaluationValue::Pulse(value) => Some(*value),
-                    EvaluationValue::Level(_) | EvaluationValue::PulseRoute { .. } => None,
                 })
                 .collect(),
             causes,

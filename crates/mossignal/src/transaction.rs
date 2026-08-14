@@ -1355,8 +1355,9 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     candidate.status = MachineStatus::Ready { now: at };
     candidate.external_levels = levels;
     candidate.settled_levels = evaluation.values;
+    // SPEC: docs/specs/contracts/reaction-scoped-pulse-foundation.yaml
+    // "lifecycle-transaction-integration" — only Level operation values survive publication.
     candidate.operation_levels = evaluation.operation_levels;
-    candidate.operation_pulses = evaluation.operation_pulses;
     candidate.operation_causes = operation_causes;
     candidate.output_baselines = evaluation.external_outputs;
     candidate.input_causes = input_causes;
