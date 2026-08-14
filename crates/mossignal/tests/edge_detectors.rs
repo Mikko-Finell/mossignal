@@ -234,6 +234,37 @@ fn assume_policy_compares_the_first_observation_normally() {
                     inspection.committed(),
                     EdgeObservation::Established(current)
                 );
+
+                let next = current.invert();
+                let ready = machine
+                    .apply(Transaction::advance(
+                        Time::from_ticks(8),
+                        machine.revision(),
+                        delta(&fixture, next),
+                    ))
+                    .unwrap_or_else(|failure| panic!("assumed edge must advance: {failure}"));
+                let ready_emitted = detector.emits(inspection.committed(), next);
+                assert_pulse(ready.output_events(), fixture.output, ready_emitted);
+                let ready_inspection = machine.inspect_edge_detector(fixture.node).unwrap();
+                assert_eq!(
+                    ready_inspection.committed(),
+                    EdgeObservation::Established(next)
+                );
+                assert_eq!(ready_inspection.input(), next);
+                assert_eq!(
+                    ready_inspection.output(),
+                    if ready_emitted {
+                        PulseCount::ONE
+                    } else {
+                        PulseCount::ZERO
+                    }
+                );
+                assert!(
+                    ready
+                        .provenance()
+                        .inspect(ready_inspection.observation_cause())
+                        .is_ok()
+                );
             }
         }
     }
