@@ -1,0 +1,308 @@
+schema_version: "0.1"
+id: mossignal.node.set_reset_latch_family
+title: Set/reset latch primitive family
+kind: family
+status: reviewed
+
+source_baseline:
+  commit: bc39319ad596752b53380445d26bc5b98f51635a
+  working_tree: dirty
+
+summary: >-
+  PulseSetResetLatch and LevelSetResetLatch are fixed-shape Boolean stored-level
+  primitives sharing one explicit conflict-policy vocabulary while differing in
+  control signal kind and in whether a retained conflict is a transient runtime
+  occurrence or a persistent diagnostic episode.
+
+scope:
+  includes:
+    - shared conflict policy, explicit initial state, fixed port shapes, and state laws
+    - pulse-presence and settled-level control semantics
+    - typed and dynamic authoring, validation, compilation, inspection, provenance, identity, and conformance
+    - exact retained-conflict and rejected-conflict diagnostic classifications
+  excludes:
+    - the general runtime-occurrence representation and successful-result publication path
+    - persistent diagnostic episode representation, identity, storage, lifecycle, and publication
+    - SampleHold, resettable standard modules, counters, and arbitrary state machines
+    - snapshot encoding, replay, topology migration, and reconfiguration implementation
+
+known_uncovered:
+  - Canonical snapshot and restoration schema for latch stored state
+  - Compatible latch-state and level-conflict-episode migration across topology changes
+  - The reusable persistent diagnostic episode contract needed by LevelSetResetLatch
+
+aliases:
+  - PulseSetResetLatch
+  - LevelSetResetLatch
+  - ConflictPolicy
+  - PulseSetResetConfig
+  - LevelSetResetConfig
+
+requirements:
+  - id: fixed-shapes-and-shared-policy
+    kind: public_surface
+    statement: >-
+      PulseSetResetLatch has fixed Pulse set and reset inputs, LevelSetResetLatch
+      has fixed Level set and reset inputs, and each has one Level output and one
+      stored LogicLevel cell. PulseSetResetConfig and LevelSetResetConfig each
+      contain an explicit initial LogicLevel and the same ConflictPolicy value,
+      whose closed cases are SetDominant, ResetDominant, RetainAndDiagnose, and
+      RejectTransaction.
+    sources: [pulse-latch, level-latch, concrete-config]
+
+  - id: pulse-control-law
+    kind: semantic
+    statement: >-
+      PulseSetResetLatch treats a positive complete simultaneous count as control
+      presence. Set alone produces and proposes High, reset alone produces and
+      proposes Low, neither retains the previous state, and multiplicity beyond
+      presence does not change that latch law. Complete counts remain available
+      for structured conflict evidence, and grouped causal provenance preserves
+      every contributor without inventing ordered pulse identities.
+    sources: [simultaneous-batches, pulse-latch, conflict-evidence, pulse-provenance]
+
+  - id: level-control-law
+    kind: semantic
+    statement: >-
+      LevelSetResetLatch uses fully settled current controls. High/Low produces
+      and proposes High, Low/High produces and proposes Low, Low/Low retains the
+      previous state, and High/High applies the shared conflict policy. Continuous
+      High/High under RetainAndDiagnose is one persistent condition rather than
+      repeated transient warnings.
+    sources: [current-time-controls, level-latch, diagnostic-occurrences-and-episodes]
+
+  - id: exact-conflict-outcomes
+    kind: semantic
+    statement: >-
+      For either latch, SetDominant produces and proposes High, ResetDominant
+      produces and proposes Low, RetainAndDiagnose produces and proposes the
+      previous state while delivering the condition in the signal-kind-specific
+      form, and RejectTransaction rejects the containing transaction atomically.
+    sources: [simultaneous-batches, pulse-latch, level-latch, settlement]
+
+  - id: occurrence-versus-episode-delivery
+    kind: lifecycle
+    statement: >-
+      A retained pulse conflict emits exactly one reaction-scoped occurrence
+      using runtime.pulse_latch_conflict_retained. A retained level conflict uses
+      runtime.level_latch_conflict_retained as a persistent episode that does not
+      repeat unchanged warnings. Rejected pulse and level conflicts use their
+      respective runtime.*_latch_conflict_rejected operation-failure codes.
+    sources: [diagnostic-occurrences-and-episodes, pulse-latch, level-latch, runtime-codes]
+
+  - id: previous-proposed-and-immediate-visibility
+    kind: semantic
+    statement: >-
+      Declared initial state is the previous committed state for initialization.
+      Each reaction reads one previous stored level, exposes the settled current
+      output downstream in that reaction, and stages at most one successor that
+      commits only after complete successful settlement. Both control inputs are
+      conservative current-input-to-output dependencies; statefulness does not
+      break those instantaneous paths.
+    sources: [dependency-signatures, machine-initialization, pulse-latch, level-latch, settlement]
+
+  - id: typed-dynamic-and-module-authoring
+    kind: public_surface
+    statement: >-
+      NetworkBuilder exposes typed pulse_set_reset_latch and
+      level_set_reset_latch constructors plus explicit keyed add_* forms. Dynamic
+      definitions use the corresponding closed NodeKind variants and exact
+      configuration values. ModuleBuilder must offer the same primitive family
+      through ordinary module-local typed signals rather than a parallel node law.
+    sources: [constructor-family, module-builder, dynamic-node-kind]
+
+  - id: validation-compilation-and-semantic-state
+    kind: semantic
+    statement: >-
+      Structural validation enforces each latch's exact roles and signal kinds,
+      and compilation preserves stable subject correspondence, kind, policy,
+      initial state, current dependencies, and one correctly typed Boolean
+      stored-state cell without exposing dense slots. Changing an initial value
+      or conflict policy does not overwrite an already preserved stored level.
+    sources: [pulse-latch, level-latch, dependency-signatures, boolean-state-reconfiguration, runtime-compilation, runtime-invariants, previous-and-proposed-state]
+
+  - id: semantic-identity-facets
+    kind: semantic
+    statement: >-
+      Network semantic identity includes the latch kind, stable typed set and
+      reset roles, explicit initial level, conflict policy, and one-cell stored-
+      level state schema. It excludes construction order, dense state-slot
+      assignment, memory layout, and other private compiled representation.
+    sources: [pulse-latch, level-latch, concrete-config, network-fingerprint, runtime-fingerprint]
+
+  - id: inspection-provenance-and-evidence
+    kind: system_effect
+    statement: >-
+      Applicable inspection distinguishes declared initial state from committed
+      stored level and exposes the node kind, policy, settled controls and output,
+      current supporters or blockers, and latest state-establishing cause. Conflict
+      evidence identifies the stable node subject, policy, previous state, exact
+      controls or pulse counts, logical time, and revision without relying on
+      rendered prose or private positions; pulse causal support retains grouped
+      contributor identity and count separately from that evidence payload.
+    sources: [explanations-and-causes, node-inspection, conflict-evidence, pulse-provenance]
+
+  - id: latch-conformance
+    kind: verification
+    statement: >-
+      Conformance exhausts both previous levels, all four simultaneous control
+      presence or level combinations, and all four policies. Pulse coverage
+      includes zero, one, two, and a larger representable count while proving the
+      presence-only law and exact conflict evidence. The applicable reusable node
+      suite covers lifecycle phases, current dependency and output/successor laws,
+      same-reaction downstream visibility, deterministic validation and semantic
+      identity, inspection and causal support, occurrence-versus-episode
+      classification, structured rejection, and complete failure atomicity.
+    sources: [testing-lifecycle, testing-pulse-algebra, testing-current-state, testing-common-conformance, testing-primitive, testing-stateful-chain, testing-conflict-policies, testing-compilation, testing-failure-atomicity, testing-diagnostics]
+
+implementation_freedom:
+  - Private descriptor fields, state-slot widths, stored-level table organization, staging helpers, and evaluator dispatch remain free when the shared laws and stable semantic correspondence are preserved.
+  - The semantic-family storage recommendation does not require Toggle, latches, and SampleHold to use one physical table; sharing or separating private LogicLevel storage remains a deterministic implementation choice.
+  - The exact rule for refreshing a stored-level cause when a control requests the already-stored value may use the simplest deterministic conforming model; implementation must test and record the choice without treating it as a compatibility promise.
+  - Focused owned latch inspection may precede the broader generic inspection and explanation system.
+
+open_questions: []
+
+sources:
+  simultaneous-batches:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 7. Simultaneous batches]
+    reviewed_hash: sha256:6f0c086ed445bf436c4974044bddc2eb224e4d6299620fedf775de6c641c4941
+  current-time-controls:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 8. Current-time controls]
+    reviewed_hash: sha256:120b4e4edfeeff5fd29c35ae9b04b6b00cac94026e7ab5405c1d9d31851a6b87
+  dependency-signatures:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
+  machine-initialization:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 13. Machine and node initialization]
+    reviewed_hash: sha256:9fef8b08457ff277136cf9fb3e6c9d5311de22c3f95bb086257bd89d4019e887
+  explanations-and-causes:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 18. Explanations and causes]
+    reviewed_hash: sha256:af07465662f1f93e504301c409b8a58c05f1558940699e318face0445feec256
+  diagnostic-occurrences-and-episodes:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 19. Diagnostic occurrences and episodes]
+    reviewed_hash: sha256:fbb4eefba1a54aafc70dc116763e989b3c5380a67066e8f63d67c0f23948fe5c
+  pulse-latch:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 43. `PulseSetResetLatch`]
+    reviewed_hash: sha256:fee927885b78a6c1dd70fe624908d09d1b9d0d0aad2b4ab12b48ab18b87b35e7
+  level-latch:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 44. `LevelSetResetLatch`]
+    reviewed_hash: sha256:00da9ec9d5d87a6d925d8fb399bc98a0225a6f8919ea28b4bb298df49bd17344
+  node-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path:
+      - Part VIII — Inspection, explanation, and migration obligations
+      - 61. Node inspection
+    reviewed_hash: sha256:109589c8402f33c1ea69f83627b4d39073bd3e3f37fc24e0494f8daaf2c5c88d
+  boolean-state-reconfiguration:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path:
+      - Part VIII — Inspection, explanation, and migration obligations
+      - 63. Reconfiguration obligations by family
+      - 63.3 Boolean state nodes
+    reviewed_hash: sha256:0ccbf242a65ea6fab868c1c72f7c9e22d7fc3e496513f6b95ef7fe86e626d988
+  concrete-config:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 29. Built-in configuration values]
+    reviewed_hash: sha256:b989b03bf932e65581c5878a208b6d619f3667762f9a547c2daa6366db6abc84
+  constructor-family:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  module-builder:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+    reviewed_hash: sha256:de8ed7d677513f9268ea2aa34ab57661a9153405ab31ae41e8e3a95ed5203ca4
+  dynamic-node-kind:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
+  settlement:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 26. Settlement]
+    reviewed_hash: sha256:875bead35fccd63f762bf9fc87fbe484c579f99908d5e175bc8b135351296e23
+  runtime-compilation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 21. Compilation responsibilities]
+    reviewed_hash: sha256:f086a8575e9ed012b3a9aca9d4b8b193a323040e8b58b341c77d9de835db2237
+  runtime-invariants:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 22. Compiled invariants]
+    reviewed_hash: sha256:746554b068081f15488f90197bf4c03ad4b384836a2fca010cd0c90eb81e56fe
+  previous-and-proposed-state:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part V — Runtime storage, 27. Previous and proposed state]
+    reviewed_hash: sha256:484b7e5f9121da346bc2df3176671942a0fb8e684da85104d48ae9b728a53461
+  pulse-provenance:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 69. Pulse provenance]
+    reviewed_hash: sha256:18a5cfbbc600cc44fab9fed9d6730472865bb0b06d8a93eda6bff220c976e3ca
+  network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part VI — Digest and fingerprint suite
+      - 54. Network and input-schema fingerprints
+      - 54.1 Network fingerprint
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  runtime-fingerprint:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IV — Compilation, 23. Semantic fingerprint]
+    reviewed_hash: sha256:93810388dc436f32e1d3395798095baa37c59213f8becc008194c7e1a0df5985
+  conflict-evidence:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 14. Evidence families, 14.24 `ConflictEvidence`]
+    reviewed_hash: sha256:2b1cada19c225c82934c0d83b768c4b5c9154865d8868cc3e2378ad9abdbe95d
+  runtime-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part V — Exhaustive initial catalogue
+      - 29. Runtime values, time, policy, and semantic rejection
+    reviewed_hash: sha256:c9f66339774d5f873cdf36804834c8e71d0ea3025aef36badde12a1ca570e825
+  testing-primitive:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 39. Exhaustive primitive testing]
+    reviewed_hash: sha256:c67d2593f52b5536672661e3cdb833b44716d657c7a9d23dabb0f698adcdb3de
+  testing-lifecycle:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VI — Initialization verification, 23. Lifecycle coverage]
+    reviewed_hash: sha256:9868a6b5542f3beb82a608c4dce58e6e9e8180b60e00ce1477374c0a07e9e61c
+  testing-pulse-algebra:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 34. Pulse algebra]
+    reviewed_hash: sha256:0e9cad7bccffb06aa64c8b1f0a75ff2d73862c35e36f7bac2d1ea44aafef0e31
+  testing-current-state:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 36. Current-state isolation]
+    reviewed_hash: sha256:4b26150e2f39bd5e89b72ecb0f36aa0c321a6d1a0f5f109ad110dc91611b69b8
+  testing-common-conformance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 38. Common conformance matrix]
+    reviewed_hash: sha256:d37d3539bb2e78723780838aede84b7ec5b6c3539db83d92e769e935022d1942
+  testing-stateful-chain:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 40. Stateful chain testing]
+    reviewed_hash: sha256:b83754e36e34c9cbfe974203926f6761f76ac2b38268564b2eb3a8db0709da4e
+  testing-conflict-policies:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 41. Conflict policies]
+    reviewed_hash: sha256:241eee01fe5dcfccb892198cd4e9d995d6098a8bcadb66e7253e04eee000cb3a
+  testing-compilation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72
+  testing-failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
+  testing-diagnostics:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIII — Diagnostic verification, 74. Structured diagnostic conformance]
+    reviewed_hash: sha256:2a9449312adf0c09ce27b88156e3e18d40fbbf73f489188b30f9376c88ab4005

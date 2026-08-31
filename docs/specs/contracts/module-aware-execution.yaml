@@ -5,7 +5,7 @@ kind: capability
 status: reviewed
 
 source_baseline:
-  commit: a7e75d75699d40c65c2f4b1a092866e6d1df4e47
+  commit: bc39319ad596752b53380445d26bc5b98f51635a
   working_tree: dirty
 
 summary: >-
@@ -162,7 +162,7 @@ sources:
   api-validated:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]
-    reviewed_hash: sha256:ba5bdf22f7ee67ffe108d8dadd7bc7e2da25c61f82b81d6be21a50f063e31a63
+    reviewed_hash: sha256:21c95cae542bea77e6acf22714564b7688dc5e603a17e0f1a01aedf8d810ee24
   api-compiled:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part II — Canonical object model, 14. `CompiledNetwork<D>`]

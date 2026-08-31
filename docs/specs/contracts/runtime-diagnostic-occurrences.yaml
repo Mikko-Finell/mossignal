@@ -1,0 +1,225 @@
+schema_version: "0.1"
+id: mossignal.diagnostics.runtime_occurrences
+title: Committed runtime diagnostic occurrences
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: bc39319ad596752b53380445d26bc5b98f51635a
+  working_tree: dirty
+
+summary: >-
+  DiagnosticOccurrence<D> is the owned successful-runtime delivery of one
+  catalogue-backed transient condition at an exact logical time and topology
+  revision, published only through a committed transaction result.
+
+scope:
+  includes:
+    - RuntimeOccurrence catalogue delivery and safe construction
+    - owned occurrence problem, time, revision, and result publication
+    - deterministic successful-transaction staging and failure rollback
+    - the initial pulse-latch retained-conflict occurrence
+  excludes:
+    - validation report findings and operation failures
+    - persistent diagnostic episode state and lifecycle transitions
+    - observer subscriptions, logging, notification delivery, and host callbacks
+    - retained occurrence history, snapshot encoding, replay, and persistence formats
+
+known_uncovered:
+  - Optional retained diagnostic history and observer cursor semantics
+  - Canonical persistence or replay representation for result-owned occurrences
+
+aliases:
+  - DiagnosticOccurrence<D>
+  - RuntimeOccurrence
+  - runtime.pulse_latch_conflict_retained
+
+requirements:
+  - id: distinct-catalogue-delivery
+    kind: public_surface
+    statement: >-
+      ProblemDelivery includes RuntimeOccurrence as a distinct successful-runtime
+      form. Delivery is fixed by the authoritative catalogue rather than inferred
+      from severity, and safe occurrence construction accepts only codes whose
+      registry entry permits RuntimeOccurrence.
+    sources: [catalogue-delivery, concrete-occurrence]
+
+  - id: owned-occurrence-record
+    kind: public_surface
+    statement: >-
+      DiagnosticOccurrence<D> owns one Problem<D>, exact Time<D>, and
+      NetworkRevision and exposes them through borrowed structured access. It is
+      distinct from Diagnostic<D>, RuntimeFailure, persistent episode changes,
+      and InternalDefect<D>; rendered text is not authoritative occurrence data.
+    sources: [catalogue-distinct-forms, concrete-occurrence, concrete-delivery-boundaries]
+
+  - id: committed-result-publication
+    kind: lifecycle
+    statement: >-
+      Runtime occurrences produced by committed reactions appear in the successful
+      owned TransactionResult<D>. Distinct earlier deadline reactions remain in
+      chronological order before the current-time reaction. Occurrences do not
+      appear in RuntimeFailure, invoke host effects during preparation, become
+      machine-retained state, or survive a rejected transaction as published
+      machine or result state.
+    sources: [catalogue-runtime-occurrences, catalogue-failure-boundary, concrete-result, api-transaction-ordering, api-settlement, testing-no-host-effects]
+    basis: derived
+
+  - id: transient-reaction-identity
+    kind: semantic
+    statement: >-
+      A transient condition creates an occurrence for the reaction in which it
+      exists and does not create active diagnostic state. Separate later pulse
+      conflicts are separate occurrences even when their structural subject and
+      evidence are otherwise equal.
+    sources: [builtin-occurrences-and-episodes, catalogue-runtime-occurrences, pulse-latch]
+
+  - id: initial-pulse-latch-condition
+    kind: semantic
+    statement: >-
+      The initial occurrence-capable code is
+      runtime.pulse_latch_conflict_retained, fixed as Warning and Advisory with
+      exact ConflictEvidence. One PulseSetResetLatch using RetainAndDiagnose emits
+      one occurrence when both complete pulse controls are present in a reaction
+      while retaining its previous stored level.
+    sources: [pulse-latch, conflict-evidence, runtime-codes]
+
+  - id: structured-stable-evidence
+    kind: semantic
+    statement: >-
+      An occurrence uses the common catalogue-backed Problem<D> with a stable
+      primary node subject and exact typed evidence. Pulse-latch conflict evidence
+      includes the policy, previous stored state, exact set and reset counts,
+      logical time, and revision without parsing prose or exposing dense runtime
+      positions.
+    sources: [conflict-evidence, runtime-codes, concrete-occurrence]
+
+  - id: module-transparent-occurrences
+    kind: system_effect
+    statement: >-
+      Ordinary-primitive lowering and retained qualified identity mean that a
+      primitive occurrence arising inside a supported user module retains its
+      primitive code and canonical instance-qualified internal subject. A
+      primitive occurrence inside a standard expansion does the same, and its
+      presentation grouping must not emit a duplicate module-level warning for
+      that condition.
+    sources: [api-validated, api-modules, concrete-occurrence]
+    basis: derived
+
+  - id: deterministic-occurrence-conformance
+    kind: verification
+    statement: >-
+      Verification compares occurrences structurally and proves deterministic
+      ordering independent of authoring, connection, input, and evaluator work
+      order. It covers absence and presence, initialization and later reactions,
+      separate later conflicts, multiple latch subjects, exact evidence,
+      module-qualified subjects, and complete rollback when any
+      candidate transaction fails.
+    sources: [simultaneous-batches, concrete-required-guarantees, testing-work-order, testing-input-order, testing-failure-atomicity, testing-diagnostics]
+
+implementation_freedom:
+  - Occurrence staging may use any private deterministic collection or reaction-local builder; TransactionResult fields may remain private when equivalent accessors expose the owned ordered occurrences.
+  - Exact ordering among multiple simultaneous occurrences may use the simplest deterministic stable-subject-aware rule consistent with existing subject-order scope; implementation must test and record the chosen order without implying a broader canonical occurrence-order promise.
+  - No machine-retained recent-occurrence history is required by this opening slice.
+
+open_questions: []
+
+sources:
+  builtin-occurrences-and-episodes:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 19. Diagnostic occurrences and episodes]
+    reviewed_hash: sha256:fbb4eefba1a54aafc70dc116763e989b3c5380a67066e8f63d67c0f23948fe5c
+  simultaneous-batches:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 7. Simultaneous batches]
+    reviewed_hash: sha256:6f0c086ed445bf436c4974044bddc2eb224e4d6299620fedf775de6c641c4941
+  pulse-latch:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 43. `PulseSetResetLatch`]
+    reviewed_hash: sha256:fee927885b78a6c1dd70fe624908d09d1b9d0d0aad2b4ab12b48ab18b87b35e7
+  catalogue-distinct-forms:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part I — Unified problem model
+      - 3. One catalogue, distinct delivery forms
+    reviewed_hash: sha256:ed9a99f9eabe8010d801d28d7b808a7b1a2d2a4e4123983eae8261a21231c8b0
+  catalogue-delivery:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 10. Delivery]
+    reviewed_hash: sha256:a3bbce37b265f68ccbba354b142df58d1cbc2d9f38c4ebdeb0fc5afa9bb2d53a
+  conflict-evidence:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 14. Evidence families, 14.24 `ConflictEvidence`]
+    reviewed_hash: sha256:2b1cada19c225c82934c0d83b768c4b5c9154865d8868cc3e2378ad9abdbe95d
+  catalogue-runtime-occurrences:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part III — Reports, failures, ordering, and identity
+      - 22. Runtime occurrences
+    reviewed_hash: sha256:557c5e3339c0783c6d617f02a239cb4f90c73dd3eb8f56da38fadf10bad2018f
+  catalogue-failure-boundary:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part VI — Rust API integration
+      - 46. Required mapping by API family
+    reviewed_hash: sha256:c1a274325868079eb7b79402bb95b07543ff5c4af1dec2dc4c3288de47078b01
+  runtime-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part V — Exhaustive initial catalogue
+      - 29. Runtime values, time, policy, and semantic rejection
+    reviewed_hash: sha256:c9f66339774d5f873cdf36804834c8e71d0ea3025aef36badde12a1ca570e825
+  concrete-occurrence:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part IX — Reports and diagnostics, 41. Unified problem records and report findings]
+    reviewed_hash: sha256:a965b8ccf98ed45ad067b921de73a8cd0ec36e32e165257f8887beeee7de98c7
+  concrete-result:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, 64. `TransactionResult<D>`]
+    reviewed_hash: sha256:20fb868dbf44f94e61a1e06e7f9f5ac08b5b7dbd7db5584777630bae19f6f295
+  concrete-delivery-boundaries:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part XXX — Public API coherence requirements
+      - 110. Shared failure model
+    reviewed_hash: sha256:d95437914a843efb2ebd82514c793056288d0389bc07587e8c260a3c615760bb
+  concrete-required-guarantees:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXXII — Required concrete API properties, 115. Required guarantees]
+    reviewed_hash: sha256:2598e6a15ec43a06891a89eab1ce13e2966bbc8b69d81d954174f4957f576328
+  api-validated:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part II — Canonical object model, 13. `ValidatedNetwork<D>`]
+    reviewed_hash: sha256:21c95cae542bea77e6acf22714564b7688dc5e603a17e0f1a01aedf8d810ee24
+  api-modules:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part XI — Modules and graph queries, 64. Modules]
+    reviewed_hash: sha256:2709760df44dedd80d1e5ba55da90bb4206d5e2877a6cbc023a114f660582f8b
+  api-transaction-ordering:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 24. Transaction ordering]
+    reviewed_hash: sha256:98abbcc0a7ea1f9dbc9c7086d836b04ca13036f08ed5e440dcce937c7332ad9c
+  api-settlement:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 26. Settlement]
+    reviewed_hash: sha256:875bead35fccd63f762bf9fc87fbe484c579f99908d5e175bc8b135351296e23
+  testing-work-order:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 31. Work-order invariance]
+    reviewed_hash: sha256:8c1c30a0f4074fa39644273d73b72060f4baf5b3849ca81f95ea246e1f402822
+  testing-input-order:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VII — Reaction and signal verification, 32. Input-order invariance]
+    reviewed_hash: sha256:6bb063631903f75427fb410642aadddc444776fe412e1ce90b2d74ac139fd9d6
+  testing-failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
+  testing-no-host-effects:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 57. No host effects during preparation]
+    reviewed_hash: sha256:cb8e9eaecf7089db591d4b18ff0ad31ba6a2fa567992e48bb18339ea0a62e188
+  testing-diagnostics:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIII — Diagnostic verification, 74. Structured diagnostic conformance]
+    reviewed_hash: sha256:2a9449312adf0c09ce27b88156e3e18d40fbbf73f489188b30f9376c88ab4005
