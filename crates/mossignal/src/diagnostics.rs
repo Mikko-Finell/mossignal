@@ -3,7 +3,7 @@
 //! The opening catalogue is intentionally small.  Its types are the common
 //! representation used by later graph construction and validation modules.
 
-use crate::authored::{EdgeInitialization, InputPortRole, OutputPortRole};
+use crate::authored::{ConflictPolicy, EdgeInitialization, InputPortRole, OutputPortRole};
 use crate::identity::{InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint};
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
@@ -13,6 +13,7 @@ use crate::machine::NetworkRevision;
 use crate::metadata::OriginRef;
 use crate::signal::{LogicLevel, PulseCount, SignalKind};
 use crate::standard::{StandardModuleRef, StandardParameterKey, StandardParameterKind};
+use crate::time::Time;
 use core::cmp::Ordering;
 use core::marker::PhantomData;
 
@@ -198,6 +199,7 @@ pub enum Responsibility {
 pub enum ProblemDelivery {
     ReportFinding,
     OperationFailure,
+    RuntimeOccurrence,
     InternalDefect,
 }
 
@@ -226,6 +228,7 @@ pub enum EvidenceSchema {
     InputObservation,
     InputSchema,
     Provenance,
+    Conflict,
     InternalInvariant,
 }
 
@@ -287,6 +290,8 @@ pub enum DiagnosticCode {
     RuntimePolicyMissingLimit,
     RuntimePolicyInvalidLimit,
     RuntimeBudgetExceeded,
+    RuntimePulseLatchConflictRetained,
+    RuntimePulseLatchConflictRejected,
     InputUnknownEndpoint,
     InputWrongSignalKind,
     InputDuplicateObservation,
@@ -315,6 +320,7 @@ struct CodeSpecification {
 struct DeliverySet {
     report_finding: bool,
     operation_failure: bool,
+    runtime_occurrence: bool,
     internal_defect: bool,
 }
 
@@ -435,6 +441,7 @@ pub enum DuplicateNodeKind {
     FallingEdge(EdgeInitialization),
     AnyEdge(EdgeInitialization),
     Toggle(LogicLevel),
+    PulseSetResetLatch(LogicLevel, ConflictPolicy),
     PulseDelay(u64),
 }
 
@@ -561,6 +568,7 @@ pub enum InspectionSubjectKind {
     PulseDelay,
     EdgeDetector,
     Toggle,
+    PulseSetResetLatch,
     Module,
     LevelOutput,
     SignalKind(SignalKind),
@@ -596,6 +604,25 @@ pub struct BudgetEvidence {
     pub budget: &'static str,
     pub limit: u64,
     pub consumed: u64,
+}
+
+/// Exact structured evidence for one set/reset conflict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictEvidence {
+    /// The stable direct or module-qualified primitive subject.
+    pub node: NodeEvidence,
+    /// The configured conflict law.
+    pub policy: ConflictPolicy,
+    /// The previous stored level read by the reaction.
+    pub previous: LogicLevel,
+    /// The complete simultaneous set count.
+    pub set_count: PulseCount,
+    /// The complete simultaneous reset count.
+    pub reset_count: PulseCount,
+    /// The exact logical tick at which the conflict settled.
+    pub at_ticks: u64,
+    /// The topology revision under which the conflict settled.
+    pub revision: NetworkRevision,
 }
 
 /// Structured evidence for one exact opening catalogue code.
@@ -854,6 +881,14 @@ pub enum ProblemEvidence<D> {
     },
     RuntimeBudgetExceeded {
         evidence: BudgetEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimePulseLatchConflictRetained {
+        evidence: ConflictEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimePulseLatchConflictRejected {
+        evidence: ConflictEvidence,
         marker: PhantomData<fn() -> D>,
     },
     InputUnknownEndpoint {
@@ -1334,8 +1369,17 @@ impl<D> ProblemEvidence<D> {
 // SPEC: docs/specs/contracts/diagnostic-problem-model.yaml
 // "authoritative-registry" — code spelling, classification, delivery, and
 // evidence association are declared together so they cannot drift apart.
+macro_rules! runtime_occurrence_delivery {
+    () => {
+        false
+    };
+    ($allowed:expr) => {
+        $allowed
+    };
+}
+
 macro_rules! opening_diagnostic_registry {
-    ($( $code:ident, $evidence:pat, $spelling:literal, $severity:ident, $responsibility:ident, $schema:ident, $report_finding:expr, $operation_failure:expr, $internal_defect:expr; )+) => {
+    ($( $code:ident, $evidence:pat, $spelling:literal, $severity:ident, $responsibility:ident, $schema:ident, $report_finding:expr, $operation_failure:expr, $internal_defect:expr $(, $runtime_occurrence:expr)?; )+) => {
         impl DiagnosticCode {
             /// Every code implemented by the current catalogue slice.
             pub const ALL: &'static [Self] = &[$(Self::$code,)+];
@@ -1371,6 +1415,7 @@ macro_rules! opening_diagnostic_registry {
                 match delivery {
                     ProblemDelivery::ReportFinding => allowed.report_finding,
                     ProblemDelivery::OperationFailure => allowed.operation_failure,
+                    ProblemDelivery::RuntimeOccurrence => allowed.runtime_occurrence,
                     ProblemDelivery::InternalDefect => allowed.internal_defect,
                 }
             }
@@ -1385,6 +1430,7 @@ macro_rules! opening_diagnostic_registry {
                         delivery: DeliverySet {
                             report_finding: $report_finding,
                             operation_failure: $operation_failure,
+                            runtime_occurrence: runtime_occurrence_delivery!($($runtime_occurrence)?),
                             internal_defect: $internal_defect,
                         },
                     },)+
@@ -1459,6 +1505,8 @@ opening_diagnostic_registry! {
     RuntimePolicyMissingLimit, Self::RuntimePolicyMissingLimit { .. }, "runtime.policy_missing_limit", Error, CallerInput, Parameter, false, true, false;
     RuntimePolicyInvalidLimit, Self::RuntimePolicyInvalidLimit { .. }, "runtime.policy_invalid_limit", Error, CallerInput, Parameter, false, true, false;
     RuntimeBudgetExceeded, Self::RuntimeBudgetExceeded { .. }, "runtime.budget_exceeded", Error, ResourceLimit, Budget, false, true, false;
+    RuntimePulseLatchConflictRetained, Self::RuntimePulseLatchConflictRetained { .. }, "runtime.pulse_latch_conflict_retained", Warning, Advisory, Conflict, false, false, false, true;
+    RuntimePulseLatchConflictRejected, Self::RuntimePulseLatchConflictRejected { .. }, "runtime.pulse_latch_conflict_rejected", Error, SemanticRejection, Conflict, false, true, false;
     InputUnknownEndpoint, Self::InputUnknownEndpoint { .. }, "input.unknown_endpoint", Error, CallerInput, InputObservation, false, true, false;
     InputWrongSignalKind, Self::InputWrongSignalKind { .. }, "input.wrong_signal_kind", Error, CallerInput, InputObservation, false, true, false;
     InputDuplicateObservation, Self::InputDuplicateObservation { .. }, "input.duplicate_observation", Error, CallerInput, InputObservation, false, true, false;
@@ -1573,6 +1621,63 @@ impl<D> Diagnostic<D> {
     #[must_use]
     pub fn into_problem(self) -> Problem<D> {
         self.problem
+    }
+}
+
+/// One catalogue-valid transient runtime condition published by a committed reaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticOccurrence<D> {
+    problem: Problem<D>,
+    at: Time<D>,
+    revision: NetworkRevision,
+}
+
+impl<D> DiagnosticOccurrence<D> {
+    /// Creates an occurrence only for a code whose catalogue delivery permits it.
+    pub fn new(
+        problem: Problem<D>,
+        at: Time<D>,
+        revision: NetworkRevision,
+    ) -> Result<Self, Box<Problem<D>>> {
+        let evidence_is_coherent = match problem.evidence() {
+            ProblemEvidence::RuntimePulseLatchConflictRetained { evidence, .. } => {
+                evidence.policy == ConflictPolicy::RetainAndDiagnose
+                    && evidence.at_ticks == at.ticks()
+                    && evidence.revision == revision
+            }
+            _ => true,
+        };
+        if evidence_is_coherent
+            && problem
+                .code()
+                .allows_delivery(ProblemDelivery::RuntimeOccurrence)
+        {
+            Ok(Self {
+                problem,
+                at,
+                revision,
+            })
+        } else {
+            Err(Box::new(problem))
+        }
+    }
+
+    /// Returns the complete catalogue-backed problem.
+    #[must_use]
+    pub const fn problem(&self) -> &Problem<D> {
+        &self.problem
+    }
+
+    /// Returns the exact reaction time of the condition.
+    #[must_use]
+    pub const fn at(&self) -> Time<D> {
+        self.at
+    }
+
+    /// Returns the topology revision under which the condition settled.
+    #[must_use]
+    pub const fn revision(&self) -> NetworkRevision {
+        self.revision
     }
 }
 
@@ -1935,6 +2040,12 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         ProblemEvidence::RuntimeBudgetExceeded { .. } => {
             ConditionDiscriminator::Operation(DiagnosticCode::RuntimeBudgetExceeded)
         }
+        ProblemEvidence::RuntimePulseLatchConflictRetained { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimePulseLatchConflictRetained)
+        }
+        ProblemEvidence::RuntimePulseLatchConflictRejected { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimePulseLatchConflictRejected)
+        }
         ProblemEvidence::InputUnknownEndpoint { .. } => {
             ConditionDiscriminator::Operation(DiagnosticCode::InputUnknownEndpoint)
         }
@@ -2295,13 +2406,14 @@ mod tests {
             );
             writeln!(
                 rendered,
-                "{}|{:?}|{:?}|{:?}|{}|{}|{}",
+                "{}|{:?}|{:?}|{:?}|{}|{}|{}|{}",
                 code.as_str(),
                 code.severity(),
                 code.responsibility(),
                 code.evidence_schema(),
                 code.allows_delivery(ProblemDelivery::ReportFinding),
                 code.allows_delivery(ProblemDelivery::OperationFailure),
+                code.allows_delivery(ProblemDelivery::RuntimeOccurrence),
                 code.allows_delivery(ProblemDelivery::InternalDefect),
             )
             .unwrap_or_else(|_| unreachable!("writing to String cannot fail"));
@@ -2333,7 +2445,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 81);
+        assert_eq!(leaves.len(), 85);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {
@@ -2574,5 +2686,79 @@ mod tests {
             set.internal_defects()[0].code(),
             DiagnosticCode::InternalDiagnosticEvidenceConflict
         );
+    }
+
+    #[test]
+    fn occurrence_construction_enforces_delivery_and_exact_conflict_pairing() {
+        let revision = NetworkRevision::from_value(3);
+        let at = Time::<()>::from_ticks(5);
+        let conflict = ConflictEvidence {
+            node: NodeEvidence::Node(NodeKey::from_u128(7)),
+            policy: ConflictPolicy::RetainAndDiagnose,
+            previous: LogicLevel::Low,
+            set_count: PulseCount::ONE,
+            reset_count: PulseCount::new(2),
+            at_ticks: at.ticks(),
+            revision,
+        };
+        let retained = Problem::new(
+            SubjectRef::Node(NodeKey::from_u128(7)),
+            Vec::new(),
+            ProblemEvidence::RuntimePulseLatchConflictRetained {
+                evidence: conflict.clone(),
+                marker: PhantomData,
+            },
+        );
+        assert!(DiagnosticOccurrence::new(retained, at, revision).is_ok());
+
+        let wrong_time = Problem::new(
+            SubjectRef::Node(NodeKey::from_u128(7)),
+            Vec::new(),
+            ProblemEvidence::RuntimePulseLatchConflictRetained {
+                evidence: ConflictEvidence {
+                    at_ticks: 4,
+                    ..conflict.clone()
+                },
+                marker: PhantomData,
+            },
+        );
+        assert!(DiagnosticOccurrence::new(wrong_time, at, revision).is_err());
+
+        let wrong_policy = Problem::new(
+            SubjectRef::Node(NodeKey::from_u128(7)),
+            Vec::new(),
+            ProblemEvidence::RuntimePulseLatchConflictRetained {
+                evidence: ConflictEvidence {
+                    policy: ConflictPolicy::SetDominant,
+                    ..conflict.clone()
+                },
+                marker: PhantomData,
+            },
+        );
+        assert!(DiagnosticOccurrence::new(wrong_policy, at, revision).is_err());
+
+        let rejected = Problem::new(
+            SubjectRef::Node(NodeKey::from_u128(7)),
+            Vec::new(),
+            ProblemEvidence::RuntimePulseLatchConflictRejected {
+                evidence: conflict,
+                marker: PhantomData,
+            },
+        );
+        assert!(DiagnosticOccurrence::new(rejected, at, revision).is_err());
+
+        let operation_failure = Problem::new(
+            SubjectRef::Operation(OperationSubjectRef::MachineTransaction),
+            Vec::new(),
+            ProblemEvidence::RuntimeBudgetExceeded {
+                evidence: BudgetEvidence {
+                    budget: "test",
+                    limit: 1,
+                    consumed: 2,
+                },
+                marker: PhantomData,
+            },
+        );
+        assert!(DiagnosticOccurrence::new(operation_failure, at, revision).is_err());
     }
 }

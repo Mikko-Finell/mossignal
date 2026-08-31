@@ -21,8 +21,9 @@ mod transaction;
 mod validation;
 
 pub use authored::{
-    EdgeConfig, EdgeDetectorKind, EdgeInitialization, EdgeObservation, ModuleBinding,
-    ModuleBindingSet, ModuleInstanceDef, PulseDelayConfig, ToggleConfig,
+    ConflictPolicy, EdgeConfig, EdgeDetectorKind, EdgeInitialization, EdgeObservation,
+    ModuleBinding, ModuleBindingSet, ModuleInstanceDef, PulseDelayConfig, PulseSetResetConfig,
+    ToggleConfig,
 };
 pub use binding::{
     BindingFailure, BindingSet, BindingSetBuilder, BoundApplyFailure, BoundMachine,
@@ -34,6 +35,7 @@ pub use builder::{
     ModuleBuilder, ModuleInstanceBuilder, NetworkBuilder, PulseRouteOutputs, Signal,
 };
 pub use compile::CompiledNetwork;
+pub use diagnostics::{ConflictEvidence, DiagnosticOccurrence};
 pub use identity::{InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint, TimeDomainId};
 pub use input::{
     InputBuildFailure, InputDelta, InputDeltaBuilder, InputSnapshot, InputSnapshotBuilder,
@@ -43,7 +45,8 @@ pub use machine::{
     Machine, MachineStatus, ModuleInputInspection, ModuleInspection, ModuleInspectionFailure,
     ModuleNodeInspection, ModuleOutputInspection, ModulePendingPulseDelayInspection,
     NetworkRevision, PendingEventKey, PendingPulseDelayInspection, PulseDelayDefinitionInspection,
-    PulseDelayInspection, PulseDelayInspectionFailure, Schedule, ScheduleFailure,
+    PulseDelayInspection, PulseDelayInspectionFailure, PulseSetResetLatchDefinitionInspection,
+    PulseSetResetLatchInspection, PulseSetResetLatchInspectionFailure, Schedule, ScheduleFailure,
     ToggleDefinitionInspection, ToggleInspection, ToggleInspectionFailure,
 };
 pub use module::{

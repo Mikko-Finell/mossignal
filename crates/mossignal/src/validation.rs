@@ -898,6 +898,9 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                             DuplicateNodeKind::AnyEdge(config.initialization)
                         }
                         NodeKind::Toggle(config) => DuplicateNodeKind::Toggle(config.initial),
+                        NodeKind::PulseSetResetLatch(config) => {
+                            DuplicateNodeKind::PulseSetResetLatch(config.initial, config.conflict)
+                        }
                         NodeKind::PulseDelay(config) => {
                             DuplicateNodeKind::PulseDelay(config.delay.ticks())
                         }

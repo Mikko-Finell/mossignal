@@ -1,6 +1,8 @@
 //! Mutable machine lifecycle over an immutable compiled topology.
 
-use crate::authored::{EdgeDetectorKind, EdgeInitialization, EdgeObservation, NodeKind};
+use crate::authored::{
+    ConflictPolicy, EdgeDetectorKind, EdgeInitialization, EdgeObservation, NodeKind,
+};
 use crate::compile::CompiledNetwork;
 use crate::diagnostics::{
     DiagnosticCode, InspectionEvidence, InspectionSubjectKind, LifecycleEvidence,
@@ -395,6 +397,8 @@ pub struct ModuleNodeInspection<D> {
     edge_observation_cause: Option<CauseRef>,
     toggle_state: Option<LogicLevel>,
     toggle_inversion: Option<CauseRef>,
+    pulse_set_reset_state: Option<LogicLevel>,
+    pulse_set_reset_cause: Option<CauseRef>,
     pending: Vec<ModulePendingPulseDelayInspection<D>>,
 }
 
@@ -438,6 +442,16 @@ impl<D> ModuleNodeInspection<D> {
     #[must_use]
     pub const fn toggle_inversion(&self) -> Option<CauseRef> {
         self.toggle_inversion
+    }
+    /// Returns committed stored state for a pulse set/reset latch.
+    #[must_use]
+    pub const fn pulse_set_reset_state(&self) -> Option<LogicLevel> {
+        self.pulse_set_reset_state
+    }
+    /// Returns the retained cause of the latest state-establishing latch control.
+    #[must_use]
+    pub const fn pulse_set_reset_cause(&self) -> Option<CauseRef> {
+        self.pulse_set_reset_cause
     }
     #[must_use]
     pub fn pending(&self) -> &[ModulePendingPulseDelayInspection<D>] {
@@ -677,8 +691,9 @@ pub(crate) struct MachineStore<D> {
     pub(crate) provenance: Option<ProvenanceView<D>>,
     pub(crate) edge_observations: Vec<EdgeObservation>,
     pub(crate) edge_observation_causes: BTreeMap<NodeKey, CauseRef>,
-    pub(crate) toggle_states: Vec<LogicLevel>,
+    pub(crate) stored_levels: Vec<LogicLevel>,
     pub(crate) toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
+    pub(crate) pulse_latch_state_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) pending_pulse_delays: BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
     pub(crate) next_pending_event_serial: u64,
 }
@@ -698,8 +713,9 @@ impl<D> Clone for MachineStore<D> {
             provenance: self.provenance.clone(),
             edge_observations: self.edge_observations.clone(),
             edge_observation_causes: self.edge_observation_causes.clone(),
-            toggle_states: self.toggle_states.clone(),
+            stored_levels: self.stored_levels.clone(),
             toggle_inversion_causes: self.toggle_inversion_causes.clone(),
+            pulse_latch_state_causes: self.pulse_latch_state_causes.clone(),
             pending_pulse_delays: self.pending_pulse_delays.clone(),
             next_pending_event_serial: self.next_pending_event_serial,
         }
@@ -962,6 +978,127 @@ impl ToggleInspectionFailure {
     }
 }
 
+/// Structural information available for one compiled pulse set/reset latch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PulseSetResetLatchDefinitionInspection {
+    node: NodeKey,
+    initial: LogicLevel,
+    conflict: ConflictPolicy,
+}
+
+impl PulseSetResetLatchDefinitionInspection {
+    /// Returns the stable node key.
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+    /// Returns the declared initial level.
+    #[must_use]
+    pub const fn initial(&self) -> LogicLevel {
+        self.initial
+    }
+    /// Returns the simultaneous-control conflict policy.
+    #[must_use]
+    pub const fn conflict(&self) -> ConflictPolicy {
+        self.conflict
+    }
+}
+
+/// One owned observation of committed pulse set/reset latch state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PulseSetResetLatchInspection<D> {
+    node: NodeKey,
+    initial: LogicLevel,
+    conflict: ConflictPolicy,
+    committed: LogicLevel,
+    revision: NetworkRevision,
+    at: Time<D>,
+    latest_establishment: CauseRef,
+}
+
+impl<D> PulseSetResetLatchInspection<D> {
+    /// Returns the stable node key.
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+    /// Returns the declared initial level.
+    #[must_use]
+    pub const fn initial(&self) -> LogicLevel {
+        self.initial
+    }
+    /// Returns the simultaneous-control conflict policy.
+    #[must_use]
+    pub const fn conflict(&self) -> ConflictPolicy {
+        self.conflict
+    }
+    /// Returns the committed stored level.
+    #[must_use]
+    pub const fn committed(&self) -> LogicLevel {
+        self.committed
+    }
+    /// Returns the observed topology revision.
+    #[must_use]
+    pub const fn revision(&self) -> NetworkRevision {
+        self.revision
+    }
+    /// Returns the logical time of the committed observation.
+    #[must_use]
+    pub const fn at(&self) -> Time<D> {
+        self.at
+    }
+    /// Returns the cause that most recently established the stored level.
+    #[must_use]
+    pub const fn latest_establishment(&self) -> CauseRef {
+        self.latest_establishment
+    }
+}
+
+/// A structural or lifecycle failure to inspect one pulse set/reset latch.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PulseSetResetLatchInspectionFailure {
+    /// The node key is not part of the compiled topology.
+    UnknownNode(NodeKey),
+    /// The node exists but is not a pulse set/reset latch.
+    NotPulseSetResetLatch(NodeKey),
+    /// Runtime state is unavailable before machine initialization.
+    NotInitialized,
+}
+
+impl PulseSetResetLatchInspectionFailure {
+    /// Returns the exact catalogue code for this failure.
+    #[must_use]
+    pub fn code(self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+    /// Returns the catalogue-fixed severity.
+    #[must_use]
+    pub fn severity(self) -> Severity {
+        self.code().severity()
+    }
+    /// Returns the catalogue-fixed responsibility.
+    #[must_use]
+    pub fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+    /// Projects the failure into the common problem kernel.
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        match self {
+            Self::UnknownNode(node) => {
+                inspection_unknown(node, InspectionSubjectKind::PulseSetResetLatch)
+            }
+            Self::NotPulseSetResetLatch(node) => {
+                inspection_wrong_kind(node, InspectionSubjectKind::PulseSetResetLatch)
+            }
+            Self::NotInitialized => {
+                lifecycle_not_initialized(OperationSubjectRef::MachineLifecycle)
+            }
+        }
+    }
+}
+
 fn lifecycle_not_initialized<D>(operation: OperationSubjectRef) -> Problem<D> {
     Problem::new(
         SubjectRef::Operation(operation),
@@ -1013,7 +1150,7 @@ fn inspection_wrong_kind<D>(node: NodeKey, expected: InspectionSubjectKind) -> P
 impl<D> Machine<D> {
     pub(crate) fn new(compiled: CompiledNetwork<D>, policy: RuntimePolicy) -> Self {
         let edge_observations = compiled.initial_edge_observations();
-        let toggle_states = compiled.initial_toggle_states();
+        let stored_levels = compiled.initial_stored_levels();
         Self {
             compiled,
             policy,
@@ -1030,8 +1167,9 @@ impl<D> Machine<D> {
                 provenance: None,
                 edge_observations,
                 edge_observation_causes: BTreeMap::new(),
-                toggle_states,
+                stored_levels,
                 toggle_inversion_causes: BTreeMap::new(),
+                pulse_latch_state_causes: BTreeMap::new(),
                 pending_pulse_delays: BTreeMap::new(),
                 next_pending_event_serial: 0,
             },
@@ -1230,9 +1368,15 @@ impl<D> Machine<D> {
             let toggle_state = self
                 .compiled
                 .toggle_state_slot(flat)
-                .and_then(|(slot, _)| self.store.toggle_states.get(slot.value()).copied())
+                .and_then(|(slot, _)| self.store.stored_levels.get(slot.value()).copied())
                 .filter(|_| self.is_initialized());
             let toggle_inversion = self.store.toggle_inversion_causes.get(&flat).copied();
+            let pulse_set_reset_state = self
+                .compiled
+                .pulse_set_reset_state_slot(flat)
+                .and_then(|(slot, _, _)| self.store.stored_levels.get(slot.value()).copied())
+                .filter(|_| self.is_initialized());
+            let pulse_set_reset_cause = self.store.pulse_latch_state_causes.get(&flat).copied();
             let mut pending = self
                 .store
                 .pending_pulse_delays
@@ -1270,6 +1414,8 @@ impl<D> Machine<D> {
                 edge_observation_cause,
                 toggle_state,
                 toggle_inversion,
+                pulse_set_reset_state,
+                pulse_set_reset_cause,
                 pending,
             });
         }
@@ -1495,7 +1641,7 @@ impl<D> Machine<D> {
             .ok_or(ToggleInspectionFailure::NotToggle(node))?;
         let committed = self
             .store
-            .toggle_states
+            .stored_levels
             .get(slot.value())
             .copied()
             .ok_or(ToggleInspectionFailure::NotToggle(node))?;
@@ -1506,6 +1652,62 @@ impl<D> Machine<D> {
             revision: self.store.revision,
             at: now,
             latest_inversion: self.store.toggle_inversion_causes.get(&node).copied(),
+        })
+    }
+
+    /// Returns declared pulse set/reset latch state and policy before or after initialization.
+    pub fn inspect_pulse_set_reset_latch_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<PulseSetResetLatchDefinitionInspection, PulseSetResetLatchInspectionFailure> {
+        if self.compiled.qualified_node(node).is_some() {
+            return Err(PulseSetResetLatchInspectionFailure::UnknownNode(node));
+        }
+        let Some((_, initial, conflict)) = self.compiled.pulse_set_reset_state_slot(node) else {
+            return Err(if self.compiled.contains_node(node) {
+                PulseSetResetLatchInspectionFailure::NotPulseSetResetLatch(node)
+            } else {
+                PulseSetResetLatchInspectionFailure::UnknownNode(node)
+            });
+        };
+        Ok(PulseSetResetLatchDefinitionInspection {
+            node,
+            initial,
+            conflict,
+        })
+    }
+
+    /// Returns an owned observation of committed pulse set/reset latch state.
+    pub fn inspect_pulse_set_reset_latch(
+        &self,
+        node: NodeKey,
+    ) -> Result<PulseSetResetLatchInspection<D>, PulseSetResetLatchInspectionFailure> {
+        let definition = self.inspect_pulse_set_reset_latch_definition(node)?;
+        let MachineStatus::Ready { now } = self.store.status else {
+            return Err(PulseSetResetLatchInspectionFailure::NotInitialized);
+        };
+        let (slot, _, _) = self.compiled.pulse_set_reset_state_slot(node).ok_or(
+            PulseSetResetLatchInspectionFailure::NotPulseSetResetLatch(node),
+        )?;
+        let committed = self.store.stored_levels.get(slot.value()).copied().ok_or(
+            PulseSetResetLatchInspectionFailure::NotPulseSetResetLatch(node),
+        )?;
+        let latest_establishment = self
+            .store
+            .pulse_latch_state_causes
+            .get(&node)
+            .copied()
+            .ok_or(PulseSetResetLatchInspectionFailure::NotPulseSetResetLatch(
+                node,
+            ))?;
+        Ok(PulseSetResetLatchInspection {
+            node,
+            initial: definition.initial,
+            conflict: definition.conflict,
+            committed,
+            revision: self.store.revision,
+            at: now,
+            latest_establishment,
         })
     }
 }

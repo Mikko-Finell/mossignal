@@ -1,9 +1,9 @@
 //! Immutable dense execution topology for validated restricted networks.
 
 use crate::authored::{
-    ConnectionDef, ConnectionEndpoint, EdgeDetectorKind, EdgeObservation, ExternalInputDef,
-    ExternalOutputDef, InputPortRole, ModuleInstanceDef, ModuleInterfaceMapping, NodeDef, NodeKind,
-    NodePorts, OutputPortRole, UncheckedNetwork,
+    ConflictPolicy, ConnectionDef, ConnectionEndpoint, EdgeDetectorKind, EdgeObservation,
+    ExternalInputDef, ExternalOutputDef, InputPortRole, ModuleInstanceDef, ModuleInterfaceMapping,
+    NodeDef, NodeKind, NodePorts, OutputPortRole, UncheckedNetwork,
 };
 use crate::diagnostics::{DiagnosticSet, Report};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
@@ -66,7 +66,7 @@ struct CompiledInner<D> {
     external_output_lookup: BTreeMap<AnyExternalOutputKey, ExternalOutputIndex>,
     operation_lookup: BTreeMap<ReactionVertex, OperationIndex>,
     edge_initial_observations: Vec<EdgeObservation>,
-    toggle_initial_states: Vec<LogicLevel>,
+    stored_level_initial_states: Vec<LogicLevel>,
     qualified_node_lookup: BTreeMap<QualifiedNodeRef, NodeKey>,
     qualified_node_reverse: BTreeMap<NodeKey, QualifiedNodeRef>,
     qualified_input_reverse: BTreeMap<AnyInPortKey, QualifiedInPortRef>,
@@ -119,9 +119,9 @@ struct ExternalOutputIndex(usize);
 struct OperationIndex(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct ToggleStateIndex(usize);
+pub(crate) struct StoredLevelStateIndex(usize);
 
-impl ToggleStateIndex {
+impl StoredLevelStateIndex {
     pub(crate) const fn value(self) -> usize {
         self.0
     }
@@ -182,7 +182,13 @@ enum CompiledNodeKind {
     },
     Toggle {
         input: PortIndex,
-        state: ToggleStateIndex,
+        state: StoredLevelStateIndex,
+    },
+    PulseSetResetLatch {
+        set: PortIndex,
+        reset: PortIndex,
+        state: StoredLevelStateIndex,
+        conflict: ConflictPolicy,
     },
     PulseDelay {
         input: PortIndex,
@@ -212,6 +218,7 @@ impl CompiledNodeKind {
                 EdgeDetectorKind::Any => SemanticNodeKind::AnyEdge,
             },
             Self::Toggle { .. } => SemanticNodeKind::Toggle,
+            Self::PulseSetResetLatch { .. } => SemanticNodeKind::PulseSetResetLatch,
             Self::PulseDelay { .. } => SemanticNodeKind::PulseDelay,
         }
     }
@@ -269,6 +276,15 @@ impl CompiledNodeKind {
             }
             Self::EdgeDetector { input, .. } if port == input => Some(InputPortRole::Input),
             Self::Toggle { input, .. } if port == input => Some(InputPortRole::Toggle),
+            Self::PulseSetResetLatch { set, reset, .. } => {
+                if port == set {
+                    Some(InputPortRole::Set)
+                } else if port == reset {
+                    Some(InputPortRole::Reset)
+                } else {
+                    None
+                }
+            }
             Self::PulseDelay { input, .. } if port == input => Some(InputPortRole::PulseDelay),
             Self::EdgeDetector { .. } | Self::Toggle { .. } | Self::PulseDelay { .. } => None,
         }
@@ -296,7 +312,7 @@ impl CompiledNodeKind {
     const fn state_family(self) -> Option<StateFamily> {
         match self {
             Self::EdgeDetector { .. } => Some(StateFamily::EdgeObservation),
-            Self::Toggle { .. } => Some(StateFamily::StoredLevel),
+            Self::Toggle { .. } | Self::PulseSetResetLatch { .. } => Some(StateFamily::StoredLevel),
             _ => None,
         }
     }
@@ -359,8 +375,10 @@ pub(crate) struct FullEvaluation {
     pub(crate) external_outputs: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     pub(crate) pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
     pub(crate) proposed_edge_observations: Vec<EdgeObservation>,
-    pub(crate) proposed_toggle_states: Vec<LogicLevel>,
+    pub(crate) proposed_stored_levels: Vec<LogicLevel>,
     pub(crate) toggle_inversions: BTreeMap<NodeKey, usize>,
+    pub(crate) pulse_latch_state_establishments: BTreeSet<NodeKey>,
+    pub(crate) pulse_latch_conflicts: Vec<PulseLatchConflict>,
     pub(crate) pulse_delay_proposals: Vec<PulseDelayProposal>,
     #[cfg(test)]
     execution_counts: Vec<usize>,
@@ -372,6 +390,15 @@ pub(crate) struct PulseDelayProposal {
     pub(crate) delay_ticks: u64,
     pub(crate) count: PulseCount,
     pub(crate) input_source: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PulseLatchConflict {
+    pub(crate) node: NodeKey,
+    pub(crate) policy: ConflictPolicy,
+    pub(crate) previous: LogicLevel,
+    pub(crate) set_count: PulseCount,
+    pub(crate) reset_count: PulseCount,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -415,6 +442,18 @@ pub(crate) enum EvaluationCause {
         result: LogicLevel,
         inverted: bool,
     },
+    PulseSetResetLatch {
+        node: NodeKey,
+        set: usize,
+        reset: usize,
+        set_port: InPortKey<Pulse>,
+        reset_port: InPortKey<Pulse>,
+        set_count: PulseCount,
+        reset_count: PulseCount,
+        previous: LogicLevel,
+        result: LogicLevel,
+        policy: ConflictPolicy,
+    },
     PulseDelay {
         node: NodeKey,
     },
@@ -444,6 +483,7 @@ pub(crate) enum EvaluationFailure {
         left: PulseCount,
         right: PulseCount,
     },
+    PulseLatchConflict(PulseLatchConflict),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -590,7 +630,7 @@ impl<D> CompiledNetwork<D> {
                 external_inputs,
                 &BTreeMap::new(),
                 &self.inner.edge_initial_observations,
-                &self.inner.toggle_initial_states,
+                &self.inner.stored_level_initial_states,
             )
             .ok()
     }
@@ -605,7 +645,7 @@ impl<D> CompiledNetwork<D> {
             external_levels,
             external_pulses,
             &self.inner.edge_initial_observations,
-            &self.inner.toggle_initial_states,
+            &self.inner.stored_level_initial_states,
         )
     }
 
@@ -614,13 +654,13 @@ impl<D> CompiledNetwork<D> {
         external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
         previous_edge_observations: &[EdgeObservation],
-        previous_toggle_states: &[LogicLevel],
+        previous_stored_levels: &[LogicLevel],
     ) -> Result<FullEvaluation, EvaluationFailure> {
         self.inner.evaluate_reaction(
             external_levels,
             external_pulses,
             previous_edge_observations,
-            previous_toggle_states,
+            previous_stored_levels,
         )
     }
 
@@ -629,14 +669,14 @@ impl<D> CompiledNetwork<D> {
         external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
         previous_edge_observations: &[EdgeObservation],
-        previous_toggle_states: &[LogicLevel],
+        previous_stored_levels: &[LogicLevel],
         due_pulses: &BTreeMap<NodeKey, PulseCount>,
     ) -> Result<FullEvaluation, EvaluationFailure> {
         self.inner.evaluate_reaction_with_due(
             external_levels,
             external_pulses,
             previous_edge_observations,
-            previous_toggle_states,
+            previous_stored_levels,
             due_pulses,
         )
     }
@@ -645,8 +685,8 @@ impl<D> CompiledNetwork<D> {
         self.inner.operations.len()
     }
 
-    pub(crate) fn initial_toggle_states(&self) -> Vec<LogicLevel> {
-        self.inner.toggle_initial_states.clone()
+    pub(crate) fn initial_stored_levels(&self) -> Vec<LogicLevel> {
+        self.inner.stored_level_initial_states.clone()
     }
 
     pub(crate) fn initial_edge_observations(&self) -> Vec<EdgeObservation> {
@@ -681,12 +721,29 @@ impl<D> CompiledNetwork<D> {
     pub(crate) fn toggle_state_slot(
         &self,
         node: NodeKey,
-    ) -> Option<(ToggleStateIndex, LogicLevel)> {
+    ) -> Option<(StoredLevelStateIndex, LogicLevel)> {
         let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
         match descriptor.kind {
             CompiledNodeKind::Toggle { state, .. } => {
-                Some((state, self.inner.toggle_initial_states[state.0]))
+                Some((state, self.inner.stored_level_initial_states[state.0]))
             }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn pulse_set_reset_state_slot(
+        &self,
+        node: NodeKey,
+    ) -> Option<(StoredLevelStateIndex, LogicLevel, ConflictPolicy)> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        match descriptor.kind {
+            CompiledNodeKind::PulseSetResetLatch {
+                state, conflict, ..
+            } => Some((
+                state,
+                self.inner.stored_level_initial_states[state.0],
+                conflict,
+            )),
             _ => None,
         }
     }
@@ -792,13 +849,13 @@ impl<D> CompiledInner<D> {
         external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
         previous_edge_observations: &[EdgeObservation],
-        previous_toggle_states: &[LogicLevel],
+        previous_stored_levels: &[LogicLevel],
     ) -> Result<FullEvaluation, EvaluationFailure> {
         self.evaluate_reaction_with_due(
             external_levels,
             external_pulses,
             previous_edge_observations,
-            previous_toggle_states,
+            previous_stored_levels,
             &BTreeMap::new(),
         )
     }
@@ -808,11 +865,11 @@ impl<D> CompiledInner<D> {
         external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
         previous_edge_observations: &[EdgeObservation],
-        previous_toggle_states: &[LogicLevel],
+        previous_stored_levels: &[LogicLevel],
         due_pulses: &BTreeMap<NodeKey, PulseCount>,
     ) -> Result<FullEvaluation, EvaluationFailure> {
         if previous_edge_observations.len() != self.edge_initial_observations.len()
-            || previous_toggle_states.len() != self.toggle_initial_states.len()
+            || previous_stored_levels.len() != self.stored_level_initial_states.len()
         {
             return Err(EvaluationFailure::Incomplete);
         }
@@ -821,8 +878,10 @@ impl<D> CompiledInner<D> {
         let mut external_outputs = BTreeMap::new();
         let mut pulse_outputs = BTreeMap::new();
         let mut proposed_edge_observations = previous_edge_observations.to_vec();
-        let mut proposed_toggle_states = previous_toggle_states.to_vec();
+        let mut proposed_stored_levels = previous_stored_levels.to_vec();
         let mut toggle_inversions = BTreeMap::new();
+        let mut pulse_latch_state_establishments = BTreeSet::new();
+        let mut pulse_latch_conflicts = Vec::new();
         let mut pulse_delay_proposals = Vec::new();
         #[cfg(test)]
         let mut execution_counts = vec![0; self.operations.len()];
@@ -1266,7 +1325,7 @@ impl<D> CompiledInner<D> {
                         // SPEC: docs/specs/contracts/toggle.yaml "parity-output-and-successor-law"
                         // Every operation reads the shared previous vector and only stages a successor.
                         let count = self.pulse_input_value(*input, &values)?;
-                        let previous = previous_toggle_states
+                        let previous = previous_stored_levels
                             .get(state.0)
                             .copied()
                             .ok_or(EvaluationFailure::Incomplete)?;
@@ -1276,7 +1335,7 @@ impl<D> CompiledInner<D> {
                         } else {
                             previous
                         };
-                        proposed_toggle_states[state.0] = result;
+                        proposed_stored_levels[state.0] = result;
                         if inverted {
                             toggle_inversions.insert(*key, index);
                         }
@@ -1289,6 +1348,78 @@ impl<D> CompiledInner<D> {
                                 previous,
                                 result,
                                 inverted,
+                            },
+                        )
+                    }
+                    NodeDescriptor {
+                        key,
+                        kind:
+                            CompiledNodeKind::PulseSetResetLatch {
+                                set,
+                                reset,
+                                state,
+                                conflict,
+                            },
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/set-reset-latch-family.yaml
+                        // "pulse-control-law" — complete counts choose presence while remaining
+                        // available to exact evidence and causal support.
+                        let set_count = self.pulse_input_value(*set, &values)?;
+                        let reset_count = self.pulse_input_value(*reset, &values)?;
+                        let previous = previous_stored_levels
+                            .get(state.0)
+                            .copied()
+                            .ok_or(EvaluationFailure::Incomplete)?;
+                        let set_present = set_count.is_positive();
+                        let reset_present = reset_count.is_positive();
+                        let (result, establishes) = match (set_present, reset_present) {
+                            (false, false) => (previous, false),
+                            (true, false) => (LogicLevel::High, true),
+                            (false, true) => (LogicLevel::Low, true),
+                            (true, true) => match conflict {
+                                ConflictPolicy::SetDominant => (LogicLevel::High, true),
+                                ConflictPolicy::ResetDominant => (LogicLevel::Low, true),
+                                ConflictPolicy::RetainAndDiagnose => {
+                                    pulse_latch_conflicts.push(PulseLatchConflict {
+                                        node: *key,
+                                        policy: *conflict,
+                                        previous,
+                                        set_count,
+                                        reset_count,
+                                    });
+                                    (previous, false)
+                                }
+                                ConflictPolicy::RejectTransaction => {
+                                    return Err(EvaluationFailure::PulseLatchConflict(
+                                        PulseLatchConflict {
+                                            node: *key,
+                                            policy: *conflict,
+                                            previous,
+                                            set_count,
+                                            reset_count,
+                                        },
+                                    ));
+                                }
+                            },
+                        };
+                        proposed_stored_levels[state.0] = result;
+                        if establishes {
+                            pulse_latch_state_establishments.insert(*key);
+                        }
+                        (
+                            EvaluationValue::Level(result),
+                            EvaluationCause::PulseSetResetLatch {
+                                node: *key,
+                                set: self.input_source(*set)?.0,
+                                reset: self.input_source(*reset)?.0,
+                                set_port: self.pulse_port_key(*set)?,
+                                reset_port: self.pulse_port_key(*reset)?,
+                                set_count,
+                                reset_count,
+                                previous,
+                                result,
+                                policy: *conflict,
                             },
                         )
                     }
@@ -1437,8 +1568,10 @@ impl<D> CompiledInner<D> {
             external_outputs,
             pulse_outputs,
             proposed_edge_observations,
-            proposed_toggle_states,
+            proposed_stored_levels,
             toggle_inversions,
+            pulse_latch_state_establishments,
+            pulse_latch_conflicts,
             pulse_delay_proposals,
             #[cfg(test)]
             execution_counts,
@@ -1500,7 +1633,7 @@ impl<D> CompiledInner<D> {
         let mut input_port_lookup = BTreeMap::new();
         let mut output_port_lookup = BTreeMap::new();
         let mut edge_initial_observations = Vec::new();
-        let mut toggle_initial_states = Vec::new();
+        let mut stored_level_initial_states = Vec::new();
 
         let mut authored_nodes: Vec<_> = definition.nodes().iter().collect();
         authored_nodes.sort_by_key(|node| node.key());
@@ -1651,9 +1784,31 @@ impl<D> CompiledInner<D> {
                     let input = inputs.first().copied().unwrap_or_else(|| {
                         panic!("validated Toggle descriptor must retain its pulse input")
                     });
-                    let state = ToggleStateIndex(toggle_initial_states.len());
-                    toggle_initial_states.push(config.initial);
+                    let state = StoredLevelStateIndex(stored_level_initial_states.len());
+                    stored_level_initial_states.push(config.initial);
                     CompiledNodeKind::Toggle { input, state }
+                }
+                NodeKind::PulseSetResetLatch(config) => {
+                    let role_port = |role| {
+                        node.ports()
+                            .input_roles()
+                            .iter()
+                            .zip(inputs.iter().copied())
+                            .find_map(|(candidate, port)| (*candidate == role).then_some(port))
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "validated PulseSetResetLatch descriptor must retain every fixed input role"
+                                )
+                            })
+                    };
+                    let state = StoredLevelStateIndex(stored_level_initial_states.len());
+                    stored_level_initial_states.push(config.initial);
+                    CompiledNodeKind::PulseSetResetLatch {
+                        set: role_port(InputPortRole::Set),
+                        reset: role_port(InputPortRole::Reset),
+                        state,
+                        conflict: config.conflict,
+                    }
                 }
                 NodeKind::PulseDelay(config) => {
                     let input = inputs.first().copied().unwrap_or_else(|| {
@@ -1780,7 +1935,7 @@ impl<D> CompiledInner<D> {
             external_output_lookup,
             operation_lookup,
             edge_initial_observations,
-            toggle_initial_states,
+            stored_level_initial_states,
             qualified_node_lookup: metadata.qualified_node_lookup,
             qualified_node_reverse: metadata.qualified_node_reverse,
             qualified_input_reverse: metadata.qualified_input_reverse,
@@ -1853,7 +2008,15 @@ impl<D> CompiledInner<D> {
                     node.inputs.contains(&input) && state.0 < self.edge_initial_observations.len()
                 }
                 CompiledNodeKind::Toggle { input, state } => {
-                    node.inputs.contains(&input) && state.0 < self.toggle_initial_states.len()
+                    node.inputs.contains(&input) && state.0 < self.stored_level_initial_states.len()
+                }
+                CompiledNodeKind::PulseSetResetLatch {
+                    set, reset, state, ..
+                } => {
+                    set != reset
+                        && node.inputs.contains(&set)
+                        && node.inputs.contains(&reset)
+                        && state.0 < self.stored_level_initial_states.len()
                 }
                 CompiledNodeKind::PulseDelay { input, delay_ticks } => {
                     node.inputs.contains(&input) && delay_ticks > 0
@@ -2673,6 +2836,7 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
                 NodeKind::FallingEdge(config) => NodeKind::falling_edge(*config),
                 NodeKind::AnyEdge(config) => NodeKind::any_edge(*config),
                 NodeKind::Toggle(config) => NodeKind::toggle(config.initial),
+                NodeKind::PulseSetResetLatch(config) => NodeKind::pulse_set_reset_latch(*config),
                 NodeKind::PulseDelay(config) => NodeKind::pulse_delay(config.delay),
             };
             crate::authored::NodeDef::new(
@@ -3500,5 +3664,54 @@ mod tests {
             }
         }
         relation
+    }
+
+    #[test]
+    fn toggle_and_pulse_latch_share_one_stored_level_family() {
+        let mut builder = crate::NetworkBuilder::<()>::new(TimeDomainId::from_u128(900));
+        let (_, toggle_input) = builder.pulse_input("toggle");
+        let (_, set) = builder.pulse_input("set");
+        let (_, reset) = builder.pulse_input("reset");
+        let toggle_node = NodeKey::from_u128(10);
+        let latch_node = NodeKey::from_u128(20);
+        builder
+            .add_toggle(
+                toggle_node,
+                toggle_input,
+                crate::ToggleConfig::new(LogicLevel::Low),
+                DiagnosticMeta::default(),
+            )
+            .unwrap_or_else(|failure| panic!("toggle must author: {failure:?}"));
+        builder
+            .add_pulse_set_reset_latch(
+                latch_node,
+                set,
+                reset,
+                crate::PulseSetResetConfig::new(
+                    LogicLevel::High,
+                    crate::ConflictPolicy::ResetDominant,
+                ),
+                DiagnosticMeta::default(),
+            )
+            .unwrap_or_else(|failure| panic!("latch must author: {failure:?}"));
+        let compiled = builder
+            .finish()
+            .require_artifact()
+            .unwrap_or_else(|failure| panic!("stored-level fixture must validate: {failure:?}"))
+            .compile()
+            .require_artifact()
+            .unwrap_or_else(|failure| panic!("stored-level fixture must compile: {failure:?}"));
+        assert_eq!(
+            compiled.initial_stored_levels(),
+            vec![LogicLevel::Low, LogicLevel::High]
+        );
+        let (toggle_slot, _) = compiled
+            .toggle_state_slot(toggle_node)
+            .unwrap_or_else(|| panic!("toggle slot must exist"));
+        let (latch_slot, _, _) = compiled
+            .pulse_set_reset_state_slot(latch_node)
+            .unwrap_or_else(|| panic!("latch slot must exist"));
+        assert_eq!(toggle_slot.value(), 0);
+        assert_eq!(latch_slot.value(), 1);
     }
 }

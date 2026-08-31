@@ -41,6 +41,9 @@ EdgeDetectorInspectionFailure::NotInitialized|lifecycle.not_initialized
 ToggleInspectionFailure::UnknownNode|inspection.unknown_subject
 ToggleInspectionFailure::NotToggle|inspection.wrong_subject_kind
 ToggleInspectionFailure::NotInitialized|lifecycle.not_initialized
+PulseSetResetLatchInspectionFailure::UnknownNode|inspection.unknown_subject
+PulseSetResetLatchInspectionFailure::NotPulseSetResetLatch|inspection.wrong_subject_kind
+PulseSetResetLatchInspectionFailure::NotInitialized|lifecycle.not_initialized
 CauseLookupFailure::ForeignCause|explanation.foreign_cause
 CauseLookupFailure::InvalidCause|explanation.invalid_cause
 RuntimeFailureEvidence::AlreadyInitialized|lifecycle.already_initialized
@@ -53,6 +56,7 @@ RuntimeFailureEvidence::StaleInputSchema|input.stale_schema
 RuntimeFailureEvidence::BudgetExceeded|runtime.budget_exceeded
 RuntimeFailureEvidence::PulseCountOverflow|runtime.pulse_count_overflow
 RuntimeFailureEvidence::TimeOverflow|runtime.time_overflow
+RuntimeFailureEvidence::PulseLatchConflict|runtime.pulse_latch_conflict_rejected
 CatalogueFailure(standard_module.unknown_id)|standard_module.unknown_id
 CatalogueFailure(standard_module.unsupported_version)|standard_module.unsupported_version
 BindingFailure(binding.unknown_endpoint)|binding.unknown_endpoint

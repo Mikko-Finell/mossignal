@@ -491,7 +491,7 @@ Explicitly exclude:
 
 ---
 
-## 44A. [IN PROGRESS] Shared stored-level foundation, `PulseSetResetLatch`, and runtime occurrences
+## 44A. [DONE] Shared stored-level foundation, `PulseSetResetLatch`, and runtime occurrences
 
 Establish the first half of the set/reset latch family without introducing
 persistent diagnostic state:

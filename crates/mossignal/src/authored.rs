@@ -649,6 +649,8 @@ pub enum NodeKind<D> {
     AnyEdge(EdgeConfig),
     /// A pulse-controlled stored level with one pulse input and one level output.
     Toggle(ToggleConfig),
+    /// A pulse-controlled set/reset latch with one stored level.
+    PulseSetResetLatch(PulseSetResetConfig),
     /// A temporal pulse reproducer with one pulse input and one pulse output.
     PulseDelay(PulseDelayConfig<D>),
 }
@@ -673,6 +675,7 @@ impl<D> Clone for NodeKind<D> {
             Self::FallingEdge(config) => Self::FallingEdge(*config),
             Self::AnyEdge(config) => Self::AnyEdge(*config),
             Self::Toggle(config) => Self::Toggle(*config),
+            Self::PulseSetResetLatch(config) => Self::PulseSetResetLatch(*config),
             Self::PulseDelay(config) => Self::PulseDelay(*config),
         }
     }
@@ -698,6 +701,7 @@ impl<D> PartialEq for NodeKind<D> {
             | (Self::FallingEdge(left), Self::FallingEdge(right))
             | (Self::AnyEdge(left), Self::AnyEdge(right)) => left == right,
             (Self::Toggle(left), Self::Toggle(right)) => left == right,
+            (Self::PulseSetResetLatch(left), Self::PulseSetResetLatch(right)) => left == right,
             (Self::PulseDelay(left), Self::PulseDelay(right)) => left == right,
             _ => false,
         }
@@ -728,6 +732,10 @@ impl<D> fmt::Debug for NodeKind<D> {
             }
             Self::AnyEdge(config) => formatter.debug_tuple("AnyEdge").field(config).finish(),
             Self::Toggle(config) => formatter.debug_tuple("Toggle").field(config).finish(),
+            Self::PulseSetResetLatch(config) => formatter
+                .debug_tuple("PulseSetResetLatch")
+                .field(config)
+                .finish(),
             Self::PulseDelay(config) => formatter.debug_tuple("PulseDelay").field(config).finish(),
         }
     }
@@ -834,6 +842,12 @@ impl<D> NodeKind<D> {
     #[must_use]
     pub const fn toggle(initial: LogicLevel) -> Self {
         Self::Toggle(ToggleConfig::new(initial))
+    }
+
+    /// Creates a pulse-controlled set/reset latch with explicit configuration.
+    #[must_use]
+    pub const fn pulse_set_reset_latch(config: PulseSetResetConfig) -> Self {
+        Self::PulseSetResetLatch(config)
     }
 
     /// Creates a PulseDelay with the supplied positive delay.
@@ -984,6 +998,36 @@ pub struct ToggleConfig {
     pub initial: LogicLevel,
 }
 
+/// The simultaneous set/reset policy shared by the latch family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ConflictPolicy {
+    /// A simultaneous conflict stores and exposes High.
+    SetDominant,
+    /// A simultaneous conflict stores and exposes Low.
+    ResetDominant,
+    /// A simultaneous conflict retains the previous state and diagnoses it.
+    RetainAndDiagnose,
+    /// A simultaneous conflict rejects the containing transaction atomically.
+    RejectTransaction,
+}
+
+/// The semantic configuration of an authored [`NodeKind::PulseSetResetLatch`] claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PulseSetResetConfig {
+    /// The declared stored level used as previous state by the first reaction.
+    pub initial: LogicLevel,
+    /// The exact law applied when both pulse controls are present.
+    pub conflict: ConflictPolicy,
+}
+
+impl PulseSetResetConfig {
+    /// Creates a pulse-latch configuration without hidden defaults.
+    #[must_use]
+    pub const fn new(initial: LogicLevel, conflict: ConflictPolicy) -> Self {
+        Self { initial, conflict }
+    }
+}
+
 /// The semantic configuration of an authored [`NodeKind::PulseDelay`] claim.
 pub struct PulseDelayConfig<D> {
     /// The strictly positive delay between input and reproduced output.
@@ -1051,6 +1095,10 @@ pub enum InputPortRole {
     WhenHigh,
     /// The pulse control input of [`NodeKind::Toggle`].
     Toggle,
+    /// The set control of a set/reset latch.
+    Set,
+    /// The reset control of a set/reset latch.
+    Reset,
     /// The pulse input of [`NodeKind::PulseDelay`].
     PulseDelay,
     /// The pulse batch controlled by a level-controlled pulse primitive.

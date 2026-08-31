@@ -345,6 +345,20 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
             writer.field("initial", |writer| logic_level(writer, config.initial));
             writer.field("state_schema", |writer| writer.variant_null("stored_level"));
         }
+        NodeKind::PulseSetResetLatch(config) => {
+            writer.variant_start(identity_tag);
+            writer.record_start(3);
+            writer.field("initial", |writer| logic_level(writer, config.initial));
+            writer.field("conflict", |writer| {
+                writer.variant_null(match config.conflict {
+                    crate::authored::ConflictPolicy::SetDominant => "set_dominant",
+                    crate::authored::ConflictPolicy::ResetDominant => "reset_dominant",
+                    crate::authored::ConflictPolicy::RetainAndDiagnose => "retain_and_diagnose",
+                    crate::authored::ConflictPolicy::RejectTransaction => "reject_transaction",
+                })
+            });
+            writer.field("state_schema", |writer| writer.variant_null("stored_level"));
+        }
         NodeKind::PulseDelay(config) => {
             writer.variant_start(identity_tag);
             writer.record_start(2);
@@ -388,6 +402,8 @@ fn input_port_role(role: InputPortRole) -> &'static str {
         InputPortRole::Pulses => "pulses",
         InputPortRole::Enable => "enable",
         InputPortRole::Toggle => "toggle",
+        InputPortRole::Set => "set",
+        InputPortRole::Reset => "reset",
         InputPortRole::PulseDelay => "pulse_delay",
     }
 }
@@ -1382,6 +1398,64 @@ mod tests {
         )
     }
 
+    fn golden_pulse_set_reset_latch(
+        initial: LogicLevel,
+        conflict: crate::authored::ConflictPolicy,
+        reverse: bool,
+    ) -> UncheckedNetwork<()> {
+        let set = ExternalInputKey::<Pulse>::from_u128(10);
+        let reset = ExternalInputKey::<Pulse>::from_u128(11);
+        let set_port = InPortKey::<Pulse>::from_u128(20);
+        let reset_port = InPortKey::<Pulse>::from_u128(21);
+        let output_port = OutPortKey::<Level>::from_u128(30);
+        let mut inputs = vec![
+            ExternalInputDef::new(set.into(), DiagnosticMeta::default()),
+            ExternalInputDef::new(reset.into(), DiagnosticMeta::default()),
+        ];
+        let mut connections = vec![
+            ConnectionDef::new(
+                ConnectionKey::from_u128(50),
+                set.into(),
+                set_port.into(),
+                DiagnosticMeta::default(),
+            ),
+            ConnectionDef::new(
+                ConnectionKey::from_u128(51),
+                reset.into(),
+                reset_port.into(),
+                DiagnosticMeta::default(),
+            ),
+        ];
+        if reverse {
+            inputs.reverse();
+            connections.reverse();
+        }
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(2),
+                NodeKind::<()>::pulse_set_reset_latch(crate::authored::PulseSetResetConfig::new(
+                    initial, conflict,
+                )),
+                NodePorts::with_input_roles(
+                    vec![set_port.into(), reset_port.into()],
+                    vec![InputPortRole::Set, InputPortRole::Reset],
+                    vec![output_port.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            inputs,
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(40).into(),
+                SignalSourceKey::NodeOutput(output_port).into(),
+                DiagnosticMeta::default(),
+            )],
+            connections,
+        )
+    }
+
     fn golden_edge(kind: NodeKind<()>) -> UncheckedNetwork<()> {
         let external = ExternalInputKey::<Level>::from_u128(10);
         let input = InPortKey::<Level>::from_u128(20);
@@ -1807,6 +1881,42 @@ mod tests {
             validated_fingerprints(toggle_pair(false)),
             validated_fingerprints(toggle_pair(true)),
             "multiple Toggle claims must ignore insertion order"
+        );
+    }
+
+    #[test]
+    fn pulse_set_reset_latch_projection_vector_is_exact_and_order_independent() {
+        let network = golden_pulse_set_reset_latch(
+            LogicLevel::Low,
+            crate::authored::ConflictPolicy::RetainAndDiagnose,
+            false,
+        );
+        let (network_bytes, input_bytes) = canonical_inputs(&network);
+        let fingerprints = validated_fingerprints(network);
+        assert_eq!(
+            hex(&network_bytes),
+            "838266646f6d61696e78206d6f737369676e616c2f6e6574776f726b5f66696e6765727072696e742f763182677061796c6f61648982781f6275696c745f696e5f6e6f64655f73656d616e746963735f76657273696f6e01826b636f6e6e656374696f6e73828382636b657950000000000000000000000000000000328266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000014826b7369676e616c5f6b696e64826570756c7365f68382636b657950000000000000000000000000000000338266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000b826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000015826b7369676e616c5f6b696e64826570756c7365f68276636f72655f73656d616e746963735f76657273696f6e01826f65787465726e616c5f696e70757473828282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f68282636b6579500000000000000000000000000000000b826b7369676e616c5f6b696e64826570756c7365f6827065787465726e616c5f6f757470757473818382636b65795000000000000000000000000000000028826b7369676e616c5f6b696e6482656c6576656cf68266736f7572636582686f75745f706f72748282636b6579500000000000000000000000000000001e826b7369676e616c5f6b696e6482656c6576656cf6826b6e6574776f726b5f6b6579500000000000000000000000000000000182656e6f646573818282636b6579500000000000000000000000000000000282646b696e64827570756c73655f7365745f72657365745f6c61746368838267696e697469616c82636c6f77f68268636f6e666c696374827372657461696e5f616e645f646961676e6f7365f6826c73746174655f736368656d61826c73746f7265645f6c6576656cf68265706f72747383858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000001e82656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001482656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c658263736574f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001582656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582657265736574f6826b7369676e616c5f6b696e64826570756c7365f6826e74696d655f646f6d61696e5f69645000000000000000000000000000000002826776657273696f6e01"
+        );
+        assert_eq!(
+            hex(&input_bytes),
+            "838266646f6d61696e78256d6f737369676e616c2f696e7075745f736368656d615f66696e6765727072696e742f763182677061796c6f6164818266696e707574738283826d65737461626c6973686d656e74826f7265616374696f6e5f73636f706564f682636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f683826d65737461626c6973686d656e74826f7265616374696f6e5f73636f706564f682636b6579500000000000000000000000000000000b826b7369676e616c5f6b696e64826570756c7365f6826776657273696f6e01"
+        );
+        assert_eq!(
+            fingerprints.0.to_string(),
+            "b7b9d03e2c294919122f21b126329a7b66f9ee43c047add788b4b302fbdbf846"
+        );
+        assert_eq!(
+            fingerprints.1.to_string(),
+            "f6ad405d12442bf45a174f6b733a18b869d24c64509a90d65cfa733620d9be02"
+        );
+        assert_eq!(
+            fingerprints,
+            validated_fingerprints(golden_pulse_set_reset_latch(
+                LogicLevel::Low,
+                crate::authored::ConflictPolicy::RetainAndDiagnose,
+                true,
+            )),
+            "latch claims must ignore authored collection order"
         );
     }
 
