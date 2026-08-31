@@ -491,27 +491,70 @@ Explicitly exclude:
 
 ---
 
-## 44. Set/reset latch family
+## 44A. [IN PROGRESS] Shared stored-level foundation, `PulseSetResetLatch`, and runtime occurrences
 
-Implement the specified pulse- and level-controlled set/reset latch primitives:
+Establish the first half of the set/reset latch family without introducing
+persistent diagnostic state:
 
-```text
-PulseSetResetLatch
-LevelSetResetLatch
-```
+* generalize the private Toggle-specific `LogicLevel` state layout into one
+  shared Boolean stored-level family that can also serve the latches and
+  `SampleHold`;
+* add the shared `ConflictPolicy` and `PulseSetResetConfig` values;
+* implement `PulseSetResetLatch` over complete simultaneous Pulse counts using
+  presence semantics, declared initial state, same-reaction current output, and
+  one atomically committed proposed successor;
+* implement dominant, retain-and-diagnose, and transaction-rejecting conflict
+  behavior through the existing stateful and failure-atomic transaction model;
+* add the catalogue-backed `RuntimeOccurrence` delivery form and owned
+  `DiagnosticOccurrence<D>` publication in successful transaction results;
+* carry exact conflict evidence, stable subjects, module-qualified provenance,
+  inspection, fingerprints, and exhaustive control-state conformance through
+  the established closed node architecture.
 
-Carry their declared initial state, simultaneous set/reset policy, current
-output visibility, proposed successor commitment, inspection, provenance,
-fingerprints, diagnostics, and exhaustive control-state conformance through the
-existing stateful architecture.
+Do not add a separate pulse-latch `LogicLevel` state vector beside Toggle state.
+The shared private storage family does not erase node-specific transition,
+inspection, or provenance laws.
 
 Explicitly exclude:
 
+* `LevelSetResetLatch` and persistent diagnostic episode state;
+* `SampleHold` behavior;
 * resettable standard modules;
-* `SampleHold`;
 * counters and general finite-state machines;
 * temporal scheduling;
-* state migration.
+* snapshot, replay, reconfiguration, and state migration implementation;
+* observers, logging, and retained diagnostic history.
+
+---
+
+## 44B. `LevelSetResetLatch` and persistent diagnostic episodes
+
+Build on the accepted 44A conflict policy and shared stored-level family:
+
+* implement `LevelSetResetLatch` using fully settled current Level controls,
+  declared initial state, same-reaction current output, and atomic successor
+  commitment;
+* preserve the dominant and transaction-rejecting laws while treating a
+  retained continuous High/High conflict as semantic diagnostic state;
+* introduce stable `DiagnosticEpisodeId` and condition identity derived from
+  catalogue code, stable owning subject, and condition discriminator rather
+  than dense slots or rendered text;
+* stage machine-owned active episode state and deterministic `Began`, `Changed`,
+  and `Resolved` transitions inside the transaction candidate;
+* suppress repeated unchanged warnings, expose active episode inspection, and
+  retain exact structured evidence and provenance;
+* prove rejected transactions cannot create, alter, or resolve an episode.
+
+Record snapshot, replay, reconfiguration, migration, and termination behavior as
+known later integration facets until those owning systems exist. Item 60 expands
+the accepted occurrence and episode foundations rather than introducing them.
+
+Explicitly exclude:
+
+* probes, assertions, observer subscriptions, and host delivery;
+* persistence, replay, and topology-patch implementation;
+* `SampleHold`, resettable standard modules, and temporal nodes;
+* general diagnostic history and arbitrary state-machine abstractions.
 
 ---
 
@@ -946,19 +989,23 @@ Explicitly exclude:
 
 ---
 
-## 60. Probes, assertions, and persistent diagnostic operation
+## 60. Probes, assertions, and expanded diagnostic operation
 
-Add operational observation and checking only after graph, provenance, and
-diagnostic ownership are mature:
+Broaden operational observation and checking only after graph, provenance, and
+the latch-founded diagnostic ownership model are mature:
 
 * probes and named observation points where specified;
 * assertion and fault semantics;
-* runtime diagnostic occurrences;
-* persistent diagnostic episodes;
-* stable subjects and lifecycle transitions;
+* additional runtime-occurrence and persistent-episode condition families;
+* broader episode inspection, lifecycle, and operational controls;
 * transaction-atomic publication;
-* snapshot, restoration, replay, module, and topology-patch integration;
+* integration of accepted episode state with snapshots, restoration, replay,
+  modules, and topology patches;
 * deterministic conformance and failure tests.
+
+This item does not introduce runtime occurrences or persistent episodes for the
+first time. Those foundations begin with the two set/reset latch tasks in item
+44; this item expands their condition breadth and operational integration.
 
 These facilities must remain semantic observations and diagnostics. They must
 not invoke arbitrary callbacks, perform host effects during propagation, or
