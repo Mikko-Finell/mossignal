@@ -527,7 +527,7 @@ Explicitly exclude:
 
 ---
 
-## 44B. `LevelSetResetLatch` and persistent diagnostic episodes
+## 44B. [IN PROGRESS] `LevelSetResetLatch` and persistent diagnostic episodes
 
 Build on the accepted 44A conflict policy and shared stored-level family:
 

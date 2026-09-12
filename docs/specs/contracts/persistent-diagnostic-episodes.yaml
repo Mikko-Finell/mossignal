@@ -1,0 +1,210 @@
+schema_version: "0.1"
+id: mossignal.diagnostics.persistent_episodes
+title: Persistent diagnostic episode identity and lifecycle
+kind: lifecycle
+status: reviewed
+
+source_baseline:
+  commit: cc3d74809c44dd9aab2bd27b662b600fe9abff65
+  working_tree: dirty
+
+summary: >-
+  An active diagnostic episode is machine-owned semantic state for one continuous
+  catalogue-defined condition. Stable condition and episode identities support
+  owned current inspection and atomic lifecycle changes without repeated warnings
+  for an unchanged condition.
+
+scope:
+  includes:
+    - catalogue-safe condition keys, episode identities, and owned public records
+    - active-state ownership, material changes, and successful-result publication
+    - initialized inspection, causal retention, determinism, and rollback
+  excludes:
+    - primitive-specific conflict laws and transient runtime occurrences
+    - observer subscriptions, host delivery, rendering, and retained completed history
+    - persistence encodings, restoration, replay, digests, and topology migration algorithms
+
+known_uncovered:
+  - Snapshot and replay encoding, restoration validation, and digest projections of active episodes
+  - Compatible preservation, subject reassociation, policy changes, and resolution or termination during topology replacement
+
+aliases:
+  - DiagnosticConditionKey
+  - DiagnosticEpisodeId
+  - ActiveDiagnosticEpisode<D>
+  - DiagnosticEpisodeChange<D>
+  - PersistentEpisode
+
+requirements:
+  - id: catalogue-safe-condition
+    kind: public_surface
+    statement: >-
+      PersistentEpisode is a distinct catalogue-declared delivery form, not a
+      severity inference. DiagnosticConditionKey is the opaque canonical identity
+      of code, primary subject, and code-defined condition discriminator. An active
+      episode's current Problem must agree with that code and subject and permit
+      PersistentEpisode delivery; lifecycle changes retain the condition code.
+    sources: [delivery, condition-key, episode-records]
+
+  - id: stable-episode-identity
+    kind: semantic
+    statement: >-
+      A fresh opaque DiagnosticEpisodeId derives from network identity, condition
+      code, primary structural subject, and condition discriminator. Identity is
+      stable across compatible state transitions and does not derive from rendered
+      wording, provenance arena identities, or dense runtime positions. Dense-slot
+      reuse must not transfer an episode to another subject.
+    sources: [catalogue-identity, runtime-identity, episode-records]
+
+  - id: owned-active-and-change-records
+    kind: public_surface
+    statement: >-
+      Owned ActiveDiagnosticEpisode<D> inspection exposes identity, condition key,
+      current Problem<D>, began_at, and last_material_change. The non-exhaustive
+      DiagnosticEpisodeChangeKind distinguishes Began, Changed, Resolved, and
+      Terminated. Owned DiagnosticEpisodeChange<D> exposes identity, kind, exact
+      change time, and optional before and after Problem<D> values. Rendered text
+      is not authoritative episode data.
+    sources: [episode-records]
+
+  - id: continuous-condition-lifecycle
+    kind: lifecycle
+    statement: >-
+      An episode begins when its persistent condition becomes active and emits a
+      change when its evidence materially changes. An unchanged active condition
+      remains inspectable without repeated events on unrelated transactions.
+      Resolution ends active state; a resolution event is optional under the
+      general episode model. Begin, change, resolution, and termination are event
+      kinds, not new condition codes.
+    sources: [catalogue-episodes, runtime-lifecycle, episode-records]
+
+  - id: material-change-versus-reevaluation
+    kind: semantic
+    statement: >-
+      Mere reevaluation of an unchanged condition at a later transaction time
+      must not count as material evidence change or restart began_at or
+      last_material_change. Materiality must preserve the catalogue-defined
+      evidence meaning while satisfying unchanged-condition suppression.
+    sources: [catalogue-episodes, episode-records, runtime-lifecycle]
+    basis: derived
+
+  - id: candidate-owned-atomic-state
+    kind: lifecycle
+    statement: >-
+      Active episodes belong to semantic machine state because they affect future
+      emission. Initialization establishes them through ordinary settlement;
+      chronological deadline reactions and the requested-time reaction update
+      candidate episode state inside the same outer transaction. Rejection commits
+      no creation, evidence change, resolution, or termination.
+    sources: [runtime-state, transaction-ordering, catalogue-episodes]
+
+  - id: committed-ordered-publication
+    kind: public_surface
+    statement: >-
+      Successful owned TransactionResult<D> publishes diagnostic_episode_changes
+      as part of its semantic changes with deterministic collection order. Changes
+      from intervening reactions retain their actual logical times and are not
+      independently published before the complete outer transaction commits.
+      Public fields may be private when equivalent accessors preserve ownership
+      and structured access.
+    sources: [result, change-set, transaction-ordering, episode-records]
+
+  - id: ready-inspection-and-causal-retention
+    kind: system_effect
+    statement: >-
+      Current active-episode inspection is a read-only projection of committed
+      Ready state and returns a structured not-initialized failure before
+      initialization. The machine retains enough provenance to explain active
+      diagnostic evidence where causally relevant, including historical facts
+      that cannot be reconstructed from current values. Any CauseRef exposed in
+      result changes resolves through that result's owned provenance view.
+    sources: [inspection, provenance, result]
+
+  - id: episode-conformance
+    kind: verification
+    statement: >-
+      Verification covers inactive-to-active, unchanged continuation, material
+      evidence change, resolution, and rejection with candidate episode changes;
+      compares structured problems and episode identities; exercises applicable
+      primary-subject, discriminator, and evidence merge rules; and demonstrates
+      stable semantic identity independent of prose, dense slots, and provenance
+      arena identifiers. Tests of preservation, reassociation, removal, snapshots,
+      restoration, and replay belong with those supported integration contexts.
+    sources: [testing-structure, testing-lifecycle, testing-identity, catalogue-tests]
+
+implementation_freedom:
+  - Private active-state tables, identity encoding, discriminator representation, materiality comparison, and candidate staging helpers remain free within the represented semantic rules.
+  - Narrow inspection helpers and private record fields with equivalent accessors may precede general inspection plans and observer APIs.
+  - Completed episode history is optional and need not be retained in execution state.
+
+open_questions: []
+
+sources:
+  delivery:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 10. Delivery]
+    reviewed_hash: sha256:a3bbce37b265f68ccbba354b142df58d1cbc2d9f38c4ebdeb0fc5afa9bb2d53a
+  condition-key:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: ["Part III — Reports, failures, ordering, and identity", 19. Condition identity and deduplication]
+    reviewed_hash: sha256:2efbd3f6e0d40ea076a88e9442a880fc32825ca6ecf711efc8d3a69f8fc0f783
+  catalogue-episodes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: ["Part III — Reports, failures, ordering, and identity", 20. Persistent episodes]
+    reviewed_hash: sha256:72a50962b4b18ed4f4c5acb076ea30b918006f029054f1da9fc3d5efddd16952
+  catalogue-identity:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: ["Part III — Reports, failures, ordering, and identity", 21. Episode identity and migration]
+    reviewed_hash: sha256:b2bdb6bd20d896b582b9a1ef5dabf958049abebea545e7365baae7f3aef1dd82
+  episode-records:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXVI — Persistent diagnostic episodes and observers, 95. Active diagnostic episodes]
+    reviewed_hash: sha256:963ec29fb21dd157403e1254f2336d3d92411ae53e5dce9c09b1bf714393d2e2
+  runtime-lifecycle:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XI — Persistent diagnostics, 71. Diagnostic episodes]
+    reviewed_hash: sha256:5b853b89975d59e0a7045b30032cba3b9c8ac6f8ff4b5b573eee4c789cbb075a
+  runtime-identity:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XI — Persistent diagnostics, 72. Episode identity]
+    reviewed_hash: sha256:7dbc6c3f7eba35879f980ea7d26546ce65ace6f90dfc5b849930e34cac3c75ae
+  runtime-state:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XI — Persistent diagnostics, 73. Semantic state]
+    reviewed_hash: sha256:58007d27f5281622f35dba59a23094aab91ced846edd73b580abb432d4fee216
+  transaction-ordering:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 24. Transaction ordering]
+    reviewed_hash: sha256:98abbcc0a7ea1f9dbc9c7086d836b04ca13036f08ed5e440dcce937c7332ad9c
+  result:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, 64. `TransactionResult<D>`]
+    reviewed_hash: sha256:20fb868dbf44f94e61a1e06e7f9f5ac08b5b7dbd7db5584777630bae19f6f295
+  change-set:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, 65. Semantic change set]
+    reviewed_hash: sha256:8af2febf043005e8ea96062936f92b570a6363dcf699a9145fb07f99ebed7389
+  inspection:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 48. Inspection is core]
+    reviewed_hash: sha256:22fc5616b40716c3dda6327430fc974ce61fc62f507639e681fab7ab23b30003
+  provenance:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 53. Causal provenance]
+    reviewed_hash: sha256:9a55ead387cffd6833521d6efa179e653027358990c73721faf8e258eb064574
+  testing-structure:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIII — Diagnostic verification, 74. Structured diagnostic conformance]
+    reviewed_hash: sha256:2a9449312adf0c09ce27b88156e3e18d40fbbf73f489188b30f9376c88ab4005
+  testing-lifecycle:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIII — Diagnostic verification, 75. Persistent episode lifecycle]
+    reviewed_hash: sha256:a8393551cc987be78942cf3908765491d967c830c19b4ea6587d46223b5165d8
+  testing-identity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIII — Diagnostic verification, 76. Episode identity]
+    reviewed_hash: sha256:d0b9f2ce8c574b2e312737bbb448931a7ac24186990f2c38ca774352b53b18ec
+  catalogue-tests:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VIII — Verification obligations, 58. Episode tests]
+    reviewed_hash: sha256:037a32e72812c8f227f1cd538096ed102dc69db90ee2c5ee61d1ca9487435ccd
