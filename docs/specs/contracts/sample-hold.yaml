@@ -1,0 +1,200 @@
+schema_version: "0.1"
+id: mossignal.node.sample_hold
+title: Pulse-sampled Level storage primitive
+kind: node
+status: reviewed
+
+source_baseline:
+  commit: e7a72dab3cbf1bab3630374465755e2ee67a9dc3
+  working_tree: dirty
+
+summary: >-
+  SampleHold stores one LogicLevel and captures the fully settled current value
+  whenever its complete simultaneous sample count is positive, exposing the
+  captured value downstream before one atomic state commitment.
+
+scope:
+  includes:
+    - fixed shape, explicit initial level, sampling law, and current dependencies
+    - typed and dynamic authoring, validation, and semantic identity facets
+    - stored-value inspection, capture provenance, and primitive conformance
+  excludes:
+    - generic stateful transaction and pulse-batch machinery owned by other contracts
+    - resettable standard modules and non-Level value domains
+    - persistence, topology-patch compatibility, and state migration
+    - general explanation queries, observer subscriptions, and retained state history
+
+known_uncovered:
+  - Canonical snapshot, restoration, replay, and digest representation of held state
+  - Compatible held-state preservation and explicit reset across topology changes
+
+aliases:
+  - SampleHold
+  - SampleHoldConfig
+  - sample_hold
+  - sample-and-hold
+  - sample-hold state
+
+requirements:
+  - id: fixed-shape-and-initial-level
+    kind: semantic
+    statement: >-
+      SampleHold has one Level value input, one Pulse sample input, one Level
+      output, and one stored LogicLevel with an explicit initial level.
+      SampleHoldConfig contains the initial LogicLevel as semantic policy,
+      without diagnostic metadata or runtime state. The primitive has no
+      optional reset port; resettable behavior belongs to a named standard
+      module or a separately specified fixed-shape node.
+    sources: [sample-law, concrete-config]
+
+  - id: settled-sampling-law
+    kind: semantic
+    statement: >-
+      For previous stored level s, zero sample count produces current output s
+      and successor s. A positive sample count produces the fully settled
+      current value input as both current output and successor. Multiple
+      simultaneous samples have the same state effect as one, and all their
+      contributing causes remain available. The captured value is visible
+      downstream in the same reaction; state commits once after settlement.
+    sources: [sample-law, simultaneous-batches]
+
+  - id: shape-validation-and-current-dependencies
+    kind: semantic
+    statement: >-
+      Validation enforces the fixed value/sample roles and their distinct
+      Level/Pulse kinds. Both current inputs conservatively influence the
+      current Level output, independent of the current sample count or stored
+      value. SampleHold is not a whole-node causality barrier, and a cycle
+      following either instantaneous input-to-output path is rejected.
+    sources: [sample-law, dependency-signature]
+
+  - id: typed-and-dynamic-authoring
+    kind: public_surface
+    statement: >-
+      NetworkBuilder provides sample_hold with Signal<Level> value,
+      Signal<Pulse> sample, and SampleHoldConfig, returning the Level signal
+      through structured authoring failure. Its explicit add_sample_hold form
+      accepts NodeKey and DiagnosticMeta and returns AddedNode. Imported or
+      explicitly authored definitions can supply exact fixed-port keys.
+      Equivalent dynamic definitions use the ordinary closed, non-callback
+      node-kind/configuration surface and validation boundary.
+    sources: [constructor-family, explicit-keyed, dynamic-node-kind]
+
+  - id: semantic-identity-facets
+    kind: semantic
+    statement: >-
+      SampleHold's network semantic projection includes its distinct node kind,
+      stable typed value/sample input and output identities and semantic roles,
+      explicit initial level, and stored-level state schema. Construction order
+      and private state-slot or descriptor layout are not semantic identity.
+    sources: [sample-law, network-fingerprint]
+
+  - id: held-state-inspection-and-causality
+    kind: system_effect
+    statement: >-
+      Applicable inspection distinguishes declared initial level, current settled
+      input/output facts, committed held state, current support, and the cause
+      establishing the held state, with logical time and revision. Before
+      initialization only structural and declared-state facts are available.
+      Capture provenance preserves the sampled Level's causal support and
+      grouped sample contributions without inventing ordered pulse identities.
+      Retention keeps the historical support needed to explain the held value;
+      an unexplained previous value is not an authoritative terminal root.
+    sources: [sample-law, node-inspection, current-support, pulse-provenance, causal-provenance]
+
+  - id: sample-hold-conformance
+    kind: verification
+    statement: >-
+      The primitive conformance inventory classifies applicable shape, initial
+      state, first-reaction behavior, dependency, output/successor, simultaneous
+      input, multiplicity, inspection, and causality fields. Focused stateful
+      chains include SampleHold feeding FallingEdge and verify immediate
+      downstream visibility together with atomic successor commitment.
+      Required historical facts have authoritative causal roots, and changing
+      support for an unchanged output must not fabricate a new output transition.
+    sources: [testing-conformance, testing-stateful-chain, testing-provenance, testing-current-vs-transition]
+
+recommendations:
+  - id: exhaustive-sampling-domain
+    statement: >-
+      Enumerate both previous stored levels, both sampled levels, and zero versus
+      positive sample count exhaustively; the complete semantic law has eight
+      state/input-presence combinations.
+    sources: [testing-primitive]
+
+implementation_freedom:
+  - Private storage tables, descriptors, exact fixed-port allocation, helper names, and focused inspection accessor shapes may follow the simplest deterministic implementation preserving the represented semantics.
+  - The exact held-state cause refresh convention for a sample that captures the already-held value is open; choose, test, and record a deterministic rule while retaining its sample contributors and preserving the separate output-transition cause.
+  - Canonical kind and role spellings for a newly represented SampleHold projection are bounded implementation choices under the repository pre-release policy; record and test the coherent projection without inferring a compatibility freeze.
+
+open_questions: []
+
+sources:
+  sample-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 45. `SampleHold`]
+    reviewed_hash: sha256:ec91dad08319e933024a9315055bd504bedb1dfbc16f2aecabef3c060575c026
+  simultaneous-batches:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 7. Simultaneous batches]
+    reviewed_hash: sha256:6f0c086ed445bf436c4974044bddc2eb224e4d6299620fedf775de6c641c4941
+  dependency-signature:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
+  concrete-config:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 29. Built-in configuration values]
+    reviewed_hash: sha256:b989b03bf932e65581c5878a208b6d619f3667762f9a547c2daa6366db6abc84
+  constructor-family:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  explicit-keyed:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 28. Explicit keyed primitive construction]
+    reviewed_hash: sha256:eebf1d5f4f29d91da4e1483f86545fa1ed80b3aa7abb514939fd3dd2a7f8efdf
+  dynamic-node-kind:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
+  network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.1 Network fingerprint]
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  node-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 61. Node inspection]
+    reviewed_hash: sha256:109589c8402f33c1ea69f83627b4d39073bd3e3f37fc24e0494f8daaf2c5c88d
+  current-support:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 65. Current support and transition cause]
+    reviewed_hash: sha256:5d08e732804e9aad13ba3e00ed410d86020e8c126a8dcf318ab7359b3c6cee14
+  pulse-provenance:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 69. Pulse provenance]
+    reviewed_hash: sha256:18a5cfbbc600cc44fab9fed9d6730472865bb0b06d8a93eda6bff220c976e3ca
+  causal-provenance:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 53. Causal provenance]
+    reviewed_hash: sha256:9a55ead387cffd6833521d6efa179e653027358990c73721faf8e258eb064574
+  testing-conformance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 38. Common conformance matrix]
+    reviewed_hash: sha256:d37d3539bb2e78723780838aede84b7ec5b6c3539db83d92e769e935022d1942
+  testing-stateful-chain:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 40. Stateful chain testing]
+    reviewed_hash: sha256:b83754e36e34c9cbfe974203926f6761f76ac2b38268564b2eb3a8db0709da4e
+  testing-provenance:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 68. Authoritative-root completeness]
+    reviewed_hash: sha256:31301008860a4fec9c0cd20e272a80b5323700daa6818a7c21cc57bd3de40523
+  testing-current-vs-transition:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 70. Current support versus latest transition]
+    reviewed_hash: sha256:b4740b878989222112bdfa1c20e0f0d819014635cc4bdaadf4f671048eff0e49
+  testing-primitive:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VIII — Built-in node conformance, 39. Exhaustive primitive testing]
+    reviewed_hash: sha256:c67d2593f52b5536672661e3cdb833b44716d657c7a9d23dabb0f698adcdb3de
