@@ -345,6 +345,12 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
             writer.field("initial", |writer| logic_level(writer, config.initial));
             writer.field("state_schema", |writer| writer.variant_null("stored_level"));
         }
+        NodeKind::SampleHold(config) => {
+            writer.variant_start(identity_tag);
+            writer.record_start(2);
+            writer.field("initial", |writer| logic_level(writer, config.initial));
+            writer.field("state_schema", |writer| writer.variant_null("stored_level"));
+        }
         NodeKind::PulseSetResetLatch(config) => {
             writer.variant_start(identity_tag);
             writer.record_start(3);
@@ -418,6 +424,8 @@ fn input_port_role(role: InputPortRole) -> &'static str {
         InputPortRole::Toggle => "toggle",
         InputPortRole::Set => "set",
         InputPortRole::Reset => "reset",
+        InputPortRole::Value => "value",
+        InputPortRole::Sample => "sample",
         InputPortRole::PulseDelay => "pulse_delay",
     }
 }
@@ -1528,6 +1536,67 @@ mod tests {
         )
     }
 
+    fn golden_sample_hold(
+        initial: LogicLevel,
+        reverse: bool,
+        annotated: bool,
+    ) -> UncheckedNetwork<()> {
+        let metadata = if annotated {
+            meta("held signal")
+        } else {
+            DiagnosticMeta::default()
+        };
+        let value = ExternalInputKey::<Level>::from_u128(10);
+        let sample = ExternalInputKey::<Pulse>::from_u128(11);
+        let value_port = InPortKey::<Level>::from_u128(20);
+        let sample_port = InPortKey::<Pulse>::from_u128(21);
+        let output_port = OutPortKey::<Level>::from_u128(30);
+        let mut inputs = vec![
+            ExternalInputDef::new(value.into(), metadata.clone()),
+            ExternalInputDef::new(sample.into(), metadata.clone()),
+        ];
+        let mut connections = vec![
+            ConnectionDef::new(
+                ConnectionKey::from_u128(50),
+                value.into(),
+                value_port.into(),
+                metadata.clone(),
+            ),
+            ConnectionDef::new(
+                ConnectionKey::from_u128(51),
+                sample.into(),
+                sample_port.into(),
+                metadata.clone(),
+            ),
+        ];
+        if reverse {
+            inputs.reverse();
+            connections.reverse();
+        }
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            metadata.clone(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(2),
+                NodeKind::<()>::sample_hold(crate::authored::SampleHoldConfig::new(initial)),
+                NodePorts::with_input_roles(
+                    vec![value_port.into(), sample_port.into()],
+                    vec![InputPortRole::Value, InputPortRole::Sample],
+                    vec![output_port.into()],
+                ),
+                metadata.clone(),
+            )],
+            inputs,
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(40).into(),
+                SignalSourceKey::NodeOutput(output_port).into(),
+                metadata.clone(),
+            )],
+            connections,
+        )
+    }
+
     fn golden_edge(kind: NodeKind<()>) -> UncheckedNetwork<()> {
         let external = ExternalInputKey::<Level>::from_u128(10);
         let input = InPortKey::<Level>::from_u128(20);
@@ -2266,6 +2335,38 @@ mod tests {
                 false
             ))
             .0
+        );
+    }
+
+    #[test]
+    fn sample_hold_projection_has_exact_bytes_digest_and_semantic_roles() {
+        let network = golden_sample_hold(LogicLevel::Low, false, false);
+        let (bytes, _) = canonical_inputs(&network);
+        // Fixture: Level value(20), Level output(30), then Pulse sample(21).
+        // The checked-in oracle uses the existing projection record vocabulary,
+        // with sample_hold/initial/stored_level and distinct value/sample roles.
+        assert_eq!(
+            hex(&bytes),
+            include_str!("../tests/golden/sample_hold_projection.hex").trim()
+        );
+        let expected = validated_fingerprints(network);
+        assert_eq!(
+            expected.0.to_string(),
+            "1e9f43b8f4a503059a1803b00483446b11bb4d61cb13360ec2fe3b452d6a1de8"
+        );
+        for (reverse, annotated) in [(true, false), (false, true), (true, true)] {
+            assert_eq!(
+                expected,
+                validated_fingerprints(golden_sample_hold(LogicLevel::Low, reverse, annotated))
+            );
+        }
+        assert_ne!(
+            expected.0,
+            validated_fingerprints(golden_sample_hold(LogicLevel::High, false, false)).0
+        );
+        assert_ne!(
+            expected.0,
+            validated_fingerprints(golden_toggle(LogicLevel::Low, InputPortRole::Toggle)).0
         );
     }
 }

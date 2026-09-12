@@ -669,7 +669,7 @@ struct ProvenanceBuild<D> {
     pulse_output_causes: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
     edge_observation_causes: BTreeMap<NodeKey, CauseRef>,
     toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
-    latch_state_causes: BTreeMap<NodeKey, CauseRef>,
+    establishment_causes: BTreeMap<NodeKey, CauseRef>,
     pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
 }
 
@@ -688,7 +688,7 @@ struct PreviousLevelOutputs<'a> {
 struct PreviousStateCauses<'a> {
     edge_observations: &'a BTreeMap<NodeKey, CauseRef>,
     toggle_inversions: &'a BTreeMap<NodeKey, CauseRef>,
-    latches: &'a BTreeMap<NodeKey, CauseRef>,
+    establishments: &'a BTreeMap<NodeKey, CauseRef>,
 }
 
 impl<D> Clone for ProvenanceView<D> {
@@ -1121,7 +1121,7 @@ impl<D> Machine<D> {
                 operation_causes: built.operation_causes,
                 edge_observation_causes: built.edge_observation_causes,
                 toggle_inversion_causes: built.toggle_inversion_causes,
-                latch_state_causes: built.latch_state_causes,
+                establishment_causes: built.establishment_causes,
                 active_episodes,
                 pending_pulse_delays,
                 next_pending_event_serial,
@@ -1169,7 +1169,7 @@ impl<D> Machine<D> {
         let mut output_causes = self.store.output_causes.clone();
         let mut edge_observation_causes = self.store.edge_observation_causes.clone();
         let mut toggle_inversion_causes = self.store.toggle_inversion_causes.clone();
-        let mut latch_state_causes = self.store.latch_state_causes.clone();
+        let mut establishment_causes = self.store.establishment_causes.clone();
         let mut provenance = match self.store.provenance.as_ref() {
             Some(provenance) => provenance.clone(),
             None => panic!("ready machine must retain committed provenance"),
@@ -1232,7 +1232,7 @@ impl<D> Machine<D> {
                 &output_baselines,
                 &edge_observation_causes,
                 &toggle_inversion_causes,
-                &latch_state_causes,
+                &establishment_causes,
                 &due.causes,
             );
             remap_pending_causes(&mut pending_pulse_delays, built.provenance.scope);
@@ -1286,7 +1286,7 @@ impl<D> Machine<D> {
             output_causes = built.output_causes;
             edge_observation_causes = built.edge_observation_causes;
             toggle_inversion_causes = built.toggle_inversion_causes;
-            latch_state_causes = built.latch_state_causes;
+            establishment_causes = built.establishment_causes;
             provenance = built.provenance;
             enforce_created_event_budget::<D>(
                 &self.policy,
@@ -1343,7 +1343,7 @@ impl<D> Machine<D> {
             &output_baselines,
             &edge_observation_causes,
             &toggle_inversion_causes,
-            &latch_state_causes,
+            &establishment_causes,
             &due.causes,
         );
         remap_pending_causes(&mut pending_pulse_delays, built.provenance.scope);
@@ -1426,7 +1426,7 @@ impl<D> Machine<D> {
                 operation_causes: built.operation_causes,
                 edge_observation_causes: built.edge_observation_causes,
                 toggle_inversion_causes: built.toggle_inversion_causes,
-                latch_state_causes: built.latch_state_causes,
+                establishment_causes: built.establishment_causes,
                 active_episodes,
                 pending_pulse_delays,
                 next_pending_event_serial,
@@ -1903,7 +1903,7 @@ struct PublishedCandidate<D> {
     operation_causes: Vec<CauseRef>,
     edge_observation_causes: BTreeMap<NodeKey, CauseRef>,
     toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
-    latch_state_causes: BTreeMap<NodeKey, CauseRef>,
+    establishment_causes: BTreeMap<NodeKey, CauseRef>,
     active_episodes: crate::episode::ActiveEpisodes<D>,
     pending_pulse_delays: BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
     next_pending_event_serial: u64,
@@ -1920,7 +1920,7 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
         operation_causes,
         edge_observation_causes,
         toggle_inversion_causes,
-        latch_state_causes,
+        establishment_causes,
         active_episodes,
         pending_pulse_delays,
         next_pending_event_serial,
@@ -1943,7 +1943,7 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     candidate.edge_observation_causes = edge_observation_causes;
     candidate.stored_levels = evaluation.proposed_stored_levels;
     candidate.toggle_inversion_causes = toggle_inversion_causes;
-    candidate.latch_state_causes = latch_state_causes;
+    candidate.establishment_causes = establishment_causes;
     candidate.active_episodes = active_episodes;
     candidate.pending_pulse_delays = pending_pulse_delays;
     candidate.next_pending_event_serial = next_pending_event_serial;
@@ -2231,7 +2231,7 @@ fn build_initialization_provenance<D>(
         pulse_output_causes: evaluation_causes.pulse_outputs,
         edge_observation_causes: evaluation_causes.edge_observations,
         toggle_inversion_causes: evaluation_causes.toggle_inversions,
-        latch_state_causes: evaluation_causes.latches,
+        establishment_causes: evaluation_causes.establishments,
         pulse_delay_schedules: evaluation_causes.pulse_delay_schedules,
     }
 }
@@ -2250,7 +2250,7 @@ fn build_ready_provenance<D>(
     previous_output_baselines: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     previous_edge_observation_causes: &BTreeMap<NodeKey, CauseRef>,
     previous_toggle_inversion_causes: &BTreeMap<NodeKey, CauseRef>,
-    previous_latch_state_causes: &BTreeMap<NodeKey, CauseRef>,
+    previous_establishment_causes: &BTreeMap<NodeKey, CauseRef>,
     due_pulse_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
 ) -> ProvenanceBuild<D> {
     let scope = UNFINALIZED_PROVENANCE_SCOPE;
@@ -2315,7 +2315,7 @@ fn build_ready_provenance<D>(
         Some(PreviousStateCauses {
             edge_observations: previous_edge_observation_causes,
             toggle_inversions: previous_toggle_inversion_causes,
-            latches: previous_latch_state_causes,
+            establishments: previous_establishment_causes,
         }),
     );
 
@@ -2330,7 +2330,7 @@ fn build_ready_provenance<D>(
         pulse_output_causes: evaluation_causes.pulse_outputs,
         edge_observation_causes: evaluation_causes.edge_observations,
         toggle_inversion_causes: evaluation_causes.toggle_inversions,
-        latch_state_causes: evaluation_causes.latches,
+        establishment_causes: evaluation_causes.establishments,
         pulse_delay_schedules: evaluation_causes.pulse_delay_schedules,
     }
 }
@@ -2341,7 +2341,7 @@ struct EvaluationCauseMaps {
     pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
     edge_observations: BTreeMap<NodeKey, CauseRef>,
     toggle_inversions: BTreeMap<NodeKey, CauseRef>,
-    latches: BTreeMap<NodeKey, CauseRef>,
+    establishments: BTreeMap<NodeKey, CauseRef>,
     pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
 }
 
@@ -2371,10 +2371,10 @@ fn append_evaluation_provenance<D>(
         .flat_map(|previous| previous.toggle_inversions.iter())
         .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
         .collect::<BTreeMap<_, _>>();
-    let mut latch_state_causes = previous_state
+    let mut establishment_causes = previous_state
         .as_ref()
         .into_iter()
-        .flat_map(|previous| previous.latches.iter())
+        .flat_map(|previous| previous.establishments.iter())
         .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
         .collect::<BTreeMap<_, _>>();
 
@@ -2589,7 +2589,7 @@ fn append_evaluation_provenance<D>(
                 contributions.sort_by(|left, right| left.port.cmp(&right.port));
                 let mut supporters = vec![transaction_cause];
                 supporters.extend(contributions.iter().map(|entry| entry.cause));
-                if let Some(previous_cause) = latch_state_causes.get(node).copied() {
+                if let Some(previous_cause) = establishment_causes.get(node).copied() {
                     supporters.push(previous_cause);
                 }
                 supporters.sort();
@@ -2604,9 +2604,9 @@ fn append_evaluation_provenance<D>(
                         supporters,
                     },
                 );
-                if previous_state.is_none() || evaluation.latch_state_establishments.contains(node)
+                if previous_state.is_none() || evaluation.stored_level_establishments.contains(node)
                 {
-                    latch_state_causes.insert(*node, reference);
+                    establishment_causes.insert(*node, reference);
                 }
                 reference
             }
@@ -2618,7 +2618,7 @@ fn append_evaluation_provenance<D>(
                     operation_cause(&operation_causes, *set),
                     operation_cause(&operation_causes, *reset),
                 ];
-                if let Some(previous) = latch_state_causes.get(node).copied() {
+                if let Some(previous) = establishment_causes.get(node).copied() {
                     supporters.push(previous);
                 }
                 supporters.sort();
@@ -2631,9 +2631,53 @@ fn append_evaluation_provenance<D>(
                         supporters,
                     },
                 );
-                if previous_state.is_none() || evaluation.latch_state_establishments.contains(node)
+                if previous_state.is_none() || evaluation.stored_level_establishments.contains(node)
                 {
-                    latch_state_causes.insert(*node, reference);
+                    establishment_causes.insert(*node, reference);
+                }
+                reference
+            }
+            EvaluationCause::SampleHold {
+                node,
+                value,
+                sample,
+                sample_port,
+                sample_count,
+                result,
+            } => {
+                let mut supporters = vec![
+                    transaction_cause,
+                    operation_cause(&operation_causes, *value),
+                ];
+                let contributions = vec![PulseContribution {
+                    port: input_causes.compiled.pulse_port_subject(*sample_port),
+                    count: *sample_count,
+                    cause: operation_cause(&operation_causes, *sample),
+                }];
+                supporters.push(contributions[0].cause);
+                if sample_count.is_zero()
+                    && let Some(previous) = establishment_causes.get(node).copied()
+                {
+                    supporters.push(previous);
+                }
+                supporters.sort();
+                supporters.dedup();
+                let reference = push_record(
+                    scope,
+                    records,
+                    ProvenanceRecord::PulseControlledLevel {
+                        subject: provenance_subject(input_causes.compiled, *node),
+                        contributions,
+                        result: *result,
+                        supporters,
+                    },
+                );
+                // SPEC: docs/specs/contracts/sample-hold.yaml "held-state-inspection-and-causality"
+                // Retention keeps its authoritative history; captures remain explainable.
+                // We treat every positive sample, including equal values, as an establishment.
+                if previous_state.is_none() || evaluation.stored_level_establishments.contains(node)
+                {
+                    establishment_causes.insert(*node, reference);
                 }
                 reference
             }
@@ -2734,7 +2778,7 @@ fn append_evaluation_provenance<D>(
         pulse_outputs: pulse_output_causes,
         edge_observations: edge_observation_causes,
         toggle_inversions: toggle_inversion_causes,
-        latches: latch_state_causes,
+        establishments: establishment_causes,
         pulse_delay_schedules,
     }
 }
@@ -2784,7 +2828,7 @@ fn finalize_provenance_build<D>(
     for cause in build.toggle_inversion_causes.values_mut() {
         *cause = remap_cause(*cause, scope);
     }
-    for cause in build.latch_state_causes.values_mut() {
+    for cause in build.establishment_causes.values_mut() {
         *cause = remap_cause(*cause, scope);
     }
     for cause in build.pulse_delay_schedules.values_mut() {
@@ -3646,7 +3690,7 @@ mod tests {
         episodes: Vec<EpisodeObservation>,
         stored_levels: Vec<LogicLevel>,
         toggle_inversion_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
-        latch_state_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
+        establishment_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
         pending_pulse_delays: std::collections::BTreeMap<
             crate::time::Time<()>,
             Vec<crate::machine::PendingPulseDelay<()>>,
@@ -3698,7 +3742,7 @@ mod tests {
                 .collect(),
             stored_levels: machine.store.stored_levels.clone(),
             toggle_inversion_causes: machine.store.toggle_inversion_causes.clone(),
-            latch_state_causes: machine.store.latch_state_causes.clone(),
+            establishment_causes: machine.store.establishment_causes.clone(),
             pending_pulse_delays: machine.store.pending_pulse_delays.clone(),
             next_pending_event_serial: machine.store.next_pending_event_serial,
         }
@@ -5433,6 +5477,263 @@ mod tests {
                     | OutputEvent::Pulsed { cause, .. } => *cause,
                 };
                 assert!(initialized.provenance().inspect(cause).is_ok());
+            }
+        }
+    }
+    #[test]
+    fn sample_hold_rolls_back_capture_and_earlier_deadline_with_complete_state() {
+        use crate::{
+            ConflictPolicy, LevelSetResetConfig, NetworkBuilder, PulseDelayConfig, SampleHoldConfig,
+        };
+        let mut b = NetworkBuilder::<()>::new(crate::TimeDomainId::from_u128(2));
+        let (value, v) = b.level_input("value");
+        let (sample, p) = b.pulse_input("sample");
+        let (reject, r) = b.level_input("reject");
+        let delayed = b
+            .pulse_delay(
+                p,
+                PulseDelayConfig::new(crate::time::NonZeroSpan::from_ticks(2).unwrap()),
+            )
+            .unwrap();
+        let samples = b.merge([p, delayed]).unwrap();
+        let node = NodeKey::from_u128(100);
+        let held = b
+            .add_sample_hold(
+                node,
+                v,
+                samples,
+                SampleHoldConfig::new(LogicLevel::Low),
+                DiagnosticMeta::default(),
+            )
+            .unwrap()
+            .into_outputs();
+        b.level_output("held", held).unwrap();
+        let bad = b.all([held, r]).unwrap();
+        b.level_set_reset_latch(
+            bad,
+            bad,
+            LevelSetResetConfig::new(LogicLevel::Low, ConflictPolicy::RejectTransaction),
+        )
+        .unwrap();
+        let high = b.constant(LogicLevel::High);
+        b.level_set_reset_latch(
+            high,
+            high,
+            LevelSetResetConfig::new(LogicLevel::Low, ConflictPolicy::RetainAndDiagnose),
+        )
+        .unwrap();
+        let c = b
+            .finish()
+            .require_artifact()
+            .unwrap()
+            .compile()
+            .require_artifact()
+            .unwrap();
+        for target in [1, 3] {
+            let mut m = c.spawn(policy_with([100, 10000, 100, 1000, 100000]));
+            let initial = m
+                .apply(Transaction::initialize(
+                    crate::time::Time::from_ticks(0),
+                    m.revision(),
+                    c.input_snapshot()
+                        .set(value, LogicLevel::Low)
+                        .unwrap()
+                        .set(reject, LogicLevel::Low)
+                        .unwrap()
+                        .pulse(sample, PulseCount::ONE)
+                        .unwrap()
+                        .finish()
+                        .unwrap(),
+                ))
+                .unwrap();
+            let retained = m.inspect_sample_hold(node).unwrap();
+            if target == 3 {
+                // Value changes before the due sample: no immediate capture at t=1.
+                m.apply(Transaction::advance(
+                    crate::time::Time::from_ticks(1),
+                    m.revision(),
+                    c.input_delta()
+                        .set(value, LogicLevel::High)
+                        .unwrap()
+                        .finish()
+                        .unwrap(),
+                ))
+                .unwrap();
+            }
+            let before = observe(&m);
+            let mut delta = c.input_delta().set(reject, LogicLevel::High).unwrap();
+            if target == 1 {
+                delta = delta
+                    .set(value, LogicLevel::High)
+                    .unwrap()
+                    .pulse(sample, PulseCount::ONE)
+                    .unwrap();
+            }
+            let failure = m
+                .apply(Transaction::advance(
+                    crate::time::Time::from_ticks(target),
+                    m.revision(),
+                    delta.finish().unwrap(),
+                ))
+                .unwrap_err();
+            assert_eq!(
+                failure.code(),
+                DiagnosticCode::RuntimeLevelLatchConflictRejected
+            );
+            assert_eq!(observe(&m), before);
+            assert_eq!(
+                m.inspect_sample_hold(node).unwrap().committed(),
+                LogicLevel::Low
+            );
+            assert!(
+                retained
+                    .provenance()
+                    .inspect(retained.latest_establishment())
+                    .is_ok()
+            );
+            for event in initial.output_events() {
+                let cause = match event {
+                    OutputEvent::LevelEstablished { cause, .. }
+                    | OutputEvent::LevelChanged { cause, .. }
+                    | OutputEvent::Pulsed { cause, .. } => *cause,
+                };
+                assert!(initial.provenance().inspect(cause).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn sample_hold_event_and_provenance_budgets_are_atomic_at_both_lifecycle_boundaries() {
+        let mut b = crate::NetworkBuilder::<()>::new(crate::TimeDomainId::from_u128(2));
+        let (value, v) = b.level_input("value");
+        let (sample, p) = b.pulse_input("sample");
+        let node = NodeKey::from_u128(100);
+        let state = b
+            .add_sample_hold(
+                node,
+                v,
+                p,
+                crate::SampleHoldConfig::new(LogicLevel::Low),
+                DiagnosticMeta::default(),
+            )
+            .unwrap()
+            .into_outputs();
+        b.level_output("held", state).unwrap();
+        let c = b
+            .finish()
+            .require_artifact()
+            .unwrap()
+            .compile()
+            .require_artifact()
+            .unwrap();
+        let make_init = |capture| {
+            c.input_snapshot()
+                .set(
+                    value,
+                    if capture {
+                        LogicLevel::High
+                    } else {
+                        LogicLevel::Low
+                    },
+                )
+                .unwrap()
+                .pulse(
+                    sample,
+                    if capture {
+                        PulseCount::ONE
+                    } else {
+                        PulseCount::ZERO
+                    },
+                )
+                .unwrap()
+                .finish()
+                .unwrap()
+        };
+        let make_delta = || {
+            c.input_delta()
+                .set(value, LogicLevel::High)
+                .unwrap()
+                .pulse(sample, PulseCount::ONE)
+                .unwrap()
+                .finish()
+                .unwrap()
+        };
+        let roomy = policy_with([100, 10000, 100, 1000, 100000]);
+        for ready in [false, true] {
+            let mut seed = c.spawn(roomy.clone());
+            if ready {
+                seed.apply(Transaction::initialize(
+                    crate::time::Time::from_ticks(0),
+                    seed.revision(),
+                    make_init(false),
+                ))
+                .unwrap();
+            }
+            let apply = |m: &mut crate::Machine<()>| {
+                if ready {
+                    m.apply(Transaction::advance(
+                        crate::time::Time::from_ticks(1),
+                        m.revision(),
+                        make_delta(),
+                    ))
+                } else {
+                    m.apply(Transaction::initialize(
+                        crate::time::Time::from_ticks(0),
+                        m.revision(),
+                        make_init(true),
+                    ))
+                }
+            };
+            let mut reference = c.spawn(roomy.clone());
+            reference.store = seed.store.clone();
+            let previous = reference
+                .store
+                .provenance
+                .as_ref()
+                .map_or(0, ProvenanceView::len);
+            let result = apply(&mut reference).unwrap();
+            let growth = (result.provenance().len() - previous) as u64;
+            assert!(growth > 0);
+            let events = result.output_events().len() as u64;
+            assert_eq!(events, 1);
+            for (index, consumed, budget) in [
+                (
+                    3,
+                    events,
+                    RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
+                ),
+                (4, growth, RuntimePolicyLimit::MaxRequiredProvenanceGrowth),
+            ] {
+                for limit in [consumed - 1, consumed, consumed + 1] {
+                    let mut limits = [100, 10000, 100, 1000, 100000];
+                    limits[index] = limit;
+                    let mut m = c.spawn(policy_with(limits));
+                    // Install the same Ready reference state to isolate this transaction's budget boundary.
+                    m.store = seed.store.clone();
+                    let before = observe(&m);
+                    match apply(&mut m) {
+                        Err(failure) => {
+                            assert!(limit < consumed);
+                            assert_eq!(
+                                failure.evidence(),
+                                &RuntimeFailureEvidence::BudgetExceeded {
+                                    budget,
+                                    limit,
+                                    consumed
+                                }
+                            );
+                            assert_eq!(observe(&m), before);
+                        }
+                        Ok(result) => {
+                            assert!(limit >= consumed);
+                            assert_eq!(
+                                m.inspect_sample_hold(node).unwrap().committed(),
+                                LogicLevel::High
+                            );
+                            assert_eq!(result.output_events().len(), 1);
+                        }
+                    }
+                }
             }
         }
     }

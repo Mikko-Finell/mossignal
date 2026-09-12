@@ -558,7 +558,7 @@ Explicitly exclude:
 
 ---
 
-## 45. [IN PROGRESS] `SampleHold`
+## 45. [DONE] `SampleHold`
 
 Implement `SampleHold` as the next distinct stateful primitive:
 

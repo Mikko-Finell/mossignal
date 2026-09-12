@@ -196,6 +196,11 @@ enum CompiledNodeKind {
         state: StoredLevelStateIndex,
         conflict: ConflictPolicy,
     },
+    SampleHold {
+        value: PortIndex,
+        sample: PortIndex,
+        state: StoredLevelStateIndex,
+    },
     PulseDelay {
         input: PortIndex,
         delay_ticks: u64,
@@ -226,6 +231,7 @@ impl CompiledNodeKind {
             Self::Toggle { .. } => SemanticNodeKind::Toggle,
             Self::PulseSetResetLatch { .. } => SemanticNodeKind::PulseSetResetLatch,
             Self::LevelSetResetLatch { .. } => SemanticNodeKind::LevelSetResetLatch,
+            Self::SampleHold { .. } => SemanticNodeKind::SampleHold,
             Self::PulseDelay { .. } => SemanticNodeKind::PulseDelay,
         }
     }
@@ -293,6 +299,15 @@ impl CompiledNodeKind {
                     None
                 }
             }
+            Self::SampleHold { value, sample, .. } => {
+                if port == value {
+                    Some(InputPortRole::Value)
+                } else if port == sample {
+                    Some(InputPortRole::Sample)
+                } else {
+                    None
+                }
+            }
             Self::PulseDelay { input, .. } if port == input => Some(InputPortRole::PulseDelay),
             Self::EdgeDetector { .. } | Self::Toggle { .. } | Self::PulseDelay { .. } => None,
         }
@@ -322,7 +337,8 @@ impl CompiledNodeKind {
             Self::EdgeDetector { .. } => Some(StateFamily::EdgeObservation),
             Self::Toggle { .. }
             | Self::PulseSetResetLatch { .. }
-            | Self::LevelSetResetLatch { .. } => Some(StateFamily::StoredLevel),
+            | Self::LevelSetResetLatch { .. }
+            | Self::SampleHold { .. } => Some(StateFamily::StoredLevel),
             _ => None,
         }
     }
@@ -387,7 +403,7 @@ pub(crate) struct FullEvaluation {
     pub(crate) proposed_edge_observations: Vec<EdgeObservation>,
     pub(crate) proposed_stored_levels: Vec<LogicLevel>,
     pub(crate) toggle_inversions: BTreeMap<NodeKey, usize>,
-    pub(crate) latch_state_establishments: BTreeSet<NodeKey>,
+    pub(crate) stored_level_establishments: BTreeSet<NodeKey>,
     pub(crate) pulse_latch_conflicts: Vec<PulseLatchConflict>,
     pub(crate) level_latch_conflicts: Vec<LevelLatchConflict>,
     pub(crate) pulse_delay_proposals: Vec<PulseDelayProposal>,
@@ -483,6 +499,14 @@ pub(crate) enum EvaluationCause {
         previous: LogicLevel,
         result: LogicLevel,
         policy: ConflictPolicy,
+    },
+    SampleHold {
+        node: NodeKey,
+        value: usize,
+        sample: usize,
+        sample_port: InPortKey<Pulse>,
+        sample_count: PulseCount,
+        result: LogicLevel,
     },
     PulseDelay {
         node: NodeKey,
@@ -814,6 +838,25 @@ impl<D> CompiledNetwork<D> {
         Some((value(set)?, value(reset)?))
     }
 
+    pub(crate) fn sample_hold_state_slot(
+        &self,
+        node: NodeKey,
+    ) -> Option<(StoredLevelStateIndex, LogicLevel)> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        let CompiledNodeKind::SampleHold { state, .. } = descriptor.kind else {
+            return None;
+        };
+        Some((state, self.inner.stored_level_initial_states[state.0]))
+    }
+
+    pub(crate) fn sample_hold_value_operation(&self, node: NodeKey) -> Option<usize> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        let CompiledNodeKind::SampleHold { value, .. } = descriptor.kind else {
+            return None;
+        };
+        Some(self.inner.input_source(value).ok()?.0)
+    }
+
     pub(crate) fn pulse_delay(&self, node: NodeKey) -> Option<NonZeroSpan<D>> {
         let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
         let CompiledNodeKind::PulseDelay { delay_ticks, .. } = descriptor.kind else {
@@ -946,7 +989,7 @@ impl<D> CompiledInner<D> {
         let mut proposed_edge_observations = previous_edge_observations.to_vec();
         let mut proposed_stored_levels = previous_stored_levels.to_vec();
         let mut toggle_inversions = BTreeMap::new();
-        let mut latch_state_establishments = BTreeSet::new();
+        let mut stored_level_establishments = BTreeSet::new();
         let mut pulse_latch_conflicts = Vec::new();
         let mut level_latch_conflicts = Vec::new();
         let mut pulse_delay_proposals = Vec::new();
@@ -1472,7 +1515,7 @@ impl<D> CompiledInner<D> {
                         };
                         proposed_stored_levels[state.0] = result;
                         if establishes {
-                            latch_state_establishments.insert(*key);
+                            stored_level_establishments.insert(*key);
                         }
                         (
                             EvaluationValue::Level(result),
@@ -1543,7 +1586,7 @@ impl<D> CompiledInner<D> {
                         };
                         proposed_stored_levels[state.0] = result;
                         if establishes {
-                            latch_state_establishments.insert(*key);
+                            stored_level_establishments.insert(*key);
                         }
                         (
                             EvaluationValue::Level(result),
@@ -1556,6 +1599,45 @@ impl<D> CompiledInner<D> {
                                 previous,
                                 result,
                                 policy: *conflict,
+                            },
+                        )
+                    }
+                    NodeDescriptor {
+                        key,
+                        kind:
+                            CompiledNodeKind::SampleHold {
+                                value,
+                                sample,
+                                state,
+                            },
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/sample-hold.yaml "settled-sampling-law"
+                        // Presence captures the settled value once; multiplicity survives in provenance.
+                        let sampled = self.level_input_value(*value, &values)?;
+                        let sample_count = self.pulse_input_value(*sample, &values)?;
+                        let previous = previous_stored_levels
+                            .get(state.0)
+                            .copied()
+                            .ok_or(EvaluationFailure::Incomplete)?;
+                        let result = if sample_count.is_positive() {
+                            sampled
+                        } else {
+                            previous
+                        };
+                        proposed_stored_levels[state.0] = result;
+                        if sample_count.is_positive() {
+                            stored_level_establishments.insert(*key);
+                        }
+                        (
+                            EvaluationValue::Level(result),
+                            EvaluationCause::SampleHold {
+                                node: *key,
+                                value: self.input_source(*value)?.0,
+                                sample: self.input_source(*sample)?.0,
+                                sample_port: self.pulse_port_key(*sample)?,
+                                sample_count,
+                                result,
                             },
                         )
                     }
@@ -1706,7 +1788,7 @@ impl<D> CompiledInner<D> {
             proposed_edge_observations,
             proposed_stored_levels,
             toggle_inversions,
-            latch_state_establishments,
+            stored_level_establishments,
             pulse_latch_conflicts,
             level_latch_conflicts,
             pulse_delay_proposals,
@@ -1969,6 +2051,27 @@ impl<D> CompiledInner<D> {
                         conflict: config.conflict,
                     }
                 }
+                NodeKind::SampleHold(config) => {
+                    let role_port = |role| {
+                        node.ports()
+                            .input_roles()
+                            .iter()
+                            .zip(inputs.iter().copied())
+                            .find_map(|(candidate, port)| (*candidate == role).then_some(port))
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "validated SampleHold descriptor must retain every fixed input role"
+                                )
+                            })
+                    };
+                    let state = StoredLevelStateIndex(stored_level_initial_states.len());
+                    stored_level_initial_states.push(config.initial);
+                    CompiledNodeKind::SampleHold {
+                        value: role_port(InputPortRole::Value),
+                        sample: role_port(InputPortRole::Sample),
+                        state,
+                    }
+                }
                 NodeKind::PulseDelay(config) => {
                     let input = inputs.first().copied().unwrap_or_else(|| {
                         panic!("validated PulseDelay descriptor must retain its pulse input")
@@ -2178,6 +2281,16 @@ impl<D> CompiledInner<D> {
                     set != reset
                         && node.inputs.contains(&set)
                         && node.inputs.contains(&reset)
+                        && state.0 < self.stored_level_initial_states.len()
+                }
+                CompiledNodeKind::SampleHold {
+                    value,
+                    sample,
+                    state,
+                } => {
+                    value != sample
+                        && node.inputs.contains(&value)
+                        && node.inputs.contains(&sample)
                         && state.0 < self.stored_level_initial_states.len()
                 }
                 CompiledNodeKind::PulseDelay { input, delay_ticks } => {
@@ -3000,6 +3113,7 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
                 NodeKind::Toggle(config) => NodeKind::toggle(config.initial),
                 NodeKind::PulseSetResetLatch(config) => NodeKind::pulse_set_reset_latch(*config),
                 NodeKind::LevelSetResetLatch(config) => NodeKind::level_set_reset_latch(*config),
+                NodeKind::SampleHold(config) => NodeKind::sample_hold(*config),
                 NodeKind::PulseDelay(config) => NodeKind::pulse_delay(config.delay),
             };
             crate::authored::NodeDef::new(
@@ -3830,7 +3944,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_and_both_latches_share_one_stored_level_family() {
+    fn toggle_latches_and_sample_hold_share_one_stored_level_family() {
         let mut builder = crate::NetworkBuilder::<()>::new(TimeDomainId::from_u128(900));
         let (_, toggle_input) = builder.pulse_input("toggle");
         let (_, set) = builder.pulse_input("set");
@@ -3871,6 +3985,16 @@ mod tests {
                 DiagnosticMeta::default(),
             )
             .unwrap();
+        let sample_node = NodeKey::from_u128(40);
+        builder
+            .add_sample_hold(
+                sample_node,
+                control,
+                set,
+                crate::SampleHoldConfig::new(LogicLevel::High),
+                DiagnosticMeta::default(),
+            )
+            .unwrap();
         let compiled = builder
             .finish()
             .require_artifact()
@@ -3880,7 +4004,12 @@ mod tests {
             .unwrap_or_else(|failure| panic!("stored-level fixture must compile: {failure:?}"));
         assert_eq!(
             compiled.initial_stored_levels(),
-            vec![LogicLevel::Low, LogicLevel::High, LogicLevel::Low]
+            vec![
+                LogicLevel::Low,
+                LogicLevel::High,
+                LogicLevel::Low,
+                LogicLevel::High
+            ]
         );
         let (toggle_slot, _) = compiled
             .toggle_state_slot(toggle_node)
@@ -3897,6 +4026,14 @@ mod tests {
                 .0
                 .value(),
             2
+        );
+        assert_eq!(
+            compiled
+                .sample_hold_state_slot(sample_node)
+                .unwrap()
+                .0
+                .value(),
+            3
         );
     }
 }

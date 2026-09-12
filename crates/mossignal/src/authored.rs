@@ -653,6 +653,8 @@ pub enum NodeKind<D> {
     PulseSetResetLatch(PulseSetResetConfig),
     /// A stored level controlled by current set and reset levels.
     LevelSetResetLatch(LevelSetResetConfig),
+    /// A stored Level sampled by a complete simultaneous Pulse batch.
+    SampleHold(SampleHoldConfig),
     /// A temporal pulse reproducer with one pulse input and one pulse output.
     PulseDelay(PulseDelayConfig<D>),
 }
@@ -679,6 +681,7 @@ impl<D> Clone for NodeKind<D> {
             Self::Toggle(config) => Self::Toggle(*config),
             Self::PulseSetResetLatch(config) => Self::PulseSetResetLatch(*config),
             Self::LevelSetResetLatch(config) => Self::LevelSetResetLatch(*config),
+            Self::SampleHold(config) => Self::SampleHold(*config),
             Self::PulseDelay(config) => Self::PulseDelay(*config),
         }
     }
@@ -706,6 +709,7 @@ impl<D> PartialEq for NodeKind<D> {
             (Self::Toggle(left), Self::Toggle(right)) => left == right,
             (Self::PulseSetResetLatch(left), Self::PulseSetResetLatch(right)) => left == right,
             (Self::LevelSetResetLatch(left), Self::LevelSetResetLatch(right)) => left == right,
+            (Self::SampleHold(left), Self::SampleHold(right)) => left == right,
             (Self::PulseDelay(left), Self::PulseDelay(right)) => left == right,
             _ => false,
         }
@@ -744,6 +748,7 @@ impl<D> fmt::Debug for NodeKind<D> {
                 .debug_tuple("LevelSetResetLatch")
                 .field(config)
                 .finish(),
+            Self::SampleHold(config) => formatter.debug_tuple("SampleHold").field(config).finish(),
             Self::PulseDelay(config) => formatter.debug_tuple("PulseDelay").field(config).finish(),
         }
     }
@@ -862,6 +867,12 @@ impl<D> NodeKind<D> {
     #[must_use]
     pub const fn level_set_reset_latch(config: LevelSetResetConfig) -> Self {
         Self::LevelSetResetLatch(config)
+    }
+
+    /// Creates a sample-and-hold node with an explicit initial Level.
+    #[must_use]
+    pub const fn sample_hold(config: SampleHoldConfig) -> Self {
+        Self::SampleHold(config)
     }
 
     /// Creates a PulseDelay with the supplied positive delay.
@@ -1071,6 +1082,32 @@ impl LevelSetResetConfig {
     }
 }
 
+/// Semantic configuration for [`NodeKind::SampleHold`].
+///
+/// ```
+/// use mossignal::{NetworkBuilder, SampleHoldConfig, TimeDomainId};
+/// use mossignal::signal::LogicLevel;
+/// let mut builder = NetworkBuilder::<()>::new(TimeDomainId::from_u128(1));
+/// let (_, value) = builder.level_input("value");
+/// let (_, sample) = builder.pulse_input("sample");
+/// let held = builder.sample_hold(value, sample, SampleHoldConfig::new(LogicLevel::Low))?;
+/// builder.level_output("held", held)?;
+/// # Ok::<(), mossignal::AuthoringFailure>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SampleHoldConfig {
+    /// The declared held level used as previous state by initialization.
+    pub initial: LogicLevel,
+}
+
+impl SampleHoldConfig {
+    /// Creates a configuration without an implicit initial level.
+    #[must_use]
+    pub const fn new(initial: LogicLevel) -> Self {
+        Self { initial }
+    }
+}
+
 /// The semantic configuration of an authored [`NodeKind::PulseDelay`] claim.
 pub struct PulseDelayConfig<D> {
     /// The strictly positive delay between input and reproduced output.
@@ -1142,6 +1179,10 @@ pub enum InputPortRole {
     Set,
     /// The reset control of a set/reset latch.
     Reset,
+    /// The Level value captured by [`NodeKind::SampleHold`].
+    Value,
+    /// The Pulse capture control of [`NodeKind::SampleHold`].
+    Sample,
     /// The pulse input of [`NodeKind::PulseDelay`].
     PulseDelay,
     /// The pulse batch controlled by a level-controlled pulse primitive.

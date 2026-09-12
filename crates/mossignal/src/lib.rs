@@ -24,7 +24,7 @@ mod validation;
 pub use authored::{
     ConflictPolicy, EdgeConfig, EdgeDetectorKind, EdgeInitialization, EdgeObservation,
     LevelSetResetConfig, ModuleBinding, ModuleBindingSet, ModuleInstanceDef, PulseDelayConfig,
-    PulseSetResetConfig, ToggleConfig,
+    PulseSetResetConfig, SampleHoldConfig, ToggleConfig,
 };
 pub use binding::{
     BindingFailure, BindingSet, BindingSetBuilder, BoundApplyFailure, BoundMachine,
@@ -53,8 +53,9 @@ pub use machine::{
     ModuleOutputInspection, ModulePendingPulseDelayInspection, NetworkRevision, PendingEventKey,
     PendingPulseDelayInspection, PulseDelayDefinitionInspection, PulseDelayInspection,
     PulseDelayInspectionFailure, PulseSetResetLatchDefinitionInspection,
-    PulseSetResetLatchInspection, PulseSetResetLatchInspectionFailure, Schedule, ScheduleFailure,
-    ToggleDefinitionInspection, ToggleInspection, ToggleInspectionFailure,
+    PulseSetResetLatchInspection, PulseSetResetLatchInspectionFailure,
+    SampleHoldDefinitionInspection, SampleHoldInspection, SampleHoldInspectionFailure, Schedule,
+    ScheduleFailure, ToggleDefinitionInspection, ToggleInspection, ToggleInspectionFailure,
 };
 pub use module::{
     DefinitionGraphView, ModuleDef, ModuleInputIter, ModuleOrigin, ModuleOutputIter, NodeSubject,

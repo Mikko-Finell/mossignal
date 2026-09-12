@@ -4,7 +4,8 @@ use crate::authored::{
     ConnectionDef, ConnectionEndpoint, EdgeConfig, ExternalInputDef, ExternalOutputDef,
     LevelSetResetConfig, ModuleBinding, ModuleBindingSet, ModuleInputDef, ModuleInstanceDef,
     ModuleInterfaceMapping, ModuleOutputDef, NodeDef, NodeKind, NodePorts, OutputPortRole,
-    PulseDelayConfig, PulseSetResetConfig, ToggleConfig, UncheckedModule, UncheckedNetwork,
+    PulseDelayConfig, PulseSetResetConfig, SampleHoldConfig, ToggleConfig, UncheckedModule,
+    UncheckedNetwork,
 };
 use crate::diagnostics::Report;
 use crate::diagnostics::{
@@ -1692,6 +1693,117 @@ impl<D> NetworkBuilder<D> {
             self.allocator.connection(),
             source_endpoint(reset.source),
             ConnectionEndpoint::node_input(reset_port.into()),
+            DiagnosticMeta::default(),
+        ));
+        Ok(AddedNode {
+            key,
+            outputs: self.signal(SignalSourceKey::NodeOutput(output_port)),
+        })
+    }
+
+    /// Adds a sample-and-hold node with locally allocated stable identities.
+    pub fn sample_hold(
+        &mut self,
+        value: Signal<Level>,
+        sample: Signal<Pulse>,
+        config: SampleHoldConfig,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        let key = self.next_node_key();
+        let value_port = self.next_in_port_key();
+        let sample_port = self.next_pulse_in_port_key();
+        let output_port = self.next_out_port_key();
+        Ok(self
+            .add_sample_hold_with_ports(
+                key,
+                value_port,
+                sample_port,
+                output_port,
+                value,
+                sample,
+                config,
+                DiagnosticMeta::default(),
+            )?
+            .into_outputs())
+    }
+
+    /// Adds an explicitly keyed sample-and-hold node with locally allocated ports.
+    pub fn add_sample_hold(
+        &mut self,
+        key: NodeKey,
+        value: Signal<Level>,
+        sample: Signal<Pulse>,
+        config: SampleHoldConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        let value_port = self.next_in_port_key();
+        let sample_port = self.next_pulse_in_port_key();
+        let output_port = self.next_out_port_key();
+        self.add_sample_hold_with_ports(
+            key,
+            value_port,
+            sample_port,
+            output_port,
+            value,
+            sample,
+            config,
+            meta,
+        )
+    }
+
+    /// Adds an explicitly keyed sample-and-hold node with exact fixed port identities.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_sample_hold_with_ports(
+        &mut self,
+        key: NodeKey,
+        value_port: InPortKey<Level>,
+        sample_port: InPortKey<Pulse>,
+        output_port: OutPortKey<Level>,
+        value: Signal<Level>,
+        sample: Signal<Pulse>,
+        config: SampleHoldConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.require_local(value)?;
+        self.require_local(sample)?;
+        if self.node_keys.contains(&key) {
+            return Err(AuthoringFailure::DuplicateNodeKey(key));
+        }
+        if self.in_port_keys.contains(&value_port) {
+            return Err(AuthoringFailure::DuplicateInPortKey(value_port));
+        }
+        if self.pulse_in_port_keys.contains(&sample_port) {
+            return Err(AuthoringFailure::DuplicatePulseInPortKey(sample_port));
+        }
+        if self.out_port_keys.contains(&output_port) {
+            return Err(AuthoringFailure::DuplicateOutPortKey(output_port));
+        }
+        self.node_keys.insert(key);
+        self.in_port_keys.insert(value_port);
+        self.pulse_in_port_keys.insert(sample_port);
+        self.out_port_keys.insert(output_port);
+        self.nodes.push(NodeDef::new(
+            key,
+            NodeKind::SampleHold(config),
+            NodePorts::with_input_roles(
+                vec![value_port.into(), sample_port.into()],
+                vec![
+                    crate::authored::InputPortRole::Value,
+                    crate::authored::InputPortRole::Sample,
+                ],
+                vec![output_port.into()],
+            ),
+            meta,
+        ));
+        self.connections.push(ConnectionDef::new(
+            self.allocator.connection(),
+            source_endpoint(value.source),
+            ConnectionEndpoint::node_input(value_port.into()),
+            DiagnosticMeta::default(),
+        ));
+        self.connections.push(ConnectionDef::new(
+            self.allocator.connection(),
+            source_endpoint_pulse(sample.source),
+            ConnectionEndpoint::node_input(sample_port.into()),
             DiagnosticMeta::default(),
         ));
         Ok(AddedNode {
@@ -3998,6 +4110,61 @@ impl<D> ModuleBuilder<D> {
             output_port,
             set,
             reset,
+            config,
+            meta,
+        )
+    }
+
+    /// Adds a sample-and-hold node.
+    pub fn sample_hold(
+        &mut self,
+        value: Signal<Level>,
+        sample: Signal<Pulse>,
+        config: SampleHoldConfig,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        self.graph.require_local(value)?;
+        self.graph.require_local(sample)?;
+        self.graph.sample_hold(value, sample, config)
+    }
+
+    /// Adds an explicitly keyed sample-and-hold node with locally allocated ports.
+    pub fn add_sample_hold(
+        &mut self,
+        key: NodeKey,
+        value: Signal<Level>,
+        sample: Signal<Pulse>,
+        config: SampleHoldConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph.require_local(value)?;
+        self.graph.require_local(sample)?;
+        self.require_unused_node_key(key)?;
+        self.graph.add_sample_hold(key, value, sample, config, meta)
+    }
+
+    /// Adds an explicitly keyed sample-and-hold node with exact fixed ports.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_sample_hold_with_ports(
+        &mut self,
+        key: NodeKey,
+        value_port: InPortKey<Level>,
+        sample_port: InPortKey<Pulse>,
+        output_port: OutPortKey<Level>,
+        value: Signal<Level>,
+        sample: Signal<Pulse>,
+        config: SampleHoldConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph.require_local(value)?;
+        self.graph.require_local(sample)?;
+        self.require_unused_node_key(key)?;
+        self.graph.add_sample_hold_with_ports(
+            key,
+            value_port,
+            sample_port,
+            output_port,
+            value,
+            sample,
             config,
             meta,
         )

@@ -13,7 +13,9 @@ use crate::key::{
     AnyModuleInputKey, AnyModuleOutputKey, ExternalInputKey, ExternalOutputKey, ModuleInstanceKey,
     NodeKey,
 };
-use crate::module::{ModuleOrigin, QualifiedConnectionRef, QualifiedModuleRef, QualifiedNodeRef};
+use crate::module::{
+    ModuleOrigin, NodeSubject, QualifiedConnectionRef, QualifiedModuleRef, QualifiedNodeRef,
+};
 use crate::policy::{RuntimePolicy, RuntimePolicyId};
 use crate::signal::{Level, LogicLevel, PulseCount};
 use crate::standard::{
@@ -401,6 +403,7 @@ pub struct ModuleNodeInspection<D> {
     pulse_set_reset_cause: Option<CauseRef>,
     level_set_reset_state: Option<LogicLevel>,
     level_set_reset_cause: Option<CauseRef>,
+    sample_hold: Option<SampleHoldInspection<D>>,
     pending: Vec<ModulePendingPulseDelayInspection<D>>,
 }
 
@@ -464,6 +467,11 @@ impl<D> ModuleNodeInspection<D> {
     #[must_use]
     pub const fn level_set_reset_cause(&self) -> Option<CauseRef> {
         self.level_set_reset_cause
+    }
+    /// Returns this instance's owned held-state and capture evidence, when initialized.
+    #[must_use]
+    pub const fn sample_hold(&self) -> Option<&SampleHoldInspection<D>> {
+        self.sample_hold.as_ref()
     }
     #[must_use]
     pub fn pending(&self) -> &[ModulePendingPulseDelayInspection<D>] {
@@ -705,7 +713,7 @@ pub(crate) struct MachineStore<D> {
     pub(crate) edge_observation_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) stored_levels: Vec<LogicLevel>,
     pub(crate) toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
-    pub(crate) latch_state_causes: BTreeMap<NodeKey, CauseRef>,
+    pub(crate) establishment_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) active_episodes: crate::episode::ActiveEpisodes<D>,
     pub(crate) pending_pulse_delays: BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
     pub(crate) next_pending_event_serial: u64,
@@ -728,7 +736,7 @@ impl<D> Clone for MachineStore<D> {
             edge_observation_causes: self.edge_observation_causes.clone(),
             stored_levels: self.stored_levels.clone(),
             toggle_inversion_causes: self.toggle_inversion_causes.clone(),
-            latch_state_causes: self.latch_state_causes.clone(),
+            establishment_causes: self.establishment_causes.clone(),
             active_episodes: self.active_episodes.clone(),
             pending_pulse_delays: self.pending_pulse_delays.clone(),
             next_pending_event_serial: self.next_pending_event_serial,
@@ -1246,6 +1254,162 @@ impl LevelSetResetLatchInspectionFailure {
     }
 }
 
+/// Structural information available for one compiled SampleHold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SampleHoldDefinitionInspection {
+    node: NodeKey,
+    initial: LogicLevel,
+}
+
+impl SampleHoldDefinitionInspection {
+    /// Returns the stable node key.
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+    /// Returns the declared initial level.
+    #[must_use]
+    pub const fn initial(&self) -> LogicLevel {
+        self.initial
+    }
+}
+
+/// An owned held-value observation with immutable current and establishment provenance.
+/// Sample pulse counts appear only in the retained causal evidence of their reaction.
+pub struct SampleHoldInspection<D> {
+    node: NodeSubject,
+    initial: LogicLevel,
+    committed: LogicLevel,
+    value: LogicLevel,
+    revision: NetworkRevision,
+    at: Time<D>,
+    latest_establishment: CauseRef,
+    current_support: CauseRef,
+    provenance: ProvenanceView<D>,
+}
+
+impl<D> Clone for SampleHoldInspection<D> {
+    fn clone(&self) -> Self {
+        Self {
+            node: self.node.clone(),
+            initial: self.initial,
+            committed: self.committed,
+            value: self.value,
+            revision: self.revision,
+            at: self.at,
+            latest_establishment: self.latest_establishment,
+            current_support: self.current_support,
+            provenance: self.provenance.clone(),
+        }
+    }
+}
+
+impl<D> fmt::Debug for SampleHoldInspection<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SampleHoldInspection")
+            .field("node", &self.node)
+            .field("initial", &self.initial)
+            .field("committed", &self.committed)
+            .field("value", &self.value)
+            .field("revision", &self.revision)
+            .field("at_ticks", &self.at.ticks())
+            .field("latest_establishment", &self.latest_establishment)
+            .field("current_support", &self.current_support)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<D> SampleHoldInspection<D> {
+    /// Returns the direct or fully qualified stable owner.
+    #[must_use]
+    pub const fn node(&self) -> &NodeSubject {
+        &self.node
+    }
+    /// Returns the declared initial held value.
+    #[must_use]
+    pub const fn initial(&self) -> LogicLevel {
+        self.initial
+    }
+    /// Returns the committed held value, also the settled output.
+    #[must_use]
+    pub const fn committed(&self) -> LogicLevel {
+        self.committed
+    }
+    /// Returns the current settled Level input, which may differ from the held value.
+    #[must_use]
+    pub const fn value(&self) -> LogicLevel {
+        self.value
+    }
+    /// Returns the revision of this observation.
+    #[must_use]
+    pub const fn revision(&self) -> NetworkRevision {
+        self.revision
+    }
+    /// Returns the logical time of this observation.
+    #[must_use]
+    pub const fn at(&self) -> Time<D> {
+        self.at
+    }
+    /// Returns the last capture or initial establishment, resolved by this owned view.
+    #[must_use]
+    pub const fn latest_establishment(&self) -> CauseRef {
+        self.latest_establishment
+    }
+    /// Returns the current reaction's support, resolved by this owned view.
+    #[must_use]
+    pub const fn current_support(&self) -> CauseRef {
+        self.current_support
+    }
+    /// Retains both causes even after later machine transactions.
+    #[must_use]
+    pub const fn provenance(&self) -> &ProvenanceView<D> {
+        &self.provenance
+    }
+}
+
+/// A structural or lifecycle failure to inspect one SampleHold.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleHoldInspectionFailure {
+    /// The node key is not part of the compiled topology.
+    UnknownNode(NodeKey),
+    /// The node exists but is not a SampleHold.
+    NotSampleHold(NodeKey),
+    /// Runtime state is unavailable before machine initialization.
+    NotInitialized,
+}
+
+impl SampleHoldInspectionFailure {
+    /// Returns the exact catalogue code for this failure.
+    #[must_use]
+    pub fn code(self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+    /// Returns the catalogue-fixed severity.
+    #[must_use]
+    pub fn severity(self) -> Severity {
+        self.code().severity()
+    }
+    /// Returns the catalogue-fixed responsibility.
+    #[must_use]
+    pub fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+    /// Projects the failure into the common problem kernel.
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        match self {
+            Self::UnknownNode(node) => inspection_unknown(node, InspectionSubjectKind::SampleHold),
+            Self::NotSampleHold(node) => {
+                inspection_wrong_kind(node, InspectionSubjectKind::SampleHold)
+            }
+            Self::NotInitialized => {
+                lifecycle_not_initialized(OperationSubjectRef::MachineLifecycle)
+            }
+        }
+    }
+}
+
 /// A lifecycle failure to inspect active runtime diagnostic episodes.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1359,7 +1523,7 @@ impl<D> Machine<D> {
                 edge_observation_causes: BTreeMap::new(),
                 stored_levels,
                 toggle_inversion_causes: BTreeMap::new(),
-                latch_state_causes: BTreeMap::new(),
+                establishment_causes: BTreeMap::new(),
                 active_episodes: BTreeMap::new(),
                 pending_pulse_delays: BTreeMap::new(),
                 next_pending_event_serial: 0,
@@ -1569,7 +1733,7 @@ impl<D> Machine<D> {
                 .filter(|_| self.is_initialized());
             let pulse_set_reset_cause = self
                 .store
-                .latch_state_causes
+                .establishment_causes
                 .get(&flat)
                 .copied()
                 .filter(|_| pulse_set_reset_state.is_some());
@@ -1580,7 +1744,7 @@ impl<D> Machine<D> {
                 .filter(|_| self.is_initialized());
             let level_set_reset_cause = self
                 .store
-                .latch_state_causes
+                .establishment_causes
                 .get(&flat)
                 .copied()
                 .filter(|_| level_set_reset_state.is_some());
@@ -1625,6 +1789,7 @@ impl<D> Machine<D> {
                 pulse_set_reset_cause,
                 level_set_reset_state,
                 level_set_reset_cause,
+                sample_hold: self.sample_hold_observation(flat),
                 pending,
             });
         }
@@ -1901,7 +2066,7 @@ impl<D> Machine<D> {
         let committed = self.store.stored_levels.get(slot.value()).copied().ok_or(
             PulseSetResetLatchInspectionFailure::NotPulseSetResetLatch(node),
         )?;
-        let latest_establishment = self.store.latch_state_causes.get(&node).copied().ok_or(
+        let latest_establishment = self.store.establishment_causes.get(&node).copied().ok_or(
             PulseSetResetLatchInspectionFailure::NotPulseSetResetLatch(node),
         )?;
         Ok(PulseSetResetLatchInspection {
@@ -1951,7 +2116,7 @@ impl<D> Machine<D> {
         let committed = self.store.stored_levels.get(slot.value()).copied().ok_or(
             LevelSetResetLatchInspectionFailure::NotLevelSetResetLatch(node),
         )?;
-        let latest_establishment = self.store.latch_state_causes.get(&node).copied().ok_or(
+        let latest_establishment = self.store.establishment_causes.get(&node).copied().ok_or(
             LevelSetResetLatchInspectionFailure::NotLevelSetResetLatch(node),
         )?;
         let (set, reset) = self
@@ -1970,6 +2135,64 @@ impl<D> Machine<D> {
             revision: self.store.revision,
             at: now,
             latest_establishment,
+        })
+    }
+    /// Returns declared SampleHold state before or after initialization.
+    pub fn inspect_sample_hold_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<SampleHoldDefinitionInspection, SampleHoldInspectionFailure> {
+        if self.compiled.qualified_node(node).is_some() {
+            return Err(SampleHoldInspectionFailure::UnknownNode(node));
+        }
+        let Some((_, initial)) = self.compiled.sample_hold_state_slot(node) else {
+            return Err(if self.compiled.contains_node(node) {
+                SampleHoldInspectionFailure::NotSampleHold(node)
+            } else {
+                SampleHoldInspectionFailure::UnknownNode(node)
+            });
+        };
+        Ok(SampleHoldDefinitionInspection { node, initial })
+    }
+
+    /// Returns an owned observation of one direct SampleHold; module nodes are available through module inspection.
+    pub fn inspect_sample_hold(
+        &self,
+        node: NodeKey,
+    ) -> Result<SampleHoldInspection<D>, SampleHoldInspectionFailure> {
+        self.inspect_sample_hold_definition(node)?;
+        if !self.is_initialized() {
+            return Err(SampleHoldInspectionFailure::NotInitialized);
+        }
+        Ok(self.sample_hold_observation(node).unwrap_or_else(|| {
+            panic!("initialized SampleHold must retain its stored value and both causal roots")
+        }))
+    }
+
+    fn sample_hold_observation(&self, node: NodeKey) -> Option<SampleHoldInspection<D>> {
+        let MachineStatus::Ready { now } = self.store.status else {
+            return None;
+        };
+        let (slot, initial) = self.compiled.sample_hold_state_slot(node)?;
+        let value_operation = self.compiled.sample_hold_value_operation(node)?;
+        Some(SampleHoldInspection {
+            node: self.compiled.node_subject(node),
+            initial,
+            committed: *self.store.stored_levels.get(slot.value())?,
+            value: self
+                .store
+                .operation_levels
+                .get(value_operation)
+                .copied()
+                .flatten()?,
+            revision: self.store.revision,
+            at: now,
+            latest_establishment: *self.store.establishment_causes.get(&node)?,
+            current_support: *self
+                .store
+                .operation_causes
+                .get(self.compiled.node_operation(node)?)?,
+            provenance: self.store.provenance.as_ref()?.clone(),
         })
     }
 }

@@ -448,6 +448,7 @@ pub enum DuplicateNodeKind {
     Toggle(LogicLevel),
     PulseSetResetLatch(LogicLevel, ConflictPolicy),
     LevelSetResetLatch(LogicLevel, ConflictPolicy),
+    SampleHold(LogicLevel),
     PulseDelay(u64),
 }
 
@@ -576,6 +577,7 @@ pub enum InspectionSubjectKind {
     Toggle,
     PulseSetResetLatch,
     LevelSetResetLatch,
+    SampleHold,
     Module,
     LevelOutput,
     SignalKind(SignalKind),
@@ -2479,7 +2481,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 90);
+        assert_eq!(leaves.len(), 93);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {
