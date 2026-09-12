@@ -5,6 +5,7 @@ pub mod binding;
 pub mod builder;
 mod compile;
 pub mod diagnostics;
+mod episode;
 pub mod identity;
 mod input;
 pub mod key;
@@ -22,8 +23,8 @@ mod validation;
 
 pub use authored::{
     ConflictPolicy, EdgeConfig, EdgeDetectorKind, EdgeInitialization, EdgeObservation,
-    ModuleBinding, ModuleBindingSet, ModuleInstanceDef, PulseDelayConfig, PulseSetResetConfig,
-    ToggleConfig,
+    LevelSetResetConfig, ModuleBinding, ModuleBindingSet, ModuleInstanceDef, PulseDelayConfig,
+    PulseSetResetConfig, ToggleConfig,
 };
 pub use binding::{
     BindingFailure, BindingSet, BindingSetBuilder, BoundApplyFailure, BoundMachine,
@@ -35,17 +36,23 @@ pub use builder::{
     ModuleBuilder, ModuleInstanceBuilder, NetworkBuilder, PulseRouteOutputs, Signal,
 };
 pub use compile::CompiledNetwork;
-pub use diagnostics::{ConflictEvidence, DiagnosticOccurrence};
+pub use diagnostics::{ConflictControls, ConflictEvidence, DiagnosticOccurrence};
+pub use episode::{
+    ActiveDiagnosticEpisode, DiagnosticConditionKey, DiagnosticEpisodeChange,
+    DiagnosticEpisodeChangeKind, DiagnosticEpisodeId,
+};
 pub use identity::{InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint, TimeDomainId};
 pub use input::{
     InputBuildFailure, InputDelta, InputDeltaBuilder, InputSnapshot, InputSnapshotBuilder,
 };
 pub use machine::{
-    EdgeDetectorDefinitionInspection, EdgeDetectorInspection, EdgeDetectorInspectionFailure,
-    Machine, MachineStatus, ModuleInputInspection, ModuleInspection, ModuleInspectionFailure,
-    ModuleNodeInspection, ModuleOutputInspection, ModulePendingPulseDelayInspection,
-    NetworkRevision, PendingEventKey, PendingPulseDelayInspection, PulseDelayDefinitionInspection,
-    PulseDelayInspection, PulseDelayInspectionFailure, PulseSetResetLatchDefinitionInspection,
+    DiagnosticEpisodeInspectionFailure, EdgeDetectorDefinitionInspection, EdgeDetectorInspection,
+    EdgeDetectorInspectionFailure, LevelSetResetLatchDefinitionInspection,
+    LevelSetResetLatchInspection, LevelSetResetLatchInspectionFailure, Machine, MachineStatus,
+    ModuleInputInspection, ModuleInspection, ModuleInspectionFailure, ModuleNodeInspection,
+    ModuleOutputInspection, ModulePendingPulseDelayInspection, NetworkRevision, PendingEventKey,
+    PendingPulseDelayInspection, PulseDelayDefinitionInspection, PulseDelayInspection,
+    PulseDelayInspectionFailure, PulseSetResetLatchDefinitionInspection,
     PulseSetResetLatchInspection, PulseSetResetLatchInspectionFailure, Schedule, ScheduleFailure,
     ToggleDefinitionInspection, ToggleInspection, ToggleInspectionFailure,
 };

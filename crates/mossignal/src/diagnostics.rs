@@ -200,6 +200,8 @@ pub enum ProblemDelivery {
     ReportFinding,
     OperationFailure,
     RuntimeOccurrence,
+    /// A continuous condition retained in semantic machine state.
+    PersistentEpisode,
     InternalDefect,
 }
 
@@ -292,6 +294,8 @@ pub enum DiagnosticCode {
     RuntimeBudgetExceeded,
     RuntimePulseLatchConflictRetained,
     RuntimePulseLatchConflictRejected,
+    RuntimeLevelLatchConflictRetained,
+    RuntimeLevelLatchConflictRejected,
     InputUnknownEndpoint,
     InputWrongSignalKind,
     InputDuplicateObservation,
@@ -321,6 +325,7 @@ struct DeliverySet {
     report_finding: bool,
     operation_failure: bool,
     runtime_occurrence: bool,
+    persistent_episode: bool,
     internal_defect: bool,
 }
 
@@ -442,6 +447,7 @@ pub enum DuplicateNodeKind {
     AnyEdge(EdgeInitialization),
     Toggle(LogicLevel),
     PulseSetResetLatch(LogicLevel, ConflictPolicy),
+    LevelSetResetLatch(LogicLevel, ConflictPolicy),
     PulseDelay(u64),
 }
 
@@ -569,6 +575,7 @@ pub enum InspectionSubjectKind {
     EdgeDetector,
     Toggle,
     PulseSetResetLatch,
+    LevelSetResetLatch,
     Module,
     LevelOutput,
     SignalKind(SignalKind),
@@ -606,6 +613,15 @@ pub struct BudgetEvidence {
     pub consumed: u64,
 }
 
+/// The exact controls of a set/reset conflict, without erasing signal kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictControls {
+    /// Complete simultaneous pulse counts.
+    Pulse { set: PulseCount, reset: PulseCount },
+    /// Fully settled current levels.
+    Level { set: LogicLevel, reset: LogicLevel },
+}
+
 /// Exact structured evidence for one set/reset conflict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConflictEvidence {
@@ -615,10 +631,8 @@ pub struct ConflictEvidence {
     pub policy: ConflictPolicy,
     /// The previous stored level read by the reaction.
     pub previous: LogicLevel,
-    /// The complete simultaneous set count.
-    pub set_count: PulseCount,
-    /// The complete simultaneous reset count.
-    pub reset_count: PulseCount,
+    /// The exact simultaneous controls, retaining their signal kind.
+    pub controls: ConflictControls,
     /// The exact logical tick at which the conflict settled.
     pub at_ticks: u64,
     /// The topology revision under which the conflict settled.
@@ -888,6 +902,14 @@ pub enum ProblemEvidence<D> {
         marker: PhantomData<fn() -> D>,
     },
     RuntimePulseLatchConflictRejected {
+        evidence: ConflictEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimeLevelLatchConflictRetained {
+        evidence: ConflictEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimeLevelLatchConflictRejected {
         evidence: ConflictEvidence,
         marker: PhantomData<fn() -> D>,
     },
@@ -1379,7 +1401,7 @@ macro_rules! runtime_occurrence_delivery {
 }
 
 macro_rules! opening_diagnostic_registry {
-    ($( $code:ident, $evidence:pat, $spelling:literal, $severity:ident, $responsibility:ident, $schema:ident, $report_finding:expr, $operation_failure:expr, $internal_defect:expr $(, $runtime_occurrence:expr)?; )+) => {
+    ($( $code:ident, $evidence:pat, $spelling:literal, $severity:ident, $responsibility:ident, $schema:ident, $report_finding:expr, $operation_failure:expr, $internal_defect:expr $(, $runtime_occurrence:expr $(, $persistent_episode:expr)?)?; )+) => {
         impl DiagnosticCode {
             /// Every code implemented by the current catalogue slice.
             pub const ALL: &'static [Self] = &[$(Self::$code,)+];
@@ -1416,6 +1438,7 @@ macro_rules! opening_diagnostic_registry {
                     ProblemDelivery::ReportFinding => allowed.report_finding,
                     ProblemDelivery::OperationFailure => allowed.operation_failure,
                     ProblemDelivery::RuntimeOccurrence => allowed.runtime_occurrence,
+                    ProblemDelivery::PersistentEpisode => allowed.persistent_episode,
                     ProblemDelivery::InternalDefect => allowed.internal_defect,
                 }
             }
@@ -1431,6 +1454,7 @@ macro_rules! opening_diagnostic_registry {
                             report_finding: $report_finding,
                             operation_failure: $operation_failure,
                             runtime_occurrence: runtime_occurrence_delivery!($($runtime_occurrence)?),
+                            persistent_episode: runtime_occurrence_delivery!($($($persistent_episode)?)?),
                             internal_defect: $internal_defect,
                         },
                     },)+
@@ -1507,6 +1531,8 @@ opening_diagnostic_registry! {
     RuntimeBudgetExceeded, Self::RuntimeBudgetExceeded { .. }, "runtime.budget_exceeded", Error, ResourceLimit, Budget, false, true, false;
     RuntimePulseLatchConflictRetained, Self::RuntimePulseLatchConflictRetained { .. }, "runtime.pulse_latch_conflict_retained", Warning, Advisory, Conflict, false, false, false, true;
     RuntimePulseLatchConflictRejected, Self::RuntimePulseLatchConflictRejected { .. }, "runtime.pulse_latch_conflict_rejected", Error, SemanticRejection, Conflict, false, true, false;
+    RuntimeLevelLatchConflictRetained, Self::RuntimeLevelLatchConflictRetained { .. }, "runtime.level_latch_conflict_retained", Warning, Advisory, Conflict, false, false, false, false, true;
+    RuntimeLevelLatchConflictRejected, Self::RuntimeLevelLatchConflictRejected { .. }, "runtime.level_latch_conflict_rejected", Error, SemanticRejection, Conflict, false, true, false;
     InputUnknownEndpoint, Self::InputUnknownEndpoint { .. }, "input.unknown_endpoint", Error, CallerInput, InputObservation, false, true, false;
     InputWrongSignalKind, Self::InputWrongSignalKind { .. }, "input.wrong_signal_kind", Error, CallerInput, InputObservation, false, true, false;
     InputDuplicateObservation, Self::InputDuplicateObservation { .. }, "input.duplicate_observation", Error, CallerInput, InputObservation, false, true, false;
@@ -1642,6 +1668,7 @@ impl<D> DiagnosticOccurrence<D> {
         let evidence_is_coherent = match problem.evidence() {
             ProblemEvidence::RuntimePulseLatchConflictRetained { evidence, .. } => {
                 evidence.policy == ConflictPolicy::RetainAndDiagnose
+                    && matches!(evidence.controls, ConflictControls::Pulse { set, reset } if set.is_positive() && reset.is_positive())
                     && evidence.at_ticks == at.ticks()
                     && evidence.revision == revision
             }
@@ -2046,6 +2073,12 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         ProblemEvidence::RuntimePulseLatchConflictRejected { .. } => {
             ConditionDiscriminator::Operation(DiagnosticCode::RuntimePulseLatchConflictRejected)
         }
+        ProblemEvidence::RuntimeLevelLatchConflictRetained { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimeLevelLatchConflictRetained)
+        }
+        ProblemEvidence::RuntimeLevelLatchConflictRejected { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimeLevelLatchConflictRejected)
+        }
         ProblemEvidence::InputUnknownEndpoint { .. } => {
             ConditionDiscriminator::Operation(DiagnosticCode::InputUnknownEndpoint)
         }
@@ -2406,7 +2439,7 @@ mod tests {
             );
             writeln!(
                 rendered,
-                "{}|{:?}|{:?}|{:?}|{}|{}|{}|{}",
+                "{}|{:?}|{:?}|{:?}|{}|{}|{}|{}|{}",
                 code.as_str(),
                 code.severity(),
                 code.responsibility(),
@@ -2414,6 +2447,7 @@ mod tests {
                 code.allows_delivery(ProblemDelivery::ReportFinding),
                 code.allows_delivery(ProblemDelivery::OperationFailure),
                 code.allows_delivery(ProblemDelivery::RuntimeOccurrence),
+                code.allows_delivery(ProblemDelivery::PersistentEpisode),
                 code.allows_delivery(ProblemDelivery::InternalDefect),
             )
             .unwrap_or_else(|_| unreachable!("writing to String cannot fail"));
@@ -2445,7 +2479,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 85);
+        assert_eq!(leaves.len(), 90);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {
@@ -2696,8 +2730,10 @@ mod tests {
             node: NodeEvidence::Node(NodeKey::from_u128(7)),
             policy: ConflictPolicy::RetainAndDiagnose,
             previous: LogicLevel::Low,
-            set_count: PulseCount::ONE,
-            reset_count: PulseCount::new(2),
+            controls: ConflictControls::Pulse {
+                set: PulseCount::ONE,
+                reset: PulseCount::new(2),
+            },
             at_ticks: at.ticks(),
             revision,
         };
@@ -2710,6 +2746,22 @@ mod tests {
             },
         );
         assert!(DiagnosticOccurrence::new(retained, at, revision).is_ok());
+
+        let wrong_control_kind = Problem::new(
+            SubjectRef::Node(NodeKey::from_u128(7)),
+            Vec::new(),
+            ProblemEvidence::RuntimePulseLatchConflictRetained {
+                evidence: ConflictEvidence {
+                    controls: ConflictControls::Level {
+                        set: LogicLevel::High,
+                        reset: LogicLevel::High,
+                    },
+                    ..conflict.clone()
+                },
+                marker: PhantomData,
+            },
+        );
+        assert!(DiagnosticOccurrence::new(wrong_control_kind, at, revision).is_err());
 
         let wrong_time = Problem::new(
             SubjectRef::Node(NodeKey::from_u128(7)),

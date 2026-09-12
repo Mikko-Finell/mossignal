@@ -901,6 +901,9 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         NodeKind::PulseSetResetLatch(config) => {
                             DuplicateNodeKind::PulseSetResetLatch(config.initial, config.conflict)
                         }
+                        NodeKind::LevelSetResetLatch(config) => {
+                            DuplicateNodeKind::LevelSetResetLatch(config.initial, config.conflict)
+                        }
                         NodeKind::PulseDelay(config) => {
                             DuplicateNodeKind::PulseDelay(config.delay.ticks())
                         }

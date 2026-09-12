@@ -2,9 +2,9 @@
 
 use crate::authored::{
     ConnectionDef, ConnectionEndpoint, EdgeConfig, ExternalInputDef, ExternalOutputDef,
-    ModuleBinding, ModuleBindingSet, ModuleInputDef, ModuleInstanceDef, ModuleInterfaceMapping,
-    ModuleOutputDef, NodeDef, NodeKind, NodePorts, OutputPortRole, PulseDelayConfig,
-    PulseSetResetConfig, ToggleConfig, UncheckedModule, UncheckedNetwork,
+    LevelSetResetConfig, ModuleBinding, ModuleBindingSet, ModuleInputDef, ModuleInstanceDef,
+    ModuleInterfaceMapping, ModuleOutputDef, NodeDef, NodeKind, NodePorts, OutputPortRole,
+    PulseDelayConfig, PulseSetResetConfig, ToggleConfig, UncheckedModule, UncheckedNetwork,
 };
 use crate::diagnostics::Report;
 use crate::diagnostics::{
@@ -1580,6 +1580,117 @@ impl<D> NetworkBuilder<D> {
         self.connections.push(ConnectionDef::new(
             self.allocator.connection(),
             source_endpoint_pulse(reset.source),
+            ConnectionEndpoint::node_input(reset_port.into()),
+            DiagnosticMeta::default(),
+        ));
+        Ok(AddedNode {
+            key,
+            outputs: self.signal(SignalSourceKey::NodeOutput(output_port)),
+        })
+    }
+
+    /// Adds a level-controlled set/reset latch with locally allocated stable identities.
+    pub fn level_set_reset_latch(
+        &mut self,
+        set: Signal<Level>,
+        reset: Signal<Level>,
+        config: LevelSetResetConfig,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        let key = self.next_node_key();
+        let set_port = self.next_in_port_key();
+        let reset_port = self.next_in_port_key();
+        let output_port = self.next_out_port_key();
+        Ok(self
+            .add_level_set_reset_latch_with_ports(
+                key,
+                set_port,
+                reset_port,
+                output_port,
+                set,
+                reset,
+                config,
+                DiagnosticMeta::default(),
+            )?
+            .into_outputs())
+    }
+
+    /// Adds an explicitly keyed level set/reset latch with locally allocated ports.
+    pub fn add_level_set_reset_latch(
+        &mut self,
+        key: NodeKey,
+        set: Signal<Level>,
+        reset: Signal<Level>,
+        config: LevelSetResetConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        let set_port = self.next_in_port_key();
+        let reset_port = self.next_in_port_key();
+        let output_port = self.next_out_port_key();
+        self.add_level_set_reset_latch_with_ports(
+            key,
+            set_port,
+            reset_port,
+            output_port,
+            set,
+            reset,
+            config,
+            meta,
+        )
+    }
+
+    /// Adds an explicitly keyed level set/reset latch with exact fixed port identities.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_level_set_reset_latch_with_ports(
+        &mut self,
+        key: NodeKey,
+        set_port: InPortKey<Level>,
+        reset_port: InPortKey<Level>,
+        output_port: OutPortKey<Level>,
+        set: Signal<Level>,
+        reset: Signal<Level>,
+        config: LevelSetResetConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.require_local(set)?;
+        self.require_local(reset)?;
+        if self.node_keys.contains(&key) {
+            return Err(AuthoringFailure::DuplicateNodeKey(key));
+        }
+        if self.in_port_keys.contains(&set_port) {
+            return Err(AuthoringFailure::DuplicateInPortKey(set_port));
+        }
+        if reset_port == set_port || self.in_port_keys.contains(&reset_port) {
+            return Err(AuthoringFailure::DuplicateInPortKey(reset_port));
+        }
+        if self.out_port_keys.contains(&output_port) {
+            return Err(AuthoringFailure::DuplicateOutPortKey(output_port));
+        }
+        self.node_keys.insert(key);
+        self.in_port_keys.insert(set_port);
+        self.in_port_keys.insert(reset_port);
+        self.out_port_keys.insert(output_port);
+        self.nodes.push(NodeDef::new(
+            key,
+            NodeKind::LevelSetResetLatch(config),
+            NodePorts::with_input_roles(
+                vec![set_port.into(), reset_port.into()],
+                vec![
+                    crate::authored::InputPortRole::Set,
+                    crate::authored::InputPortRole::Reset,
+                ],
+                vec![output_port.into()],
+            ),
+            meta,
+        ));
+        self.connections.push(ConnectionDef::new(
+            self.allocator.connection(),
+            source_endpoint(set.source),
+            ConnectionEndpoint::node_input(set_port.into()),
+            DiagnosticMeta::default(),
+        ));
+        self.connections.push(ConnectionDef::new(
+            self.allocator.connection(),
+            source_endpoint(reset.source),
             ConnectionEndpoint::node_input(reset_port.into()),
             DiagnosticMeta::default(),
         ));
@@ -3826,6 +3937,61 @@ impl<D> ModuleBuilder<D> {
         self.graph.require_local(set)?;
         self.graph.require_local(reset)?;
         self.graph.add_pulse_set_reset_latch_with_ports(
+            key,
+            set_port,
+            reset_port,
+            output_port,
+            set,
+            reset,
+            config,
+            meta,
+        )
+    }
+
+    /// Adds a level-controlled set/reset latch.
+    pub fn level_set_reset_latch(
+        &mut self,
+        set: Signal<Level>,
+        reset: Signal<Level>,
+        config: LevelSetResetConfig,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        self.graph.require_local(set)?;
+        self.graph.require_local(reset)?;
+        self.graph.level_set_reset_latch(set, reset, config)
+    }
+
+    /// Adds an explicitly keyed level set/reset latch with locally allocated ports.
+    pub fn add_level_set_reset_latch(
+        &mut self,
+        key: NodeKey,
+        set: Signal<Level>,
+        reset: Signal<Level>,
+        config: LevelSetResetConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph.require_local(set)?;
+        self.graph.require_local(reset)?;
+        self.require_unused_node_key(key)?;
+        self.graph
+            .add_level_set_reset_latch(key, set, reset, config, meta)
+    }
+
+    /// Adds an explicitly keyed level set/reset latch with exact fixed ports.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_level_set_reset_latch_with_ports(
+        &mut self,
+        key: NodeKey,
+        set_port: InPortKey<Level>,
+        reset_port: InPortKey<Level>,
+        output_port: OutPortKey<Level>,
+        set: Signal<Level>,
+        reset: Signal<Level>,
+        config: LevelSetResetConfig,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph.require_local(set)?;
+        self.graph.require_local(reset)?;
+        self.graph.add_level_set_reset_latch_with_ports(
             key,
             set_port,
             reset_port,

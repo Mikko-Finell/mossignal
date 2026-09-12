@@ -190,6 +190,12 @@ enum CompiledNodeKind {
         state: StoredLevelStateIndex,
         conflict: ConflictPolicy,
     },
+    LevelSetResetLatch {
+        set: PortIndex,
+        reset: PortIndex,
+        state: StoredLevelStateIndex,
+        conflict: ConflictPolicy,
+    },
     PulseDelay {
         input: PortIndex,
         delay_ticks: u64,
@@ -219,6 +225,7 @@ impl CompiledNodeKind {
             },
             Self::Toggle { .. } => SemanticNodeKind::Toggle,
             Self::PulseSetResetLatch { .. } => SemanticNodeKind::PulseSetResetLatch,
+            Self::LevelSetResetLatch { .. } => SemanticNodeKind::LevelSetResetLatch,
             Self::PulseDelay { .. } => SemanticNodeKind::PulseDelay,
         }
     }
@@ -276,7 +283,8 @@ impl CompiledNodeKind {
             }
             Self::EdgeDetector { input, .. } if port == input => Some(InputPortRole::Input),
             Self::Toggle { input, .. } if port == input => Some(InputPortRole::Toggle),
-            Self::PulseSetResetLatch { set, reset, .. } => {
+            Self::PulseSetResetLatch { set, reset, .. }
+            | Self::LevelSetResetLatch { set, reset, .. } => {
                 if port == set {
                     Some(InputPortRole::Set)
                 } else if port == reset {
@@ -312,7 +320,9 @@ impl CompiledNodeKind {
     const fn state_family(self) -> Option<StateFamily> {
         match self {
             Self::EdgeDetector { .. } => Some(StateFamily::EdgeObservation),
-            Self::Toggle { .. } | Self::PulseSetResetLatch { .. } => Some(StateFamily::StoredLevel),
+            Self::Toggle { .. }
+            | Self::PulseSetResetLatch { .. }
+            | Self::LevelSetResetLatch { .. } => Some(StateFamily::StoredLevel),
             _ => None,
         }
     }
@@ -377,8 +387,9 @@ pub(crate) struct FullEvaluation {
     pub(crate) proposed_edge_observations: Vec<EdgeObservation>,
     pub(crate) proposed_stored_levels: Vec<LogicLevel>,
     pub(crate) toggle_inversions: BTreeMap<NodeKey, usize>,
-    pub(crate) pulse_latch_state_establishments: BTreeSet<NodeKey>,
+    pub(crate) latch_state_establishments: BTreeSet<NodeKey>,
     pub(crate) pulse_latch_conflicts: Vec<PulseLatchConflict>,
+    pub(crate) level_latch_conflicts: Vec<LevelLatchConflict>,
     pub(crate) pulse_delay_proposals: Vec<PulseDelayProposal>,
     #[cfg(test)]
     execution_counts: Vec<usize>,
@@ -399,6 +410,15 @@ pub(crate) struct PulseLatchConflict {
     pub(crate) previous: LogicLevel,
     pub(crate) set_count: PulseCount,
     pub(crate) reset_count: PulseCount,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LevelLatchConflict {
+    pub(crate) node: NodeKey,
+    pub(crate) policy: ConflictPolicy,
+    pub(crate) previous: LogicLevel,
+    pub(crate) set_level: LogicLevel,
+    pub(crate) reset_level: LogicLevel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,6 +474,16 @@ pub(crate) enum EvaluationCause {
         result: LogicLevel,
         policy: ConflictPolicy,
     },
+    LevelSetResetLatch {
+        node: NodeKey,
+        set: usize,
+        reset: usize,
+        set_level: LogicLevel,
+        reset_level: LogicLevel,
+        previous: LogicLevel,
+        result: LogicLevel,
+        policy: ConflictPolicy,
+    },
     PulseDelay {
         node: NodeKey,
     },
@@ -484,6 +514,7 @@ pub(crate) enum EvaluationFailure {
         right: PulseCount,
     },
     PulseLatchConflict(PulseLatchConflict),
+    LevelLatchConflict(LevelLatchConflict),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -748,6 +779,41 @@ impl<D> CompiledNetwork<D> {
         }
     }
 
+    pub(crate) fn level_set_reset_state_slot(
+        &self,
+        node: NodeKey,
+    ) -> Option<(StoredLevelStateIndex, LogicLevel, ConflictPolicy)> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        match descriptor.kind {
+            CompiledNodeKind::LevelSetResetLatch {
+                state, conflict, ..
+            } => Some((
+                state,
+                self.inner.stored_level_initial_states[state.0],
+                conflict,
+            )),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn level_set_reset_controls(
+        &self,
+        node: NodeKey,
+        operations: &[Option<LogicLevel>],
+    ) -> Option<(LogicLevel, LogicLevel)> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        let CompiledNodeKind::LevelSetResetLatch { set, reset, .. } = descriptor.kind else {
+            return None;
+        };
+        let value = |port| {
+            operations
+                .get(self.inner.input_source(port).ok()?.0)
+                .copied()
+                .flatten()
+        };
+        Some((value(set)?, value(reset)?))
+    }
+
     pub(crate) fn pulse_delay(&self, node: NodeKey) -> Option<NonZeroSpan<D>> {
         let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
         let CompiledNodeKind::PulseDelay { delay_ticks, .. } = descriptor.kind else {
@@ -880,8 +946,9 @@ impl<D> CompiledInner<D> {
         let mut proposed_edge_observations = previous_edge_observations.to_vec();
         let mut proposed_stored_levels = previous_stored_levels.to_vec();
         let mut toggle_inversions = BTreeMap::new();
-        let mut pulse_latch_state_establishments = BTreeSet::new();
+        let mut latch_state_establishments = BTreeSet::new();
         let mut pulse_latch_conflicts = Vec::new();
+        let mut level_latch_conflicts = Vec::new();
         let mut pulse_delay_proposals = Vec::new();
         #[cfg(test)]
         let mut execution_counts = vec![0; self.operations.len()];
@@ -1405,7 +1472,7 @@ impl<D> CompiledInner<D> {
                         };
                         proposed_stored_levels[state.0] = result;
                         if establishes {
-                            pulse_latch_state_establishments.insert(*key);
+                            latch_state_establishments.insert(*key);
                         }
                         (
                             EvaluationValue::Level(result),
@@ -1417,6 +1484,75 @@ impl<D> CompiledInner<D> {
                                 reset_port: self.pulse_port_key(*reset)?,
                                 set_count,
                                 reset_count,
+                                previous,
+                                result,
+                                policy: *conflict,
+                            },
+                        )
+                    }
+                    NodeDescriptor {
+                        key,
+                        kind:
+                            CompiledNodeKind::LevelSetResetLatch {
+                                set,
+                                reset,
+                                state,
+                                conflict,
+                            },
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/set-reset-latch-family.yaml
+                        // "level-control-law" — controls settle before current output and one successor.
+                        let set_level = self.level_input_value(*set, &values)?;
+                        let reset_level = self.level_input_value(*reset, &values)?;
+                        let previous = previous_stored_levels
+                            .get(state.0)
+                            .copied()
+                            .ok_or(EvaluationFailure::Incomplete)?;
+                        let set_present = set_level.is_high();
+                        let reset_present = reset_level.is_high();
+                        let (result, establishes) = match (set_present, reset_present) {
+                            (false, false) => (previous, false),
+                            (true, false) => (LogicLevel::High, true),
+                            (false, true) => (LogicLevel::Low, true),
+                            (true, true) => match conflict {
+                                ConflictPolicy::SetDominant => (LogicLevel::High, true),
+                                ConflictPolicy::ResetDominant => (LogicLevel::Low, true),
+                                ConflictPolicy::RetainAndDiagnose => {
+                                    level_latch_conflicts.push(LevelLatchConflict {
+                                        node: *key,
+                                        policy: *conflict,
+                                        previous,
+                                        set_level,
+                                        reset_level,
+                                    });
+                                    (previous, false)
+                                }
+                                ConflictPolicy::RejectTransaction => {
+                                    return Err(EvaluationFailure::LevelLatchConflict(
+                                        LevelLatchConflict {
+                                            node: *key,
+                                            policy: *conflict,
+                                            previous,
+                                            set_level,
+                                            reset_level,
+                                        },
+                                    ));
+                                }
+                            },
+                        };
+                        proposed_stored_levels[state.0] = result;
+                        if establishes {
+                            latch_state_establishments.insert(*key);
+                        }
+                        (
+                            EvaluationValue::Level(result),
+                            EvaluationCause::LevelSetResetLatch {
+                                node: *key,
+                                set: self.input_source(*set)?.0,
+                                reset: self.input_source(*reset)?.0,
+                                set_level,
+                                reset_level,
                                 previous,
                                 result,
                                 policy: *conflict,
@@ -1570,8 +1706,9 @@ impl<D> CompiledInner<D> {
             proposed_edge_observations,
             proposed_stored_levels,
             toggle_inversions,
-            pulse_latch_state_establishments,
+            latch_state_establishments,
             pulse_latch_conflicts,
+            level_latch_conflicts,
             pulse_delay_proposals,
             #[cfg(test)]
             execution_counts,
@@ -1810,6 +1947,28 @@ impl<D> CompiledInner<D> {
                         conflict: config.conflict,
                     }
                 }
+                NodeKind::LevelSetResetLatch(config) => {
+                    let role_port = |role| {
+                        node.ports()
+                            .input_roles()
+                            .iter()
+                            .zip(inputs.iter().copied())
+                            .find_map(|(candidate, port)| (*candidate == role).then_some(port))
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "validated LevelSetResetLatch descriptor must retain every fixed input role"
+                                )
+                            })
+                    };
+                    let state = StoredLevelStateIndex(stored_level_initial_states.len());
+                    stored_level_initial_states.push(config.initial);
+                    CompiledNodeKind::LevelSetResetLatch {
+                        set: role_port(InputPortRole::Set),
+                        reset: role_port(InputPortRole::Reset),
+                        state,
+                        conflict: config.conflict,
+                    }
+                }
                 NodeKind::PulseDelay(config) => {
                     let input = inputs.first().copied().unwrap_or_else(|| {
                         panic!("validated PulseDelay descriptor must retain its pulse input")
@@ -2011,6 +2170,9 @@ impl<D> CompiledInner<D> {
                     node.inputs.contains(&input) && state.0 < self.stored_level_initial_states.len()
                 }
                 CompiledNodeKind::PulseSetResetLatch {
+                    set, reset, state, ..
+                }
+                | CompiledNodeKind::LevelSetResetLatch {
                     set, reset, state, ..
                 } => {
                     set != reset
@@ -2837,6 +2999,7 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
                 NodeKind::AnyEdge(config) => NodeKind::any_edge(*config),
                 NodeKind::Toggle(config) => NodeKind::toggle(config.initial),
                 NodeKind::PulseSetResetLatch(config) => NodeKind::pulse_set_reset_latch(*config),
+                NodeKind::LevelSetResetLatch(config) => NodeKind::level_set_reset_latch(*config),
                 NodeKind::PulseDelay(config) => NodeKind::pulse_delay(config.delay),
             };
             crate::authored::NodeDef::new(
@@ -3667,7 +3830,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_and_pulse_latch_share_one_stored_level_family() {
+    fn toggle_and_both_latches_share_one_stored_level_family() {
         let mut builder = crate::NetworkBuilder::<()>::new(TimeDomainId::from_u128(900));
         let (_, toggle_input) = builder.pulse_input("toggle");
         let (_, set) = builder.pulse_input("set");
@@ -3694,6 +3857,20 @@ mod tests {
                 DiagnosticMeta::default(),
             )
             .unwrap_or_else(|failure| panic!("latch must author: {failure:?}"));
+        let level_node = NodeKey::from_u128(30);
+        let control = builder.constant(LogicLevel::High);
+        builder
+            .add_level_set_reset_latch(
+                level_node,
+                control,
+                control,
+                crate::LevelSetResetConfig::new(
+                    LogicLevel::Low,
+                    crate::ConflictPolicy::RetainAndDiagnose,
+                ),
+                DiagnosticMeta::default(),
+            )
+            .unwrap();
         let compiled = builder
             .finish()
             .require_artifact()
@@ -3703,7 +3880,7 @@ mod tests {
             .unwrap_or_else(|failure| panic!("stored-level fixture must compile: {failure:?}"));
         assert_eq!(
             compiled.initial_stored_levels(),
-            vec![LogicLevel::Low, LogicLevel::High]
+            vec![LogicLevel::Low, LogicLevel::High, LogicLevel::Low]
         );
         let (toggle_slot, _) = compiled
             .toggle_state_slot(toggle_node)
@@ -3713,5 +3890,13 @@ mod tests {
             .unwrap_or_else(|| panic!("latch slot must exist"));
         assert_eq!(toggle_slot.value(), 0);
         assert_eq!(latch_slot.value(), 1);
+        assert_eq!(
+            compiled
+                .level_set_reset_state_slot(level_node)
+                .unwrap()
+                .0
+                .value(),
+            2
+        );
     }
 }

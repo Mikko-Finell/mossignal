@@ -304,8 +304,13 @@ fn positive_multiplicity_is_presence_equivalent_but_conflict_evidence_is_exact()
                 assert_eq!(evidence.node, NodeEvidence::Node(fixture.node));
                 assert_eq!(evidence.policy, ConflictPolicy::RetainAndDiagnose);
                 assert_eq!(evidence.previous, LogicLevel::High);
-                assert_eq!(evidence.set_count, PulseCount::new(set_count));
-                assert_eq!(evidence.reset_count, PulseCount::new(reset_count));
+                assert_eq!(
+                    evidence.controls,
+                    mossignal::ConflictControls::Pulse {
+                        set: PulseCount::new(set_count),
+                        reset: PulseCount::new(reset_count)
+                    }
+                );
                 assert_eq!(evidence.at_ticks, 23);
                 assert_eq!(evidence.revision, machine.revision());
             }

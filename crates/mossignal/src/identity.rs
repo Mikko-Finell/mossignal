@@ -359,6 +359,20 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
             });
             writer.field("state_schema", |writer| writer.variant_null("stored_level"));
         }
+        NodeKind::LevelSetResetLatch(config) => {
+            writer.variant_start(identity_tag);
+            writer.record_start(3);
+            writer.field("initial", |writer| logic_level(writer, config.initial));
+            writer.field("conflict", |writer| {
+                writer.variant_null(match config.conflict {
+                    crate::authored::ConflictPolicy::SetDominant => "set_dominant",
+                    crate::authored::ConflictPolicy::ResetDominant => "reset_dominant",
+                    crate::authored::ConflictPolicy::RetainAndDiagnose => "retain_and_diagnose",
+                    crate::authored::ConflictPolicy::RejectTransaction => "reject_transaction",
+                })
+            });
+            writer.field("state_schema", |writer| writer.variant_null("stored_level"));
+        }
         NodeKind::PulseDelay(config) => {
             writer.variant_start(identity_tag);
             writer.record_start(2);
@@ -1456,6 +1470,64 @@ mod tests {
         )
     }
 
+    fn golden_level_set_reset_latch(
+        initial: LogicLevel,
+        conflict: crate::authored::ConflictPolicy,
+        reverse: bool,
+    ) -> UncheckedNetwork<()> {
+        let set = ExternalInputKey::<Level>::from_u128(10);
+        let reset = ExternalInputKey::<Level>::from_u128(11);
+        let set_port = InPortKey::<Level>::from_u128(20);
+        let reset_port = InPortKey::<Level>::from_u128(21);
+        let output_port = OutPortKey::<Level>::from_u128(30);
+        let mut inputs = vec![
+            ExternalInputDef::new(set.into(), DiagnosticMeta::default()),
+            ExternalInputDef::new(reset.into(), DiagnosticMeta::default()),
+        ];
+        let mut connections = vec![
+            ConnectionDef::new(
+                ConnectionKey::from_u128(50),
+                set.into(),
+                set_port.into(),
+                DiagnosticMeta::default(),
+            ),
+            ConnectionDef::new(
+                ConnectionKey::from_u128(51),
+                reset.into(),
+                reset_port.into(),
+                DiagnosticMeta::default(),
+            ),
+        ];
+        if reverse {
+            inputs.reverse();
+            connections.reverse();
+        }
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(2),
+                NodeKind::<()>::level_set_reset_latch(crate::authored::LevelSetResetConfig::new(
+                    initial, conflict,
+                )),
+                NodePorts::with_input_roles(
+                    vec![set_port.into(), reset_port.into()],
+                    vec![InputPortRole::Set, InputPortRole::Reset],
+                    vec![output_port.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            inputs,
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(40).into(),
+                SignalSourceKey::NodeOutput(output_port).into(),
+                DiagnosticMeta::default(),
+            )],
+            connections,
+        )
+    }
+
     fn golden_edge(kind: NodeKind<()>) -> UncheckedNetwork<()> {
         let external = ExternalInputKey::<Level>::from_u128(10);
         let input = InPortKey::<Level>::from_u128(20);
@@ -2162,6 +2234,38 @@ mod tests {
         assert_ne!(
             pulse.input_schema_fingerprint(),
             level.input_schema_fingerprint()
+        );
+    }
+    #[test]
+    fn level_set_reset_latch_projection_is_exact_and_order_independent() {
+        // All ports are Level: canonical stable-key order is set(20), reset(21), output(30).
+        let network = golden_level_set_reset_latch(
+            LogicLevel::Low,
+            crate::ConflictPolicy::RetainAndDiagnose,
+            false,
+        );
+        let (bytes, _) = canonical_inputs(&network);
+        assert_eq!(
+            hex(&bytes),
+            include_str!("../tests/golden/level_set_reset_latch_projection.hex").trim()
+        );
+        let expected = validated_fingerprints(network);
+        assert_eq!(
+            expected,
+            validated_fingerprints(golden_level_set_reset_latch(
+                LogicLevel::Low,
+                crate::ConflictPolicy::RetainAndDiagnose,
+                true
+            ))
+        );
+        assert_ne!(
+            expected.0,
+            validated_fingerprints(golden_pulse_set_reset_latch(
+                LogicLevel::Low,
+                crate::ConflictPolicy::RetainAndDiagnose,
+                false
+            ))
+            .0
         );
     }
 }

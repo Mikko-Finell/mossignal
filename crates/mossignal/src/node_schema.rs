@@ -23,6 +23,7 @@ pub(crate) enum SemanticNodeKind {
     AnyEdge,
     Toggle,
     PulseSetResetLatch,
+    LevelSetResetLatch,
     PulseDelay,
 }
 
@@ -47,6 +48,7 @@ impl SemanticNodeKind {
             Self::AnyEdge => "any_edge",
             Self::Toggle => "toggle",
             Self::PulseSetResetLatch => "pulse_set_reset_latch",
+            Self::LevelSetResetLatch => "level_set_reset_latch",
             Self::PulseDelay => "pulse_delay",
         }
     }
@@ -287,6 +289,10 @@ const PULSE_SET_RESET_INPUTS: &[InputPortSchema] = &[
     InputPortSchema::current(InputPortRole::Set, SignalKind::Pulse),
     InputPortSchema::current(InputPortRole::Reset, SignalKind::Pulse),
 ];
+const LEVEL_SET_RESET_INPUTS: &[InputPortSchema] = &[
+    InputPortSchema::current(InputPortRole::Set, SignalKind::Level),
+    InputPortSchema::current(InputPortRole::Reset, SignalKind::Level),
+];
 const PULSE_DELAY_INPUT: &[InputPortSchema] = &[InputPortSchema::future_only(
     InputPortRole::PulseDelay,
     SignalKind::Pulse,
@@ -371,6 +377,10 @@ pub(crate) const fn schema_for_kind(kind: SemanticNodeKind) -> NodeSchema {
             state_family: Some(StateFamily::StoredLevel),
             ..fixed(kind, PULSE_SET_RESET_INPUTS, LEVEL_OUTPUT)
         },
+        SemanticNodeKind::LevelSetResetLatch => NodeSchema {
+            state_family: Some(StateFamily::StoredLevel),
+            ..fixed(kind, LEVEL_SET_RESET_INPUTS, LEVEL_OUTPUT)
+        },
         SemanticNodeKind::PulseDelay => NodeSchema {
             temporal_family: Some(TemporalFamily::PendingPulseGroup),
             ..fixed(kind, PULSE_DELAY_INPUT, PULSE_OUTPUT)
@@ -401,6 +411,7 @@ pub(crate) const fn node_schema<D>(kind: &NodeKind<D>) -> NodeSchema {
         NodeKind::AnyEdge(_) => SemanticNodeKind::AnyEdge,
         NodeKind::Toggle(_) => SemanticNodeKind::Toggle,
         NodeKind::PulseSetResetLatch(_) => SemanticNodeKind::PulseSetResetLatch,
+        NodeKind::LevelSetResetLatch(_) => SemanticNodeKind::LevelSetResetLatch,
         NodeKind::PulseDelay(_) => SemanticNodeKind::PulseDelay,
     };
     schema_for_kind(semantic_kind)
@@ -436,6 +447,10 @@ mod tests {
             NodeKind::any_edge(EdgeConfig::new(EdgeInitialization::Baseline)),
             NodeKind::toggle(LogicLevel::Low),
             NodeKind::pulse_set_reset_latch(crate::authored::PulseSetResetConfig::new(
+                LogicLevel::Low,
+                crate::authored::ConflictPolicy::SetDominant,
+            )),
+            NodeKind::level_set_reset_latch(crate::authored::LevelSetResetConfig::new(
                 LogicLevel::Low,
                 crate::authored::ConflictPolicy::SetDominant,
             )),
@@ -519,6 +534,18 @@ mod tests {
             level_output(),
         );
         pulse_latch.state = Some(StateFamily::StoredLevel);
+        let mut level_latch = fixed(
+            NodeKind::level_set_reset_latch(crate::authored::LevelSetResetConfig::new(
+                LogicLevel::Low,
+                crate::authored::ConflictPolicy::SetDominant,
+            )),
+            vec![
+                (InputPortRole::Set, SignalKind::Level, true),
+                (InputPortRole::Reset, SignalKind::Level, true),
+            ],
+            level_output(),
+        );
+        level_latch.state = Some(StateFamily::StoredLevel);
         let mut pulse_delay = fixed(
             NodeKind::pulse_delay(delay),
             vec![(InputPortRole::PulseDelay, SignalKind::Pulse, false)],
@@ -616,6 +643,7 @@ mod tests {
             any_edge,
             toggle,
             pulse_latch,
+            level_latch,
             pulse_delay,
         ]
     }
@@ -623,7 +651,7 @@ mod tests {
     #[test]
     fn every_closed_node_kind_has_one_distinct_schema_identity() {
         let schemas: Vec<_> = every_kind().iter().map(node_schema).collect();
-        assert_eq!(schemas.len(), 19);
+        assert_eq!(schemas.len(), 20);
         assert_eq!(
             schemas
                 .iter()
@@ -645,7 +673,7 @@ mod tests {
     #[test]
     fn every_closed_node_kind_matches_the_complete_schema_matrix() {
         let cases = schema_cases();
-        assert_eq!(cases.len(), 19);
+        assert_eq!(cases.len(), 20);
         for case in cases {
             let schema = node_schema(&case.kind);
             assert_eq!(schema.expected_input_count(), case.expected_input_count);

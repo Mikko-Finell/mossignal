@@ -1,12 +1,14 @@
 //! Restricted initialization and ready-machine Level and Pulse transactions.
 
 use crate::authored::{ConflictPolicy, EdgeObservation};
-use crate::compile::{EvaluationCause, EvaluationFailure, FullEvaluation, PulseLatchConflict};
+use crate::compile::{
+    EvaluationCause, EvaluationFailure, FullEvaluation, LevelLatchConflict, PulseLatchConflict,
+};
 use crate::diagnostics::{
-    BudgetEvidence, ConflictEvidence, DiagnosticCode, DiagnosticOccurrence, InputSchemaEvidence,
-    LifecycleEvidence, NodeEvidence, OperationSubjectRef, ParameterEvidence, Problem,
-    ProblemEvidence, ProvenanceEvidence, Responsibility, RevisionMismatchEvidence, Severity,
-    SubjectRef, TimeEvidence, TimeOperation,
+    BudgetEvidence, ConflictControls, ConflictEvidence, DiagnosticCode, DiagnosticOccurrence,
+    InputSchemaEvidence, LifecycleEvidence, NodeEvidence, OperationSubjectRef, ParameterEvidence,
+    Problem, ProblemEvidence, ProvenanceEvidence, Responsibility, RevisionMismatchEvidence,
+    Severity, SubjectRef, TimeEvidence, TimeOperation,
 };
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
 use crate::input::{InputDelta, InputSnapshot};
@@ -149,6 +151,17 @@ pub enum RuntimeFailureEvidence {
         previous: LogicLevel,
         set_count: PulseCount,
         reset_count: PulseCount,
+        at_ticks: u64,
+        revision: NetworkRevision,
+    },
+
+    LevelLatchConflict {
+        primary: NodeKey,
+        node: NodeSubject,
+        policy: ConflictPolicy,
+        previous: LogicLevel,
+        set_level: LogicLevel,
+        reset_level: LogicLevel,
         at_ticks: u64,
         revision: NetworkRevision,
     },
@@ -304,8 +317,39 @@ impl RuntimeFailureEvidence {
                             node: node_evidence(node),
                             policy: *policy,
                             previous: *previous,
-                            set_count: *set_count,
-                            reset_count: *reset_count,
+                            controls: ConflictControls::Pulse {
+                                set: *set_count,
+                                reset: *reset_count,
+                            },
+                            at_ticks: *at_ticks,
+                            revision: *revision,
+                        },
+                        marker: PhantomData,
+                    },
+                );
+            }
+            Self::LevelLatchConflict {
+                primary,
+                node,
+                policy,
+                previous,
+                set_level,
+                reset_level,
+                at_ticks,
+                revision,
+            } => {
+                return Problem::new(
+                    SubjectRef::Node(*primary),
+                    Vec::new(),
+                    ProblemEvidence::RuntimeLevelLatchConflictRejected {
+                        evidence: ConflictEvidence {
+                            node: node_evidence(node),
+                            policy: *policy,
+                            previous: *previous,
+                            controls: ConflictControls::Level {
+                                set: *set_level,
+                                reset: *reset_level,
+                            },
                             at_ticks: *at_ticks,
                             revision: *revision,
                         },
@@ -625,7 +669,7 @@ struct ProvenanceBuild<D> {
     pulse_output_causes: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
     edge_observation_causes: BTreeMap<NodeKey, CauseRef>,
     toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
-    pulse_latch_state_causes: BTreeMap<NodeKey, CauseRef>,
+    latch_state_causes: BTreeMap<NodeKey, CauseRef>,
     pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
 }
 
@@ -644,7 +688,7 @@ struct PreviousLevelOutputs<'a> {
 struct PreviousStateCauses<'a> {
     edge_observations: &'a BTreeMap<NodeKey, CauseRef>,
     toggle_inversions: &'a BTreeMap<NodeKey, CauseRef>,
-    pulse_latches: &'a BTreeMap<NodeKey, CauseRef>,
+    latches: &'a BTreeMap<NodeKey, CauseRef>,
 }
 
 impl<D> Clone for ProvenanceView<D> {
@@ -868,6 +912,7 @@ pub struct TransactionResult<D> {
     after_revision: NetworkRevision,
     output_events: Vec<OutputEvent<D>>,
     occurrences: Vec<DiagnosticOccurrence<D>>,
+    diagnostic_episode_changes: Vec<crate::DiagnosticEpisodeChange<D>>,
     schedule: Schedule<D>,
     provenance: ProvenanceView<D>,
 }
@@ -901,6 +946,12 @@ impl<D> TransactionResult<D> {
     #[must_use]
     pub fn occurrences(&self) -> &[DiagnosticOccurrence<D>] {
         &self.occurrences
+    }
+
+    /// Returns committed episode transitions in chronological, stable-owner order.
+    #[must_use]
+    pub fn diagnostic_episode_changes(&self) -> &[crate::DiagnosticEpisodeChange<D>] {
+        &self.diagnostic_episode_changes
     }
 
     /// Returns the next temporal wakeup state after this transaction.
@@ -982,6 +1033,8 @@ impl<D> Machine<D> {
             revision,
         )?;
         let occurrences = pulse_latch_occurrences(&self.compiled, at, revision, &evaluation);
+        let mut active_episodes = self.store.active_episodes.clone();
+        let mut diagnostic_episode_changes = Vec::new();
         let mut built = build_initialization_provenance(
             &self.compiled,
             revision,
@@ -1013,6 +1066,15 @@ impl<D> Machine<D> {
             self.compiled.fingerprint(),
         );
         remap_pending_causes(&mut pending_pulse_delays, built.provenance.scope);
+        reconcile_level_episodes(
+            &self.compiled,
+            at,
+            revision,
+            &evaluation,
+            &built,
+            &mut active_episodes,
+            &mut diagnostic_episode_changes,
+        );
         enforce_budget::<D>(
             &self.policy,
             RuntimePolicyLimit::MaxRequiredProvenanceGrowth,
@@ -1030,7 +1092,10 @@ impl<D> Machine<D> {
         enforce_created_event_budget::<D>(
             &self.policy,
             created_pending_events,
-            output_events.len().saturating_add(occurrences.len()),
+            output_events
+                .len()
+                .saturating_add(occurrences.len())
+                .saturating_add(diagnostic_episode_changes.len()),
         )?;
         let schedule = schedule_from_pending(&pending_pulse_delays);
         let result = TransactionResult {
@@ -1039,6 +1104,7 @@ impl<D> Machine<D> {
             after_revision: revision,
             output_events,
             occurrences,
+            diagnostic_episode_changes,
             schedule,
             provenance: built.provenance.clone(),
         };
@@ -1055,7 +1121,8 @@ impl<D> Machine<D> {
                 operation_causes: built.operation_causes,
                 edge_observation_causes: built.edge_observation_causes,
                 toggle_inversion_causes: built.toggle_inversion_causes,
-                pulse_latch_state_causes: built.pulse_latch_state_causes,
+                latch_state_causes: built.latch_state_causes,
+                active_episodes,
                 pending_pulse_delays,
                 next_pending_event_serial,
             },
@@ -1102,7 +1169,7 @@ impl<D> Machine<D> {
         let mut output_causes = self.store.output_causes.clone();
         let mut edge_observation_causes = self.store.edge_observation_causes.clone();
         let mut toggle_inversion_causes = self.store.toggle_inversion_causes.clone();
-        let mut pulse_latch_state_causes = self.store.pulse_latch_state_causes.clone();
+        let mut latch_state_causes = self.store.latch_state_causes.clone();
         let mut provenance = match self.store.provenance.as_ref() {
             Some(provenance) => provenance.clone(),
             None => panic!("ready machine must retain committed provenance"),
@@ -1110,6 +1177,8 @@ impl<D> Machine<D> {
         let previous_provenance_len = provenance.len();
         let mut output_events = Vec::new();
         let mut occurrences = Vec::new();
+        let mut active_episodes = self.store.active_episodes.clone();
+        let mut diagnostic_episode_changes = Vec::new();
         let mut created_pending_events = 0_u64;
         let mut reaction_count = 0_u64;
         let empty_levels = BTreeMap::new();
@@ -1163,7 +1232,7 @@ impl<D> Machine<D> {
                 &output_baselines,
                 &edge_observation_causes,
                 &toggle_inversion_causes,
-                &pulse_latch_state_causes,
+                &latch_state_causes,
                 &due.causes,
             );
             remap_pending_causes(&mut pending_pulse_delays, built.provenance.scope);
@@ -1203,16 +1272,29 @@ impl<D> Machine<D> {
             );
             remap_pending_causes(&mut pending_pulse_delays, built.provenance.scope);
             remap_output_event_causes(&mut output_events, built.provenance.scope);
+            reconcile_level_episodes(
+                &self.compiled,
+                deadline,
+                revision,
+                &internal,
+                &built,
+                &mut active_episodes,
+                &mut diagnostic_episode_changes,
+            );
+            remap_episode_changes(&mut diagnostic_episode_changes, built.provenance.scope);
             input_causes = built.input_causes;
             output_causes = built.output_causes;
             edge_observation_causes = built.edge_observation_causes;
             toggle_inversion_causes = built.toggle_inversion_causes;
-            pulse_latch_state_causes = built.pulse_latch_state_causes;
+            latch_state_causes = built.latch_state_causes;
             provenance = built.provenance;
             enforce_created_event_budget::<D>(
                 &self.policy,
                 created_pending_events,
-                output_events.len().saturating_add(occurrences.len()),
+                output_events
+                    .len()
+                    .saturating_add(occurrences.len())
+                    .saturating_add(diagnostic_episode_changes.len()),
             )?;
             enforce_provenance_growth::<D>(
                 &self.policy,
@@ -1261,7 +1343,7 @@ impl<D> Machine<D> {
             &output_baselines,
             &edge_observation_causes,
             &toggle_inversion_causes,
-            &pulse_latch_state_causes,
+            &latch_state_causes,
             &due.causes,
         );
         remap_pending_causes(&mut pending_pulse_delays, built.provenance.scope);
@@ -1297,10 +1379,23 @@ impl<D> Machine<D> {
         );
         remap_pending_causes(&mut pending_pulse_delays, built.provenance.scope);
         remap_output_event_causes(&mut output_events, built.provenance.scope);
+        reconcile_level_episodes(
+            &self.compiled,
+            at,
+            revision,
+            &evaluation,
+            &built,
+            &mut active_episodes,
+            &mut diagnostic_episode_changes,
+        );
+        remap_episode_changes(&mut diagnostic_episode_changes, built.provenance.scope);
         enforce_created_event_budget::<D>(
             &self.policy,
             created_pending_events,
-            output_events.len().saturating_add(occurrences.len()),
+            output_events
+                .len()
+                .saturating_add(occurrences.len())
+                .saturating_add(diagnostic_episode_changes.len()),
         )?;
         enforce_provenance_growth::<D>(
             &self.policy,
@@ -1314,6 +1409,7 @@ impl<D> Machine<D> {
             after_revision: revision,
             output_events,
             occurrences,
+            diagnostic_episode_changes,
             schedule,
             provenance: built.provenance.clone(),
         };
@@ -1330,7 +1426,8 @@ impl<D> Machine<D> {
                 operation_causes: built.operation_causes,
                 edge_observation_causes: built.edge_observation_causes,
                 toggle_inversion_causes: built.toggle_inversion_causes,
-                pulse_latch_state_causes: built.pulse_latch_state_causes,
+                latch_state_causes: built.latch_state_causes,
+                active_episodes,
                 pending_pulse_delays,
                 next_pending_event_serial,
             },
@@ -1437,6 +1534,9 @@ fn evaluate_reaction<D>(
         Err(EvaluationFailure::PulseLatchConflict(conflict)) => Err(RuntimeFailure::new(
             pulse_latch_failure(compiled, conflict, at, revision),
         )),
+        Err(EvaluationFailure::LevelLatchConflict(conflict)) => Err(RuntimeFailure::new(
+            level_latch_failure(compiled, conflict, at, revision),
+        )),
         Err(EvaluationFailure::Incomplete) => {
             panic!("validated topology and exact-bound inputs must evaluate completely")
         }
@@ -1460,6 +1560,9 @@ fn evaluation_failure<D>(
         EvaluationFailure::PulseLatchConflict(conflict) => {
             RuntimeFailure::new(pulse_latch_failure(compiled, conflict, at, revision))
         }
+        EvaluationFailure::LevelLatchConflict(conflict) => {
+            RuntimeFailure::new(level_latch_failure(compiled, conflict, at, revision))
+        }
         EvaluationFailure::Incomplete => {
             panic!("validated topology and exact-bound inputs must evaluate completely")
         }
@@ -1479,6 +1582,24 @@ fn pulse_latch_failure<D>(
         previous: conflict.previous,
         set_count: conflict.set_count,
         reset_count: conflict.reset_count,
+        at_ticks: at.ticks(),
+        revision,
+    }
+}
+
+fn level_latch_failure<D>(
+    compiled: &crate::CompiledNetwork<D>,
+    conflict: LevelLatchConflict,
+    at: Time<D>,
+    revision: NetworkRevision,
+) -> RuntimeFailureEvidence {
+    RuntimeFailureEvidence::LevelLatchConflict {
+        primary: conflict.node,
+        node: compiled.node_subject(conflict.node),
+        policy: conflict.policy,
+        previous: conflict.previous,
+        set_level: conflict.set_level,
+        reset_level: conflict.reset_level,
         at_ticks: at.ticks(),
         revision,
     }
@@ -1510,8 +1631,10 @@ fn pulse_latch_occurrences<D>(
                         node: node_evidence(&node),
                         policy: conflict.policy,
                         previous: conflict.previous,
-                        set_count: conflict.set_count,
-                        reset_count: conflict.reset_count,
+                        controls: ConflictControls::Pulse {
+                            set: conflict.set_count,
+                            reset: conflict.reset_count,
+                        },
                         at_ticks: at.ticks(),
                         revision,
                     },
@@ -1526,6 +1649,72 @@ fn pulse_latch_occurrences<D>(
             }
         })
         .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconcile_level_episodes<D>(
+    compiled: &crate::CompiledNetwork<D>,
+    at: Time<D>,
+    revision: NetworkRevision,
+    evaluation: &FullEvaluation,
+    built: &ProvenanceBuild<D>,
+    active: &mut crate::episode::ActiveEpisodes<D>,
+    changes: &mut Vec<crate::DiagnosticEpisodeChange<D>>,
+) {
+    let problems = evaluation
+        .level_latch_conflicts
+        .iter()
+        .map(|conflict| {
+            Problem::new(
+                SubjectRef::Node(conflict.node),
+                Vec::new(),
+                ProblemEvidence::RuntimeLevelLatchConflictRetained {
+                    evidence: ConflictEvidence {
+                        node: node_evidence(&compiled.node_subject(conflict.node)),
+                        policy: conflict.policy,
+                        previous: conflict.previous,
+                        controls: ConflictControls::Level {
+                            set: conflict.set_level,
+                            reset: conflict.reset_level,
+                        },
+                        at_ticks: at.ticks(),
+                        revision,
+                    },
+                    marker: PhantomData,
+                },
+            )
+        })
+        .collect();
+    let causes = evaluation
+        .causes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, cause)| match cause {
+            EvaluationCause::LevelSetResetLatch { node, .. } => Some((
+                compiled.node_subject(*node),
+                operation_cause(&built.operation_causes, index),
+            )),
+            _ => None,
+        })
+        .collect();
+    crate::episode::reconcile(
+        active,
+        changes,
+        compiled.network_key(),
+        at,
+        problems,
+        &causes,
+        &built.provenance,
+    );
+}
+
+fn remap_episode_changes<D>(
+    changes: &mut [crate::DiagnosticEpisodeChange<D>],
+    scope: ProvenanceScope,
+) {
+    for change in changes {
+        change.remap_cause(remap_cause(change.cause(), scope));
+    }
 }
 
 #[derive(Default)]
@@ -1714,7 +1903,8 @@ struct PublishedCandidate<D> {
     operation_causes: Vec<CauseRef>,
     edge_observation_causes: BTreeMap<NodeKey, CauseRef>,
     toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
-    pulse_latch_state_causes: BTreeMap<NodeKey, CauseRef>,
+    latch_state_causes: BTreeMap<NodeKey, CauseRef>,
+    active_episodes: crate::episode::ActiveEpisodes<D>,
     pending_pulse_delays: BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
     next_pending_event_serial: u64,
 }
@@ -1730,7 +1920,8 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
         operation_causes,
         edge_observation_causes,
         toggle_inversion_causes,
-        pulse_latch_state_causes,
+        latch_state_causes,
+        active_episodes,
         pending_pulse_delays,
         next_pending_event_serial,
     } = published;
@@ -1752,7 +1943,8 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     candidate.edge_observation_causes = edge_observation_causes;
     candidate.stored_levels = evaluation.proposed_stored_levels;
     candidate.toggle_inversion_causes = toggle_inversion_causes;
-    candidate.pulse_latch_state_causes = pulse_latch_state_causes;
+    candidate.latch_state_causes = latch_state_causes;
+    candidate.active_episodes = active_episodes;
     candidate.pending_pulse_delays = pending_pulse_delays;
     candidate.next_pending_event_serial = next_pending_event_serial;
     machine.store = candidate;
@@ -2039,7 +2231,7 @@ fn build_initialization_provenance<D>(
         pulse_output_causes: evaluation_causes.pulse_outputs,
         edge_observation_causes: evaluation_causes.edge_observations,
         toggle_inversion_causes: evaluation_causes.toggle_inversions,
-        pulse_latch_state_causes: evaluation_causes.pulse_latches,
+        latch_state_causes: evaluation_causes.latches,
         pulse_delay_schedules: evaluation_causes.pulse_delay_schedules,
     }
 }
@@ -2058,7 +2250,7 @@ fn build_ready_provenance<D>(
     previous_output_baselines: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     previous_edge_observation_causes: &BTreeMap<NodeKey, CauseRef>,
     previous_toggle_inversion_causes: &BTreeMap<NodeKey, CauseRef>,
-    previous_pulse_latch_state_causes: &BTreeMap<NodeKey, CauseRef>,
+    previous_latch_state_causes: &BTreeMap<NodeKey, CauseRef>,
     due_pulse_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
 ) -> ProvenanceBuild<D> {
     let scope = UNFINALIZED_PROVENANCE_SCOPE;
@@ -2123,7 +2315,7 @@ fn build_ready_provenance<D>(
         Some(PreviousStateCauses {
             edge_observations: previous_edge_observation_causes,
             toggle_inversions: previous_toggle_inversion_causes,
-            pulse_latches: previous_pulse_latch_state_causes,
+            latches: previous_latch_state_causes,
         }),
     );
 
@@ -2138,7 +2330,7 @@ fn build_ready_provenance<D>(
         pulse_output_causes: evaluation_causes.pulse_outputs,
         edge_observation_causes: evaluation_causes.edge_observations,
         toggle_inversion_causes: evaluation_causes.toggle_inversions,
-        pulse_latch_state_causes: evaluation_causes.pulse_latches,
+        latch_state_causes: evaluation_causes.latches,
         pulse_delay_schedules: evaluation_causes.pulse_delay_schedules,
     }
 }
@@ -2149,7 +2341,7 @@ struct EvaluationCauseMaps {
     pulse_outputs: BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
     edge_observations: BTreeMap<NodeKey, CauseRef>,
     toggle_inversions: BTreeMap<NodeKey, CauseRef>,
-    pulse_latches: BTreeMap<NodeKey, CauseRef>,
+    latches: BTreeMap<NodeKey, CauseRef>,
     pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
 }
 
@@ -2179,10 +2371,10 @@ fn append_evaluation_provenance<D>(
         .flat_map(|previous| previous.toggle_inversions.iter())
         .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
         .collect::<BTreeMap<_, _>>();
-    let mut pulse_latch_state_causes = previous_state
+    let mut latch_state_causes = previous_state
         .as_ref()
         .into_iter()
-        .flat_map(|previous| previous.pulse_latches.iter())
+        .flat_map(|previous| previous.latches.iter())
         .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
         .collect::<BTreeMap<_, _>>();
 
@@ -2397,7 +2589,7 @@ fn append_evaluation_provenance<D>(
                 contributions.sort_by(|left, right| left.port.cmp(&right.port));
                 let mut supporters = vec![transaction_cause];
                 supporters.extend(contributions.iter().map(|entry| entry.cause));
-                if let Some(previous_cause) = pulse_latch_state_causes.get(node).copied() {
+                if let Some(previous_cause) = latch_state_causes.get(node).copied() {
                     supporters.push(previous_cause);
                 }
                 supporters.sort();
@@ -2412,10 +2604,36 @@ fn append_evaluation_provenance<D>(
                         supporters,
                     },
                 );
-                if previous_state.is_none()
-                    || evaluation.pulse_latch_state_establishments.contains(node)
+                if previous_state.is_none() || evaluation.latch_state_establishments.contains(node)
                 {
-                    pulse_latch_state_causes.insert(*node, reference);
+                    latch_state_causes.insert(*node, reference);
+                }
+                reference
+            }
+            EvaluationCause::LevelSetResetLatch {
+                node, set, reset, ..
+            } => {
+                let mut supporters = vec![
+                    transaction_cause,
+                    operation_cause(&operation_causes, *set),
+                    operation_cause(&operation_causes, *reset),
+                ];
+                if let Some(previous) = latch_state_causes.get(node).copied() {
+                    supporters.push(previous);
+                }
+                supporters.sort();
+                supporters.dedup();
+                let reference = push_record(
+                    scope,
+                    records,
+                    ProvenanceRecord::Derived {
+                        subject: provenance_subject(input_causes.compiled, *node),
+                        supporters,
+                    },
+                );
+                if previous_state.is_none() || evaluation.latch_state_establishments.contains(node)
+                {
+                    latch_state_causes.insert(*node, reference);
                 }
                 reference
             }
@@ -2516,7 +2734,7 @@ fn append_evaluation_provenance<D>(
         pulse_outputs: pulse_output_causes,
         edge_observations: edge_observation_causes,
         toggle_inversions: toggle_inversion_causes,
-        pulse_latches: pulse_latch_state_causes,
+        latches: latch_state_causes,
         pulse_delay_schedules,
     }
 }
@@ -2566,7 +2784,7 @@ fn finalize_provenance_build<D>(
     for cause in build.toggle_inversion_causes.values_mut() {
         *cause = remap_cause(*cause, scope);
     }
-    for cause in build.pulse_latch_state_causes.values_mut() {
+    for cause in build.latch_state_causes.values_mut() {
         *cause = remap_cause(*cause, scope);
     }
     for cause in build.pulse_delay_schedules.values_mut() {
@@ -3397,6 +3615,17 @@ mod tests {
     }
 
     #[derive(Debug, PartialEq, Eq)]
+    struct EpisodeObservation {
+        identity: crate::DiagnosticEpisodeId,
+        condition: crate::DiagnosticConditionKey,
+        problem: crate::diagnostics::Problem<()>,
+        began: crate::time::Time<()>,
+        changed: crate::time::Time<()>,
+        cause: CauseRef,
+        provenance: ([u8; 32], usize, usize),
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
     struct MachineObservation {
         network_key: NetworkKey,
         network_fingerprint: crate::NetworkFingerprint,
@@ -3410,9 +3639,14 @@ mod tests {
         input_causes: std::collections::BTreeMap<ExternalInputKey<Level>, CauseRef>,
         output_causes: std::collections::BTreeMap<ExternalOutputKey<Level>, CauseRef>,
         provenance: Option<([u8; 32], usize, usize)>,
+        operation_levels: Vec<Option<LogicLevel>>,
+        operation_causes: Vec<CauseRef>,
+        edge_observations: Vec<crate::EdgeObservation>,
+        edge_observation_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
+        episodes: Vec<EpisodeObservation>,
         stored_levels: Vec<LogicLevel>,
         toggle_inversion_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
-        pulse_latch_state_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
+        latch_state_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
         pending_pulse_delays: std::collections::BTreeMap<
             crate::time::Time<()>,
             Vec<crate::machine::PendingPulseDelay<()>>,
@@ -3440,9 +3674,31 @@ mod tests {
                     std::sync::Arc::as_ptr(&view.records) as usize,
                 )
             }),
+            operation_levels: machine.store.operation_levels.clone(),
+            operation_causes: machine.store.operation_causes.clone(),
+            edge_observations: machine.store.edge_observations.clone(),
+            edge_observation_causes: machine.store.edge_observation_causes.clone(),
+            episodes: machine
+                .store
+                .active_episodes
+                .values()
+                .map(|e| EpisodeObservation {
+                    identity: e.identity(),
+                    condition: e.condition().clone(),
+                    problem: e.current().clone(),
+                    began: e.began_at(),
+                    changed: e.last_material_change(),
+                    cause: e.cause(),
+                    provenance: (
+                        e.provenance().scope,
+                        e.provenance().len(),
+                        std::sync::Arc::as_ptr(&e.provenance().records) as usize,
+                    ),
+                })
+                .collect(),
             stored_levels: machine.store.stored_levels.clone(),
             toggle_inversion_causes: machine.store.toggle_inversion_causes.clone(),
-            pulse_latch_state_causes: machine.store.pulse_latch_state_causes.clone(),
+            latch_state_causes: machine.store.latch_state_causes.clone(),
             pending_pulse_delays: machine.store.pending_pulse_delays.clone(),
             next_pending_event_serial: machine.store.next_pending_event_serial,
         }
@@ -5077,6 +5333,106 @@ mod tests {
                     });
                     assert_eq!(machine.now(), Some(crate::time::Time::from_ticks(11)));
                 }
+            }
+        }
+    }
+    #[test]
+    fn deadline_episode_creation_and_resolution_roll_back_with_the_complete_machine() {
+        use crate::time::{NonZeroSpan, Time};
+        use crate::{
+            ConflictPolicy, LevelSetResetConfig, NetworkBuilder, PulseDelayConfig, ToggleConfig,
+        };
+        let mut b = NetworkBuilder::<()>::with_key(
+            NetworkKey::from_u128(90),
+            crate::TimeDomainId::from_u128(2),
+        );
+        let (input, p) = b.pulse_input("schedule");
+        let (reject, control) = b.level_input("reject");
+        let a = b
+            .pulse_delay(
+                p,
+                PulseDelayConfig::new(NonZeroSpan::from_ticks(2).unwrap()),
+            )
+            .unwrap();
+        let z = b
+            .pulse_delay(
+                p,
+                PulseDelayConfig::new(NonZeroSpan::from_ticks(4).unwrap()),
+            )
+            .unwrap();
+        let pulses = b.merge([a, z]).unwrap();
+        let set = b
+            .toggle(pulses, ToggleConfig::new(LogicLevel::Low))
+            .unwrap();
+        let high = b.constant(LogicLevel::High);
+        let state = b
+            .level_set_reset_latch(
+                set,
+                high,
+                LevelSetResetConfig::new(LogicLevel::Low, ConflictPolicy::RetainAndDiagnose),
+            )
+            .unwrap();
+        b.level_output("state", state).unwrap();
+        b.level_set_reset_latch(
+            control,
+            control,
+            LevelSetResetConfig::new(LogicLevel::Low, ConflictPolicy::RejectTransaction),
+        )
+        .unwrap();
+        let c = b
+            .finish()
+            .require_artifact()
+            .unwrap()
+            .compile()
+            .require_artifact()
+            .unwrap();
+        for (start, target) in [(0, 3), (2, 5)] {
+            let mut m = c.spawn(policy_with([100, 10000, 100, 1000, 100000]));
+            let initialized = m
+                .apply(Transaction::initialize(
+                    Time::from_ticks(0),
+                    m.revision(),
+                    c.input_snapshot()
+                        .set(reject, LogicLevel::Low)
+                        .unwrap()
+                        .pulse(input, PulseCount::ONE)
+                        .unwrap()
+                        .finish()
+                        .unwrap(),
+                ))
+                .unwrap();
+            if start > 0 {
+                m.apply(Transaction::advance(
+                    Time::from_ticks(start),
+                    m.revision(),
+                    c.input_delta().finish().unwrap(),
+                ))
+                .unwrap();
+            }
+            let before = observe(&m);
+            let failure = m
+                .apply(Transaction::advance(
+                    Time::from_ticks(target),
+                    m.revision(),
+                    c.input_delta()
+                        .set(reject, LogicLevel::High)
+                        .unwrap()
+                        .finish()
+                        .unwrap(),
+                ))
+                .unwrap_err();
+            assert_eq!(
+                failure.code(),
+                crate::diagnostics::DiagnosticCode::RuntimeLevelLatchConflictRejected
+            );
+            assert_eq!(observe(&m), before);
+            for event in initialized.output_events() {
+                let cause = match event {
+                    OutputEvent::LevelEstablished { cause, .. }
+                    | OutputEvent::LevelChanged { cause, .. }
+                    | OutputEvent::Pulsed { cause, .. } => *cause,
+                };
+                assert!(initialized.provenance().inspect(cause).is_ok());
             }
         }
     }

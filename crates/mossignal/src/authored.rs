@@ -651,6 +651,8 @@ pub enum NodeKind<D> {
     Toggle(ToggleConfig),
     /// A pulse-controlled set/reset latch with one stored level.
     PulseSetResetLatch(PulseSetResetConfig),
+    /// A stored level controlled by current set and reset levels.
+    LevelSetResetLatch(LevelSetResetConfig),
     /// A temporal pulse reproducer with one pulse input and one pulse output.
     PulseDelay(PulseDelayConfig<D>),
 }
@@ -676,6 +678,7 @@ impl<D> Clone for NodeKind<D> {
             Self::AnyEdge(config) => Self::AnyEdge(*config),
             Self::Toggle(config) => Self::Toggle(*config),
             Self::PulseSetResetLatch(config) => Self::PulseSetResetLatch(*config),
+            Self::LevelSetResetLatch(config) => Self::LevelSetResetLatch(*config),
             Self::PulseDelay(config) => Self::PulseDelay(*config),
         }
     }
@@ -702,6 +705,7 @@ impl<D> PartialEq for NodeKind<D> {
             | (Self::AnyEdge(left), Self::AnyEdge(right)) => left == right,
             (Self::Toggle(left), Self::Toggle(right)) => left == right,
             (Self::PulseSetResetLatch(left), Self::PulseSetResetLatch(right)) => left == right,
+            (Self::LevelSetResetLatch(left), Self::LevelSetResetLatch(right)) => left == right,
             (Self::PulseDelay(left), Self::PulseDelay(right)) => left == right,
             _ => false,
         }
@@ -734,6 +738,10 @@ impl<D> fmt::Debug for NodeKind<D> {
             Self::Toggle(config) => formatter.debug_tuple("Toggle").field(config).finish(),
             Self::PulseSetResetLatch(config) => formatter
                 .debug_tuple("PulseSetResetLatch")
+                .field(config)
+                .finish(),
+            Self::LevelSetResetLatch(config) => formatter
+                .debug_tuple("LevelSetResetLatch")
                 .field(config)
                 .finish(),
             Self::PulseDelay(config) => formatter.debug_tuple("PulseDelay").field(config).finish(),
@@ -848,6 +856,12 @@ impl<D> NodeKind<D> {
     #[must_use]
     pub const fn pulse_set_reset_latch(config: PulseSetResetConfig) -> Self {
         Self::PulseSetResetLatch(config)
+    }
+
+    /// Creates a level-controlled set/reset latch with explicit configuration.
+    #[must_use]
+    pub const fn level_set_reset_latch(config: LevelSetResetConfig) -> Self {
+        Self::LevelSetResetLatch(config)
     }
 
     /// Creates a PulseDelay with the supplied positive delay.
@@ -1022,6 +1036,35 @@ pub struct PulseSetResetConfig {
 
 impl PulseSetResetConfig {
     /// Creates a pulse-latch configuration without hidden defaults.
+    #[must_use]
+    pub const fn new(initial: LogicLevel, conflict: ConflictPolicy) -> Self {
+        Self { initial, conflict }
+    }
+}
+
+/// The semantic configuration of an authored [`NodeKind::LevelSetResetLatch`] claim.
+///
+/// ```
+/// use mossignal::{ConflictPolicy, LevelSetResetConfig, NetworkBuilder, TimeDomainId};
+/// use mossignal::signal::LogicLevel;
+/// let mut builder = NetworkBuilder::<()>::new(TimeDomainId::from_u128(1));
+/// let (_, set) = builder.level_input("set");
+/// let (_, reset) = builder.level_input("reset");
+/// let state = builder.level_set_reset_latch(set, reset,
+///     LevelSetResetConfig::new(LogicLevel::Low, ConflictPolicy::RetainAndDiagnose))?;
+/// builder.level_output("state", state)?;
+/// # Ok::<(), mossignal::AuthoringFailure>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LevelSetResetConfig {
+    /// The declared stored level used as previous state by the first reaction.
+    pub initial: LogicLevel,
+    /// The exact law applied when both settled controls are High.
+    pub conflict: ConflictPolicy,
+}
+
+impl LevelSetResetConfig {
+    /// Creates a level-latch configuration without hidden defaults.
     #[must_use]
     pub const fn new(initial: LogicLevel, conflict: ConflictPolicy) -> Self {
         Self { initial, conflict }
