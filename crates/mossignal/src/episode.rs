@@ -424,7 +424,7 @@ mod tests {
         evidence.at_ticks = at;
         evidence.previous = previous;
         Problem::new(
-            *active.current().primary(),
+            active.current().primary().clone(),
             Vec::new(),
             ProblemEvidence::RuntimeLevelLatchConflictRetained {
                 evidence,
@@ -504,7 +504,7 @@ mod tests {
             },
         ] {
             let bad = Problem::<()>::new(
-                *first.current().primary(),
+                first.current().primary().clone(),
                 Vec::new(),
                 ProblemEvidence::RuntimeLevelLatchConflictRetained {
                     evidence,
@@ -523,7 +523,7 @@ mod tests {
                 marker: PhantomData,
             },
         ] {
-            let bad = Problem::new(*first.current().primary(), Vec::new(), evidence);
+            let bad = Problem::new(first.current().primary().clone(), Vec::new(), evidence);
             assert!(DiagnosticConditionKey::from_problem(&bad).is_none());
         }
         assert_eq!(

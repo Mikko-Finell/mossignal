@@ -1624,7 +1624,10 @@ fn pulse_latch_occurrences<D>(
         .into_iter()
         .map(|(node, conflict)| {
             let problem = Problem::new(
-                SubjectRef::Node(conflict.node),
+                match &node {
+                    NodeSubject::Node(node) => SubjectRef::Node(*node),
+                    NodeSubject::Qualified(node) => SubjectRef::QualifiedNode(node.clone()),
+                },
                 Vec::new(),
                 ProblemEvidence::RuntimePulseLatchConflictRetained {
                     evidence: ConflictEvidence {

@@ -11,6 +11,7 @@ use crate::key::{
 };
 use crate::machine::NetworkRevision;
 use crate::metadata::OriginRef;
+use crate::module::QualifiedNodeRef;
 use crate::signal::{LogicLevel, PulseCount, SignalKind};
 use crate::standard::{StandardModuleRef, StandardParameterKey, StandardParameterKind};
 use crate::time::Time;
@@ -19,7 +20,7 @@ use core::marker::PhantomData;
 
 /// A stable subject to which a diagnostic condition applies.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SubjectRef {
     /// An authored network.
     Network(NetworkKey),
@@ -39,6 +40,8 @@ pub enum SubjectRef {
     ModuleInstanceOutput(ModuleInstanceKey, AnyModuleOutputKey),
     /// An authored node.
     Node(NodeKey),
+    /// An authored module-local node qualified by its complete instance path.
+    QualifiedNode(QualifiedNodeRef),
     /// An authored node input port.
     InPort(AnyInPortKey),
     /// An authored node output port.
@@ -99,14 +102,14 @@ pub enum ReactionRole {
 }
 
 /// A stable current-reaction graph member used in cycle diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ReactionMemberRef {
     pub subject: SubjectRef,
     pub role: ReactionRole,
 }
 
 /// One stable dependency step in a current-reaction cycle witness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CurrentReactionCycleStep {
     pub source: ReactionMemberRef,
     pub dependency: SubjectRef,
@@ -131,6 +134,7 @@ impl SubjectRef {
                 (9, SubjectPayload::InstanceOutput(*instance, *key))
             }
             Self::Node(key) => (10, SubjectPayload::Direct(key.as_u128())),
+            Self::QualifiedNode(node) => (10, SubjectPayload::QualifiedNode(node.clone())),
             Self::InPort(key) => (11, SubjectPayload::InPort(*key)),
             Self::OutPort(key) => (12, SubjectPayload::OutPort(*key)),
             Self::Connection(key) => (13, SubjectPayload::Direct(key.as_u128())),
@@ -146,10 +150,11 @@ impl SubjectRef {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum SubjectPayload {
     Direct(u128),
     Fingerprint([u8; 32]),
+    QualifiedNode(QualifiedNodeRef),
     ModuleInput(AnyModuleInputKey),
     ModuleOutput(AnyModuleOutputKey),
     InstanceInput(ModuleInstanceKey, AnyModuleInputKey),
@@ -354,7 +359,7 @@ pub enum RelatedSubjectRole {
 }
 
 /// A typed relationship to another subject involved in a problem.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelatedSubject {
     pub role: RelatedSubjectRole,
     pub subject: SubjectRef,
@@ -454,7 +459,7 @@ pub enum DuplicateNodeKind {
 
 /// The stable identity of one required fixed input that is absent.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequiredInputRef {
     /// An authored input port exists but has no driver.
     Port(SubjectRef),
@@ -1588,7 +1593,7 @@ impl<D> Problem<D> {
         conflicting_primary: SubjectRef,
     ) -> Self {
         Self::new(
-            conflicting_primary,
+            conflicting_primary.clone(),
             Vec::new(),
             ProblemEvidence::InternalDiagnosticEvidenceConflict {
                 conflicting_code,
@@ -1762,7 +1767,7 @@ impl<D> DiagnosticSet<D> {
             .position(|old| same_condition(old.problem(), diagnostic.problem()))
         {
             let code = self.findings[existing].problem.code;
-            let primary = self.findings[existing].problem.primary;
+            let primary = self.findings[existing].problem.primary.clone();
             let result = merge_evidence(
                 &mut self.findings[existing].problem.evidence,
                 diagnostic.problem.evidence,
@@ -1862,7 +1867,7 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
             ConditionDiscriminator::Operation(DiagnosticCode::AuthoringForeignSignal)
         }
         ProblemEvidence::ValidationDuplicateKey { key, .. } => {
-            ConditionDiscriminator::Subject(*key)
+            ConditionDiscriminator::Subject(key.clone())
         }
         ProblemEvidence::ValidationMissingNode { missing, .. } => {
             ConditionDiscriminator::Subject(SubjectRef::Node(*missing))
@@ -1876,9 +1881,9 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
             missing,
             expected_kind,
             ..
-        } => ConditionDiscriminator::SubjectAndKind(*missing, *expected_kind),
+        } => ConditionDiscriminator::SubjectAndKind(missing.clone(), *expected_kind),
         ProblemEvidence::ValidationInvalidDirection { source, target, .. } => {
-            ConditionDiscriminator::Subjects(*source, *target)
+            ConditionDiscriminator::Subjects(source.clone(), target.clone())
         }
         ProblemEvidence::ValidationSignalKindMismatch { .. }
         | ProblemEvidence::ValidationUnsupportedMultipleDrivers { .. } => {
@@ -1893,7 +1898,7 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
             required,
             expected_kind,
             ..
-        } => ConditionDiscriminator::Required(*required, *expected_kind),
+        } => ConditionDiscriminator::Required(required.clone(), *expected_kind),
         ProblemEvidence::ValidationInvalidFixedArity {
             role,
             expected,
@@ -1906,7 +1911,7 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
             ..
         } => ConditionDiscriminator::Arity(FixedArityRole::Input, *minimum, *encountered),
         ProblemEvidence::ValidationDuplicateSource { source, .. } => {
-            ConditionDiscriminator::DuplicateSource(*source)
+            ConditionDiscriminator::DuplicateSource(source.clone())
         }
         ProblemEvidence::ValidationEmptyVariadicNode { ports, .. } => {
             ConditionDiscriminator::VariadicArity(ports.len())
@@ -1990,7 +1995,7 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         } => ConditionDiscriminator::StandardArity(module_ref.clone(), *arity, *threshold),
         ProblemEvidence::StandardModuleDuplicateSource {
             module_ref, source, ..
-        } => ConditionDiscriminator::StandardSource(module_ref.clone(), *source),
+        } => ConditionDiscriminator::StandardSource(module_ref.clone(), source.clone()),
         ProblemEvidence::BindingUnknownEndpoint { evidence, .. } => {
             ConditionDiscriminator::Binding(
                 DiagnosticCode::BindingUnknownEndpoint,
@@ -2121,7 +2126,7 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
             conflicting_code,
             conflicting_primary,
             ..
-        } => ConditionDiscriminator::Internal(*conflicting_code, *conflicting_primary),
+        } => ConditionDiscriminator::Internal(*conflicting_code, conflicting_primary.clone()),
     }
 }
 
@@ -2620,7 +2625,7 @@ mod tests {
         let primary = SubjectRef::InPort(AnyInPortKey::from(InPortKey::<Level>::from_u128(1)));
         let make = |drivers| {
             Diagnostic::new(Problem::new(
-                primary,
+                primary.clone(),
                 Vec::new(),
                 ProblemEvidence::<()>::unsupported_multiple_drivers(drivers),
             ))
@@ -2657,7 +2662,7 @@ mod tests {
         let primary = SubjectRef::Connection(ConnectionKey::from_u128(1));
         let make = |source| {
             Diagnostic::new(Problem::new(
-                primary,
+                primary.clone(),
                 Vec::new(),
                 ProblemEvidence::<()>::signal_kind_mismatch(
                     source,
@@ -2691,14 +2696,14 @@ mod tests {
             role: ReactionRole::NodeOperation,
         };
         let forward = CurrentReactionCycleStep {
-            source: first,
+            source: first.clone(),
             dependency: SubjectRef::Connection(ConnectionKey::from_u128(1)),
-            target: second,
+            target: second.clone(),
         };
         let backward = CurrentReactionCycleStep {
-            source: second,
+            source: second.clone(),
             dependency: SubjectRef::Connection(ConnectionKey::from_u128(2)),
-            target: first,
+            target: first.clone(),
         };
         let make = |members, witness| {
             Diagnostic::new(Problem::new(
@@ -2709,13 +2714,22 @@ mod tests {
             .unwrap_or_else(|_| unreachable!("cycle validation is reportable"))
         };
         let mut set = DiagnosticSet::new();
-        set.insert(make(vec![first, second], vec![forward, backward]));
-        set.insert(make(vec![second, first], vec![forward, backward]));
+        set.insert(make(
+            vec![first.clone(), second.clone()],
+            vec![forward.clone(), backward.clone()],
+        ));
+        set.insert(make(
+            vec![second.clone(), first.clone()],
+            vec![forward.clone(), backward.clone()],
+        ));
 
         assert_eq!(set.len(), 1);
         assert!(set.internal_defects().is_empty());
 
-        set.insert(make(vec![first, second], vec![backward, forward]));
+        set.insert(make(
+            vec![first.clone(), second.clone()],
+            vec![backward.clone(), forward.clone()],
+        ));
         assert_eq!(set.len(), 1);
         assert_eq!(set.internal_defects().len(), 1);
         assert_eq!(

@@ -5,7 +5,7 @@ use mossignal::authored::{
     NodePorts, PulseDelayConfig, UncheckedNetwork,
 };
 use mossignal::diagnostics::{
-    DiagnosticCode, NodeEvidence, ProblemEvidence, Responsibility, Severity,
+    DiagnosticCode, NodeEvidence, ProblemEvidence, Responsibility, Severity, SubjectRef,
 };
 use mossignal::key::{
     ConnectionKey, ExternalInputKey, ExternalOutputKey, InPortKey, ModuleInputKey,
@@ -762,21 +762,41 @@ fn module_local_occurrence_retains_the_qualified_primitive_subject() {
         .require_artifact()
         .unwrap_or_else(|failure| panic!("module must validate: {failure:?}"));
 
-    let instance = ModuleInstanceKey::from_u128(100);
+    let instances = [
+        ModuleInstanceKey::from_u128(100),
+        ModuleInstanceKey::from_u128(200),
+    ];
     let mut network = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(60));
-    let (set_key, set) = network.pulse_input("set");
-    let (reset_key, reset) = network.pulse_input("reset");
-    let added = network
-        .instantiate(&module, instance, DiagnosticMeta::default())
+    let (set_a_key, set_a) = network.pulse_input("set-a");
+    let (reset_a_key, reset_a) = network.pulse_input("reset-a");
+    let (set_b_key, set_b) = network.pulse_input("set-b");
+    let (reset_b_key, reset_b) = network.pulse_input("reset-b");
+    let added_a = network
+        .instantiate(&module, instances[0], DiagnosticMeta::default())
         .unwrap_or_else(|failure| panic!("instance must begin: {failure:?}"))
-        .bind_pulse(module_set, set)
-        .and_then(|builder| builder.bind_pulse(module_reset, reset))
+        .bind_pulse(module_set, set_a)
+        .and_then(|builder| builder.bind_pulse(module_reset, reset_a))
         .and_then(|builder| builder.finish())
-        .unwrap_or_else(|failure| panic!("instance must bind: {failure:?}"));
+        .unwrap_or_else(|failure| panic!("first instance must bind: {failure:?}"));
+    let added_b = network
+        .instantiate(&module, instances[1], DiagnosticMeta::default())
+        .unwrap_or_else(|failure| panic!("second instance must begin: {failure:?}"))
+        .bind_pulse(module_set, set_b)
+        .and_then(|builder| builder.bind_pulse(module_reset, reset_b))
+        .and_then(|builder| builder.finish())
+        .unwrap_or_else(|failure| panic!("second instance must bind: {failure:?}"));
     network
         .level_output(
-            "state",
-            added
+            "state-a",
+            added_a
+                .level_output(module_output)
+                .unwrap_or_else(|failure| panic!("module output must exist: {failure:?}")),
+        )
+        .unwrap_or_else(|failure| panic!("network output must author: {failure:?}"));
+    network
+        .level_output(
+            "state-b",
+            added_b
                 .level_output(module_output)
                 .unwrap_or_else(|failure| panic!("module output must exist: {failure:?}")),
         )
@@ -790,8 +810,10 @@ fn module_local_occurrence_retains_the_qualified_primitive_subject() {
         .unwrap_or_else(|failure| panic!("network must compile: {failure:?}"));
     let snapshot = compiled
         .input_snapshot()
-        .pulse(set_key, PulseCount::ONE)
-        .and_then(|builder| builder.pulse(reset_key, PulseCount::ONE))
+        .pulse(set_a_key, PulseCount::ONE)
+        .and_then(|builder| builder.pulse(reset_a_key, PulseCount::ONE))
+        .and_then(|builder| builder.pulse(set_b_key, PulseCount::ONE))
+        .and_then(|builder| builder.pulse(reset_b_key, PulseCount::ONE))
         .and_then(mossignal::InputSnapshotBuilder::finish)
         .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
     let mut machine = compiled.spawn(policy());
@@ -802,21 +824,26 @@ fn module_local_occurrence_retains_the_qualified_primitive_subject() {
             snapshot,
         ))
         .unwrap_or_else(|failure| panic!("module network must initialize: {failure}"));
-    let [occurrence] = result.occurrences() else {
-        panic!("one module-local latch must emit one occurrence");
-    };
-    match occurrence.problem().evidence() {
-        ProblemEvidence::RuntimePulseLatchConflictRetained { evidence, .. } => assert_eq!(
-            evidence.node,
-            NodeEvidence::Qualified {
-                instances: vec![instance],
-                node: latch,
-            }
-        ),
-        other => panic!("unexpected module occurrence evidence: {other:?}"),
+    assert_eq!(result.occurrences().len(), instances.len());
+    for (occurrence, instance) in result.occurrences().iter().zip(instances) {
+        let SubjectRef::QualifiedNode(primary) = occurrence.problem().primary() else {
+            panic!("occurrence primary must retain the complete qualified node identity");
+        };
+        assert_eq!(primary.instances(), &[instance]);
+        assert_eq!(primary.node(), latch);
+        match occurrence.problem().evidence() {
+            ProblemEvidence::RuntimePulseLatchConflictRetained { evidence, .. } => assert_eq!(
+                evidence.node,
+                NodeEvidence::Qualified {
+                    instances: vec![instance],
+                    node: latch,
+                }
+            ),
+            other => panic!("unexpected module occurrence evidence: {other:?}"),
+        }
     }
     let inspected = machine
-        .inspect_module(instance)
+        .inspect_module(instances[0])
         .unwrap_or_else(|failure| panic!("module must inspect: {failure:?}"));
     let latch = inspected
         .nodes()
@@ -825,6 +852,7 @@ fn module_local_occurrence_retains_the_qualified_primitive_subject() {
         .unwrap_or_else(|| panic!("module latch must remain inspectable"));
     assert_eq!(latch.pulse_set_reset_state(), Some(LogicLevel::Low));
     assert!(latch.pulse_set_reset_cause().is_some());
+    assert!(machine.inspect_module(instances[1]).is_ok());
 }
 
 #[test]

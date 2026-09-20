@@ -707,7 +707,7 @@ impl KeyKindMismatch {
     pub fn problem<D>(self) -> Problem<D> {
         let requested = SubjectRef::Operation(OperationSubjectRef::KeyProjection);
         Problem::new(
-            requested,
+            requested.clone(),
             Vec::new(),
             ProblemEvidence::InspectionWrongSubjectKind {
                 evidence: InspectionEvidence {

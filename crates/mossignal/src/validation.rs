@@ -1237,7 +1237,7 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                 claims
                     .entry(binding.input())
                     .or_default()
-                    .push(source_subject);
+                    .push(source_subject.clone());
                 let valid_source = self.instance_source_exists(binding.source());
                 if !required.contains(&binding.input())
                     || !is_source(binding.source())
@@ -1437,7 +1437,10 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
             if !is_source(source) || !is_target(target) {
                 self.add(
                     SubjectRef::Connection(connection.key()),
-                    ProblemEvidence::invalid_direction(source_subject, target_subject),
+                    ProblemEvidence::invalid_direction(
+                        source_subject.clone(),
+                        target_subject.clone(),
+                    ),
                 );
             }
             if source.kind() != target.kind() {
@@ -2928,8 +2931,8 @@ mod tests {
                 assert!(members.len() >= 4);
                 assert!(!witness.is_empty());
                 assert_eq!(
-                    witness.first().map(|step| step.source),
-                    witness.last().map(|step| step.target)
+                    witness.first().map(|step| step.source.clone()),
+                    witness.last().map(|step| step.target.clone())
                 );
             }
             _ => panic!("expected current-reaction cycle evidence"),

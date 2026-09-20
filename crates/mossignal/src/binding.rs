@@ -853,7 +853,7 @@ impl BoundOutputFailure {
         let evidence = match self {
             Self::UnknownExternalKey => ProblemEvidence::InspectionUnknownSubject {
                 evidence: InspectionEvidence {
-                    requested,
+                    requested: requested.clone(),
                     qualified_path: Vec::new(),
                     expected: InspectionSubjectKind::LevelOutput,
                     actual: None,
@@ -862,7 +862,7 @@ impl BoundOutputFailure {
             },
             Self::WrongSignalKind => ProblemEvidence::InspectionWrongSubjectKind {
                 evidence: InspectionEvidence {
-                    requested,
+                    requested: requested.clone(),
                     qualified_path: Vec::new(),
                     expected: InspectionSubjectKind::SignalKind(SignalKind::Level),
                     actual: Some(InspectionSubjectKind::SignalKind(SignalKind::Pulse)),

@@ -158,7 +158,7 @@ impl AuthoringFailure {
     pub fn problem<D>(&self) -> Problem<D> {
         if let Some(subject) = self.duplicate_subject() {
             return Problem::new(
-                subject,
+                subject.clone(),
                 Vec::new(),
                 ProblemEvidence::ValidationDuplicateKey {
                     key: subject,

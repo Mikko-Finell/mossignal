@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use mossignal::diagnostics::{NodeEvidence, ProblemEvidence, SubjectRef};
+use mossignal::diagnostics::SubjectRef;
 use mossignal::key::{ModuleInputKey, ModuleInstanceKey, ModuleOutputKey, NodeKey};
 use mossignal::metadata::DiagnosticMeta;
 use mossignal::signal::{Level, LogicLevel, Pulse, PulseCount};
@@ -115,108 +115,6 @@ fn collect_observed_pulse_inputs<D>(
         }
         _ => {}
     }
-}
-
-#[test]
-#[ignore = "bug: module-internal occurrence primary is a private flattened NodeKey"]
-fn module_pulse_latch_occurrence_primary_is_the_authored_module_local_node() {
-    let module_set = ModuleInputKey::<Pulse>::from_u128(1);
-    let module_reset = ModuleInputKey::<Pulse>::from_u128(2);
-    let module_output = ModuleOutputKey::<Level>::from_u128(3);
-    let latch = NodeKey::from_u128(10);
-    let mut module = ModuleBuilder::<TestDomain>::new();
-    let set = module
-        .add_pulse_input(module_set, DiagnosticMeta::default())
-        .unwrap_or_else(|failure| panic!("module set must author: {failure:?}"));
-    let reset = module
-        .add_pulse_input(module_reset, DiagnosticMeta::default())
-        .unwrap_or_else(|failure| panic!("module reset must author: {failure:?}"));
-    let state = module
-        .add_pulse_set_reset_latch(
-            latch,
-            set,
-            reset,
-            PulseSetResetConfig::new(LogicLevel::Low, ConflictPolicy::RetainAndDiagnose),
-            DiagnosticMeta::default(),
-        )
-        .unwrap_or_else(|failure| panic!("module latch must author: {failure:?}"))
-        .into_outputs();
-    module
-        .add_level_output(module_output, state, DiagnosticMeta::default())
-        .unwrap_or_else(|failure| panic!("module output must author: {failure:?}"));
-    let module = module
-        .finish()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("module must validate: {failure:?}"));
-
-    let instance = ModuleInstanceKey::from_u128(100);
-    let mut network = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(60));
-    let (set_key, set) = network.pulse_input("set");
-    let (reset_key, reset) = network.pulse_input("reset");
-    let added = network
-        .instantiate(&module, instance, DiagnosticMeta::default())
-        .unwrap_or_else(|failure| panic!("instance must begin: {failure:?}"))
-        .bind_pulse(module_set, set)
-        .and_then(|builder| builder.bind_pulse(module_reset, reset))
-        .and_then(|builder| builder.finish())
-        .unwrap_or_else(|failure| panic!("instance must bind: {failure:?}"));
-    network
-        .level_output(
-            "state",
-            added
-                .level_output(module_output)
-                .unwrap_or_else(|failure| panic!("module output must exist: {failure:?}")),
-        )
-        .unwrap_or_else(|failure| panic!("network output must author: {failure:?}"));
-    let compiled = network
-        .finish()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("network must validate: {failure:?}"))
-        .compile()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("network must compile: {failure:?}"));
-    let snapshot = compiled
-        .input_snapshot()
-        .pulse(set_key, PulseCount::ONE)
-        .and_then(|builder| builder.pulse(reset_key, PulseCount::ONE))
-        .and_then(mossignal::InputSnapshotBuilder::finish)
-        .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
-    let mut machine = compiled.spawn(policy());
-    let result = machine
-        .apply(Transaction::initialize(
-            Time::from_ticks(0),
-            machine.revision(),
-            snapshot,
-        ))
-        .unwrap_or_else(|failure| panic!("module network must initialize: {failure}"));
-    let [occurrence] = result.occurrences() else {
-        panic!("one module-local latch must emit one occurrence");
-    };
-
-    assert_eq!(
-        occurrence.problem().primary(),
-        &SubjectRef::Node(latch),
-        "diagnostics must name the authored module-local node, not a private flattening key"
-    );
-    match occurrence.problem().evidence() {
-        ProblemEvidence::RuntimePulseLatchConflictRetained { evidence, .. } => assert_eq!(
-            evidence.node,
-            NodeEvidence::Qualified {
-                instances: vec![instance],
-                node: latch,
-            }
-        ),
-        other => panic!("unexpected module occurrence evidence: {other:?}"),
-    }
-
-    let SubjectRef::Node(primary) = occurrence.problem().primary() else {
-        panic!("occurrence primary must be a node");
-    };
-    assert!(
-        machine.inspect_pulse_set_reset_latch(*primary).is_ok(),
-        "the diagnostic primary must identify an inspectable latch, got {primary:?}: {:?}",
-        machine.inspect_pulse_set_reset_latch(*primary)
-    );
 }
 
 #[test]

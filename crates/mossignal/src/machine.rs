@@ -585,7 +585,7 @@ impl ModuleInspectionFailure {
             Self::UnknownModule(module) => {
                 let requested = SubjectRef::ModuleInstance(module.instance());
                 Problem::new(
-                    requested,
+                    requested.clone(),
                     Vec::new(),
                     ProblemEvidence::InspectionUnknownSubject {
                         evidence: InspectionEvidence {
@@ -1470,7 +1470,7 @@ fn lifecycle_not_initialized<D>(operation: OperationSubjectRef) -> Problem<D> {
 fn inspection_unknown<D>(node: NodeKey, expected: InspectionSubjectKind) -> Problem<D> {
     let requested = SubjectRef::Node(node);
     Problem::new(
-        requested,
+        requested.clone(),
         Vec::new(),
         ProblemEvidence::InspectionUnknownSubject {
             evidence: InspectionEvidence {
@@ -1487,7 +1487,7 @@ fn inspection_unknown<D>(node: NodeKey, expected: InspectionSubjectKind) -> Prob
 fn inspection_wrong_kind<D>(node: NodeKey, expected: InspectionSubjectKind) -> Problem<D> {
     let requested = SubjectRef::Node(node);
     Problem::new(
-        requested,
+        requested.clone(),
         Vec::new(),
         ProblemEvidence::InspectionWrongSubjectKind {
             evidence: InspectionEvidence {

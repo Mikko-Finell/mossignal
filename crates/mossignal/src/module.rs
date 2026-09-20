@@ -212,7 +212,7 @@ pub struct DefinitionGraphView<'a, D> {
 }
 
 /// A stable node identity qualified by its complete module-instance path.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct QualifiedNodeRef {
     instances: Vec<ModuleInstanceKey>,
     node: NodeKey,
@@ -574,22 +574,25 @@ fn validate_module<D: PartialEq>(module: &UncheckedModule<D>) -> Report<ModuleDe
                 if !inputs.contains_key(&input) {
                     add(
                         &mut diagnostics,
-                        primary,
-                        ProblemEvidence::missing_endpoint(primary, input.kind()),
+                        primary.clone(),
+                        ProblemEvidence::missing_endpoint(primary.clone(), input.kind()),
                     );
                 }
                 let ConnectionEndpoint::NodeInput(target_key) = target else {
                     add(
                         &mut diagnostics,
-                        primary,
-                        ProblemEvidence::invalid_direction(primary, endpoint_subject(target)),
+                        primary.clone(),
+                        ProblemEvidence::invalid_direction(
+                            primary.clone(),
+                            endpoint_subject(target),
+                        ),
                     );
                     continue;
                 };
                 if !in_ports.contains(&target_key) {
                     add(
                         &mut diagnostics,
-                        primary,
+                        primary.clone(),
                         ProblemEvidence::missing_port(
                             SubjectRef::InPort(target_key),
                             target_key.kind(),
@@ -600,9 +603,9 @@ fn validate_module<D: PartialEq>(module: &UncheckedModule<D>) -> Report<ModuleDe
                 if input.kind() != target_key.kind() {
                     add(
                         &mut diagnostics,
-                        primary,
+                        primary.clone(),
                         ProblemEvidence::signal_kind_mismatch(
-                            primary,
+                            primary.clone(),
                             SubjectRef::InPort(target_key),
                             input.kind(),
                             target_key.kind(),
@@ -624,8 +627,8 @@ fn validate_module<D: PartialEq>(module: &UncheckedModule<D>) -> Report<ModuleDe
                 if !outputs.contains_key(&output) {
                     add(
                         &mut diagnostics,
-                        primary,
-                        ProblemEvidence::missing_endpoint(primary, output.kind()),
+                        primary.clone(),
+                        ProblemEvidence::missing_endpoint(primary.clone(), output.kind()),
                     );
                 }
                 if !matches!(
@@ -636,8 +639,11 @@ fn validate_module<D: PartialEq>(module: &UncheckedModule<D>) -> Report<ModuleDe
                 ) {
                     add(
                         &mut diagnostics,
-                        primary,
-                        ProblemEvidence::invalid_direction(endpoint_subject(source), primary),
+                        primary.clone(),
+                        ProblemEvidence::invalid_direction(
+                            endpoint_subject(source),
+                            primary.clone(),
+                        ),
                     );
                     continue;
                 }
@@ -681,10 +687,10 @@ fn validate_module<D: PartialEq>(module: &UncheckedModule<D>) -> Report<ModuleDe
                 if output.kind() != source.kind() {
                     add(
                         &mut diagnostics,
-                        primary,
+                        primary.clone(),
                         ProblemEvidence::signal_kind_mismatch(
                             endpoint_subject(source),
-                            primary,
+                            primary.clone(),
                             source.kind(),
                             output.kind(),
                         ),
@@ -757,7 +763,7 @@ fn validate_module<D: PartialEq>(module: &UncheckedModule<D>) -> Report<ModuleDe
     let graph = ReactionDependencyGraph::from_module(module);
     for component in graph.cyclic_components() {
         let members: Vec<_> = component.iter().copied().map(reaction_member).collect();
-        let Some(primary) = members.first().map(|member| member.subject) else {
+        let Some(primary) = members.first().map(|member| member.subject.clone()) else {
             continue;
         };
         let witness = graph
