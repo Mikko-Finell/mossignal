@@ -116,60 +116,6 @@ fn collect_observed_pulse_inputs<D>(
 }
 
 #[test]
-#[ignore = "bug: AtLeast(0) provenance retains inputs that cannot affect the constant High result"]
-fn at_least_zero_constant_high_provenance_excludes_inputs() {
-    let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(10));
-    let (left_key, left) = builder.level_input("left");
-    let (right_key, right) = builder.level_input("right");
-    let constant_high = builder
-        .at_least(0, [left, right])
-        .unwrap_or_else(|failure| panic!("AtLeast(0) must author: {failure:?}"));
-    let output = builder
-        .level_output("out", constant_high)
-        .unwrap_or_else(|failure| panic!("output must author: {failure:?}"));
-    let compiled = builder
-        .finish()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("AtLeast(0) must validate: {failure:?}"))
-        .compile()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("AtLeast(0) must compile: {failure:?}"));
-    let snapshot = compiled
-        .input_snapshot()
-        .set(left_key, LogicLevel::High)
-        .and_then(|builder| builder.set(right_key, LogicLevel::Low))
-        .and_then(mossignal::InputSnapshotBuilder::finish)
-        .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
-    let mut machine = compiled.spawn(policy());
-    let result = machine
-        .apply(Transaction::initialize(
-            Time::from_ticks(0),
-            machine.revision(),
-            snapshot,
-        ))
-        .unwrap_or_else(|failure| panic!("AtLeast(0) must initialize: {failure}"));
-    let [
-        OutputEvent::LevelEstablished {
-            output: established,
-            value,
-            cause,
-            ..
-        },
-    ] = result.output_events()
-    else {
-        panic!("initialization must establish constant High");
-    };
-    assert_eq!(*established, output);
-    assert_eq!(*value, LogicLevel::High);
-
-    let observed = observed_level_inputs(result.provenance(), *cause);
-    assert!(
-        observed.is_empty(),
-        "AtLeast(0) is independent of its inputs, but provenance retained {observed:?}"
-    );
-}
-
-#[test]
 #[ignore = "bug: module fingerprint panics on connections sourced from nested module outputs"]
 fn nested_module_output_feeding_an_internal_node_must_fingerprint() {
     let mut inner = ModuleBuilder::<TestDomain>::new();

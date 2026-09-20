@@ -1198,10 +1198,16 @@ impl<D> CompiledInner<D> {
                             }),
                             EvaluationCause::Node {
                                 node: *key,
-                                predecessors: self.predecessors[index]
-                                    .iter()
-                                    .map(|predecessor| predecessor.0)
-                                    .collect(),
+                                // SPEC: docs/specs/built_in_node_semantics.md §27 "AtLeast"
+                                // Threshold zero is constant High and has no current input support.
+                                predecessors: if *threshold == 0 {
+                                    Vec::new()
+                                } else {
+                                    self.predecessors[index]
+                                        .iter()
+                                        .map(|predecessor| predecessor.0)
+                                        .collect()
+                                },
                             },
                         )
                     }
