@@ -656,11 +656,27 @@ fn inertial_delay_cancels_replaces_and_matures_one_candidate() {
     let cancellation = canceled_inspection
         .last_cancellation()
         .unwrap_or_else(|| panic!("cancellation must remain inspectable"));
-    assert!(matches!(
-        canceled_inspection.provenance().inspect(cancellation).unwrap(),
+    let CauseInspection::Derived { supporters, .. } = canceled_inspection
+        .provenance()
+        .inspect(cancellation)
+        .unwrap()
+    else {
+        panic!("cancellation must explain both the old work and the new input")
+    };
+    assert!(supporters.iter().any(|cause| matches!(
+        canceled_inspection.provenance().inspect(*cause).unwrap(),
         CauseInspection::PendingInertialDelay { event, target: LogicLevel::High, .. }
             if event.value() == 0
-    ));
+    )));
+    assert!(supporters.iter().any(|cause| matches!(
+        canceled_inspection.provenance().inspect(*cause).unwrap(),
+        CauseInspection::Derived { supporters: input_supporters, .. }
+            if input_supporters.iter().any(|input_cause| matches!(
+                canceled_inspection.provenance().inspect(*input_cause).unwrap(),
+                CauseInspection::ExternalObservation { input: observed, value: LogicLevel::Low }
+                    if observed == input
+            ))
+    )));
 
     let replaced = machine
         .apply(Transaction::advance(

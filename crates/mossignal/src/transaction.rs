@@ -989,6 +989,32 @@ impl<D> ProvenanceView<D> {
             },
         )
     }
+
+    fn append_inertial_cancellation(
+        &mut self,
+        owner: NodeSubject,
+        canceled: CauseRef,
+        replacement: CauseRef,
+    ) -> CauseRef {
+        let Some(records) = Arc::get_mut(&mut self.records) else {
+            panic!("new transaction provenance must be uniquely owned before publication");
+        };
+        let subject = match owner {
+            NodeSubject::Node(node) => ProvenanceSubject::Node(node),
+            NodeSubject::Qualified(node) => ProvenanceSubject::QualifiedNode(node),
+        };
+        let mut supporters = vec![remap_cause(canceled, self.scope), replacement];
+        supporters.sort();
+        supporters.dedup();
+        push_record(
+            self.scope,
+            records,
+            ProvenanceRecord::Derived {
+                subject,
+                supporters,
+            },
+        )
+    }
 }
 
 /// One committed external output event.
@@ -2154,9 +2180,18 @@ fn schedule_pulse_delays<D>(
                 )?;
             }
             Proposal::Inertial(proposal) => {
+                let scheduling_cause = match inertial_proposal_causes.get(&proposal.node).copied() {
+                    Some(cause) => cause,
+                    None => panic!("every InertialDelay proposal must retain a scheduling cause"),
+                };
                 if let Some(canceled) = remove_inertial_candidate(scheduling.pending, proposal.node)
                 {
-                    cancellation_causes.insert(proposal.node, canceled.cause);
+                    let cancellation = provenance.append_inertial_cancellation(
+                        scheduling.compiled.node_subject(proposal.node),
+                        canceled.cause,
+                        scheduling_cause,
+                    );
+                    cancellation_causes.insert(proposal.node, cancellation);
                 }
                 if proposal.target == proposal.output {
                     continue;
@@ -2179,10 +2214,6 @@ fn schedule_pulse_delays<D>(
                             consumed: u64::MAX,
                         })
                     })?;
-                let scheduling_cause = match inertial_proposal_causes.get(&proposal.node).copied() {
-                    Some(cause) => cause,
-                    None => panic!("every InertialDelay proposal must retain a scheduling cause"),
-                };
                 let mut pending = PendingInertialDelay {
                     key,
                     node: proposal.node,
