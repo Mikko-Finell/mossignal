@@ -24,7 +24,7 @@ mod validation;
 pub use authored::{
     ConflictPolicy, EdgeConfig, EdgeDetectorKind, EdgeInitialization, EdgeObservation,
     LevelSetResetConfig, ModuleBinding, ModuleBindingSet, ModuleInstanceDef, PulseDelayConfig,
-    PulseSetResetConfig, SampleHoldConfig, ToggleConfig,
+    PulseSetResetConfig, SampleHoldConfig, ToggleConfig, TransportDelayConfig,
 };
 pub use binding::{
     BindingFailure, BindingSet, BindingSetBuilder, BoundApplyFailure, BoundMachine,
@@ -51,11 +51,12 @@ pub use machine::{
     LevelSetResetLatchInspection, LevelSetResetLatchInspectionFailure, Machine, MachineStatus,
     ModuleInputInspection, ModuleInspection, ModuleInspectionFailure, ModuleNodeInspection,
     ModuleOutputInspection, ModulePendingPulseDelayInspection, NetworkRevision, PendingEventKey,
-    PendingPulseDelayInspection, PulseDelayDefinitionInspection, PulseDelayInspection,
-    PulseDelayInspectionFailure, PulseSetResetLatchDefinitionInspection,
+    PendingPulseDelayInspection, PendingTransportDelayInspection, PulseDelayDefinitionInspection,
+    PulseDelayInspection, PulseDelayInspectionFailure, PulseSetResetLatchDefinitionInspection,
     PulseSetResetLatchInspection, PulseSetResetLatchInspectionFailure,
     SampleHoldDefinitionInspection, SampleHoldInspection, SampleHoldInspectionFailure, Schedule,
     ScheduleFailure, ToggleDefinitionInspection, ToggleInspection, ToggleInspectionFailure,
+    TransportDelayDefinitionInspection, TransportDelayInspection, TransportDelayInspectionFailure,
 };
 pub use module::{
     DefinitionGraphView, ModuleDef, ModuleInputIter, ModuleOrigin, ModuleOutputIter, NodeSubject,

@@ -26,6 +26,7 @@ pub(crate) enum SemanticNodeKind {
     LevelSetResetLatch,
     SampleHold,
     PulseDelay,
+    TransportDelay,
 }
 
 impl SemanticNodeKind {
@@ -52,6 +53,7 @@ impl SemanticNodeKind {
             Self::LevelSetResetLatch => "level_set_reset_latch",
             Self::SampleHold => "sample_hold",
             Self::PulseDelay => "pulse_delay",
+            Self::TransportDelay => "transport_delay",
         }
     }
 }
@@ -60,11 +62,13 @@ impl SemanticNodeKind {
 pub(crate) enum StateFamily {
     EdgeObservation,
     StoredLevel,
+    TransportLevel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TemporalFamily {
     PendingPulseGroup,
+    PendingTransportTransition,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,6 +307,10 @@ const PULSE_DELAY_INPUT: &[InputPortSchema] = &[InputPortSchema::future_only(
     InputPortRole::PulseDelay,
     SignalKind::Pulse,
 )];
+const TRANSPORT_DELAY_INPUT: &[InputPortSchema] = &[InputPortSchema::future_only(
+    InputPortRole::TransportDelay,
+    SignalKind::Level,
+)];
 
 const LEVEL_OUTPUT: &[OutputPortSchema] = &[OutputPortSchema::new(
     OutputPortRole::Output,
@@ -395,6 +403,11 @@ pub(crate) const fn schema_for_kind(kind: SemanticNodeKind) -> NodeSchema {
             temporal_family: Some(TemporalFamily::PendingPulseGroup),
             ..fixed(kind, PULSE_DELAY_INPUT, PULSE_OUTPUT)
         },
+        SemanticNodeKind::TransportDelay => NodeSchema {
+            state_family: Some(StateFamily::TransportLevel),
+            temporal_family: Some(TemporalFamily::PendingTransportTransition),
+            ..fixed(kind, TRANSPORT_DELAY_INPUT, LEVEL_OUTPUT)
+        },
     }
 }
 
@@ -424,6 +437,7 @@ pub(crate) const fn node_schema<D>(kind: &NodeKind<D>) -> NodeSchema {
         NodeKind::LevelSetResetLatch(_) => SemanticNodeKind::LevelSetResetLatch,
         NodeKind::SampleHold(_) => SemanticNodeKind::SampleHold,
         NodeKind::PulseDelay(_) => SemanticNodeKind::PulseDelay,
+        NodeKind::TransportDelay(_) => SemanticNodeKind::TransportDelay,
     };
     schema_for_kind(semantic_kind)
 }
@@ -467,6 +481,7 @@ mod tests {
             )),
             NodeKind::sample_hold(crate::SampleHoldConfig::new(LogicLevel::Low)),
             NodeKind::pulse_delay(delay),
+            NodeKind::transport_delay(delay, LogicLevel::Low),
         ]
     }
 
@@ -573,6 +588,13 @@ mod tests {
             pulse_output(),
         );
         pulse_delay.temporal = Some(TemporalFamily::PendingPulseGroup);
+        let mut transport_delay = fixed(
+            NodeKind::transport_delay(delay, LogicLevel::Low),
+            vec![(InputPortRole::TransportDelay, SignalKind::Level, false)],
+            level_output(),
+        );
+        transport_delay.state = Some(StateFamily::TransportLevel);
+        transport_delay.temporal = Some(TemporalFamily::PendingTransportTransition);
 
         vec![
             fixed(
@@ -667,13 +689,14 @@ mod tests {
             level_latch,
             sample_hold,
             pulse_delay,
+            transport_delay,
         ]
     }
 
     #[test]
     fn every_closed_node_kind_has_one_distinct_schema_identity() {
         let schemas: Vec<_> = every_kind().iter().map(node_schema).collect();
-        assert_eq!(schemas.len(), 21);
+        assert_eq!(schemas.len(), 22);
         assert_eq!(
             schemas
                 .iter()
@@ -695,7 +718,7 @@ mod tests {
     #[test]
     fn every_closed_node_kind_matches_the_complete_schema_matrix() {
         let cases = schema_cases();
-        assert_eq!(cases.len(), 21);
+        assert_eq!(cases.len(), 22);
         for case in cases {
             let schema = node_schema(&case.kind);
             assert_eq!(schema.expected_input_count(), case.expected_input_count);

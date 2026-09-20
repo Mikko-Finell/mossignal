@@ -585,7 +585,7 @@ Explicitly exclude:
 
 ---
 
-## 46. [IN PROGRESS] `TransportDelay`
+## 46. [DONE] `TransportDelay`
 
 Add the first temporal Level-to-Level primitive on the accepted event calendar:
 

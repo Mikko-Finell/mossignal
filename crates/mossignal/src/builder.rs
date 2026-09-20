@@ -4,8 +4,8 @@ use crate::authored::{
     ConnectionDef, ConnectionEndpoint, EdgeConfig, ExternalInputDef, ExternalOutputDef,
     LevelSetResetConfig, ModuleBinding, ModuleBindingSet, ModuleInputDef, ModuleInstanceDef,
     ModuleInterfaceMapping, ModuleOutputDef, NodeDef, NodeKind, NodePorts, OutputPortRole,
-    PulseDelayConfig, PulseSetResetConfig, SampleHoldConfig, ToggleConfig, UncheckedModule,
-    UncheckedNetwork,
+    PulseDelayConfig, PulseSetResetConfig, SampleHoldConfig, ToggleConfig, TransportDelayConfig,
+    UncheckedModule, UncheckedNetwork,
 };
 use crate::diagnostics::Report;
 use crate::diagnostics::{
@@ -1882,6 +1882,85 @@ impl<D> NetworkBuilder<D> {
         self.connections.push(ConnectionDef::new(
             self.allocator.connection(),
             source_endpoint_pulse(input.source),
+            ConnectionEndpoint::node_input(input_port.into()),
+            DiagnosticMeta::default(),
+        ));
+        Ok(AddedNode {
+            key,
+            outputs: self.signal(SignalSourceKey::NodeOutput(output_port)),
+        })
+    }
+
+    /// Adds a TransportDelay with locally allocated stable identities.
+    pub fn transport_delay(
+        &mut self,
+        input: Signal<Level>,
+        config: TransportDelayConfig<D>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        let key = self.next_node_key();
+        let input_port = self.next_in_port_key();
+        let output_port = self.next_out_port_key();
+        Ok(self
+            .add_transport_delay_with_ports(
+                key,
+                input_port,
+                output_port,
+                input,
+                config,
+                DiagnosticMeta::default(),
+            )?
+            .into_outputs())
+    }
+
+    /// Adds an explicitly keyed TransportDelay with locally allocated ports.
+    pub fn add_transport_delay(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Level>,
+        config: TransportDelayConfig<D>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        let input_port = self.next_in_port_key();
+        let output_port = self.next_out_port_key();
+        self.add_transport_delay_with_ports(key, input_port, output_port, input, config, meta)
+    }
+
+    /// Adds an explicitly keyed TransportDelay with exact fixed port identities.
+    pub fn add_transport_delay_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Level>,
+        output_port: OutPortKey<Level>,
+        input: Signal<Level>,
+        config: TransportDelayConfig<D>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.require_local(input)?;
+        if self.node_keys.contains(&key) {
+            return Err(AuthoringFailure::DuplicateNodeKey(key));
+        }
+        if self.in_port_keys.contains(&input_port) {
+            return Err(AuthoringFailure::DuplicateInPortKey(input_port));
+        }
+        if self.out_port_keys.contains(&output_port) {
+            return Err(AuthoringFailure::DuplicateOutPortKey(output_port));
+        }
+        self.node_keys.insert(key);
+        self.in_port_keys.insert(input_port);
+        self.out_port_keys.insert(output_port);
+        self.nodes.push(NodeDef::new(
+            key,
+            NodeKind::TransportDelay(config),
+            NodePorts::with_input_roles(
+                vec![input_port.into()],
+                vec![crate::authored::InputPortRole::TransportDelay],
+                vec![output_port.into()],
+            ),
+            meta,
+        ));
+        self.connections.push(ConnectionDef::new(
+            self.allocator.connection(),
+            source_endpoint(input.source),
             ConnectionEndpoint::node_input(input_port.into()),
             DiagnosticMeta::default(),
         ));
@@ -4206,6 +4285,44 @@ impl<D> ModuleBuilder<D> {
         self.graph.require_local(input)?;
         self.graph
             .add_pulse_delay_with_ports(key, input_port, output_port, input, config, meta)
+    }
+
+    /// Adds a TransportDelay.
+    pub fn transport_delay(
+        &mut self,
+        input: Signal<Level>,
+        config: TransportDelayConfig<D>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph.transport_delay(input, config)
+    }
+
+    /// Adds an explicitly keyed TransportDelay with locally allocated ports.
+    pub fn add_transport_delay(
+        &mut self,
+        key: NodeKey,
+        input: Signal<Level>,
+        config: TransportDelayConfig<D>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.require_unused_node_key(key)?;
+        self.graph.add_transport_delay(key, input, config, meta)
+    }
+
+    /// Adds an explicitly keyed TransportDelay with exact ports.
+    pub fn add_transport_delay_with_ports(
+        &mut self,
+        key: NodeKey,
+        input_port: InPortKey<Level>,
+        output_port: OutPortKey<Level>,
+        input: Signal<Level>,
+        config: TransportDelayConfig<D>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Level>>, AuthoringFailure> {
+        self.graph.require_local(input)?;
+        self.graph
+            .add_transport_delay_with_ports(key, input_port, output_port, input, config, meta)
     }
 
     /// Consumes the builder into the canonical unchecked user-module definition.

@@ -7,12 +7,12 @@ use mossignal::key::{
     SignalSourceKey,
 };
 use mossignal::metadata::DiagnosticMeta;
-use mossignal::signal::{Pulse, PulseCount};
+use mossignal::signal::{Level, LogicLevel, Pulse, PulseCount};
 use mossignal::time::{NonZeroSpan, Time};
 use mossignal::{
     CauseInspection, CauseRef, NetworkBuilder, NodeSubject, OutputEvent, ProvenanceView,
     PulseDelayConfig, RuntimeFailureEvidence, RuntimePolicy, RuntimePolicyLimit, Schedule,
-    TimeDomainId, Transaction,
+    TimeDomainId, Transaction, TransportDelayConfig,
 };
 
 #[derive(Debug, PartialEq)]
@@ -74,6 +74,106 @@ fn delay_fixture(delay_ticks: u64) -> DelayFixture {
         .require_artifact()
         .unwrap_or_else(|failure| panic!("PulseDelay must compile: {failure:?}"));
     DelayFixture {
+        compiled,
+        input,
+        output,
+        node,
+    }
+}
+
+struct TransportFixture {
+    compiled: mossignal::CompiledNetwork<TestDomain>,
+    input: ExternalInputKey<Level>,
+    output: ExternalOutputKey<Level>,
+    node: NodeKey,
+}
+
+fn transport_fixture(initial: LogicLevel, delay_ticks: u64) -> TransportFixture {
+    let mut builder =
+        NetworkBuilder::with_key(NetworkKey::from_u128(101), TimeDomainId::from_u128(2));
+    let input = ExternalInputKey::from_u128(110);
+    let signal = builder
+        .add_level_input(input, DiagnosticMeta::default())
+        .unwrap_or_else(|failure| panic!("level input must author: {failure:?}"));
+    let node = NodeKey::from_u128(120);
+    let delayed = builder
+        .add_transport_delay_with_ports(
+            node,
+            InPortKey::from_u128(130),
+            OutPortKey::from_u128(131),
+            signal,
+            TransportDelayConfig::new(
+                NonZeroSpan::from_ticks(delay_ticks)
+                    .unwrap_or_else(|failure| panic!("delay must be positive: {failure}")),
+                initial,
+            ),
+            DiagnosticMeta::default(),
+        )
+        .unwrap_or_else(|failure| panic!("TransportDelay must author: {failure:?}"))
+        .into_outputs();
+    let output = ExternalOutputKey::from_u128(140);
+    builder
+        .add_level_output(output, delayed, DiagnosticMeta::default())
+        .unwrap_or_else(|failure| panic!("level output must author: {failure:?}"));
+    let compiled = builder
+        .finish()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("TransportDelay must validate: {failure:?}"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("TransportDelay must compile: {failure:?}"));
+    TransportFixture {
+        compiled,
+        input,
+        output,
+        node,
+    }
+}
+
+fn transport_chain_fixture(first_delay: u64, second_delay: u64) -> TransportFixture {
+    let mut builder =
+        NetworkBuilder::with_key(NetworkKey::from_u128(201), TimeDomainId::from_u128(2));
+    let input = ExternalInputKey::from_u128(210);
+    let signal = builder
+        .add_level_input(input, DiagnosticMeta::default())
+        .unwrap();
+    let first = builder
+        .add_transport_delay(
+            NodeKey::from_u128(220),
+            signal,
+            TransportDelayConfig::new(
+                NonZeroSpan::from_ticks(first_delay).unwrap(),
+                LogicLevel::Low,
+            ),
+            DiagnosticMeta::default(),
+        )
+        .unwrap()
+        .into_outputs();
+    let node = NodeKey::from_u128(221);
+    let second = builder
+        .add_transport_delay(
+            node,
+            first,
+            TransportDelayConfig::new(
+                NonZeroSpan::from_ticks(second_delay).unwrap(),
+                LogicLevel::Low,
+            ),
+            DiagnosticMeta::default(),
+        )
+        .unwrap()
+        .into_outputs();
+    let output = ExternalOutputKey::from_u128(240);
+    builder
+        .add_level_output(output, second, DiagnosticMeta::default())
+        .unwrap();
+    let compiled = builder
+        .finish()
+        .require_artifact()
+        .unwrap()
+        .compile()
+        .require_artifact()
+        .unwrap();
+    TransportFixture {
         compiled,
         input,
         output,
@@ -294,6 +394,596 @@ fn pulse_delay_schedules_exact_future_work_and_fires_once() {
             pending.event().value()
         ));
     }
+}
+
+#[test]
+fn transport_delay_preserves_reversals_and_due_work_at_target_time() {
+    let TransportFixture {
+        compiled,
+        input,
+        output,
+        node,
+    } = transport_fixture(LogicLevel::Low, 5);
+    let mut machine = compiled.spawn(generous_policy());
+    let initialized = machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(10),
+            machine.revision(),
+            compiled
+                .input_snapshot()
+                .set(input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    assert!(matches!(
+        initialized.output_events(),
+        [OutputEvent::LevelEstablished {
+            output: actual,
+            value: LogicLevel::Low,
+            at,
+            ..
+        }] if *actual == output && *at == Time::from_ticks(10)
+    ));
+    assert_eq!(machine.next_deadline(), Ok(Some(Time::from_ticks(15))));
+    let inspection = machine.inspect_transport_delay(node).unwrap();
+    assert_eq!(inspection.initial(), LogicLevel::Low);
+    assert_eq!(inspection.remembered_input(), LogicLevel::High);
+    assert_eq!(inspection.committed(), LogicLevel::Low);
+    assert_eq!(inspection.input(), LogicLevel::High);
+    assert_eq!(inspection.pending().len(), 1);
+    assert_eq!(inspection.pending()[0].target(), LogicLevel::High);
+    assert_eq!(inspection.pending()[0].origin(), Time::from_ticks(10));
+
+    let reversal = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(12),
+            machine.revision(),
+            compiled
+                .input_delta()
+                .set(input, LogicLevel::Low)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    assert!(reversal.output_events().is_empty());
+
+    let jumped = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(17),
+            machine.revision(),
+            compiled
+                .input_delta()
+                .set(input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    let changes = jumped
+        .output_events()
+        .iter()
+        .map(|event| match event {
+            OutputEvent::LevelChanged {
+                output: actual,
+                to,
+                at,
+                ..
+            } => (*actual, *to, *at),
+            _ => panic!("jumped TransportDelay must publish only level changes"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        changes,
+        vec![
+            (output, LogicLevel::High, Time::from_ticks(15)),
+            (output, LogicLevel::Low, Time::from_ticks(17)),
+        ]
+    );
+    let final_inspection = machine.inspect_transport_delay(node).unwrap();
+    assert_eq!(final_inspection.remembered_input(), LogicLevel::High);
+    assert_eq!(final_inspection.committed(), LogicLevel::Low);
+    assert_eq!(final_inspection.input(), LogicLevel::High);
+    assert_eq!(final_inspection.pending().len(), 1);
+    assert_eq!(
+        final_inspection.pending()[0].deadline(),
+        Time::from_ticks(22)
+    );
+}
+
+#[test]
+fn transport_delay_initial_state_is_shared_by_input_memory_and_output() {
+    for initial in [LogicLevel::Low, LogicLevel::High] {
+        for first in [LogicLevel::Low, LogicLevel::High] {
+            let fixture = transport_fixture(initial, 7);
+            let mut machine = fixture.compiled.spawn(generous_policy());
+            let result = machine
+                .apply(Transaction::initialize(
+                    Time::from_ticks(11),
+                    machine.revision(),
+                    fixture
+                        .compiled
+                        .input_snapshot()
+                        .set(fixture.input, first)
+                        .unwrap()
+                        .finish()
+                        .unwrap(),
+                ))
+                .unwrap();
+            assert!(matches!(result.output_events(),
+                [OutputEvent::LevelEstablished { value, at, .. }]
+                    if *value == initial && *at == Time::from_ticks(11)
+            ));
+            let observed = machine.inspect_transport_delay(fixture.node).unwrap();
+            assert_eq!(observed.initial(), initial);
+            assert_eq!(observed.output(), initial);
+            assert_eq!(observed.remembered_input(), first);
+            assert_eq!(observed.pending().len(), usize::from(first != initial));
+            if first != initial {
+                assert_eq!(observed.pending()[0].target(), first);
+                assert_eq!(observed.pending()[0].deadline(), Time::from_ticks(18));
+            }
+        }
+    }
+}
+
+#[test]
+fn transport_delay_matches_reference_recurrence_across_input_histories() {
+    for initial in [LogicLevel::Low, LogicLevel::High] {
+        for delay in [1_u64, 3, 7] {
+            let fixture = transport_fixture(initial, delay);
+            for seed in 0_u64..8 {
+                let mut machine = fixture.compiled.spawn(generous_policy());
+                let mut time = seed + 2;
+                let mut remembered = if seed % 2 == 0 {
+                    initial
+                } else {
+                    initial.invert()
+                };
+                let mut output = initial;
+                let mut pending = Vec::<(u64, u64, LogicLevel)>::new();
+                if remembered != initial {
+                    pending.push((time, time + delay, remembered));
+                }
+                machine
+                    .apply(Transaction::initialize(
+                        Time::from_ticks(time),
+                        machine.revision(),
+                        fixture
+                            .compiled
+                            .input_snapshot()
+                            .set(fixture.input, remembered)
+                            .unwrap()
+                            .finish()
+                            .unwrap(),
+                    ))
+                    .unwrap();
+                for step in 0_u64..20 {
+                    time += 1 + ((seed * 3 + step * 5) % 4);
+                    let mut expected_events = Vec::new();
+                    pending.sort_by_key(|(_, deadline, _)| *deadline);
+                    while pending
+                        .first()
+                        .is_some_and(|(_, deadline, _)| *deadline <= time)
+                    {
+                        let (_, deadline, target) = pending.remove(0);
+                        if target != output {
+                            expected_events.push((deadline, target));
+                        }
+                        output = target;
+                    }
+                    let input = if (seed + step * 7) % 3 == 0 {
+                        remembered.invert()
+                    } else {
+                        remembered
+                    };
+                    if input != remembered {
+                        pending.push((time, time + delay, input));
+                    }
+                    remembered = input;
+                    let result = machine
+                        .apply(Transaction::advance(
+                            Time::from_ticks(time),
+                            machine.revision(),
+                            fixture
+                                .compiled
+                                .input_delta()
+                                .set(fixture.input, input)
+                                .unwrap()
+                                .finish()
+                                .unwrap(),
+                        ))
+                        .unwrap();
+                    let actual_events = result
+                        .output_events()
+                        .iter()
+                        .map(|event| match event {
+                            OutputEvent::LevelChanged { at, to, .. } => (at.ticks(), *to),
+                            _ => panic!("reference history may publish only LevelChanged events"),
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        actual_events, expected_events,
+                        "initial={initial:?}, delay={delay}, seed={seed}, step={step}"
+                    );
+                    let observed = machine.inspect_transport_delay(fixture.node).unwrap();
+                    assert_eq!(observed.output(), output);
+                    assert_eq!(observed.remembered_input(), remembered);
+                    let mut expected_pending = pending.clone();
+                    expected_pending.sort_by_key(|(_, deadline, _)| *deadline);
+                    let actual_pending = observed
+                        .pending()
+                        .iter()
+                        .map(|event| {
+                            (
+                                event.origin().ticks(),
+                                event.deadline().ticks(),
+                                event.target(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(actual_pending, expected_pending);
+                    assert_eq!(
+                        machine.next_deadline().unwrap().map(|next| next.ticks()),
+                        expected_pending.first().map(|(_, deadline, _)| *deadline)
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn transport_delay_latest_output_transition_survives_later_reactions() {
+    let fixture = transport_fixture(LogicLevel::Low, 5);
+    let mut machine = fixture.compiled.spawn(generous_policy());
+    machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            fixture
+                .compiled
+                .input_snapshot()
+                .set(fixture.input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    let initial = machine.inspect_transport_delay(fixture.node).unwrap();
+    assert_eq!(initial.latest_transition(), initial.current_support());
+
+    machine
+        .apply(Transaction::advance(
+            Time::from_ticks(5),
+            machine.revision(),
+            fixture.compiled.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+    let matured = machine.inspect_transport_delay(fixture.node).unwrap();
+    assert_eq!(matured.output(), LogicLevel::High);
+    assert_eq!(matured.latest_transition(), matured.current_support());
+    machine
+        .apply(Transaction::advance(
+            Time::from_ticks(6),
+            machine.revision(),
+            fixture.compiled.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+    let retained = machine.inspect_transport_delay(fixture.node).unwrap();
+    assert_ne!(retained.current_support(), retained.latest_transition());
+    assert!(matches!(
+        retained.provenance().inspect(retained.current_support()).unwrap(),
+        CauseInspection::Derived { supporters, .. }
+            if supporters.contains(&retained.latest_transition())
+    ));
+    assert!(matches!(
+        retained.provenance().inspect(retained.latest_transition()).unwrap(),
+        CauseInspection::Derived { supporters, .. }
+            if supporters.iter().any(|cause| matches!(
+                retained.provenance().inspect(*cause).unwrap(),
+                CauseInspection::PendingTransportDelay { .. }
+            ))
+    ));
+}
+
+#[test]
+fn mixed_temporal_events_allocate_keys_in_stable_owner_order() {
+    let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(2));
+    let level_input = ExternalInputKey::<Level>::from_u128(1);
+    let pulse_input = ExternalInputKey::<Pulse>::from_u128(2);
+    let level = builder
+        .add_level_input(level_input, DiagnosticMeta::default())
+        .unwrap();
+    let pulse = builder
+        .add_pulse_input(pulse_input, DiagnosticMeta::default())
+        .unwrap();
+    let pulse_node = NodeKey::from_u128(200);
+    let pulse_output = builder
+        .add_pulse_delay(
+            pulse_node,
+            pulse,
+            PulseDelayConfig::new(NonZeroSpan::from_ticks(5).unwrap()),
+            DiagnosticMeta::default(),
+        )
+        .unwrap()
+        .into_outputs();
+    let transport_node = NodeKey::from_u128(100);
+    let level_output = builder
+        .add_transport_delay(
+            transport_node,
+            level,
+            TransportDelayConfig::new(NonZeroSpan::from_ticks(5).unwrap(), LogicLevel::Low),
+            DiagnosticMeta::default(),
+        )
+        .unwrap()
+        .into_outputs();
+    builder
+        .add_pulse_output(
+            ExternalOutputKey::from_u128(3),
+            pulse_output,
+            DiagnosticMeta::default(),
+        )
+        .unwrap();
+    builder
+        .add_level_output(
+            ExternalOutputKey::from_u128(4),
+            level_output,
+            DiagnosticMeta::default(),
+        )
+        .unwrap();
+    let compiled = builder
+        .finish()
+        .require_artifact()
+        .unwrap()
+        .compile()
+        .require_artifact()
+        .unwrap();
+    let mut constrained = compiled.spawn(policy([100, 10_000, 1, 100, 100_000]));
+    let failure = constrained
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            constrained.revision(),
+            compiled
+                .input_snapshot()
+                .set(level_input, LogicLevel::High)
+                .unwrap()
+                .pulse(pulse_input, PulseCount::ONE)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .expect_err("the shared pending-event budget counts both temporal kinds");
+    assert!(matches!(
+        failure.evidence(),
+        RuntimeFailureEvidence::BudgetExceeded {
+            budget: RuntimePolicyLimit::MaxPendingEvents,
+            consumed: 2,
+            ..
+        }
+    ));
+    assert!(!constrained.is_initialized());
+    let mut machine = compiled.spawn(generous_policy());
+    machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            compiled
+                .input_snapshot()
+                .set(level_input, LogicLevel::High)
+                .unwrap()
+                .pulse(pulse_input, PulseCount::ONE)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(
+        machine
+            .inspect_transport_delay(transport_node)
+            .unwrap()
+            .pending()[0]
+            .event()
+            .value(),
+        0
+    );
+    assert_eq!(
+        machine.inspect_pulse_delay(pulse_node).unwrap().pending()[0]
+            .event()
+            .value(),
+        1
+    );
+}
+
+#[test]
+fn transport_chain_direct_jump_matches_internal_deadline_steps() {
+    let fixture = transport_chain_fixture(3, 4);
+    let mut jumped = fixture.compiled.spawn(generous_policy());
+    let mut stepped = fixture.compiled.spawn(generous_policy());
+    for machine in [&mut jumped, &mut stepped] {
+        machine
+            .apply(Transaction::initialize(
+                Time::from_ticks(2),
+                machine.revision(),
+                fixture
+                    .compiled
+                    .input_snapshot()
+                    .set(fixture.input, LogicLevel::High)
+                    .unwrap()
+                    .finish()
+                    .unwrap(),
+            ))
+            .unwrap();
+    }
+    let direct = jumped
+        .apply(Transaction::advance(
+            Time::from_ticks(10),
+            jumped.revision(),
+            fixture.compiled.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+    let at_first = stepped
+        .apply(Transaction::advance(
+            Time::from_ticks(5),
+            stepped.revision(),
+            fixture.compiled.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+    assert!(at_first.output_events().is_empty());
+    assert_eq!(
+        stepped
+            .inspect_transport_delay(fixture.node)
+            .unwrap()
+            .pending()[0]
+            .deadline(),
+        Time::from_ticks(9)
+    );
+    let at_second = stepped
+        .apply(Transaction::advance(
+            Time::from_ticks(9),
+            stepped.revision(),
+            fixture.compiled.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+    let at_target = stepped
+        .apply(Transaction::advance(
+            Time::from_ticks(10),
+            stepped.revision(),
+            fixture.compiled.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+    assert!(at_target.output_events().is_empty());
+    for events in [direct.output_events(), at_second.output_events()] {
+        assert!(matches!(events,
+            [OutputEvent::LevelChanged { output, to: LogicLevel::High, at, .. }]
+                if *output == fixture.output && *at == Time::from_ticks(9)
+        ));
+    }
+    for machine in [&jumped, &stepped] {
+        let observed = machine.inspect_transport_delay(fixture.node).unwrap();
+        assert_eq!(observed.output(), LogicLevel::High);
+        assert_eq!(observed.remembered_input(), LogicLevel::High);
+        assert!(observed.pending().is_empty());
+        assert_eq!(machine.schedule(), Ok(Schedule::Dormant));
+        assert!(matches!(
+            observed.provenance().inspect(observed.current_support()).unwrap(),
+            CauseInspection::Derived { supporters, .. }
+                if supporters.contains(&observed.latest_transition())
+        ));
+    }
+}
+
+#[test]
+fn transport_chain_late_overflow_rolls_back_earlier_internal_deadline() {
+    let fixture = transport_chain_fixture(2, 5);
+    let mut machine = fixture.compiled.spawn(generous_policy());
+    let start = Time::from_ticks(u64::MAX - 6);
+    machine
+        .apply(Transaction::initialize(
+            start,
+            machine.revision(),
+            fixture
+                .compiled
+                .input_snapshot()
+                .set(fixture.input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    let before = machine
+        .inspect_transport_delay(NodeKey::from_u128(220))
+        .unwrap();
+    let pending_key = before.pending()[0].event();
+    let failure = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(u64::MAX - 3),
+            machine.revision(),
+            fixture.compiled.input_delta().finish().unwrap(),
+        ))
+        .expect_err("second TransportDelay scheduling overflows after the first internal deadline");
+    assert!(matches!(
+        failure.evidence(),
+        RuntimeFailureEvidence::TransportTimeOverflow { .. }
+    ));
+    assert_eq!(machine.now(), Some(start));
+    assert_eq!(
+        machine.next_deadline(),
+        Ok(Some(Time::from_ticks(u64::MAX - 4)))
+    );
+    let after = machine
+        .inspect_transport_delay(NodeKey::from_u128(220))
+        .unwrap();
+    assert_eq!(after.output(), LogicLevel::Low);
+    assert_eq!(after.pending()[0].event(), pending_key);
+    assert_eq!(
+        machine
+            .inspect_transport_delay(fixture.node)
+            .unwrap()
+            .output(),
+        LogicLevel::Low
+    );
+}
+
+#[test]
+fn transport_delay_overflow_and_event_budget_are_atomic() {
+    let TransportFixture {
+        compiled,
+        input,
+        node,
+        ..
+    } = transport_fixture(LogicLevel::Low, 2);
+    let mut overflow = compiled.spawn(generous_policy());
+    let failure = overflow
+        .apply(Transaction::initialize(
+            Time::from_ticks(u64::MAX - 1),
+            overflow.revision(),
+            compiled
+                .input_snapshot()
+                .set(input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .expect_err("TransportDelay deadline overflow must reject initialization");
+    assert_eq!(
+        failure.evidence(),
+        &RuntimeFailureEvidence::TransportTimeOverflow {
+            node: NodeSubject::Node(node),
+            origin_ticks: u64::MAX - 1,
+            delay_ticks: 2,
+        }
+    );
+    assert_eq!(overflow.now(), None);
+    assert_eq!(
+        overflow.next_deadline(),
+        Err(mossignal::ScheduleFailure::NotInitialized)
+    );
+
+    let mut budget = compiled.spawn(policy([100, 10_000, 0, 0, 10_000]));
+    let failure = budget
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            budget.revision(),
+            compiled
+                .input_snapshot()
+                .set(input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .expect_err("TransportDelay event budget must reject initialization");
+    assert!(matches!(
+        failure.evidence(),
+        RuntimeFailureEvidence::BudgetExceeded {
+            budget: RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
+            consumed: 1,
+            ..
+        }
+    ));
+    assert!(!budget.is_initialized());
 }
 
 #[test]

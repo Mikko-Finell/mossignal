@@ -138,6 +138,39 @@ impl<D> Clone for PendingPulseDelay<D> {
 
 impl<D> Copy for PendingPulseDelay<D> {}
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PendingTransportDelay<D> {
+    pub(crate) key: PendingEventKey,
+    pub(crate) node: NodeKey,
+    pub(crate) origin: Time<D>,
+    pub(crate) deadline: Time<D>,
+    pub(crate) target: LogicLevel,
+    pub(crate) revision: NetworkRevision,
+    pub(crate) cause: CauseRef,
+}
+
+impl<D> Clone for PendingTransportDelay<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<D> Copy for PendingTransportDelay<D> {}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PendingEvent<D> {
+    PulseDelay(PendingPulseDelay<D>),
+    TransportDelay(PendingTransportDelay<D>),
+}
+
+impl<D> Clone for PendingEvent<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<D> Copy for PendingEvent<D> {}
+
 /// Structural information available for one compiled PulseDelay.
 pub struct PulseDelayDefinitionInspection<D> {
     node: NodeKey,
@@ -213,6 +246,226 @@ pub struct PulseDelayInspection<D> {
     at: Time<D>,
     pending: Vec<PendingPulseDelayInspection<D>>,
     next_deadline: Option<Time<D>>,
+}
+
+/// Structural information available for one compiled TransportDelay.
+pub struct TransportDelayDefinitionInspection<D> {
+    node: NodeKey,
+    delay: NonZeroSpan<D>,
+    initial: LogicLevel,
+}
+
+impl<D> TransportDelayDefinitionInspection<D> {
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+
+    #[must_use]
+    pub const fn delay(&self) -> NonZeroSpan<D> {
+        self.delay
+    }
+
+    #[must_use]
+    pub const fn initial(&self) -> LogicLevel {
+        self.initial
+    }
+}
+
+/// One owned observation of a pending TransportDelay transition.
+pub struct PendingTransportDelayInspection<D> {
+    event: PendingEventKey,
+    node: NodeKey,
+    origin: Time<D>,
+    deadline: Time<D>,
+    target: LogicLevel,
+    revision: NetworkRevision,
+    cause: CauseRef,
+}
+
+impl<D> Clone for PendingTransportDelayInspection<D> {
+    fn clone(&self) -> Self {
+        Self {
+            event: self.event,
+            node: self.node,
+            origin: self.origin,
+            deadline: self.deadline,
+            target: self.target,
+            revision: self.revision,
+            cause: self.cause,
+        }
+    }
+}
+
+impl<D> PendingTransportDelayInspection<D> {
+    #[must_use]
+    pub const fn event(&self) -> PendingEventKey {
+        self.event
+    }
+
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+
+    #[must_use]
+    pub const fn origin(&self) -> Time<D> {
+        self.origin
+    }
+
+    #[must_use]
+    pub const fn deadline(&self) -> Time<D> {
+        self.deadline
+    }
+
+    #[must_use]
+    pub const fn target(&self) -> LogicLevel {
+        self.target
+    }
+
+    #[must_use]
+    pub const fn revision(&self) -> NetworkRevision {
+        self.revision
+    }
+
+    #[must_use]
+    pub const fn cause(&self) -> CauseRef {
+        self.cause
+    }
+}
+
+/// One owned ready-machine observation of TransportDelay state and pending work.
+pub struct TransportDelayInspection<D> {
+    node: NodeSubject,
+    delay: NonZeroSpan<D>,
+    initial: LogicLevel,
+    remembered_input: LogicLevel,
+    committed: LogicLevel,
+    input: LogicLevel,
+    revision: NetworkRevision,
+    at: Time<D>,
+    latest_transition: CauseRef,
+    current_support: CauseRef,
+    pending: Vec<PendingTransportDelayInspection<D>>,
+    next_deadline: Option<Time<D>>,
+    provenance: ProvenanceView<D>,
+}
+
+impl<D> Clone for TransportDelayInspection<D> {
+    fn clone(&self) -> Self {
+        Self {
+            node: self.node.clone(),
+            delay: self.delay,
+            initial: self.initial,
+            remembered_input: self.remembered_input,
+            committed: self.committed,
+            input: self.input,
+            revision: self.revision,
+            at: self.at,
+            latest_transition: self.latest_transition,
+            current_support: self.current_support,
+            pending: self.pending.clone(),
+            next_deadline: self.next_deadline,
+            provenance: self.provenance.clone(),
+        }
+    }
+}
+
+impl<D> TransportDelayInspection<D> {
+    #[must_use]
+    pub const fn node(&self) -> &NodeSubject {
+        &self.node
+    }
+    #[must_use]
+    pub const fn delay(&self) -> NonZeroSpan<D> {
+        self.delay
+    }
+    #[must_use]
+    pub const fn initial(&self) -> LogicLevel {
+        self.initial
+    }
+    #[must_use]
+    pub const fn remembered_input(&self) -> LogicLevel {
+        self.remembered_input
+    }
+    #[must_use]
+    pub const fn committed(&self) -> LogicLevel {
+        self.committed
+    }
+    #[must_use]
+    pub const fn output(&self) -> LogicLevel {
+        self.committed
+    }
+    #[must_use]
+    pub const fn input(&self) -> LogicLevel {
+        self.input
+    }
+    #[must_use]
+    pub const fn revision(&self) -> NetworkRevision {
+        self.revision
+    }
+    #[must_use]
+    pub const fn at(&self) -> Time<D> {
+        self.at
+    }
+    #[must_use]
+    pub const fn latest_transition(&self) -> CauseRef {
+        self.latest_transition
+    }
+    #[must_use]
+    pub const fn current_support(&self) -> CauseRef {
+        self.current_support
+    }
+    #[must_use]
+    pub fn pending(&self) -> &[PendingTransportDelayInspection<D>] {
+        &self.pending
+    }
+    #[must_use]
+    pub const fn next_deadline(&self) -> Option<Time<D>> {
+        self.next_deadline
+    }
+    #[must_use]
+    pub const fn provenance(&self) -> &ProvenanceView<D> {
+        &self.provenance
+    }
+}
+
+/// A structural or lifecycle failure to inspect one node as TransportDelay.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportDelayInspectionFailure {
+    UnknownNode(NodeKey),
+    NotTransportDelay(NodeKey),
+    NotInitialized,
+}
+
+impl TransportDelayInspectionFailure {
+    #[must_use]
+    pub fn code(self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+    #[must_use]
+    pub fn severity(self) -> Severity {
+        self.code().severity()
+    }
+    #[must_use]
+    pub fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        match self {
+            Self::UnknownNode(node) => {
+                inspection_unknown(node, InspectionSubjectKind::TransportDelay)
+            }
+            Self::NotTransportDelay(node) => {
+                inspection_wrong_kind(node, InspectionSubjectKind::TransportDelay)
+            }
+            Self::NotInitialized => {
+                lifecycle_not_initialized(OperationSubjectRef::MachineLifecycle)
+            }
+        }
+    }
 }
 
 impl<D> PulseDelayInspection<D> {
@@ -404,6 +657,7 @@ pub struct ModuleNodeInspection<D> {
     level_set_reset_state: Option<LogicLevel>,
     level_set_reset_cause: Option<CauseRef>,
     sample_hold: Option<SampleHoldInspection<D>>,
+    transport_delay: Option<TransportDelayInspection<D>>,
     pending: Vec<ModulePendingPulseDelayInspection<D>>,
 }
 
@@ -472,6 +726,10 @@ impl<D> ModuleNodeInspection<D> {
     #[must_use]
     pub const fn sample_hold(&self) -> Option<&SampleHoldInspection<D>> {
         self.sample_hold.as_ref()
+    }
+    #[must_use]
+    pub const fn transport_delay(&self) -> Option<&TransportDelayInspection<D>> {
+        self.transport_delay.as_ref()
     }
     #[must_use]
     pub fn pending(&self) -> &[ModulePendingPulseDelayInspection<D>] {
@@ -714,8 +972,9 @@ pub(crate) struct MachineStore<D> {
     pub(crate) stored_levels: Vec<LogicLevel>,
     pub(crate) toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) establishment_causes: BTreeMap<NodeKey, CauseRef>,
+    pub(crate) transport_transition_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) active_episodes: crate::episode::ActiveEpisodes<D>,
-    pub(crate) pending_pulse_delays: BTreeMap<Time<D>, Vec<PendingPulseDelay<D>>>,
+    pub(crate) pending_events: BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
     pub(crate) next_pending_event_serial: u64,
 }
 
@@ -737,8 +996,9 @@ impl<D> Clone for MachineStore<D> {
             stored_levels: self.stored_levels.clone(),
             toggle_inversion_causes: self.toggle_inversion_causes.clone(),
             establishment_causes: self.establishment_causes.clone(),
+            transport_transition_causes: self.transport_transition_causes.clone(),
             active_episodes: self.active_episodes.clone(),
-            pending_pulse_delays: self.pending_pulse_delays.clone(),
+            pending_events: self.pending_events.clone(),
             next_pending_event_serial: self.next_pending_event_serial,
         }
     }
@@ -1524,8 +1784,9 @@ impl<D> Machine<D> {
                 stored_levels,
                 toggle_inversion_causes: BTreeMap::new(),
                 establishment_causes: BTreeMap::new(),
+                transport_transition_causes: BTreeMap::new(),
                 active_episodes: BTreeMap::new(),
-                pending_pulse_delays: BTreeMap::new(),
+                pending_events: BTreeMap::new(),
                 next_pending_event_serial: 0,
             },
         }
@@ -1587,7 +1848,7 @@ impl<D> Machine<D> {
         if !self.is_initialized() {
             return Err(ScheduleFailure::NotInitialized);
         }
-        Ok(self.store.pending_pulse_delays.keys().next().copied())
+        Ok(self.store.pending_events.keys().next().copied())
     }
 
     /// Returns whether a ready machine is dormant or must be called at a deadline.
@@ -1627,18 +1888,22 @@ impl<D> Machine<D> {
         };
         let mut pending = self
             .store
-            .pending_pulse_delays
+            .pending_events
             .values()
             .flatten()
-            .filter(|event| event.node == node)
-            .map(|event| PendingPulseDelayInspection {
-                event: event.key,
-                node: event.node,
-                origin: event.origin,
-                deadline: event.deadline,
-                count: event.count,
-                revision: event.revision,
-                cause: event.cause,
+            .filter_map(|event| match event {
+                PendingEvent::PulseDelay(event) if event.node == node => {
+                    Some(PendingPulseDelayInspection {
+                        event: event.key,
+                        node: event.node,
+                        origin: event.origin,
+                        deadline: event.deadline,
+                        count: event.count,
+                        revision: event.revision,
+                        cause: event.cause,
+                    })
+                }
+                _ => None,
             })
             .collect::<Vec<_>>();
         pending.sort_by_key(|event| (event.deadline, event.event));
@@ -1650,6 +1915,101 @@ impl<D> Machine<D> {
             at: now,
             pending,
             next_deadline,
+        })
+    }
+
+    /// Returns TransportDelay's immutable definition in either lifecycle phase.
+    pub fn inspect_transport_delay_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<TransportDelayDefinitionInspection<D>, TransportDelayInspectionFailure> {
+        if self.compiled.qualified_node(node).is_some() {
+            return Err(TransportDelayInspectionFailure::UnknownNode(node));
+        }
+        let Some((delay, _, _, initial)) = self.compiled.transport_delay(node) else {
+            return Err(if self.compiled.contains_node(node) {
+                TransportDelayInspectionFailure::NotTransportDelay(node)
+            } else {
+                TransportDelayInspectionFailure::UnknownNode(node)
+            });
+        };
+        Ok(TransportDelayDefinitionInspection {
+            node,
+            delay,
+            initial,
+        })
+    }
+
+    /// Returns owned committed state and pending transition facts for a direct TransportDelay.
+    pub fn inspect_transport_delay(
+        &self,
+        node: NodeKey,
+    ) -> Result<TransportDelayInspection<D>, TransportDelayInspectionFailure> {
+        self.inspect_transport_delay_definition(node)?;
+        if !self.is_initialized() {
+            return Err(TransportDelayInspectionFailure::NotInitialized);
+        }
+        self.transport_delay_observation(node)
+            .ok_or(TransportDelayInspectionFailure::NotTransportDelay(node))
+    }
+
+    fn transport_delay_observation(&self, node: NodeKey) -> Option<TransportDelayInspection<D>> {
+        let MachineStatus::Ready { now } = self.store.status else {
+            return None;
+        };
+        let (delay, remembered_slot, output_slot, initial) = self.compiled.transport_delay(node)?;
+        let input_operation = self.compiled.transport_delay_input_operation(node)?;
+        let operation = self.compiled.node_operation(node)?;
+        let current_support = *self.store.operation_causes.get(operation)?;
+        let latest_transition = self
+            .store
+            .transport_transition_causes
+            .get(&node)
+            .copied()
+            .unwrap_or(current_support);
+        let mut pending = self
+            .store
+            .pending_events
+            .values()
+            .flatten()
+            .filter_map(|event| match event {
+                PendingEvent::TransportDelay(event) if event.node == node => {
+                    Some(PendingTransportDelayInspection {
+                        event: event.key,
+                        node: event.node,
+                        origin: event.origin,
+                        deadline: event.deadline,
+                        target: event.target,
+                        revision: event.revision,
+                        cause: event.cause,
+                    })
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        pending.sort_by_key(|event| (event.deadline, event.event));
+        let next_deadline = pending
+            .first()
+            .map(PendingTransportDelayInspection::deadline);
+        Some(TransportDelayInspection {
+            node: self.compiled.node_subject(node),
+            delay,
+            initial,
+            remembered_input: *self.store.stored_levels.get(remembered_slot.value())?,
+            committed: *self.store.stored_levels.get(output_slot.value())?,
+            input: self
+                .store
+                .operation_levels
+                .get(input_operation)?
+                .as_ref()
+                .copied()?,
+            revision: self.store.revision,
+            at: now,
+            latest_transition,
+            current_support,
+            pending,
+            next_deadline,
+            provenance: self.store.provenance.as_ref()?.clone(),
         })
     }
 
@@ -1750,16 +2110,20 @@ impl<D> Machine<D> {
                 .filter(|_| level_set_reset_state.is_some());
             let mut pending = self
                 .store
-                .pending_pulse_delays
+                .pending_events
                 .values()
                 .flatten()
-                .filter(|event| event.node == flat)
-                .map(|event| ModulePendingPulseDelayInspection {
-                    event: event.key,
-                    origin: event.origin,
-                    deadline: event.deadline,
-                    count: event.count,
-                    cause: event.cause,
+                .filter_map(|event| match event {
+                    PendingEvent::PulseDelay(event) if event.node == flat => {
+                        Some(ModulePendingPulseDelayInspection {
+                            event: event.key,
+                            origin: event.origin,
+                            deadline: event.deadline,
+                            count: event.count,
+                            cause: event.cause,
+                        })
+                    }
+                    _ => None,
                 })
                 .collect::<Vec<_>>();
             pending.sort_by_key(|event| (event.deadline, event.event));
@@ -1790,6 +2154,7 @@ impl<D> Machine<D> {
                 level_set_reset_state,
                 level_set_reset_cause,
                 sample_hold: self.sample_hold_observation(flat),
+                transport_delay: self.transport_delay_observation(flat),
                 pending,
             });
         }

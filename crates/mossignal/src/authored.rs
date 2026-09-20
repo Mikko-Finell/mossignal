@@ -657,6 +657,8 @@ pub enum NodeKind<D> {
     SampleHold(SampleHoldConfig),
     /// A temporal pulse reproducer with one pulse input and one pulse output.
     PulseDelay(PulseDelayConfig<D>),
+    /// A temporal Level transition reproducer with one Level input and one Level output.
+    TransportDelay(TransportDelayConfig<D>),
 }
 
 impl<D> Clone for NodeKind<D> {
@@ -683,6 +685,7 @@ impl<D> Clone for NodeKind<D> {
             Self::LevelSetResetLatch(config) => Self::LevelSetResetLatch(*config),
             Self::SampleHold(config) => Self::SampleHold(*config),
             Self::PulseDelay(config) => Self::PulseDelay(*config),
+            Self::TransportDelay(config) => Self::TransportDelay(*config),
         }
     }
 }
@@ -711,6 +714,7 @@ impl<D> PartialEq for NodeKind<D> {
             (Self::LevelSetResetLatch(left), Self::LevelSetResetLatch(right)) => left == right,
             (Self::SampleHold(left), Self::SampleHold(right)) => left == right,
             (Self::PulseDelay(left), Self::PulseDelay(right)) => left == right,
+            (Self::TransportDelay(left), Self::TransportDelay(right)) => left == right,
             _ => false,
         }
     }
@@ -750,6 +754,10 @@ impl<D> fmt::Debug for NodeKind<D> {
                 .finish(),
             Self::SampleHold(config) => formatter.debug_tuple("SampleHold").field(config).finish(),
             Self::PulseDelay(config) => formatter.debug_tuple("PulseDelay").field(config).finish(),
+            Self::TransportDelay(config) => formatter
+                .debug_tuple("TransportDelay")
+                .field(config)
+                .finish(),
         }
     }
 }
@@ -879,6 +887,12 @@ impl<D> NodeKind<D> {
     #[must_use]
     pub const fn pulse_delay(delay: NonZeroSpan<D>) -> Self {
         Self::PulseDelay(PulseDelayConfig::new(delay))
+    }
+
+    /// Creates a TransportDelay with the supplied positive delay and initial level.
+    #[must_use]
+    pub const fn transport_delay(delay: NonZeroSpan<D>, initial: LogicLevel) -> Self {
+        Self::TransportDelay(TransportDelayConfig::new(delay, initial))
     }
 }
 
@@ -1153,6 +1167,55 @@ impl<D> PulseDelayConfig<D> {
     }
 }
 
+/// The semantic configuration of an authored [`NodeKind::TransportDelay`] claim.
+pub struct TransportDelayConfig<D> {
+    /// The strictly positive delay between an input transition and its output.
+    pub delay: NonZeroSpan<D>,
+    /// The initial remembered input and output level.
+    pub initial: LogicLevel,
+}
+
+impl<D> Clone for TransportDelayConfig<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<D> Copy for TransportDelayConfig<D> {}
+
+impl<D> PartialEq for TransportDelayConfig<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.delay == other.delay && self.initial == other.initial
+    }
+}
+
+impl<D> Eq for TransportDelayConfig<D> {}
+
+impl<D> Hash for TransportDelayConfig<D> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.delay.hash(state);
+        self.initial.hash(state);
+    }
+}
+
+impl<D> fmt::Debug for TransportDelayConfig<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TransportDelayConfig")
+            .field("delay", &self.delay)
+            .field("initial", &self.initial)
+            .finish()
+    }
+}
+
+impl<D> TransportDelayConfig<D> {
+    /// Creates a TransportDelay configuration with a statically nonzero delay.
+    #[must_use]
+    pub const fn new(delay: NonZeroSpan<D>, initial: LogicLevel) -> Self {
+        Self { delay, initial }
+    }
+}
+
 impl ToggleConfig {
     /// Creates a Toggle configuration with explicit declared initial state.
     #[must_use]
@@ -1185,6 +1248,8 @@ pub enum InputPortRole {
     Sample,
     /// The pulse input of [`NodeKind::PulseDelay`].
     PulseDelay,
+    /// The level input of [`NodeKind::TransportDelay`].
+    TransportDelay,
     /// The pulse batch controlled by a level-controlled pulse primitive.
     Pulses,
     /// The High-enabled control of [`NodeKind::PulseGate`].

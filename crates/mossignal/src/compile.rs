@@ -205,6 +205,12 @@ enum CompiledNodeKind {
         input: PortIndex,
         delay_ticks: u64,
     },
+    TransportDelay {
+        input: PortIndex,
+        remembered_input: StoredLevelStateIndex,
+        output: StoredLevelStateIndex,
+        delay_ticks: u64,
+    },
 }
 
 impl CompiledNodeKind {
@@ -233,6 +239,7 @@ impl CompiledNodeKind {
             Self::LevelSetResetLatch { .. } => SemanticNodeKind::LevelSetResetLatch,
             Self::SampleHold { .. } => SemanticNodeKind::SampleHold,
             Self::PulseDelay { .. } => SemanticNodeKind::PulseDelay,
+            Self::TransportDelay { .. } => SemanticNodeKind::TransportDelay,
         }
     }
 
@@ -309,7 +316,13 @@ impl CompiledNodeKind {
                 }
             }
             Self::PulseDelay { input, .. } if port == input => Some(InputPortRole::PulseDelay),
-            Self::EdgeDetector { .. } | Self::Toggle { .. } | Self::PulseDelay { .. } => None,
+            Self::TransportDelay { input, .. } if port == input => {
+                Some(InputPortRole::TransportDelay)
+            }
+            Self::EdgeDetector { .. }
+            | Self::Toggle { .. }
+            | Self::PulseDelay { .. }
+            | Self::TransportDelay { .. } => None,
         }
     }
 
@@ -339,6 +352,7 @@ impl CompiledNodeKind {
             | Self::PulseSetResetLatch { .. }
             | Self::LevelSetResetLatch { .. }
             | Self::SampleHold { .. } => Some(StateFamily::StoredLevel),
+            Self::TransportDelay { .. } => Some(StateFamily::TransportLevel),
             _ => None,
         }
     }
@@ -346,6 +360,7 @@ impl CompiledNodeKind {
     const fn temporal_family(self) -> Option<TemporalFamily> {
         match self {
             Self::PulseDelay { .. } => Some(TemporalFamily::PendingPulseGroup),
+            Self::TransportDelay { .. } => Some(TemporalFamily::PendingTransportTransition),
             _ => None,
         }
     }
@@ -407,6 +422,7 @@ pub(crate) struct FullEvaluation {
     pub(crate) pulse_latch_conflicts: Vec<PulseLatchConflict>,
     pub(crate) level_latch_conflicts: Vec<LevelLatchConflict>,
     pub(crate) pulse_delay_proposals: Vec<PulseDelayProposal>,
+    pub(crate) transport_delay_proposals: Vec<TransportDelayProposal>,
     #[cfg(test)]
     execution_counts: Vec<usize>,
 }
@@ -416,6 +432,14 @@ pub(crate) struct PulseDelayProposal {
     pub(crate) node: NodeKey,
     pub(crate) delay_ticks: u64,
     pub(crate) count: PulseCount,
+    pub(crate) input_source: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TransportDelayProposal {
+    pub(crate) node: NodeKey,
+    pub(crate) delay_ticks: u64,
+    pub(crate) target: LogicLevel,
     pub(crate) input_source: usize,
 }
 
@@ -509,6 +533,9 @@ pub(crate) enum EvaluationCause {
         result: LogicLevel,
     },
     PulseDelay {
+        node: NodeKey,
+    },
+    TransportDelay {
         node: NodeKey,
     },
     Alias(usize),
@@ -726,6 +753,7 @@ impl<D> CompiledNetwork<D> {
         previous_edge_observations: &[EdgeObservation],
         previous_stored_levels: &[LogicLevel],
         due_pulses: &BTreeMap<NodeKey, PulseCount>,
+        due_transports: &BTreeMap<NodeKey, LogicLevel>,
     ) -> Result<FullEvaluation, EvaluationFailure> {
         self.inner.evaluate_reaction_with_due(
             external_levels,
@@ -733,6 +761,7 @@ impl<D> CompiledNetwork<D> {
             previous_edge_observations,
             previous_stored_levels,
             due_pulses,
+            due_transports,
         )
     }
 
@@ -865,6 +894,41 @@ impl<D> CompiledNetwork<D> {
         NonZeroSpan::from_ticks(delay_ticks).ok()
     }
 
+    pub(crate) fn transport_delay(
+        &self,
+        node: NodeKey,
+    ) -> Option<(
+        NonZeroSpan<D>,
+        StoredLevelStateIndex,
+        StoredLevelStateIndex,
+        LogicLevel,
+    )> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        let CompiledNodeKind::TransportDelay {
+            delay_ticks,
+            remembered_input,
+            output,
+            ..
+        } = descriptor.kind
+        else {
+            return None;
+        };
+        Some((
+            NonZeroSpan::from_ticks(delay_ticks).ok()?,
+            remembered_input,
+            output,
+            self.inner.stored_level_initial_states[output.0],
+        ))
+    }
+
+    pub(crate) fn transport_delay_input_operation(&self, node: NodeKey) -> Option<usize> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        let CompiledNodeKind::TransportDelay { input, .. } = descriptor.kind else {
+            return None;
+        };
+        Some(self.inner.input_source(input).ok()?.0)
+    }
+
     pub(crate) fn contains_node(&self, node: NodeKey) -> bool {
         self.inner.node_lookup.contains_key(&node)
     }
@@ -966,6 +1030,7 @@ impl<D> CompiledInner<D> {
             previous_edge_observations,
             previous_stored_levels,
             &BTreeMap::new(),
+            &BTreeMap::new(),
         )
     }
 
@@ -976,6 +1041,7 @@ impl<D> CompiledInner<D> {
         previous_edge_observations: &[EdgeObservation],
         previous_stored_levels: &[LogicLevel],
         due_pulses: &BTreeMap<NodeKey, PulseCount>,
+        due_transports: &BTreeMap<NodeKey, LogicLevel>,
     ) -> Result<FullEvaluation, EvaluationFailure> {
         if previous_edge_observations.len() != self.edge_initial_observations.len()
             || previous_stored_levels.len() != self.stored_level_initial_states.len()
@@ -993,6 +1059,7 @@ impl<D> CompiledInner<D> {
         let mut pulse_latch_conflicts = Vec::new();
         let mut level_latch_conflicts = Vec::new();
         let mut pulse_delay_proposals = Vec::new();
+        let mut transport_delay_proposals = Vec::new();
         #[cfg(test)]
         let mut execution_counts = vec![0; self.operations.len()];
 
@@ -1710,6 +1777,26 @@ impl<D> CompiledInner<D> {
                             EvaluationCause::PulseDelay { node: *key },
                         )
                     }
+                    NodeDescriptor {
+                        key,
+                        kind: CompiledNodeKind::TransportDelay { output, .. },
+                        ..
+                    } => {
+                        let previous_output = previous_stored_levels
+                            .get(output.0)
+                            .copied()
+                            .ok_or(EvaluationFailure::Incomplete)?;
+                        let settled_output =
+                            due_transports.get(key).copied().unwrap_or(previous_output);
+                        proposed_stored_levels[output.0] = settled_output;
+                        if settled_output != previous_output {
+                            stored_level_establishments.insert(*key);
+                        }
+                        (
+                            EvaluationValue::Level(settled_output),
+                            EvaluationCause::TransportDelay { node: *key },
+                        )
+                    }
                 },
                 OperationDescriptor::NodeOutput(port) => {
                     let predecessor = self.predecessors[index]
@@ -1823,6 +1910,32 @@ impl<D> CompiledInner<D> {
             }
         }
 
+        for node in &self.nodes {
+            let CompiledNodeKind::TransportDelay {
+                input,
+                remembered_input,
+                delay_ticks,
+                ..
+            } = node.kind
+            else {
+                continue;
+            };
+            let current = self.level_input_value(input, &values)?;
+            let previous = previous_stored_levels
+                .get(remembered_input.0)
+                .copied()
+                .ok_or(EvaluationFailure::Incomplete)?;
+            proposed_stored_levels[remembered_input.0] = current;
+            if current != previous {
+                transport_delay_proposals.push(TransportDelayProposal {
+                    node: node.key,
+                    delay_ticks,
+                    target: current,
+                    input_source: self.input_source(input)?.0,
+                });
+            }
+        }
+
         let complete_values = values
             .into_iter()
             .collect::<Option<Vec<_>>>()
@@ -1852,6 +1965,7 @@ impl<D> CompiledInner<D> {
             pulse_latch_conflicts,
             level_latch_conflicts,
             pulse_delay_proposals,
+            transport_delay_proposals,
             #[cfg(test)]
             execution_counts,
         })
@@ -2141,6 +2255,20 @@ impl<D> CompiledInner<D> {
                         delay_ticks: config.delay.ticks(),
                     }
                 }
+                NodeKind::TransportDelay(config) => {
+                    let input = inputs.first().copied().unwrap_or_else(|| {
+                        panic!("validated TransportDelay descriptor must retain its level input")
+                    });
+                    let remembered_input = StoredLevelStateIndex(stored_level_initial_states.len());
+                    let output = StoredLevelStateIndex(stored_level_initial_states.len() + 1);
+                    stored_level_initial_states.extend([config.initial, config.initial]);
+                    CompiledNodeKind::TransportDelay {
+                        input,
+                        remembered_input,
+                        output,
+                        delay_ticks: config.delay.ticks(),
+                    }
+                }
             };
             nodes.push(NodeDescriptor {
                 key: node.key(),
@@ -2355,6 +2483,17 @@ impl<D> CompiledInner<D> {
                 }
                 CompiledNodeKind::PulseDelay { input, delay_ticks } => {
                     node.inputs.contains(&input) && delay_ticks > 0
+                }
+                CompiledNodeKind::TransportDelay {
+                    input,
+                    remembered_input,
+                    output,
+                    delay_ticks,
+                } => {
+                    node.inputs.contains(&input)
+                        && delay_ticks > 0
+                        && remembered_input.0 + 1 == output.0
+                        && output.0 < self.stored_level_initial_states.len()
                 }
                 CompiledNodeKind::Select {
                     selector,
@@ -3175,6 +3314,9 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
                 NodeKind::LevelSetResetLatch(config) => NodeKind::level_set_reset_latch(*config),
                 NodeKind::SampleHold(config) => NodeKind::sample_hold(*config),
                 NodeKind::PulseDelay(config) => NodeKind::pulse_delay(config.delay),
+                NodeKind::TransportDelay(config) => {
+                    NodeKind::transport_delay(config.delay, config.initial)
+                }
             };
             crate::authored::NodeDef::new(
                 node.key(),
