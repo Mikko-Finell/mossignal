@@ -280,6 +280,118 @@ fn select_provenance_contains_only_the_selector_and_selected_branch() {
 }
 
 #[test]
+fn all_provenance_contains_low_blockers_or_all_high_inputs() {
+    let mut builder = NetworkBuilder::<TestTicks>::new(TimeDomainId::from_u128(DOMAIN_ID));
+    let (first_key, first) = builder.level_input("first");
+    let (second_key, second) = builder.level_input("second");
+    let (third_key, third) = builder.level_input("third");
+    let conjunction = builder
+        .all([first, second, third, first])
+        .unwrap_or_else(|failure| panic!("all must author: {failure:?}"));
+    let output = builder
+        .level_output("all", conjunction)
+        .unwrap_or_else(|failure| panic!("all output must author: {failure:?}"));
+    let identity = builder
+        .all([])
+        .unwrap_or_else(|failure| panic!("nullary all must author: {failure:?}"));
+    let identity_output = builder
+        .level_output("empty-all", identity)
+        .unwrap_or_else(|failure| panic!("nullary all output must author: {failure:?}"));
+    let compiled = builder
+        .finish()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("all must validate: {failure:?}"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("all must compile: {failure:?}"));
+
+    let snapshot = compiled
+        .input_snapshot()
+        .set(first_key, LogicLevel::Low)
+        .and_then(|builder| builder.set(second_key, LogicLevel::High))
+        .and_then(|builder| builder.set(third_key, LogicLevel::Low))
+        .and_then(mossignal::InputSnapshotBuilder::finish)
+        .unwrap_or_else(|failure| panic!("all snapshot must build: {failure}"));
+    let mut machine = compiled.spawn(runtime_policy());
+    let initialized = machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            snapshot,
+        ))
+        .unwrap_or_else(|failure| panic!("all initialization must succeed: {failure}"));
+    let (initial_value, initial_cause) = initialized
+        .output_events()
+        .iter()
+        .find_map(|event| match event {
+            OutputEvent::LevelEstablished {
+                output: established,
+                value,
+                cause,
+                ..
+            } if *established == output => Some((*value, *cause)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("All initialization must establish its output"));
+    assert_eq!(initial_value, LogicLevel::Low);
+    assert_eq!(
+        observed_level_inputs(initialized.provenance(), initial_cause),
+        BTreeSet::from([first_key.as_u128(), third_key.as_u128()])
+    );
+
+    let (identity_value, identity_cause) = initialized
+        .output_events()
+        .iter()
+        .find_map(|event| match event {
+            OutputEvent::LevelEstablished {
+                output: established,
+                value,
+                cause,
+                ..
+            } if *established == identity_output => Some((*value, *cause)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("nullary All must establish its output"));
+    assert_eq!(identity_value, LogicLevel::High);
+    assert!(observed_level_inputs(initialized.provenance(), identity_cause).is_empty());
+
+    let changed = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(1),
+            machine.revision(),
+            compiled
+                .input_delta()
+                .set(first_key, LogicLevel::High)
+                .and_then(|builder| builder.set(third_key, LogicLevel::High))
+                .and_then(mossignal::InputDeltaBuilder::finish)
+                .unwrap_or_else(|failure| panic!("all delta must build: {failure}")),
+        ))
+        .unwrap_or_else(|failure| panic!("all transition to High must succeed: {failure}"));
+    let (changed_value, changed_cause) = changed
+        .output_events()
+        .iter()
+        .find_map(|event| match event {
+            OutputEvent::LevelChanged {
+                output: changed_output,
+                to,
+                cause,
+                ..
+            } if *changed_output == output => Some((*to, *cause)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("All must publish its transition to High"));
+    assert_eq!(changed_value, LogicLevel::High);
+    assert_eq!(
+        observed_level_inputs(changed.provenance(), changed_cause),
+        BTreeSet::from([
+            first_key.as_u128(),
+            second_key.as_u128(),
+            third_key.as_u128(),
+        ])
+    );
+}
+
+#[test]
 fn foreign_signals_fail_before_either_builder_authors_a_convenience_node() {
     let mut foreign_network = NetworkBuilder::<TestTicks>::new(TimeDomainId::from_u128(DOMAIN_ID));
     let foreign = foreign_network.level_input("foreign").1;

@@ -116,65 +116,6 @@ fn collect_observed_pulse_inputs<D>(
 }
 
 #[test]
-#[ignore = "bug: All Low provenance treats High inputs as current supporters"]
-fn all_low_provenance_excludes_high_inputs() {
-    let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(8));
-    let (high_key, high) = builder.level_input("high");
-    let (low_key, low) = builder.level_input("low");
-    let conjunction = builder
-        .all([high, low])
-        .unwrap_or_else(|failure| panic!("all must author: {failure:?}"));
-    let output = builder
-        .level_output("out", conjunction)
-        .unwrap_or_else(|failure| panic!("output must author: {failure:?}"));
-    let compiled = builder
-        .finish()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("all must validate: {failure:?}"))
-        .compile()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("all must compile: {failure:?}"));
-
-    let snapshot = compiled
-        .input_snapshot()
-        .set(high_key, LogicLevel::High)
-        .and_then(|builder| builder.set(low_key, LogicLevel::Low))
-        .and_then(mossignal::InputSnapshotBuilder::finish)
-        .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
-    let mut machine = compiled.spawn(policy());
-    let result = machine
-        .apply(Transaction::initialize(
-            Time::from_ticks(0),
-            machine.revision(),
-            snapshot,
-        ))
-        .unwrap_or_else(|failure| panic!("all must initialize: {failure}"));
-    let [
-        OutputEvent::LevelEstablished {
-            output: established,
-            value,
-            cause,
-            ..
-        },
-    ] = result.output_events()
-    else {
-        panic!("initialization must establish All as Low");
-    };
-    assert_eq!(*established, output);
-    assert_eq!(*value, LogicLevel::Low);
-
-    let observed = observed_level_inputs(result.provenance(), *cause);
-    assert!(
-        observed.contains(&low_key.as_u128()),
-        "each Low input must support a Low All result: {observed:?}"
-    );
-    assert!(
-        !observed.contains(&high_key.as_u128()),
-        "High inputs are not current supporters of a Low All result, found {observed:?}"
-    );
-}
-
-#[test]
 #[ignore = "bug: Any High provenance treats Low inputs as current supporters"]
 fn any_high_provenance_excludes_low_inputs() {
     let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(9));

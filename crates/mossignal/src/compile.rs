@@ -1081,21 +1081,35 @@ impl<D> CompiledInner<D> {
                     } => {
                         // SPEC: docs/specs/built_in_node_semantics.md §24 "All"
                         // High is the conjunction identity, including for zero inputs.
-                        let mut value = LogicLevel::High;
+                        let mut all_sources = Vec::with_capacity(inputs.len());
+                        let mut low_sources = Vec::new();
                         for input in inputs {
-                            if self.level_input_value(*input, &values)?.is_low() {
-                                value = LogicLevel::Low;
-                                break;
+                            let source = self.input_source(*input)?.0;
+                            if !all_sources.contains(&source) {
+                                all_sources.push(source);
+                            }
+                            if self.level_input_value(*input, &values)?.is_low()
+                                && !low_sources.contains(&source)
+                            {
+                                low_sources.push(source);
                             }
                         }
+                        // SPEC: docs/specs/built_in_node_semantics.md §24 "All"
+                        // Low results cite every Low input; High results cite every input.
+                        let value = if low_sources.is_empty() {
+                            LogicLevel::High
+                        } else {
+                            LogicLevel::Low
+                        };
                         (
                             EvaluationValue::Level(value),
                             EvaluationCause::Node {
                                 node: *key,
-                                predecessors: self.predecessors[index]
-                                    .iter()
-                                    .map(|predecessor| predecessor.0)
-                                    .collect(),
+                                predecessors: if low_sources.is_empty() {
+                                    all_sources
+                                } else {
+                                    low_sources
+                                },
                             },
                         )
                     }
