@@ -1,0 +1,244 @@
+schema_version: "0.1"
+id: mossignal.node.inertial_delay
+title: Inertial-delayed Level transition primitive
+kind: node
+status: draft
+
+source_baseline:
+  commit: 66eea6f9a891bf3cb54ed1cd9fdd9d151d2d9863
+  working_tree: clean
+
+summary: >-
+  InertialDelay is a fixed Level-to-Level temporal primitive that reproduces a
+  changed input only when its target remains stable through one positive delay.
+  It owns one optional candidate transition whose maturity and cancellation are
+  evaluated through the ordinary machine event calendar and transaction path.
+
+scope:
+  includes:
+    - fixed Level shape, semantic configuration, and closed node identity
+    - declared initial remembered input and output state
+    - one-candidate inertial transition law and exact deadline boundary
+    - current-reaction dependency barrier and strictly-future scheduling
+    - stable pending-work identity, focused inspection, and causal explanation
+    - typed/dynamic authoring, validation, compilation, fingerprints, and conformance
+  excludes:
+    - recurring schedules and Periodic
+    - Debounce convenience spelling as a separate task-level API addition
+    - topology replacement, duration-change migration, and state migration
+    - generic cancellation handles, snapshot/replay encoding, and calendar optimization
+
+known_uncovered:
+  - Explicit InertialDelay migration policies when duration or topology changes while a candidate exists
+  - Generic pending-event inspection, retained cancellation history, and persistence representation
+
+aliases:
+  - InertialDelay
+  - InertialDelayConfig<D>
+  - inertial delay
+  - inertial candidate
+
+requirements:
+  - id: fixed-shape-and-configuration
+    kind: public_surface
+    statement: >-
+      InertialDelay has exactly one Level input and one Level output, a required
+      positive NonZeroSpan<D> delay, and one explicit initial LogicLevel. Its
+      semantic configuration is InertialDelayConfig<D> { delay, initial } and
+      contains no metadata or runtime state. Typed and dynamic authoring expose
+      the closed InertialDelay kind through the ordinary builder and definition
+      boundaries; transport and inertial delay remain distinct node kinds.
+    sources: [builtin-law, concrete-config, concrete-builders, concrete-node-kind, level-delay]
+
+  - id: declared-temporal-initialization
+    kind: lifecycle
+    statement: >-
+      Before the first reaction, the declared initial level initializes both
+      remembered input and current output. The primitive does not permit an
+      initial input/output mismatch. At initialization time T0, equality
+      between the first settled input and the declared level creates no
+      candidate; inequality retains the declared output and creates one
+      candidate targeting the first settled input at T0 + delay. Initialization
+      does not change current output immediately from current input.
+    sources: [temporal-initialization, builtin-law]
+
+  - id: candidate-transition-law
+    kind: semantic
+    statement: >-
+      Every reaction proposes the settled current Level input as remembered
+      input. A settled input transition at S creates at most one candidate with
+      target equal to the new input and deadline D = S + delay when that target
+      differs from the output that remains after due obligations at S are
+      applied. If the settled input equals that output, no candidate is needed.
+      If input changes again before a candidate matures, the previous candidate
+      is canceled and a new candidate is created from that reaction time exactly
+      when the new settled input differs from the output that remains after the
+      current due obligations. No candidate may be scheduled at its origin
+      time; all newly pending work is strictly future.
+    sources: [builtin-law, runtime-calendar]
+
+  - id: exact-deadline-boundary
+    kind: semantic
+    statement: >-
+      A candidate created at S succeeds only when its target remains the input
+      throughout the half-open interval [S, D). A candidate surviving to D is
+      evaluated from temporal state entering the reaction and matures at D. A
+      contradictory input change strictly before D cancels it, while a
+      contradictory input change exactly at D does not cancel the matured
+      transition, permits the matured target to determine current output, and
+      may create a new opposite candidate beginning at D.
+    sources: [builtin-law, runtime-boundary, verification-triad]
+
+  - id: current-output-dependency-barrier
+    kind: semantic
+    statement: >-
+      Current settled input has no instantaneous dependency on current
+      InertialDelay output. Current output is determined from previous committed
+      temporal state and candidates due in the reaction; current input can
+      update remembered input, cancel or create future work, and supply the
+      future candidate's target but cannot feed current output through an
+      instantaneous path. The conservative dependency signature must preserve
+      this temporal barrier and participate in ordinary cycle validation.
+    sources: [api-causality, builtin-signatures, builtin-law]
+
+  - id: pending-event-and-cancellation-semantics
+    kind: system_effect
+    statement: >-
+      The current candidate is represented as machine-owned temporal work with
+      stable public event identity, owner, target, originating logical time,
+      deadline, originating cause, revision context, and applicable
+      cancellation policy. Cancellation removes the candidate from semantic
+      pending work: it does not fire, determine the next deadline, or appear as
+      pending. Internal eager removal, tombstones, generation invalidation, or
+      equivalent event-table state are conforming when all candidate reads see
+      the same transaction-local calendar semantics.
+    sources: [builtin-pending-events, runtime-calendar, runtime-cancellation, runtime-staging]
+
+  - id: inspection-and-explanation
+    kind: public_surface
+    statement: >-
+      Focused inspection distinguishes declared initial state, remembered input,
+      committed output, current input, optional pending candidate, next deadline,
+      revision, and logical time. Pending facts expose target, origin, deadline,
+      elapsed and remaining spans where applicable, stable identity, and causal
+      ancestry. Recent cancellation or maturation is observable as required by
+      the node inspection contract, while canceled work is not reported as
+      pending. Explanations distinguish due obligations, current input, future
+      scheduling, cancellation, and the cause that established retained state.
+    sources: [builtin-causes, builtin-inspection, builtin-temporal-inspection]
+
+  - id: ordinary-runtime-integration
+    kind: system_effect
+    statement: >-
+      InertialDelay uses the ordinary compiled node, state-family, temporal
+      calendar, chronological advancement, provenance, output publication,
+      runtime-policy, and single-publication transaction machinery. A candidate
+      may mature or be canceled during an internal deadline reaction, but all
+      earlier internal effects and the requested-time reaction are published
+      only as one successful outer transaction. Any checked time arithmetic,
+      evaluation, event, provenance, inspection preparation, or budget failure
+      rejects the complete candidate state atomically.
+    sources: [runtime-advancement, runtime-atomic, runtime-preparation]
+
+  - id: semantic-identity
+    kind: semantic
+    statement: >-
+      Network semantic identity includes InertialDelay's distinct node kind,
+      typed Level ports and semantic roles, positive delay, explicit initial
+      level, and its remembered-input/output plus optional-candidate state and
+      inertial temporal schemas. Runtime candidate contents, dense positions,
+      allocation order, and presentation metadata do not contribute. The
+      pre-stability identity policy permits the current projection and fixtures
+      to be extended coherently for this newly implemented node.
+    sources: [api-fingerprint, network-fingerprint]
+
+  - id: required-conformance
+    kind: verification
+    statement: >-
+      Conformance must cover equal and differing initialization input, candidate
+      creation, stable input maturation, strict-before-deadline cancellation,
+      exact-deadline maturation followed by optional opposite-candidate
+      creation, absence of an instantaneous input-to-output path, strict future
+      scheduling, stable pending inspection and causes, typed/dynamic and
+      module-wrapped execution, identity sensitivity and permutation invariance,
+      checked time and budget failure atomicity, and direct-jump versus
+      stepwise equivalence. The before/exactly/after deadline triad is mandatory.
+    sources: [verification-inertial, verification-triad, verification-cancel]
+
+implementation_freedom:
+  - Candidate storage may use one explicit node state slot, a calendar event record, or a coupled representation; it must preserve one current candidate and the public facts above.
+  - The implementation may choose deterministic owner/order rules for event allocation, inspection records, and provenance supporters where the specifications do not fix an observable order; it must test and record the choice.
+  - A focused InertialDelay inspection type may be added before generic pending-event queries, snapshots, replay, or retained event-history APIs exist.
+
+open_questions: []
+
+sources:
+  builtin-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 53. `InertialDelay`]
+  builtin-pending-events:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 48. Pending events]
+  temporal-initialization:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 50. Temporal initialization]
+  builtin-signatures:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+  builtin-causes:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 18. Explanations and causes]
+  builtin-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 61. Node inspection]
+  builtin-temporal-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 62. Temporal inspection]
+  api-causality:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 8. Current-reaction causality and cycles]
+  api-fingerprint:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: ["Part III — Identity, bindings, and metadata", "19. Revision, fingerprint, digests, and runtime policy", 19.2 Network fingerprint]
+  concrete-config:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 29. Built-in configuration values]
+  concrete-builders:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+  concrete-node-kind:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+  network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, "54. Network and input-schema fingerprints", 54.1 Network fingerprint]
+  runtime-calendar:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 39. Event calendar]
+  runtime-boundary:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 44. Inertial deadline boundary]
+  runtime-cancellation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 45. Cancellation]
+  runtime-staging:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 51. Pending-event staging]
+  runtime-atomic:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 48. Single commit point]
+  runtime-preparation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 49. Preparation and commitment]
+  runtime-advancement:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 41. Advancing time]
+  verification-inertial:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 49. `InertialDelay`]
+  verification-triad:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 46. Exact-deadline boundary triad]
+  verification-cancel:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 51. Event cancellation and next deadline]
