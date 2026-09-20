@@ -187,6 +187,99 @@ fn execution_provenance_contains_only_canonical_primitive_subjects_and_no_pendin
 }
 
 #[test]
+fn select_provenance_contains_only_the_selector_and_selected_branch() {
+    let mut builder = NetworkBuilder::<TestTicks>::new(TimeDomainId::from_u128(DOMAIN_ID));
+    let (selector_key, selector) = builder.level_input("selector");
+    let (when_low_key, when_low) = builder.level_input("when-low");
+    let (when_high_key, when_high) = builder.level_input("when-high");
+    let selected = builder
+        .select(selector, when_low, when_high)
+        .unwrap_or_else(|failure| panic!("select must author: {failure:?}"));
+    let output = builder
+        .level_output("selected", selected)
+        .unwrap_or_else(|failure| panic!("select output must author: {failure:?}"));
+    let compiled = builder
+        .finish()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("select must validate: {failure:?}"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("select must compile: {failure:?}"));
+
+    let snapshot = compiled
+        .input_snapshot()
+        .set(selector_key, LogicLevel::Low)
+        .and_then(|builder| builder.set(when_low_key, LogicLevel::Low))
+        .and_then(|builder| builder.set(when_high_key, LogicLevel::High))
+        .and_then(mossignal::InputSnapshotBuilder::finish)
+        .unwrap_or_else(|failure| panic!("select snapshot must build: {failure}"));
+    let mut machine = compiled.spawn(runtime_policy());
+    let initialized = machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            snapshot,
+        ))
+        .unwrap_or_else(|failure| panic!("select initialization must succeed: {failure}"));
+    let initial_cause = match initialized.output_events() {
+        [
+            OutputEvent::LevelEstablished {
+                output: established,
+                value,
+                cause,
+                ..
+            },
+        ] => {
+            assert_eq!(*established, output);
+            assert_eq!(*value, LogicLevel::Low);
+            *cause
+        }
+        _ => panic!("select initialization must establish one low output"),
+    };
+    let initial_support = observed_level_inputs(initialized.provenance(), initial_cause);
+    assert_eq!(
+        initial_support,
+        BTreeSet::from([selector_key.as_u128(), when_low_key.as_u128()])
+    );
+    assert!(!initial_support.contains(&when_high_key.as_u128()));
+
+    let changed = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(1),
+            machine.revision(),
+            compiled
+                .input_delta()
+                .set(selector_key, LogicLevel::High)
+                .and_then(mossignal::InputDeltaBuilder::finish)
+                .unwrap_or_else(|failure| panic!("select delta must build: {failure}")),
+        ))
+        .unwrap_or_else(|failure| panic!("select branch switch must succeed: {failure}"));
+    let changed_cause = match changed.output_events() {
+        [
+            OutputEvent::LevelChanged {
+                output: changed_output,
+                from,
+                to,
+                cause,
+                ..
+            },
+        ] => {
+            assert_eq!(*changed_output, output);
+            assert_eq!(*from, LogicLevel::Low);
+            assert_eq!(*to, LogicLevel::High);
+            *cause
+        }
+        _ => panic!("select branch switch must change one output"),
+    };
+    let changed_support = observed_level_inputs(changed.provenance(), changed_cause);
+    assert_eq!(
+        changed_support,
+        BTreeSet::from([selector_key.as_u128(), when_high_key.as_u128()])
+    );
+    assert!(!changed_support.contains(&when_low_key.as_u128()));
+}
+
+#[test]
 fn foreign_signals_fail_before_either_builder_authors_a_convenience_node() {
     let mut foreign_network = NetworkBuilder::<TestTicks>::new(TimeDomainId::from_u128(DOMAIN_ID));
     let foreign = foreign_network.level_input("foreign").1;
@@ -447,6 +540,36 @@ fn assert_foreign_failures(
     assert_foreign(builder.nand([local, foreign]));
     assert_foreign(builder.nor([local, foreign]));
     assert_foreign(builder.xnor(local, foreign));
+}
+
+fn observed_level_inputs(
+    provenance: &mossignal::ProvenanceView<TestTicks>,
+    root: CauseRef,
+) -> BTreeSet<u128> {
+    let mut found = BTreeSet::new();
+    let mut pending = vec![root];
+    let mut visited = BTreeSet::new();
+    while let Some(cause) = pending.pop() {
+        if !visited.insert(cause) {
+            continue;
+        }
+        match provenance
+            .inspect(cause)
+            .unwrap_or_else(|failure| panic!("select cause must resolve: {failure}"))
+        {
+            CauseInspection::ExternalObservation { input, .. } => {
+                found.insert(input.as_u128());
+            }
+            CauseInspection::Derived { supporters, .. }
+            | CauseInspection::PulseDerived { supporters, .. }
+            | CauseInspection::PulseControlledLevel { supporters, .. }
+            | CauseInspection::PendingPulseDelay { supporters, .. } => {
+                pending.extend_from_slice(supporters);
+            }
+            _ => {}
+        }
+    }
+    found
 }
 
 fn assert_foreign(result: Result<Signal<Level>, AuthoringFailure>) {

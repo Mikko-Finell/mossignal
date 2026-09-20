@@ -1187,20 +1187,26 @@ impl<D> CompiledInner<D> {
                             },
                         ..
                     } => {
-                        let selector = self.level_input_value(*selector, &values)?;
-                        let branch = if selector.is_low() {
+                        let selector_value = self.level_input_value(*selector, &values)?;
+                        let branch = if selector_value.is_low() {
                             *when_low
                         } else {
                             *when_high
+                        };
+                        let selector_source = self.input_source(*selector)?.0;
+                        let branch_source = self.input_source(branch)?.0;
+                        // SPEC: docs/specs/contracts/level-combinational-expansion.yaml
+                        // "select-branch-law" — only the selected branch currently supports the result.
+                        let predecessors = if selector_source == branch_source {
+                            vec![selector_source]
+                        } else {
+                            vec![selector_source, branch_source]
                         };
                         (
                             EvaluationValue::Level(self.level_input_value(branch, &values)?),
                             EvaluationCause::Node {
                                 node: *key,
-                                predecessors: self.predecessors[index]
-                                    .iter()
-                                    .map(|predecessor| predecessor.0)
-                                    .collect(),
+                                predecessors,
                             },
                         )
                     }
