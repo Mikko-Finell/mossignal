@@ -54,10 +54,12 @@ impl DiagnosticConditionKey {
             NodeEvidence::Node(node) if problem.primary() == &SubjectRef::Node(*node) => {
                 NodeSubject::Node(*node)
             }
-            NodeEvidence::Qualified { instances, node }
-                if !instances.is_empty() && matches!(problem.primary(), SubjectRef::Node(_)) =>
-            {
-                NodeSubject::Qualified(QualifiedNodeRef::new(instances.clone(), *node))
+            NodeEvidence::Qualified { instances, node } if !instances.is_empty() => {
+                let qualified = QualifiedNodeRef::new(instances.clone(), *node);
+                if problem.primary() != &SubjectRef::QualifiedNode(qualified.clone()) {
+                    return None;
+                }
+                NodeSubject::Qualified(qualified)
             }
             _ => return None,
         };
@@ -513,6 +515,25 @@ mod tests {
             );
             assert!(DiagnosticConditionKey::from_problem(&bad).is_none());
         }
+        let qualified_evidence = ConflictEvidence {
+            node: NodeEvidence::Qualified {
+                instances: vec![crate::key::ModuleInstanceKey::from_u128(10)],
+                node: NodeKey::from_u128(20),
+            },
+            ..original.clone()
+        };
+        let mismatched_qualified = Problem::<()>::new(
+            SubjectRef::QualifiedNode(QualifiedNodeRef::new(
+                vec![crate::key::ModuleInstanceKey::from_u128(11)],
+                NodeKey::from_u128(20),
+            )),
+            Vec::new(),
+            ProblemEvidence::RuntimeLevelLatchConflictRetained {
+                evidence: qualified_evidence,
+                marker: PhantomData,
+            },
+        );
+        assert!(DiagnosticConditionKey::from_problem(&mismatched_qualified).is_none());
         for evidence in [
             ProblemEvidence::<()>::RuntimeLevelLatchConflictRejected {
                 evidence: original.clone(),

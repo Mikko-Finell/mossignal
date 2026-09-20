@@ -12,9 +12,9 @@ use mossignal::metadata::DiagnosticMeta;
 use mossignal::signal::{Level, LogicLevel, Pulse, PulseCount};
 use mossignal::time::Time;
 use mossignal::{
-    CauseInspection, CauseRef, ConflictPolicy, LevelSetResetConfig, ModuleBuilder, NetworkBuilder,
-    OutputEvent, ProvenanceView, PulseSetResetConfig, RuntimeFailureEvidence, RuntimePolicy,
-    TimeDomainId, Transaction,
+    CauseInspection, CauseRef, ConflictPolicy, ModuleBuilder, NetworkBuilder, OutputEvent,
+    ProvenanceView, PulseSetResetConfig, RuntimeFailureEvidence, RuntimePolicy, TimeDomainId,
+    Transaction,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -115,100 +115,6 @@ fn collect_observed_pulse_inputs<D>(
         }
         _ => {}
     }
-}
-
-#[test]
-#[ignore = "bug: module-internal episode primary is a private flattened NodeKey"]
-fn module_level_latch_episode_primary_is_the_authored_module_local_node() {
-    let module_set = ModuleInputKey::<Level>::from_u128(1);
-    let module_reset = ModuleInputKey::<Level>::from_u128(2);
-    let module_output = ModuleOutputKey::<Level>::from_u128(3);
-    let latch = NodeKey::from_u128(10);
-    let mut module = ModuleBuilder::<TestDomain>::new();
-    let set = module
-        .add_level_input(module_set, DiagnosticMeta::default())
-        .unwrap_or_else(|failure| panic!("module set must author: {failure:?}"));
-    let reset = module
-        .add_level_input(module_reset, DiagnosticMeta::default())
-        .unwrap_or_else(|failure| panic!("module reset must author: {failure:?}"));
-    let state = module
-        .add_level_set_reset_latch(
-            latch,
-            set,
-            reset,
-            LevelSetResetConfig::new(LogicLevel::Low, ConflictPolicy::RetainAndDiagnose),
-            DiagnosticMeta::default(),
-        )
-        .unwrap_or_else(|failure| panic!("module latch must author: {failure:?}"))
-        .into_outputs();
-    module
-        .add_level_output(module_output, state, DiagnosticMeta::default())
-        .unwrap_or_else(|failure| panic!("module output must author: {failure:?}"));
-    let module = module
-        .finish()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("module must validate: {failure:?}"));
-
-    let instance = ModuleInstanceKey::from_u128(100);
-    let mut network = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(60));
-    let (set_key, set) = network.level_input("set");
-    let (reset_key, reset) = network.level_input("reset");
-    let added = network
-        .instantiate(&module, instance, DiagnosticMeta::default())
-        .unwrap_or_else(|failure| panic!("instance must begin: {failure:?}"))
-        .bind_level(module_set, set)
-        .and_then(|builder| builder.bind_level(module_reset, reset))
-        .and_then(|builder| builder.finish())
-        .unwrap_or_else(|failure| panic!("instance must bind: {failure:?}"));
-    network
-        .level_output(
-            "state",
-            added
-                .level_output(module_output)
-                .unwrap_or_else(|failure| panic!("module output must exist: {failure:?}")),
-        )
-        .unwrap_or_else(|failure| panic!("network output must author: {failure:?}"));
-    let compiled = network
-        .finish()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("network must validate: {failure:?}"))
-        .compile()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("network must compile: {failure:?}"));
-    let snapshot = compiled
-        .input_snapshot()
-        .set(set_key, LogicLevel::High)
-        .and_then(|builder| builder.set(reset_key, LogicLevel::High))
-        .and_then(mossignal::InputSnapshotBuilder::finish)
-        .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
-    let mut machine = compiled.spawn(policy());
-    machine
-        .apply(Transaction::initialize(
-            Time::from_ticks(0),
-            machine.revision(),
-            snapshot,
-        ))
-        .unwrap_or_else(|failure| panic!("module network must initialize: {failure}"));
-    let episodes = machine
-        .active_diagnostic_episodes()
-        .unwrap_or_else(|failure| panic!("ready machine must expose episodes: {failure:?}"));
-    let [episode] = episodes.as_slice() else {
-        panic!("one module-local retained conflict must create one episode");
-    };
-
-    assert_eq!(
-        episode.current().primary(),
-        &SubjectRef::Node(latch),
-        "episode identity must name the authored module-local node, not a private flattening key"
-    );
-    let SubjectRef::Node(primary) = episode.current().primary() else {
-        panic!("episode primary must be a node");
-    };
-    assert!(
-        machine.inspect_level_set_reset_latch(*primary).is_ok(),
-        "the episode primary must identify an inspectable latch, got {primary:?}: {:?}",
-        machine.inspect_level_set_reset_latch(*primary)
-    );
 }
 
 #[test]

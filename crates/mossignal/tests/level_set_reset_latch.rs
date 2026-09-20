@@ -1,5 +1,6 @@
 use mossignal::diagnostics::{
     DiagnosticCode, NodeEvidence, ProblemDelivery, ProblemEvidence, Responsibility, Severity,
+    SubjectRef,
 };
 use mossignal::key::{ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey};
 use mossignal::metadata::DiagnosticMeta;
@@ -698,15 +699,22 @@ fn nested_module_episodes_have_independent_qualified_identity_and_deterministic_
         assert_eq!(episodes.len(), 2);
         assert_ne!(episodes[0].identity(), episodes[1].identity());
         for (id, episode) in [100, 200].into_iter().zip(&episodes) {
+            let expected_node = NodeKey::from_u128(10);
+            let expected_instances = vec![
+                ModuleInstanceKey::from_u128(id),
+                ModuleInstanceKey::from_u128(50),
+            ];
+            let SubjectRef::QualifiedNode(primary) = episode.current().primary() else {
+                panic!("episode primary must retain the complete qualified node path");
+            };
+            assert_eq!(primary.instances(), expected_instances.as_slice());
+            assert_eq!(primary.node(), expected_node);
             match episode.current().evidence() {
                 ProblemEvidence::RuntimeLevelLatchConflictRetained { evidence, .. } => assert_eq!(
                     evidence.node,
                     NodeEvidence::Qualified {
-                        instances: vec![
-                            ModuleInstanceKey::from_u128(id),
-                            ModuleInstanceKey::from_u128(50)
-                        ],
-                        node: NodeKey::from_u128(10)
+                        instances: expected_instances,
+                        node: expected_node
                     }
                 ),
                 other => panic!("{other:?}"),

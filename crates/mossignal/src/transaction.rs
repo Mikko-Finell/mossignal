@@ -1668,12 +1668,16 @@ fn reconcile_level_episodes<D>(
         .level_latch_conflicts
         .iter()
         .map(|conflict| {
+            let node = compiled.node_subject(conflict.node);
             Problem::new(
-                SubjectRef::Node(conflict.node),
+                match &node {
+                    NodeSubject::Node(node) => SubjectRef::Node(*node),
+                    NodeSubject::Qualified(node) => SubjectRef::QualifiedNode(node.clone()),
+                },
                 Vec::new(),
                 ProblemEvidence::RuntimeLevelLatchConflictRetained {
                     evidence: ConflictEvidence {
-                        node: node_evidence(&compiled.node_subject(conflict.node)),
+                        node: node_evidence(&node),
                         policy: conflict.policy,
                         previous: conflict.previous,
                         controls: ConflictControls::Level {
