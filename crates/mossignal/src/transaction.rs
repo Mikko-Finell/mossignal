@@ -145,7 +145,6 @@ pub enum RuntimeFailureEvidence {
         delay_ticks: u64,
     },
     PulseLatchConflict {
-        primary: NodeKey,
         node: NodeSubject,
         policy: ConflictPolicy,
         previous: LogicLevel,
@@ -156,7 +155,6 @@ pub enum RuntimeFailureEvidence {
     },
 
     LevelLatchConflict {
-        primary: NodeKey,
         node: NodeSubject,
         policy: ConflictPolicy,
         previous: LogicLevel,
@@ -300,7 +298,6 @@ impl RuntimeFailureEvidence {
                 marker: PhantomData,
             },
             Self::PulseLatchConflict {
-                primary,
                 node,
                 policy,
                 previous,
@@ -310,7 +307,7 @@ impl RuntimeFailureEvidence {
                 revision,
             } => {
                 return Problem::new(
-                    SubjectRef::Node(*primary),
+                    node_subject_ref(node),
                     Vec::new(),
                     ProblemEvidence::RuntimePulseLatchConflictRejected {
                         evidence: ConflictEvidence {
@@ -329,7 +326,6 @@ impl RuntimeFailureEvidence {
                 );
             }
             Self::LevelLatchConflict {
-                primary,
                 node,
                 policy,
                 previous,
@@ -339,7 +335,7 @@ impl RuntimeFailureEvidence {
                 revision,
             } => {
                 return Problem::new(
-                    SubjectRef::Node(*primary),
+                    node_subject_ref(node),
                     Vec::new(),
                     ProblemEvidence::RuntimeLevelLatchConflictRejected {
                         evidence: ConflictEvidence {
@@ -369,6 +365,13 @@ fn node_evidence(subject: &NodeSubject) -> NodeEvidence {
             instances: node.instances().to_vec(),
             node: node.node(),
         },
+    }
+}
+
+fn node_subject_ref(subject: &NodeSubject) -> SubjectRef {
+    match subject {
+        NodeSubject::Node(node) => SubjectRef::Node(*node),
+        NodeSubject::Qualified(node) => SubjectRef::QualifiedNode(node.clone()),
     }
 }
 
@@ -1576,7 +1579,6 @@ fn pulse_latch_failure<D>(
     revision: NetworkRevision,
 ) -> RuntimeFailureEvidence {
     RuntimeFailureEvidence::PulseLatchConflict {
-        primary: conflict.node,
         node: compiled.node_subject(conflict.node),
         policy: conflict.policy,
         previous: conflict.previous,
@@ -1594,7 +1596,6 @@ fn level_latch_failure<D>(
     revision: NetworkRevision,
 ) -> RuntimeFailureEvidence {
     RuntimeFailureEvidence::LevelLatchConflict {
-        primary: conflict.node,
         node: compiled.node_subject(conflict.node),
         policy: conflict.policy,
         previous: conflict.previous,
@@ -3523,7 +3524,6 @@ mod tests {
             ),
             (
                 RuntimeFailureEvidence::PulseLatchConflict {
-                    primary: NodeKey::from_u128(10),
                     node: NodeSubject::Node(NodeKey::from_u128(10)),
                     policy: ConflictPolicy::RejectTransaction,
                     previous: LogicLevel::Low,

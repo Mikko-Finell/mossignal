@@ -8,8 +8,8 @@ use mossignal::signal::{Level, LogicLevel, PulseCount};
 use mossignal::time::Time;
 use mossignal::{
     ConflictControls, ConflictPolicy, DiagnosticEpisodeChangeKind as Change, EdgeConfig,
-    EdgeInitialization, LevelSetResetConfig, NetworkBuilder, RuntimePolicy, TimeDomainId,
-    Transaction,
+    EdgeInitialization, LevelSetResetConfig, NetworkBuilder, RuntimeFailureEvidence, RuntimePolicy,
+    TimeDomainId, Transaction,
 };
 
 // Ownership must not add Clone bounds to the caller's time domain.
@@ -169,6 +169,7 @@ fn exhausts_initial_and_ready_control_state_policy_laws() {
                         );
                         assert_eq!(error.responsibility(), Responsibility::SemanticRejection);
                         assert_eq!(error.severity(), Severity::Error);
+                        assert_eq!(error.problem().primary(), &SubjectRef::Node(f.node));
                         match error.problem().evidence() {
                             ProblemEvidence::RuntimeLevelLatchConflictRejected {
                                 evidence, ..
@@ -613,6 +614,71 @@ fn module(initial: LogicLevel, conflict: ConflictPolicy) -> mossignal::ModuleDef
     )
     .unwrap();
     b.finish().require_artifact().unwrap()
+}
+
+#[test]
+fn module_rejected_level_latch_retains_the_qualified_failure_owner() {
+    use mossignal::key::{ModuleInputKey, ModuleInstanceKey, ModuleOutputKey};
+
+    let leaf = module(LOW, ConflictPolicy::RejectTransaction);
+    let instance = ModuleInstanceKey::from_u128(100);
+    let mut b = NetworkBuilder::with_key(NetworkKey::from_u128(72), TimeDomainId::from_u128(2));
+    let (set, set_signal) = b.level_input("set");
+    let (reset, reset_signal) = b.level_input("reset");
+    let added = b
+        .instantiate(&leaf, instance, DiagnosticMeta::default())
+        .unwrap()
+        .bind_level(ModuleInputKey::from_u128(1), set_signal)
+        .unwrap()
+        .bind_level(ModuleInputKey::from_u128(2), reset_signal)
+        .unwrap()
+        .finish()
+        .unwrap();
+    b.add_level_output(
+        ExternalOutputKey::from_u128(1),
+        added.level_output(ModuleOutputKey::from_u128(3)).unwrap(),
+        DiagnosticMeta::default(),
+    )
+    .unwrap();
+    let compiled = b
+        .finish()
+        .require_artifact()
+        .unwrap()
+        .compile()
+        .require_artifact()
+        .unwrap();
+    let snapshot = compiled
+        .input_snapshot()
+        .set(set, HIGH)
+        .unwrap()
+        .set(reset, HIGH)
+        .unwrap()
+        .finish()
+        .unwrap();
+    let mut machine = compiled.spawn(policy(1000));
+    let failure = machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            snapshot,
+        ))
+        .expect_err("module level conflict must reject initialization");
+    assert!(!machine.is_initialized());
+    let SubjectRef::QualifiedNode(primary) = failure.problem().primary() else {
+        panic!("rejected problem must retain the complete qualified primary");
+    };
+    assert_eq!(primary.instances(), &[instance]);
+    assert_eq!(primary.node(), NodeKey::from_u128(10));
+    match failure.evidence() {
+        RuntimeFailureEvidence::LevelLatchConflict { node, .. } => match node {
+            mossignal::NodeSubject::Qualified(qualified) => {
+                assert_eq!(qualified.instances(), &[instance]);
+                assert_eq!(qualified.node(), NodeKey::from_u128(10));
+            }
+            other => panic!("reject evidence must retain the qualified owner, got {other:?}"),
+        },
+        other => panic!("unexpected reject evidence: {other:?}"),
+    }
 }
 
 #[test]

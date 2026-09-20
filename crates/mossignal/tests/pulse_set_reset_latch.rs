@@ -856,6 +856,94 @@ fn module_local_occurrence_retains_the_qualified_primitive_subject() {
 }
 
 #[test]
+fn module_rejected_pulse_latch_retains_the_qualified_failure_owner() {
+    let module_set = ModuleInputKey::<Pulse>::from_u128(1);
+    let module_reset = ModuleInputKey::<Pulse>::from_u128(2);
+    let module_output = ModuleOutputKey::<Level>::from_u128(3);
+    let latch = NodeKey::from_u128(10);
+    let mut module = ModuleBuilder::<TestDomain>::new();
+    let set = module
+        .add_pulse_input(module_set, DiagnosticMeta::default())
+        .unwrap_or_else(|failure| panic!("module set must author: {failure:?}"));
+    let reset = module
+        .add_pulse_input(module_reset, DiagnosticMeta::default())
+        .unwrap_or_else(|failure| panic!("module reset must author: {failure:?}"));
+    let state = module
+        .add_pulse_set_reset_latch(
+            latch,
+            set,
+            reset,
+            PulseSetResetConfig::new(LogicLevel::Low, ConflictPolicy::RejectTransaction),
+            DiagnosticMeta::default(),
+        )
+        .unwrap_or_else(|failure| panic!("module latch must author: {failure:?}"))
+        .into_outputs();
+    module
+        .add_level_output(module_output, state, DiagnosticMeta::default())
+        .unwrap_or_else(|failure| panic!("module output must author: {failure:?}"));
+    let module = module
+        .finish()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("module must validate: {failure:?}"));
+
+    let instance = ModuleInstanceKey::from_u128(100);
+    let mut network = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(60));
+    let (set_key, set) = network.pulse_input("set");
+    let (reset_key, reset) = network.pulse_input("reset");
+    let added = network
+        .instantiate(&module, instance, DiagnosticMeta::default())
+        .unwrap_or_else(|failure| panic!("instance must begin: {failure:?}"))
+        .bind_pulse(module_set, set)
+        .and_then(|builder| builder.bind_pulse(module_reset, reset))
+        .and_then(|builder| builder.finish())
+        .unwrap_or_else(|failure| panic!("instance must bind: {failure:?}"));
+    network
+        .level_output(
+            "state",
+            added
+                .level_output(module_output)
+                .unwrap_or_else(|failure| panic!("module output must exist: {failure:?}")),
+        )
+        .unwrap_or_else(|failure| panic!("network output must author: {failure:?}"));
+    let compiled = network
+        .finish()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("network must validate: {failure:?}"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("network must compile: {failure:?}"));
+    let snapshot = compiled
+        .input_snapshot()
+        .pulse(set_key, PulseCount::ONE)
+        .and_then(|builder| builder.pulse(reset_key, PulseCount::ONE))
+        .and_then(mossignal::InputSnapshotBuilder::finish)
+        .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
+    let mut machine = compiled.spawn(policy());
+    let failure = machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            snapshot,
+        ))
+        .expect_err("simultaneous set and reset under RejectTransaction must fail");
+    let SubjectRef::QualifiedNode(primary) = failure.problem().primary() else {
+        panic!("rejected problem must retain the complete qualified primary");
+    };
+    assert_eq!(primary.instances(), &[instance]);
+    assert_eq!(primary.node(), latch);
+    match failure.evidence() {
+        RuntimeFailureEvidence::PulseLatchConflict { node, .. } => match node {
+            mossignal::NodeSubject::Qualified(qualified) => {
+                assert_eq!(qualified.instances(), &[instance]);
+                assert_eq!(qualified.node(), latch);
+            }
+            other => panic!("reject evidence must retain the qualified owner, got {other:?}"),
+        },
+        other => panic!("unexpected reject evidence: {other:?}"),
+    }
+}
+
+#[test]
 fn latch_identity_is_sensitive_to_initial_state_and_every_policy() {
     let mut fingerprints = BTreeSet::new();
     for initial in [LogicLevel::Low, LogicLevel::High] {
