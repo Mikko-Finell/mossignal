@@ -455,13 +455,13 @@ pub(crate) enum EvaluationCause {
     PulseRoute {
         node: NodeKey,
         control: usize,
-        contribution: PulseEvaluationContribution,
     },
     PulseRouteOutput {
         node: NodeKey,
         contribution: PulseEvaluationContribution,
         result: PulseCount,
         source: usize,
+        selected: bool,
     },
     EdgeDetector {
         node: NodeKey,
@@ -1424,11 +1424,6 @@ impl<D> CompiledInner<D> {
                             EvaluationCause::PulseRoute {
                                 node: *key,
                                 control: self.input_source(*selector)?.0,
-                                contribution: PulseEvaluationContribution {
-                                    port: self.pulse_port_key(*pulses)?,
-                                    count,
-                                    source: self.input_source(*pulses)?.0,
-                                },
                             },
                         )
                     }
@@ -1719,6 +1714,7 @@ impl<D> CompiledInner<D> {
                                 .ok_or(EvaluationFailure::Incomplete)?;
                             let CompiledNodeKind::PulseRoute {
                                 pulses,
+                                selector,
                                 when_low: low_port,
                                 when_high: high_port,
                                 ..
@@ -1726,10 +1722,14 @@ impl<D> CompiledInner<D> {
                             else {
                                 return Err(EvaluationFailure::Incomplete);
                             };
-                            let result = if *port == low_port {
-                                when_low
+                            let selector_value = self.level_input_value(selector, &values)?;
+                            // SPEC: docs/specs/contracts/level-controlled-pulse.yaml
+                            // "selected-output-provenance" — selection is control-based, so a
+                            // selected zero-count batch remains causally supported.
+                            let (result, selected) = if *port == low_port {
+                                (when_low, selector_value.is_low())
                             } else if *port == high_port {
-                                when_high
+                                (when_high, selector_value.is_high())
                             } else {
                                 return Err(EvaluationFailure::Incomplete);
                             };
@@ -1744,6 +1744,7 @@ impl<D> CompiledInner<D> {
                                     },
                                     result,
                                     source: predecessor.0,
+                                    selected,
                                 },
                             )
                         }

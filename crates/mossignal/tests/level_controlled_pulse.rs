@@ -261,6 +261,153 @@ fn reachable_observations(
     (levels, pulses)
 }
 
+fn observed_pulse_inputs(
+    provenance: &ProvenanceView<TestDomain>,
+    root: CauseRef,
+) -> PulseObservations {
+    let mut found = BTreeSet::new();
+    collect_observed_pulse_inputs(provenance, root, &mut found, &mut BTreeSet::new());
+    found
+}
+
+fn collect_observed_pulse_inputs(
+    provenance: &ProvenanceView<TestDomain>,
+    cause: CauseRef,
+    found: &mut PulseObservations,
+    visited: &mut BTreeSet<CauseRef>,
+) {
+    if !visited.insert(cause) {
+        return;
+    }
+    match provenance
+        .inspect(cause)
+        .unwrap_or_else(|failure| panic!("cause must resolve inside its view: {failure}"))
+    {
+        CauseInspection::ExternalPulseObservation { input, count } => {
+            found.insert((input, count));
+        }
+        CauseInspection::Derived { supporters, .. }
+        | CauseInspection::PendingPulseDelay { supporters, .. } => {
+            for supporter in supporters {
+                collect_observed_pulse_inputs(provenance, *supporter, found, visited);
+            }
+        }
+        CauseInspection::PulseDerived {
+            contributions,
+            supporters,
+            ..
+        }
+        | CauseInspection::PulseControlledLevel {
+            contributions,
+            supporters,
+            ..
+        } => {
+            for contribution in contributions {
+                collect_observed_pulse_inputs(provenance, contribution.cause(), found, visited);
+            }
+            for supporter in supporters {
+                collect_observed_pulse_inputs(provenance, *supporter, found, visited);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn pulse_route_provenance_keeps_only_selected_pulse_support() {
+    for control in [LogicLevel::Low, LogicLevel::High] {
+        for routed_count in [PulseCount::new(7), PulseCount::ZERO] {
+            let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(21));
+            let (selector_key, selector) = builder.level_input("selector");
+            let (pulses_key, pulses) = builder.pulse_input("pulses");
+            let (low_extra_key, low_extra) = builder.pulse_input("low-extra");
+            let (high_extra_key, high_extra) = builder.pulse_input("high-extra");
+            let routed = builder
+                .pulse_route(selector, pulses)
+                .unwrap_or_else(|failure| panic!("PulseRoute must author: {failure:?}"));
+            let low_merged = builder
+                .merge([routed.when_low, low_extra])
+                .unwrap_or_else(|failure| panic!("low merge must author: {failure:?}"));
+            let high_merged = builder
+                .merge([routed.when_high, high_extra])
+                .unwrap_or_else(|failure| panic!("high merge must author: {failure:?}"));
+            let low_output = builder
+                .pulse_output("low", low_merged)
+                .unwrap_or_else(|failure| panic!("low output must author: {failure:?}"));
+            let high_output = builder
+                .pulse_output("high", high_merged)
+                .unwrap_or_else(|failure| panic!("high output must author: {failure:?}"));
+            let compiled = builder
+                .finish()
+                .require_artifact()
+                .unwrap_or_else(|failure| panic!("route network must validate: {failure:?}"))
+                .compile()
+                .require_artifact()
+                .unwrap_or_else(|failure| panic!("route network must compile: {failure:?}"));
+            let snapshot = compiled
+                .input_snapshot()
+                .set(selector_key, control)
+                .and_then(|builder| builder.pulse(pulses_key, routed_count))
+                .and_then(|builder| builder.pulse(low_extra_key, PulseCount::ONE))
+                .and_then(|builder| builder.pulse(high_extra_key, PulseCount::ONE))
+                .and_then(|builder| builder.finish())
+                .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
+            let mut machine = compiled.spawn(policy());
+            let result = machine
+                .apply(Transaction::initialize(
+                    Time::from_ticks(0),
+                    machine.revision(),
+                    snapshot,
+                ))
+                .unwrap_or_else(|failure| panic!("route network must initialize: {failure}"));
+
+            let event = |output| {
+                result
+                    .output_events()
+                    .iter()
+                    .find_map(|event| match event {
+                        OutputEvent::Pulsed {
+                            output: event_output,
+                            count,
+                            cause,
+                            ..
+                        } if *event_output == output => Some((*count, *cause)),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("output {output:?} must emit"))
+            };
+            let (low_count, low_cause) = event(low_output);
+            let (high_count, high_cause) = event(high_output);
+            let expected_count =
+                routed_count
+                    .checked_add(PulseCount::ONE)
+                    .unwrap_or_else(|failure| {
+                        panic!("test count must remain representable: {failure}")
+                    });
+            if control.is_low() {
+                assert_eq!(low_count, expected_count);
+                assert_eq!(high_count, PulseCount::ONE);
+            } else {
+                assert_eq!(low_count, PulseCount::ONE);
+                assert_eq!(high_count, expected_count);
+            }
+
+            let low_inputs = observed_pulse_inputs(result.provenance(), low_cause);
+            let high_inputs = observed_pulse_inputs(result.provenance(), high_cause);
+            let (selected_inputs, selected_extra, suppressed_inputs, suppressed_extra) =
+                if control.is_low() {
+                    (low_inputs, low_extra_key, high_inputs, high_extra_key)
+                } else {
+                    (high_inputs, high_extra_key, low_inputs, low_extra_key)
+                };
+            assert!(selected_inputs.contains(&(pulses_key, routed_count)));
+            assert!(selected_inputs.contains(&(selected_extra, PulseCount::ONE)));
+            assert!(suppressed_inputs.contains(&(suppressed_extra, PulseCount::ONE)));
+            assert!(!suppressed_inputs.contains(&(pulses_key, routed_count)));
+        }
+    }
+}
+
 #[test]
 fn every_emitted_family_event_retains_current_control_and_selected_batch_provenance() {
     let fixture = family_fixture();

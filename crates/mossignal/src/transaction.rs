@@ -2458,15 +2458,10 @@ fn append_evaluation_provenance<D>(
                     },
                 )
             }
-            EvaluationCause::PulseRoute {
-                node,
-                control,
-                contribution,
-            } => {
+            EvaluationCause::PulseRoute { node, control } => {
                 let mut supporters = vec![
                     transaction_cause,
                     operation_cause(&operation_causes, *control),
-                    operation_cause(&operation_causes, contribution.source),
                 ];
                 supporters.sort();
                 supporters.dedup();
@@ -2484,17 +2479,25 @@ fn append_evaluation_provenance<D>(
                 contribution,
                 result,
                 source,
+                selected,
             } => {
-                let grouped = vec![PulseContribution {
-                    port: input_causes.compiled.pulse_port_subject(contribution.port),
-                    count: contribution.count,
-                    cause: operation_cause(&operation_causes, contribution.source),
-                }];
-                let mut supporters = vec![
-                    transaction_cause,
-                    operation_cause(&operation_causes, *source),
-                    grouped[0].cause,
-                ];
+                let route_cause = operation_cause(&operation_causes, *source);
+                // SPEC: docs/specs/contracts/level-controlled-pulse.yaml
+                // "selected-output-provenance" — suppressed output has control-only support;
+                // selected output retains the complete pulse batch, including zero.
+                let grouped = if *selected {
+                    vec![PulseContribution {
+                        port: input_causes.compiled.pulse_port_subject(contribution.port),
+                        count: contribution.count,
+                        cause: operation_cause(&operation_causes, contribution.source),
+                    }]
+                } else {
+                    Vec::new()
+                };
+                let mut supporters = vec![transaction_cause, route_cause];
+                if let Some(contribution) = grouped.first() {
+                    supporters.push(contribution.cause);
+                }
                 supporters.sort();
                 supporters.dedup();
                 push_record(
