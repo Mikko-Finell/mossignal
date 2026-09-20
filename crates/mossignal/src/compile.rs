@@ -1160,9 +1160,16 @@ impl<D> CompiledInner<D> {
                         ..
                     } => {
                         let mut high = false;
+                        let mut odd_sources = BTreeSet::new();
                         for input in inputs {
+                            let source = self.input_source(*input)?.0;
+                            if !odd_sources.remove(&source) {
+                                odd_sources.insert(source);
+                            }
                             high ^= self.level_input_value(*input, &values)?.is_high();
                         }
+                        // SPEC: docs/specs/built_in_node_semantics.md §16 "Duplicate sources" and §26 "Parity"
+                        // Each port affects the value; even source multiplicity cancels current support.
                         (
                             EvaluationValue::Level(if high {
                                 LogicLevel::High
@@ -1171,10 +1178,7 @@ impl<D> CompiledInner<D> {
                             }),
                             EvaluationCause::Node {
                                 node: *key,
-                                predecessors: self.predecessors[index]
-                                    .iter()
-                                    .map(|predecessor| predecessor.0)
-                                    .collect(),
+                                predecessors: odd_sources.into_iter().collect(),
                             },
                         )
                     }

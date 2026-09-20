@@ -62,59 +62,6 @@ fn collect_observed_level_inputs<D>(
 }
 
 #[test]
-#[ignore = "bug: xor(x, x) is constantly Low but provenance still treats x as current support"]
-fn xor_of_a_duplicated_source_is_constant_low_and_independent_of_that_source() {
-    let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(30));
-    let (input_key, input) = builder.level_input("x");
-    let xor = builder
-        .xor(input, input)
-        .unwrap_or_else(|failure| panic!("xor must author: {failure:?}"));
-    let output = builder
-        .level_output("out", xor)
-        .unwrap_or_else(|failure| panic!("output must author: {failure:?}"));
-    let compiled = builder
-        .finish()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("xor(x, x) must validate: {failure:?}"))
-        .compile()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("xor(x, x) must compile: {failure:?}"));
-    for value in [LogicLevel::Low, LogicLevel::High] {
-        let snapshot = compiled
-            .input_snapshot()
-            .set(input_key, value)
-            .and_then(mossignal::InputSnapshotBuilder::finish)
-            .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
-        let mut machine = compiled.spawn(policy());
-        let result = machine
-            .apply(Transaction::initialize(
-                Time::from_ticks(0),
-                machine.revision(),
-                snapshot,
-            ))
-            .unwrap_or_else(|failure| panic!("xor(x, x) must initialize: {failure}"));
-        let [
-            OutputEvent::LevelEstablished {
-                output: established,
-                value: established_value,
-                cause,
-                ..
-            },
-        ] = result.output_events()
-        else {
-            panic!("initialization must establish constant Low");
-        };
-        assert_eq!(*established, output);
-        assert_eq!(*established_value, LogicLevel::Low);
-        let observed = observed_level_inputs(result.provenance(), *cause);
-        assert!(
-            observed.is_empty(),
-            "xor(x, x) cannot change with x, but provenance retained {observed:?} for {value:?}"
-        );
-    }
-}
-
-#[test]
 #[ignore = "bug: AllEqual(x, x) is constantly High but provenance still treats x as current support"]
 fn all_equal_of_a_duplicated_source_is_constant_high_and_independent_of_that_source() {
     let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(32));

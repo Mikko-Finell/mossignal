@@ -899,6 +899,223 @@ fn at_least_high_provenance_contains_all_high_inputs_only() {
 }
 
 #[test]
+fn parity_provenance_cancels_even_source_multiplicity() {
+    let mut builder = NetworkBuilder::<TestTicks>::new(TimeDomainId::from_u128(DOMAIN_ID));
+    let (x_key, x) = builder.level_input("x");
+    let (y_key, y) = builder.level_input("y");
+    let even_x = builder
+        .parity([x, x])
+        .unwrap_or_else(|failure| panic!("Parity(x, x) must author: {failure:?}"));
+    let even_output = builder
+        .level_output("even-x", even_x)
+        .unwrap_or_else(|failure| panic!("even Parity output must author: {failure:?}"));
+    let odd_x = builder
+        .parity([x, x, x])
+        .unwrap_or_else(|failure| panic!("Parity(x, x, x) must author: {failure:?}"));
+    let odd_output = builder
+        .level_output("odd-x", odd_x)
+        .unwrap_or_else(|failure| panic!("odd Parity output must author: {failure:?}"));
+    let independent = builder
+        .parity([x, y])
+        .unwrap_or_else(|failure| panic!("Parity(x, y) must author: {failure:?}"));
+    let independent_output = builder
+        .level_output("independent", independent)
+        .unwrap_or_else(|failure| panic!("independent Parity output must author: {failure:?}"));
+    let even_plus_y = builder
+        .parity([x, x, y])
+        .unwrap_or_else(|failure| panic!("Parity(x, x, y) must author: {failure:?}"));
+    let even_plus_y_output = builder
+        .level_output("even-x-plus-y", even_plus_y)
+        .unwrap_or_else(|failure| panic!("mixed Parity output must author: {failure:?}"));
+    let compiled = builder
+        .finish()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("Parity network must validate: {failure:?}"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("Parity network must compile: {failure:?}"));
+    let empty_support = BTreeSet::new();
+    let x_support = BTreeSet::from([x_key.as_u128()]);
+    let y_support = BTreeSet::from([y_key.as_u128()]);
+    let xy_support = BTreeSet::from([x_key.as_u128(), y_key.as_u128()]);
+    let assert_output = |machine: &mossignal::Machine<TestTicks>,
+                         result: &mossignal::TransactionResult<TestTicks>,
+                         output: ExternalOutputKey<Level>,
+                         expected: LogicLevel,
+                         expected_support: BTreeSet<u128>| {
+        assert_eq!(machine.output_level(output), Some(expected));
+        let cause = machine
+            .output_cause(output)
+            .unwrap_or_else(|| panic!("Parity output must retain a cause"));
+        assert_eq!(
+            observed_level_inputs(result.provenance(), cause),
+            expected_support
+        );
+    };
+
+    let initialized = {
+        let snapshot = compiled
+            .input_snapshot()
+            .set(x_key, LogicLevel::Low)
+            .and_then(|builder| builder.set(y_key, LogicLevel::Low))
+            .and_then(mossignal::InputSnapshotBuilder::finish)
+            .unwrap_or_else(|failure| panic!("Parity snapshot must build: {failure}"));
+        let mut machine = compiled.spawn(runtime_policy());
+        let result = machine
+            .apply(Transaction::initialize(
+                Time::from_ticks(0),
+                machine.revision(),
+                snapshot,
+            ))
+            .unwrap_or_else(|failure| panic!("Parity initialization must succeed: {failure}"));
+        assert_output(
+            &machine,
+            &result,
+            even_output,
+            LogicLevel::Low,
+            empty_support.clone(),
+        );
+        assert_output(
+            &machine,
+            &result,
+            odd_output,
+            LogicLevel::Low,
+            x_support.clone(),
+        );
+        assert_output(
+            &machine,
+            &result,
+            independent_output,
+            LogicLevel::Low,
+            xy_support.clone(),
+        );
+        assert_output(
+            &machine,
+            &result,
+            even_plus_y_output,
+            LogicLevel::Low,
+            y_support.clone(),
+        );
+        (machine, result)
+    };
+    let (mut machine, _initialized) = initialized;
+
+    let x_high = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(1),
+            machine.revision(),
+            compiled
+                .input_delta()
+                .set(x_key, LogicLevel::High)
+                .and_then(mossignal::InputDeltaBuilder::finish)
+                .unwrap_or_else(|failure| panic!("Parity x-high delta must build: {failure}")),
+        ))
+        .unwrap_or_else(|failure| panic!("Parity x-high transition must succeed: {failure}"));
+    assert_output(
+        &machine,
+        &x_high,
+        even_output,
+        LogicLevel::Low,
+        empty_support.clone(),
+    );
+    assert_output(
+        &machine,
+        &x_high,
+        odd_output,
+        LogicLevel::High,
+        x_support.clone(),
+    );
+    assert_output(
+        &machine,
+        &x_high,
+        independent_output,
+        LogicLevel::High,
+        xy_support.clone(),
+    );
+    assert_output(
+        &machine,
+        &x_high,
+        even_plus_y_output,
+        LogicLevel::Low,
+        y_support.clone(),
+    );
+
+    let y_high = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(2),
+            machine.revision(),
+            compiled
+                .input_delta()
+                .set(y_key, LogicLevel::High)
+                .and_then(mossignal::InputDeltaBuilder::finish)
+                .unwrap_or_else(|failure| panic!("Parity y-high delta must build: {failure}")),
+        ))
+        .unwrap_or_else(|failure| panic!("Parity y-high transition must succeed: {failure}"));
+    assert_output(
+        &machine,
+        &y_high,
+        even_output,
+        LogicLevel::Low,
+        empty_support.clone(),
+    );
+    assert_output(
+        &machine,
+        &y_high,
+        odd_output,
+        LogicLevel::High,
+        x_support.clone(),
+    );
+    assert_output(
+        &machine,
+        &y_high,
+        independent_output,
+        LogicLevel::Low,
+        xy_support.clone(),
+    );
+    assert_output(
+        &machine,
+        &y_high,
+        even_plus_y_output,
+        LogicLevel::High,
+        y_support.clone(),
+    );
+
+    let x_low = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(3),
+            machine.revision(),
+            compiled
+                .input_delta()
+                .set(x_key, LogicLevel::Low)
+                .and_then(mossignal::InputDeltaBuilder::finish)
+                .unwrap_or_else(|failure| panic!("Parity x-low delta must build: {failure}")),
+        ))
+        .unwrap_or_else(|failure| panic!("Parity x-low transition must succeed: {failure}"));
+    assert_output(
+        &machine,
+        &x_low,
+        even_output,
+        LogicLevel::Low,
+        empty_support,
+    );
+    assert_output(&machine, &x_low, odd_output, LogicLevel::Low, x_support);
+    assert_output(
+        &machine,
+        &x_low,
+        independent_output,
+        LogicLevel::High,
+        xy_support,
+    );
+    assert_output(
+        &machine,
+        &x_low,
+        even_plus_y_output,
+        LogicLevel::High,
+        y_support,
+    );
+}
+
+#[test]
 fn foreign_signals_fail_before_either_builder_authors_a_convenience_node() {
     let mut foreign_network = NetworkBuilder::<TestTicks>::new(TimeDomainId::from_u128(DOMAIN_ID));
     let foreign = foreign_network.level_input("foreign").1;
