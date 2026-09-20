@@ -1,0 +1,184 @@
+schema_version: "0.1"
+id: mossignal.node.transport_delay
+title: Transport-delayed Level transitions
+kind: node
+status: draft
+
+source_baseline:
+  commit: 3909e6850b0f113c2e93c420bb7004e11bf749f9
+  working_tree: clean
+
+summary: >-
+  TransportDelay remembers each settled Level input transition and reproduces
+  its target at origin plus a positive delay, preserving short-lived changes
+  while separating current output from current-input scheduling.
+
+scope:
+  includes:
+    - fixed Level shape, explicit configuration, and temporal initialization
+    - remembered-input transition detection, due-output law, and causality barrier
+    - transport event payload, same-deadline precedence, and causal inspection
+    - typed/dynamic authoring, semantic identity facets, and node conformance
+  excludes:
+    - general calendar allocation, transaction advancement, and runtime budgets
+    - inertial cancellation, periodic scheduling, and temporal standard modules
+    - snapshot/replay encoding and topology-patch migration procedures
+
+known_uncovered:
+  - Duration/connectivity migration, including creation and rejection of conflicting equal-origin transitions
+  - Snapshot restoration and digest encoding of transport state and pending work
+  - General explanation queries, subscriptions, and optional retained event history
+
+aliases: [TransportDelay, TransportDelayConfig<D>, transport_delay, transport delay, queued Level transitions]
+
+requirements:
+  - id: fixed-shape-and-configuration
+    kind: public_surface
+    statement: >-
+      TransportDelay has one Level input and one Level output, a required
+      NonZeroSpan<D> delay, and one explicit initial LogicLevel. The concrete
+      configuration is TransportDelayConfig<D> { delay, initial }; it contains
+      semantic configuration rather than metadata or runtime state. Typed
+      convenience and explicit keyed construction accept the Level input and
+      configuration and return structured authoring results; dynamic authoring
+      preserves the closed TransportDelay kind and its configuration. Transport
+      and inertial delay remain semantically distinct.
+    sources: [transport-law, concrete-config, concrete-builders, concrete-dynamic, level-delay-distinction]
+
+  - id: declared-temporal-initialization
+    kind: lifecycle
+    statement: >-
+      Before the first reaction the single initial level initializes both
+      remembered input and output; the primitive does not permit an initial
+      input/output mismatch. Initialization compares its first settled input
+      with that remembered initial level: equality creates no transition,
+      while a difference retains the initial current output and schedules the
+      differing target for exactly initialization time plus delay.
+    sources: [temporal-initialization, transport-law]
+
+  - id: settled-transition-queue-law
+    kind: semantic
+    statement: >-
+      On every reaction, remembered input proposes the fully settled current
+      input as its successor. A difference from previous remembered input
+      queues exactly that new target at originating time plus delay. Ordinary
+      operation creates at most one input transition per originating reaction
+      and preserves short-lived changes rather than canceling superseded work.
+      Transport state retains remembered input and output; queued obligations
+      reside in the machine event calendar rather than duplicated opaque
+      node-owned queues. Each transport event carries its target LogicLevel
+      and originating logical time for precedence.
+    sources: [transport-law, transport-state-schema, transport-event-schema]
+
+  - id: temporal-output-and-dependency-boundary
+    kind: semantic
+    statement: >-
+      Current input affects remembered-input succession and future scheduling,
+      with no instantaneous path to current output. Previous output and due
+      transition facts determine current output; a due transition matures
+      regardless of a new input transition at the same time. The due batch is
+      a current-reaction root, while new input can create only later work.
+      Without a matured transition, output retains its previous level.
+    sources: [transport-law, dependency-signatures, exact-deadline]
+
+  - id: same-deadline-chronological-precedence
+    kind: semantic
+    statement: >-
+      When several transitions for one TransportDelay mature at one deadline,
+      the settled output is the target with greatest originating logical time,
+      independent of event iteration order. No same-time intermediate output
+      transitions are observable. All matured transitions remain available to
+      inspection and explanation, with earlier origins superseded at that
+      deadline. Conflicting indistinguishable origins must be resolved or
+      rejected by the migration creating them, not assigned container order.
+    sources: [transport-law]
+
+  - id: focused-temporal-state-and-causality
+    kind: public_surface
+    statement: >-
+      TransportDelay inspection distinguishes declared state, committed
+      remembered input and output, current port facts, pending transitions, and
+      observed revision/time. Temporal facts expose pending identities,
+      targets, origins/deadlines, causal ancestry, applicable cancellation and
+      migration policy, and next eligible deadline. Before initialization only
+      structural and declared-state facts are available. Current justification
+      remains distinct from latest transition cause; causal observation
+      separates the obligation producing current output, its originating input,
+      current input, and newly scheduled future work.
+    sources: [node-inspection, temporal-inspection, causes, transport-law]
+
+  - id: transport-semantic-identity
+    kind: system_effect
+    basis: derived
+    statement: >-
+      Semantic identity includes TransportDelay's distinct kind, stable typed
+      Level ports and semantic roles, configured delay and initial level, and
+      the remembered-input/output state and transport-transition temporal
+      schemas. Runtime queue contents are machine state rather than authored
+      configuration. Insertion order and private representation do not supply
+      semantic identity.
+    sources: [network-identity, concrete-config, transport-state-schema, transport-event-schema]
+
+  - id: transport-conformance
+    kind: verification
+    statement: >-
+      Conformance covers equal/differing first input, every settled transition
+      queued, preservation of short-lived input changes, correct remembered
+      input, absence of an instantaneous input-to-output path, maturation
+      despite a new same-time input, greatest-origin same-deadline resolution,
+      and absence of same-time intermediate output changes. Migration coverage
+      additionally verifies explicit resolution or rejection of conflicting
+      indistinguishable origins when that migration facility is exercised.
+    sources: [initialization-tests, transport-tests]
+
+open_questions: []
+
+sources:
+  transport-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 52. `TransportDelay`]
+  temporal-initialization:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 50. Temporal initialization]
+  dependency-signatures:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+  exact-deadline:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 49. Exact-deadline principle]
+  node-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 61. Node inspection]
+  temporal-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 62. Temporal inspection]
+  causes:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 18. Explanations and causes]
+  concrete-config:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 29. Built-in configuration values]
+  concrete-builders:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+  concrete-dynamic:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+  level-delay-distinction:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VII — Stateful and temporal semantics, 38. Level delay]
+  transport-state-schema:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 91. Built-in state schemas]
+  transport-event-schema:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 92. Pending event records]
+  network-identity:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.1 Network fingerprint]
+  initialization-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VI — Initialization verification, 28. Temporal initialization]
+  transport-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 48. `TransportDelay`]
