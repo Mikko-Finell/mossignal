@@ -409,6 +409,79 @@ fn pulse_route_provenance_keeps_only_selected_pulse_support() {
 }
 
 #[test]
+fn pulse_gate_provenance_keeps_only_enabled_pulse_support() {
+    for enable in [LogicLevel::Low, LogicLevel::High] {
+        for gated_count in [PulseCount::new(7), PulseCount::ZERO] {
+            let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(22));
+            let (enable_key, enable_signal) = builder.level_input("enable");
+            let (gated_key, gated_signal) = builder.pulse_input("gated");
+            let (extra_key, extra_signal) = builder.pulse_input("extra");
+            let gated = builder
+                .pulse_gate(gated_signal, enable_signal)
+                .unwrap_or_else(|failure| panic!("PulseGate must author: {failure:?}"));
+            let merged = builder
+                .merge([gated, extra_signal])
+                .unwrap_or_else(|failure| panic!("merge must author: {failure:?}"));
+            let merge_output = builder
+                .pulse_output("merged", merged)
+                .unwrap_or_else(|failure| panic!("merge output must author: {failure:?}"));
+            let compiled = builder
+                .finish()
+                .require_artifact()
+                .unwrap_or_else(|failure| panic!("gate network must validate: {failure:?}"))
+                .compile()
+                .require_artifact()
+                .unwrap_or_else(|failure| panic!("gate network must compile: {failure:?}"));
+            let snapshot = compiled
+                .input_snapshot()
+                .set(enable_key, enable)
+                .and_then(|builder| builder.pulse(gated_key, gated_count))
+                .and_then(|builder| builder.pulse(extra_key, PulseCount::ONE))
+                .and_then(|builder| builder.finish())
+                .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
+            let mut machine = compiled.spawn(policy());
+            let result = machine
+                .apply(Transaction::initialize(
+                    Time::from_ticks(0),
+                    machine.revision(),
+                    snapshot,
+                ))
+                .unwrap_or_else(|failure| panic!("gate network must initialize: {failure}"));
+            let OutputEvent::Pulsed { count, cause, .. } = result
+                .output_events()
+                .iter()
+                .find(|event| {
+                    matches!(
+                        event,
+                        OutputEvent::Pulsed { output, .. } if *output == merge_output
+                    )
+                })
+                .unwrap_or_else(|| panic!("merge output must emit"))
+            else {
+                panic!("merge output must emit a pulse event");
+            };
+            let expected = if enable.is_high() {
+                gated_count
+                    .checked_add(PulseCount::ONE)
+                    .unwrap_or_else(|failure| {
+                        panic!("test count must remain representable: {failure}")
+                    })
+            } else {
+                PulseCount::ONE
+            };
+            assert_eq!(*count, expected);
+            let observed = observed_pulse_inputs(result.provenance(), *cause);
+            assert!(observed.contains(&(extra_key, PulseCount::ONE)));
+            assert_eq!(
+                observed.contains(&(gated_key, gated_count)),
+                enable.is_high(),
+                "gated input support must follow settled enable: {observed:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn every_emitted_family_event_retains_current_control_and_selected_batch_provenance() {
     let fixture = family_fixture();
     let snapshot = fixture

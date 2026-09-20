@@ -114,68 +114,6 @@ fn collect_observed_pulse_inputs<D>(
 }
 
 #[test]
-#[ignore = "bug: PulseGate-suppressed pulses leak into downstream merge provenance"]
-fn pulse_gate_suppressed_pulses_must_not_support_downstream_merge() {
-    let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(22));
-    let (enable_key, enable) = builder.level_input("enable");
-    let (gated_key, gated) = builder.pulse_input("gated");
-    let (extra_key, extra) = builder.pulse_input("extra");
-    let closed = builder
-        .pulse_gate(gated, enable)
-        .unwrap_or_else(|failure| panic!("PulseGate must author: {failure:?}"));
-    let merged = builder
-        .merge([closed, extra])
-        .unwrap_or_else(|failure| panic!("merge must author: {failure:?}"));
-    let merge_out = builder
-        .pulse_output("merged", merged)
-        .unwrap_or_else(|failure| panic!("merge output must author: {failure:?}"));
-    let compiled = builder
-        .finish()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("gate network must validate: {failure:?}"))
-        .compile()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("gate network must compile: {failure:?}"));
-    let snapshot = compiled
-        .input_snapshot()
-        .set(enable_key, LogicLevel::Low)
-        .and_then(|builder| builder.pulse(gated_key, PulseCount::new(7)))
-        .and_then(|builder| builder.pulse(extra_key, PulseCount::ONE))
-        .and_then(mossignal::InputSnapshotBuilder::finish)
-        .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
-    let mut machine = compiled.spawn(policy());
-    let result = machine
-        .apply(Transaction::initialize(
-            Time::from_ticks(0),
-            machine.revision(),
-            snapshot,
-        ))
-        .unwrap_or_else(|failure| panic!("gate network must initialize: {failure}"));
-    let [
-        OutputEvent::Pulsed {
-            output,
-            count,
-            cause,
-            ..
-        },
-    ] = result.output_events()
-    else {
-        panic!("merge must emit exactly the extra pulse");
-    };
-    assert_eq!(*output, merge_out);
-    assert_eq!(*count, PulseCount::ONE);
-    let observed = observed_pulse_inputs(result.provenance(), *cause);
-    assert!(
-        observed.contains(&(extra_key.as_u128(), 1)),
-        "the extra pulse must support the merge: {observed:?}"
-    );
-    assert!(
-        !observed.contains(&(gated_key.as_u128(), 7)),
-        "PulseGate-suppressed pulses must not support downstream merge, found {observed:?}"
-    );
-}
-
-#[test]
 #[ignore = "bug: Zip unmatched pulses leak into downstream merge provenance"]
 fn zip_unmatched_pulses_must_not_support_a_zero_result_downstream_merge() {
     let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(23));

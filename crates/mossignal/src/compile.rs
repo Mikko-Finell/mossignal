@@ -1346,22 +1346,25 @@ impl<D> CompiledInner<D> {
                         // SPEC: docs/specs/contracts/level-controlled-pulse.yaml
                         // "pulse-gate-law" — the settled current Level controls the complete batch.
                         let count = self.pulse_input_value(*pulses, &values)?;
-                        let result = if self.level_input_value(*enable, &values)?.is_high() {
-                            count
+                        let enabled = self.level_input_value(*enable, &values)?.is_high();
+                        let result = if enabled { count } else { PulseCount::ZERO };
+                        let enable_source = self.input_source(*enable)?.0;
+                        let contributions = if enabled {
+                            vec![PulseEvaluationContribution {
+                                port: self.pulse_port_key(*pulses)?,
+                                count,
+                                source: self.input_source(*pulses)?.0,
+                            }]
                         } else {
-                            PulseCount::ZERO
+                            Vec::new()
                         };
                         (
                             EvaluationValue::Pulse(result),
                             EvaluationCause::PulseCombinational {
                                 node: *key,
-                                contributions: vec![PulseEvaluationContribution {
-                                    port: self.pulse_port_key(*pulses)?,
-                                    count,
-                                    source: self.input_source(*pulses)?.0,
-                                }],
+                                contributions,
                                 result,
-                                supporters: vec![self.input_source(*enable)?.0],
+                                supporters: vec![enable_source],
                             },
                         )
                     }
