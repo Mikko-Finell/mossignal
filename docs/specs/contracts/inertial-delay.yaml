@@ -2,10 +2,10 @@ schema_version: "0.1"
 id: mossignal.node.inertial_delay
 title: Inertial-delayed Level transition primitive
 kind: node
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: 66eea6f9a891bf3cb54ed1cd9fdd9d151d2d9863
+  commit: dfeacc0987a6bae10284daf07f8cf2ff82af031c
   working_tree: clean
 
 summary: >-
@@ -24,7 +24,7 @@ scope:
     - typed/dynamic authoring, validation, compilation, fingerprints, and conformance
   excludes:
     - recurring schedules and Periodic
-    - Debounce convenience spelling as a separate task-level API addition
+    - Debounce alias and convenience surface beyond the primitive itself
     - topology replacement, duration-change migration, and state migration
     - generic cancellation handles, snapshot/replay encoding, and calendar optimization
 
@@ -130,14 +130,14 @@ requirements:
   - id: ordinary-runtime-integration
     kind: system_effect
     statement: >-
-      InertialDelay uses the ordinary compiled node, state-family, temporal
-      calendar, chronological advancement, provenance, output publication,
-      runtime-policy, and single-publication transaction machinery. A candidate
-      may mature or be canceled during an internal deadline reaction, but all
-      earlier internal effects and the requested-time reaction are published
-      only as one successful outer transaction. Any checked time arithmetic,
-      evaluation, event, provenance, inspection preparation, or budget failure
-      rejects the complete candidate state atomically.
+      InertialDelay uses the ordinary chronological calendar and transaction
+      path. Earlier deadline reactions and the requested-time reaction are
+      prepared together; event scheduling and cancellation, provenance, output
+      publication, and runtime-budget checks all precede one publication point.
+      A candidate may mature or be canceled during an internal deadline
+      reaction, but any checked time arithmetic, evaluation, event, provenance,
+      inspection preparation, or budget failure rejects the complete candidate
+      state atomically.
     sources: [runtime-advancement, runtime-atomic, runtime-preparation]
 
   - id: semantic-identity
@@ -147,26 +147,26 @@ requirements:
       typed Level ports and semantic roles, positive delay, explicit initial
       level, and its remembered-input/output plus optional-candidate state and
       inertial temporal schemas. Runtime candidate contents, dense positions,
-      allocation order, and presentation metadata do not contribute. The
-      pre-stability identity policy permits the current projection and fixtures
-      to be extended coherently for this newly implemented node.
+      allocation order, and presentation metadata do not contribute.
     sources: [api-fingerprint, network-fingerprint]
 
   - id: required-conformance
     kind: verification
     statement: >-
-      Conformance must cover equal and differing initialization input, candidate
-      creation, stable input maturation, strict-before-deadline cancellation,
-      exact-deadline maturation followed by optional opposite-candidate
-      creation, absence of an instantaneous input-to-output path, strict future
-      scheduling, stable pending inspection and causes, typed/dynamic and
-      module-wrapped execution, identity sensitivity and permutation invariance,
+      Temporal conformance must cover equal and differing initialization input,
+      candidate creation, stable input maturation, strict-before-deadline
+      cancellation, exact-deadline maturation followed by optional
+      opposite-candidate creation, absence of an instantaneous input-to-output
+      path, strict future scheduling, stable pending inspection and causes,
       checked time and budget failure atomicity, and direct-jump versus
-      stepwise equivalence. The before/exactly/after deadline triad is mandatory.
+      stepwise equivalence. The before/exactly/after deadline triad is
+      mandatory; typed/dynamic, module-wrapped, identity, and permutation
+      coverage remains owned by the applicable authoring, module, and identity
+      contracts.
     sources: [verification-inertial, verification-triad, verification-cancel]
 
 implementation_freedom:
-  - Candidate storage may use one explicit node state slot, a calendar event record, or a coupled representation; it must preserve one current candidate and the public facts above.
+  - Candidate state may be coupled to one calendar event record or represented by one shared pending-work record, provided the implementation preserves one current candidate and all public facts above.
   - The implementation may choose deterministic owner/order rules for event allocation, inspection records, and provenance supporters where the specifications do not fix an observable order; it must test and record the choice.
   - A focused InertialDelay inspection type may be added before generic pending-event queries, snapshots, replay, or retained event-history APIs exist.
 
@@ -176,69 +176,92 @@ sources:
   builtin-law:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part VI — Temporal nodes, 53. `InertialDelay`]
+    reviewed_hash: sha256:c89dd8ff8c697281a3a992167ef37cca5b6f67f14afd98b89ce0688da9f92144
   builtin-pending-events:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part VI — Temporal nodes, 48. Pending events]
+    reviewed_hash: sha256:4a12fbbb26768a755ecfcba0ca51c811ff0d8bdce4aecf8efd99eb3374ace179
   temporal-initialization:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part VI — Temporal nodes, 50. Temporal initialization]
+    reviewed_hash: sha256:319dc1e0c17339f409f801b5101b152961d9f1980f53a93f857b28f10bdea0d4
   builtin-signatures:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
   builtin-causes:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part I — Shared semantic rules, 18. Explanations and causes]
+    reviewed_hash: sha256:af07465662f1f93e504301c409b8a58c05f1558940699e318face0445feec256
   builtin-inspection:
     document: docs/specs/built_in_node_semantics.md
     heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 61. Node inspection]
+    reviewed_hash: sha256:109589c8402f33c1ea69f83627b4d39073bd3e3f37fc24e0494f8daaf2c5c88d
   builtin-temporal-inspection:
     document: docs/specs/built_in_node_semantics.md
     heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 62. Temporal inspection]
+    reviewed_hash: sha256:8443220398b6d411c9fad55a65408b86674cbafca845ec53880fbf68bd093ae2
   api-causality:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part I — Semantic model, 8. Current-reaction causality and cycles]
+    reviewed_hash: sha256:2e50e375a8b29141d0adc2a9515570c1109c82a274fbcd7d38efefd9094f6b8c
   api-fingerprint:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: ["Part III — Identity, bindings, and metadata", "19. Revision, fingerprint, digests, and runtime policy", 19.2 Network fingerprint]
+    reviewed_hash: sha256:cd66beda04632e5936af447825a20e58cbe84a72313c38ef193b53d838c2eb5c
   concrete-config:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VII — Typed network authoring, 29. Built-in configuration values]
+    reviewed_hash: sha256:b989b03bf932e65581c5878a208b6d619f3667762f9a547c2daa6366db6abc84
   concrete-builders:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
   concrete-node-kind:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
   network-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, "54. Network and input-schema fingerprints", 54.1 Network fingerprint]
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
   runtime-calendar:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VII — Logical time and temporal execution, 39. Event calendar]
+    reviewed_hash: sha256:46f0c541624dc42caffb4a8f9f3e0d41185fad2382a2ad2b9a7d0528e3958d4e
   runtime-boundary:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VII — Logical time and temporal execution, 44. Inertial deadline boundary]
+    reviewed_hash: sha256:81733b1bfd7a8148bf80116279adcc71531873db46f467e2696b5fa5eb3ece5f
   runtime-cancellation:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VII — Logical time and temporal execution, 45. Cancellation]
+    reviewed_hash: sha256:62e98f48efa711f605aed44655c873a012d97d05135da418798af9d30078c84e
   runtime-staging:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VIII — Transactions and atomicity, 51. Pending-event staging]
+    reviewed_hash: sha256:bee4516e983daa9788e25bf2407ae894598245a47ef6a99356b75f778b8caa48
   runtime-atomic:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VIII — Transactions and atomicity, 48. Single commit point]
+    reviewed_hash: sha256:2f52d5b43dc3cb41ef234b07953c0648120301b22c62d91af1bc0aaef6f7d184
   runtime-preparation:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VIII — Transactions and atomicity, 49. Preparation and commitment]
+    reviewed_hash: sha256:163dacd480758eeb4ec962bdc4c0b78f09dee01337e4bbf9868efea30c3687df
   runtime-advancement:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VII — Logical time and temporal execution, 41. Advancing time]
+    reviewed_hash: sha256:2cd676a9ab1fa86bc37437cc7d485b15104ba231359672e214b1c0cff38bc278
   verification-inertial:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part IX — Temporal verification, 49. `InertialDelay`]
+    reviewed_hash: sha256:96938892e4427900067ea0b747fa9512eec0def80fab1322fccce317142c0187
   verification-triad:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part IX — Temporal verification, 46. Exact-deadline boundary triad]
+    reviewed_hash: sha256:e401b899a1602862d334623b5a1cf026c71ad773f0f6e57cfb28e33300ce1d8a
   verification-cancel:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part IX — Temporal verification, 51. Event cancellation and next deadline]
+    reviewed_hash: sha256:d92fefc365bf0d4f3d515813ac8a28e4fdd58a3c87297a617b961d82b743b796
