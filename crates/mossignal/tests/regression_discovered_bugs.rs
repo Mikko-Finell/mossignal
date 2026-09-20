@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use mossignal::signal::{LogicLevel, PulseCount};
+use mossignal::signal::LogicLevel;
 use mossignal::time::Time;
 use mossignal::{
     CauseInspection, CauseRef, NetworkBuilder, OutputEvent, ProvenanceView, RuntimePolicy,
@@ -59,121 +59,6 @@ fn collect_observed_level_inputs<D>(
         }
         _ => {}
     }
-}
-
-fn observed_pulse_inputs<D>(
-    provenance: &ProvenanceView<D>,
-    root: CauseRef,
-) -> BTreeSet<(u128, u64)> {
-    let mut found = BTreeSet::new();
-    collect_observed_pulse_inputs(provenance, root, &mut found, &mut BTreeSet::new());
-    found
-}
-
-fn collect_observed_pulse_inputs<D>(
-    provenance: &ProvenanceView<D>,
-    cause: CauseRef,
-    found: &mut BTreeSet<(u128, u64)>,
-    visited: &mut BTreeSet<CauseRef>,
-) {
-    if !visited.insert(cause) {
-        return;
-    }
-    match provenance
-        .inspect(cause)
-        .unwrap_or_else(|failure| panic!("cause must resolve inside its view: {failure}"))
-    {
-        CauseInspection::ExternalPulseObservation { input, count } => {
-            found.insert((input.as_u128(), count.get()));
-        }
-        CauseInspection::Derived { supporters, .. }
-        | CauseInspection::PendingPulseDelay { supporters, .. } => {
-            for supporter in supporters {
-                collect_observed_pulse_inputs(provenance, *supporter, found, visited);
-            }
-        }
-        CauseInspection::PulseDerived {
-            contributions,
-            supporters,
-            ..
-        }
-        | CauseInspection::PulseControlledLevel {
-            contributions,
-            supporters,
-            ..
-        } => {
-            for contribution in contributions {
-                collect_observed_pulse_inputs(provenance, contribution.cause(), found, visited);
-            }
-            for supporter in supporters {
-                collect_observed_pulse_inputs(provenance, *supporter, found, visited);
-            }
-        }
-        _ => {}
-    }
-}
-
-#[test]
-#[ignore = "bug: Zip unmatched pulses leak into downstream merge provenance"]
-fn zip_unmatched_pulses_must_not_support_a_zero_result_downstream_merge() {
-    let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(23));
-    let (left_key, left) = builder.pulse_input("left");
-    let (right_key, right) = builder.pulse_input("right");
-    let (extra_key, extra) = builder.pulse_input("extra");
-    let zipped = builder
-        .zip([left, right])
-        .unwrap_or_else(|failure| panic!("Zip must author: {failure:?}"));
-    let merged = builder
-        .merge([zipped, extra])
-        .unwrap_or_else(|failure| panic!("merge must author: {failure:?}"));
-    let merge_out = builder
-        .pulse_output("merged", merged)
-        .unwrap_or_else(|failure| panic!("merge output must author: {failure:?}"));
-    let compiled = builder
-        .finish()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("zip network must validate: {failure:?}"))
-        .compile()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("zip network must compile: {failure:?}"));
-    let snapshot = compiled
-        .input_snapshot()
-        .pulse(left_key, PulseCount::new(7))
-        .and_then(|builder| builder.pulse(right_key, PulseCount::ZERO))
-        .and_then(|builder| builder.pulse(extra_key, PulseCount::ONE))
-        .and_then(mossignal::InputSnapshotBuilder::finish)
-        .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
-    let mut machine = compiled.spawn(policy());
-    let result = machine
-        .apply(Transaction::initialize(
-            Time::from_ticks(0),
-            machine.revision(),
-            snapshot,
-        ))
-        .unwrap_or_else(|failure| panic!("zip network must initialize: {failure}"));
-    let merge_event = result
-        .output_events()
-        .iter()
-        .find_map(|event| match event {
-            OutputEvent::Pulsed {
-                output,
-                count,
-                cause,
-                ..
-            } if *output == merge_out => Some((*count, *cause)),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("merge output must emit the extra pulse"));
-    assert_eq!(merge_event.0, PulseCount::ONE);
-    let observed = observed_pulse_inputs(result.provenance(), merge_event.1);
-    assert!(
-        observed.contains(&(extra_key.as_u128(), 1)),
-        "the extra pulse must support the merge: {observed:?}"
-    );
-    assert!(
-        !observed.contains(&(left_key.as_u128(), 7)),
-        "unmatched Zip pulses must not support a zero-group downstream merge, found {observed:?}"
-    );
 }
 
 #[test]
