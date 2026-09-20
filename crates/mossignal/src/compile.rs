@@ -1185,9 +1185,12 @@ impl<D> CompiledInner<D> {
                         ..
                     } => {
                         let mut high_count = 0_u64;
+                        let mut high_sources = Vec::new();
                         for input in inputs {
+                            let source = self.input_source(*input)?.0;
                             if self.level_input_value(*input, &values)?.is_high() {
                                 high_count = high_count.saturating_add(1);
+                                high_sources.push(source);
                             }
                         }
                         // SPEC: docs/specs/contracts/level-combinational-expansion.yaml
@@ -1195,22 +1198,28 @@ impl<D> CompiledInner<D> {
                         let constant_result = *threshold == 0
                             || usize::try_from(*threshold)
                                 .map_or(true, |threshold| threshold > inputs.len());
+                        let value = if high_count >= *threshold {
+                            LogicLevel::High
+                        } else {
+                            LogicLevel::Low
+                        };
+                        // SPEC: docs/specs/built_in_node_semantics.md §18 "Explanations and causes" and §27 "AtLeast"
+                        // High results cite every High input; Low results retain every input blocker.
+                        let predecessors = if constant_result {
+                            Vec::new()
+                        } else if value.is_high() {
+                            high_sources
+                        } else {
+                            self.predecessors[index]
+                                .iter()
+                                .map(|predecessor| predecessor.0)
+                                .collect()
+                        };
                         (
-                            EvaluationValue::Level(if high_count >= *threshold {
-                                LogicLevel::High
-                            } else {
-                                LogicLevel::Low
-                            }),
+                            EvaluationValue::Level(value),
                             EvaluationCause::Node {
                                 node: *key,
-                                predecessors: if constant_result {
-                                    Vec::new()
-                                } else {
-                                    self.predecessors[index]
-                                        .iter()
-                                        .map(|predecessor| predecessor.0)
-                                        .collect()
-                                },
+                                predecessors,
                             },
                         )
                     }

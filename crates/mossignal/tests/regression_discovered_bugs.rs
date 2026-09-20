@@ -62,65 +62,6 @@ fn collect_observed_level_inputs<D>(
 }
 
 #[test]
-#[ignore = "bug: AtLeast High provenance treats Low inputs as current supporters after the threshold is met"]
-fn at_least_high_provenance_excludes_low_inputs_once_the_threshold_is_met() {
-    let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(27));
-    let (high_a_key, high_a) = builder.level_input("high-a");
-    let (high_b_key, high_b) = builder.level_input("high-b");
-    let (low_key, low) = builder.level_input("low");
-    let threshold = builder
-        .at_least(2, [high_a, high_b, low])
-        .unwrap_or_else(|failure| panic!("AtLeast(2) must author: {failure:?}"));
-    let output = builder
-        .level_output("out", threshold)
-        .unwrap_or_else(|failure| panic!("output must author: {failure:?}"));
-    let compiled = builder
-        .finish()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("AtLeast(2) must validate: {failure:?}"))
-        .compile()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("AtLeast(2) must compile: {failure:?}"));
-    let snapshot = compiled
-        .input_snapshot()
-        .set(high_a_key, LogicLevel::High)
-        .and_then(|builder| builder.set(high_b_key, LogicLevel::High))
-        .and_then(|builder| builder.set(low_key, LogicLevel::Low))
-        .and_then(mossignal::InputSnapshotBuilder::finish)
-        .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
-    let mut machine = compiled.spawn(policy());
-    let result = machine
-        .apply(Transaction::initialize(
-            Time::from_ticks(0),
-            machine.revision(),
-            snapshot,
-        ))
-        .unwrap_or_else(|failure| panic!("AtLeast(2) must initialize: {failure}"));
-    let [
-        OutputEvent::LevelEstablished {
-            output: established,
-            value,
-            cause,
-            ..
-        },
-    ] = result.output_events()
-    else {
-        panic!("initialization must establish High");
-    };
-    assert_eq!(*established, output);
-    assert_eq!(*value, LogicLevel::High);
-    let observed = observed_level_inputs(result.provenance(), *cause);
-    assert!(
-        observed.contains(&high_a_key.as_u128()) && observed.contains(&high_b_key.as_u128()),
-        "High inputs that meet the threshold must support the result: {observed:?}"
-    );
-    assert!(
-        !observed.contains(&low_key.as_u128()),
-        "Low inputs are not current supporters of an already-met AtLeast High result, found {observed:?}"
-    );
-}
-
-#[test]
 #[ignore = "bug: xor(x, x) is constantly Low but provenance still treats x as current support"]
 fn xor_of_a_duplicated_source_is_constant_low_and_independent_of_that_source() {
     let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(30));
