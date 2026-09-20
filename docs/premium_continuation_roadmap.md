@@ -615,7 +615,7 @@ Explicitly exclude:
 
 ---
 
-## 47. `InertialDelay`
+## 47. [DONE] `InertialDelay`
 
 Extend temporal execution with cancellation and replacement semantics:
 

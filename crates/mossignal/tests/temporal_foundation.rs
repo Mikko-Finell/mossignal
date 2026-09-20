@@ -10,9 +10,9 @@ use mossignal::metadata::DiagnosticMeta;
 use mossignal::signal::{Level, LogicLevel, Pulse, PulseCount};
 use mossignal::time::{NonZeroSpan, Time};
 use mossignal::{
-    CauseInspection, CauseRef, NetworkBuilder, NodeSubject, OutputEvent, ProvenanceView,
-    PulseDelayConfig, RuntimeFailureEvidence, RuntimePolicy, RuntimePolicyLimit, Schedule,
-    TimeDomainId, Transaction, TransportDelayConfig,
+    CauseInspection, CauseRef, InertialDelayConfig, NetworkBuilder, NodeSubject, OutputEvent,
+    ProvenanceView, PulseDelayConfig, RuntimeFailureEvidence, RuntimePolicy, RuntimePolicyLimit,
+    Schedule, TimeDomainId, Transaction, TransportDelayConfig,
 };
 
 #[derive(Debug, PartialEq)]
@@ -123,6 +123,110 @@ fn transport_fixture(initial: LogicLevel, delay_ticks: u64) -> TransportFixture 
         .require_artifact()
         .unwrap_or_else(|failure| panic!("TransportDelay must compile: {failure:?}"));
     TransportFixture {
+        compiled,
+        input,
+        output,
+        node,
+    }
+}
+
+struct InertialFixture {
+    compiled: mossignal::CompiledNetwork<TestDomain>,
+    input: ExternalInputKey<Level>,
+    output: ExternalOutputKey<Level>,
+    node: NodeKey,
+}
+
+fn inertial_fixture(initial: LogicLevel, delay_ticks: u64) -> InertialFixture {
+    let mut builder =
+        NetworkBuilder::with_key(NetworkKey::from_u128(301), TimeDomainId::from_u128(2));
+    let input = ExternalInputKey::from_u128(310);
+    let signal = builder
+        .add_level_input(input, DiagnosticMeta::default())
+        .unwrap_or_else(|failure| panic!("level input must author: {failure:?}"));
+    let node = NodeKey::from_u128(320);
+    let delayed = builder
+        .add_inertial_delay_with_ports(
+            node,
+            InPortKey::from_u128(330),
+            OutPortKey::from_u128(331),
+            signal,
+            InertialDelayConfig::new(
+                NonZeroSpan::from_ticks(delay_ticks)
+                    .unwrap_or_else(|failure| panic!("delay must be positive: {failure}")),
+                initial,
+            ),
+            DiagnosticMeta::default(),
+        )
+        .unwrap_or_else(|failure| panic!("InertialDelay must author: {failure:?}"))
+        .into_outputs();
+    let output = ExternalOutputKey::from_u128(340);
+    builder
+        .add_level_output(output, delayed, DiagnosticMeta::default())
+        .unwrap_or_else(|failure| panic!("level output must author: {failure:?}"));
+    let compiled = builder
+        .finish()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("InertialDelay must validate: {failure:?}"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("InertialDelay must compile: {failure:?}"));
+    InertialFixture {
+        compiled,
+        input,
+        output,
+        node,
+    }
+}
+
+fn dynamic_inertial_fixture(initial: LogicLevel, delay_ticks: u64) -> InertialFixture {
+    let input = ExternalInputKey::<Level>::from_u128(310);
+    let node = NodeKey::from_u128(320);
+    let input_port = InPortKey::<Level>::from_u128(330);
+    let output_port = OutPortKey::<Level>::from_u128(331);
+    let output = ExternalOutputKey::<Level>::from_u128(340);
+    let network = UncheckedNetwork::new(
+        NetworkKey::from_u128(301),
+        TimeDomainId::from_u128(2),
+        DiagnosticMeta::default(),
+        vec![NodeDef::new(
+            node,
+            NodeKind::inertial_delay(
+                NonZeroSpan::from_ticks(delay_ticks)
+                    .unwrap_or_else(|failure| panic!("delay must be positive: {failure}")),
+                initial,
+            ),
+            NodePorts::with_input_roles(
+                vec![input_port.into()],
+                vec![InputPortRole::InertialDelay],
+                vec![output_port.into()],
+            ),
+            DiagnosticMeta::default(),
+        )],
+        vec![ExternalInputDef::new(
+            input.into(),
+            DiagnosticMeta::default(),
+        )],
+        vec![ExternalOutputDef::new(
+            output.into(),
+            SignalSourceKey::NodeOutput(output_port).into(),
+            DiagnosticMeta::default(),
+        )],
+        vec![ConnectionDef::new(
+            ConnectionKey::from_u128(0),
+            input.into(),
+            input_port.into(),
+            DiagnosticMeta::default(),
+        )],
+    );
+    let compiled = network
+        .validate()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("dynamic InertialDelay must validate: {failure:?}"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("dynamic InertialDelay must compile: {failure:?}"));
+    InertialFixture {
         compiled,
         input,
         output,
@@ -491,6 +595,231 @@ fn transport_delay_preserves_reversals_and_due_work_at_target_time() {
         final_inspection.pending()[0].deadline(),
         Time::from_ticks(22)
     );
+}
+
+#[test]
+fn inertial_delay_cancels_replaces_and_matures_one_candidate() {
+    let InertialFixture {
+        compiled,
+        input,
+        output,
+        node,
+    } = inertial_fixture(LogicLevel::Low, 5);
+    let mut machine = compiled.spawn(generous_policy());
+    let initialized = machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(10),
+            machine.revision(),
+            compiled
+                .input_snapshot()
+                .set(input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    assert!(matches!(
+        initialized.output_events(),
+        [OutputEvent::LevelEstablished {
+            output: actual,
+            value: LogicLevel::Low,
+            at,
+            ..
+        }] if *actual == output && *at == Time::from_ticks(10)
+    ));
+    let first = machine.inspect_inertial_delay(node).unwrap();
+    assert_eq!(first.remembered_input(), LogicLevel::High);
+    assert_eq!(first.committed(), LogicLevel::Low);
+    assert_eq!(
+        first.pending().map(|pending| pending.target()),
+        Some(LogicLevel::High)
+    );
+    assert_eq!(first.next_deadline(), Some(Time::from_ticks(15)));
+    assert_eq!(first.pending().unwrap().event().value(), 0);
+
+    let canceled = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(12),
+            machine.revision(),
+            compiled
+                .input_delta()
+                .set(input, LogicLevel::Low)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    assert!(canceled.output_events().is_empty());
+    assert_eq!(machine.schedule(), Ok(Schedule::Dormant));
+    let canceled_inspection = machine.inspect_inertial_delay(node).unwrap();
+    assert!(canceled_inspection.pending().is_none());
+    let cancellation = canceled_inspection
+        .last_cancellation()
+        .unwrap_or_else(|| panic!("cancellation must remain inspectable"));
+    assert!(matches!(
+        canceled_inspection.provenance().inspect(cancellation).unwrap(),
+        CauseInspection::PendingInertialDelay { event, target: LogicLevel::High, .. }
+            if event.value() == 0
+    ));
+
+    let replaced = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(13),
+            machine.revision(),
+            compiled
+                .input_delta()
+                .set(input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    assert!(replaced.output_events().is_empty());
+    let replacement = machine.inspect_inertial_delay(node).unwrap();
+    assert_eq!(
+        replacement.pending().map(|pending| pending.target()),
+        Some(LogicLevel::High)
+    );
+    assert_eq!(replacement.next_deadline(), Some(Time::from_ticks(18)));
+    assert_eq!(replacement.pending().unwrap().event().value(), 1);
+
+    let matured = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(18),
+            machine.revision(),
+            compiled.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+    assert!(matches!(
+        matured.output_events(),
+        [OutputEvent::LevelChanged {
+            output: actual,
+            from: LogicLevel::Low,
+            to: LogicLevel::High,
+            at,
+            ..
+        }] if *actual == output && *at == Time::from_ticks(18)
+    ));
+    let final_inspection = machine.inspect_inertial_delay(node).unwrap();
+    assert_eq!(final_inspection.committed(), LogicLevel::High);
+    assert_eq!(final_inspection.remembered_input(), LogicLevel::High);
+    assert!(final_inspection.pending().is_none());
+}
+
+#[test]
+fn inertial_delay_exact_deadline_matures_before_opposite_replacement() {
+    let InertialFixture {
+        compiled,
+        input,
+        output,
+        node,
+    } = inertial_fixture(LogicLevel::Low, 5);
+    let mut machine = compiled.spawn(generous_policy());
+    machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            compiled
+                .input_snapshot()
+                .set(input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    let exact = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(5),
+            machine.revision(),
+            compiled
+                .input_delta()
+                .set(input, LogicLevel::Low)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    assert!(matches!(
+        exact.output_events(),
+        [OutputEvent::LevelChanged {
+            output: actual,
+            from: LogicLevel::Low,
+            to: LogicLevel::High,
+            at,
+            ..
+        }] if *actual == output && *at == Time::from_ticks(5)
+    ));
+    let pending = machine.inspect_inertial_delay(node).unwrap();
+    assert_eq!(pending.committed(), LogicLevel::High);
+    assert_eq!(pending.remembered_input(), LogicLevel::Low);
+    assert_eq!(
+        pending.pending().map(|event| event.target()),
+        Some(LogicLevel::Low)
+    );
+    assert_eq!(pending.next_deadline(), Some(Time::from_ticks(10)));
+
+    let after = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(10),
+            machine.revision(),
+            compiled.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+    assert!(matches!(
+        after.output_events(),
+        [OutputEvent::LevelChanged {
+            output: actual,
+            from: LogicLevel::High,
+            to: LogicLevel::Low,
+            at,
+            ..
+        }] if *actual == output && *at == Time::from_ticks(10)
+    ));
+    assert!(
+        machine
+            .inspect_inertial_delay(node)
+            .unwrap()
+            .pending()
+            .is_none()
+    );
+}
+
+#[test]
+fn inertial_delay_identity_tracks_semantic_configuration() {
+    let first = inertial_fixture(LogicLevel::Low, 5).compiled;
+    let second = inertial_fixture(LogicLevel::Low, 6).compiled;
+    let third = inertial_fixture(LogicLevel::High, 5).compiled;
+    assert_ne!(first.fingerprint(), second.fingerprint());
+    assert_ne!(first.fingerprint(), third.fingerprint());
+}
+
+#[test]
+fn inertial_delay_dynamic_authoring_matches_typed_behavior() {
+    let typed = inertial_fixture(LogicLevel::Low, 5);
+    let dynamic = dynamic_inertial_fixture(LogicLevel::Low, 5);
+    assert_eq!(typed.compiled.fingerprint(), dynamic.compiled.fingerprint());
+
+    let mut machine = dynamic.compiled.spawn(generous_policy());
+    machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            dynamic
+                .compiled
+                .input_snapshot()
+                .set(dynamic.input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    let inspection = machine.inspect_inertial_delay(dynamic.node).unwrap();
+    assert_eq!(inspection.committed(), LogicLevel::Low);
+    assert_eq!(
+        inspection.pending().map(|pending| pending.target()),
+        Some(LogicLevel::High)
+    );
+    assert_eq!(inspection.next_deadline(), Some(Time::from_ticks(5)));
 }
 
 #[test]

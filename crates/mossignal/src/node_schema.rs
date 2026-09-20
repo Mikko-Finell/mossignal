@@ -27,6 +27,7 @@ pub(crate) enum SemanticNodeKind {
     SampleHold,
     PulseDelay,
     TransportDelay,
+    InertialDelay,
 }
 
 impl SemanticNodeKind {
@@ -54,6 +55,7 @@ impl SemanticNodeKind {
             Self::SampleHold => "sample_hold",
             Self::PulseDelay => "pulse_delay",
             Self::TransportDelay => "transport_delay",
+            Self::InertialDelay => "inertial_delay",
         }
     }
 }
@@ -69,6 +71,7 @@ pub(crate) enum StateFamily {
 pub(crate) enum TemporalFamily {
     PendingPulseGroup,
     PendingTransportTransition,
+    InertialCandidate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,6 +315,11 @@ const TRANSPORT_DELAY_INPUT: &[InputPortSchema] = &[InputPortSchema::future_only
     SignalKind::Level,
 )];
 
+const INERTIAL_DELAY_INPUT: &[InputPortSchema] = &[InputPortSchema::future_only(
+    InputPortRole::InertialDelay,
+    SignalKind::Level,
+)];
+
 const LEVEL_OUTPUT: &[OutputPortSchema] = &[OutputPortSchema::new(
     OutputPortRole::Output,
     SignalKind::Level,
@@ -408,6 +416,11 @@ pub(crate) const fn schema_for_kind(kind: SemanticNodeKind) -> NodeSchema {
             temporal_family: Some(TemporalFamily::PendingTransportTransition),
             ..fixed(kind, TRANSPORT_DELAY_INPUT, LEVEL_OUTPUT)
         },
+        SemanticNodeKind::InertialDelay => NodeSchema {
+            state_family: Some(StateFamily::TransportLevel),
+            temporal_family: Some(TemporalFamily::InertialCandidate),
+            ..fixed(kind, INERTIAL_DELAY_INPUT, LEVEL_OUTPUT)
+        },
     }
 }
 
@@ -438,6 +451,7 @@ pub(crate) const fn node_schema<D>(kind: &NodeKind<D>) -> NodeSchema {
         NodeKind::SampleHold(_) => SemanticNodeKind::SampleHold,
         NodeKind::PulseDelay(_) => SemanticNodeKind::PulseDelay,
         NodeKind::TransportDelay(_) => SemanticNodeKind::TransportDelay,
+        NodeKind::InertialDelay(_) => SemanticNodeKind::InertialDelay,
     };
     schema_for_kind(semantic_kind)
 }
@@ -482,6 +496,7 @@ mod tests {
             NodeKind::sample_hold(crate::SampleHoldConfig::new(LogicLevel::Low)),
             NodeKind::pulse_delay(delay),
             NodeKind::transport_delay(delay, LogicLevel::Low),
+            NodeKind::inertial_delay(delay, LogicLevel::Low),
         ]
     }
 
@@ -595,6 +610,13 @@ mod tests {
         );
         transport_delay.state = Some(StateFamily::TransportLevel);
         transport_delay.temporal = Some(TemporalFamily::PendingTransportTransition);
+        let mut inertial_delay = fixed(
+            NodeKind::inertial_delay(delay, LogicLevel::Low),
+            vec![(InputPortRole::InertialDelay, SignalKind::Level, false)],
+            level_output(),
+        );
+        inertial_delay.state = Some(StateFamily::TransportLevel);
+        inertial_delay.temporal = Some(TemporalFamily::InertialCandidate);
 
         vec![
             fixed(
@@ -690,13 +712,14 @@ mod tests {
             sample_hold,
             pulse_delay,
             transport_delay,
+            inertial_delay,
         ]
     }
 
     #[test]
     fn every_closed_node_kind_has_one_distinct_schema_identity() {
         let schemas: Vec<_> = every_kind().iter().map(node_schema).collect();
-        assert_eq!(schemas.len(), 22);
+        assert_eq!(schemas.len(), 23);
         assert_eq!(
             schemas
                 .iter()
@@ -718,7 +741,7 @@ mod tests {
     #[test]
     fn every_closed_node_kind_matches_the_complete_schema_matrix() {
         let cases = schema_cases();
-        assert_eq!(cases.len(), 22);
+        assert_eq!(cases.len(), 23);
         for case in cases {
             let schema = node_schema(&case.kind);
             assert_eq!(schema.expected_input_count(), case.expected_input_count);

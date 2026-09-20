@@ -456,6 +456,7 @@ pub enum DuplicateNodeKind {
     SampleHold(LogicLevel),
     PulseDelay(u64),
     TransportDelay(u64, LogicLevel),
+    InertialDelay(u64, LogicLevel),
 }
 
 /// The stable identity of one required fixed input that is absent.
@@ -524,6 +525,7 @@ pub enum TimeOperation {
     TransactionAdvance,
     PulseDelayDeadline,
     TransportDelayDeadline,
+    InertialDelayDeadline,
 }
 
 /// Exact operands and relation for a logical-time condition.
@@ -581,6 +583,7 @@ pub enum InspectionSubjectKind {
     Node,
     PulseDelay,
     TransportDelay,
+    InertialDelay,
     EdgeDetector,
     Toggle,
     PulseSetResetLatch,
@@ -2489,7 +2492,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 97);
+        assert_eq!(leaves.len(), 101);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {

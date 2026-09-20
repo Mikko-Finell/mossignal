@@ -659,6 +659,8 @@ pub enum NodeKind<D> {
     PulseDelay(PulseDelayConfig<D>),
     /// A temporal Level transition reproducer with one Level input and one Level output.
     TransportDelay(TransportDelayConfig<D>),
+    /// A temporal Level transition reproducer that filters unstable changes.
+    InertialDelay(InertialDelayConfig<D>),
 }
 
 impl<D> Clone for NodeKind<D> {
@@ -686,6 +688,7 @@ impl<D> Clone for NodeKind<D> {
             Self::SampleHold(config) => Self::SampleHold(*config),
             Self::PulseDelay(config) => Self::PulseDelay(*config),
             Self::TransportDelay(config) => Self::TransportDelay(*config),
+            Self::InertialDelay(config) => Self::InertialDelay(*config),
         }
     }
 }
@@ -715,6 +718,7 @@ impl<D> PartialEq for NodeKind<D> {
             (Self::SampleHold(left), Self::SampleHold(right)) => left == right,
             (Self::PulseDelay(left), Self::PulseDelay(right)) => left == right,
             (Self::TransportDelay(left), Self::TransportDelay(right)) => left == right,
+            (Self::InertialDelay(left), Self::InertialDelay(right)) => left == right,
             _ => false,
         }
     }
@@ -756,6 +760,10 @@ impl<D> fmt::Debug for NodeKind<D> {
             Self::PulseDelay(config) => formatter.debug_tuple("PulseDelay").field(config).finish(),
             Self::TransportDelay(config) => formatter
                 .debug_tuple("TransportDelay")
+                .field(config)
+                .finish(),
+            Self::InertialDelay(config) => formatter
+                .debug_tuple("InertialDelay")
                 .field(config)
                 .finish(),
         }
@@ -893,6 +901,12 @@ impl<D> NodeKind<D> {
     #[must_use]
     pub const fn transport_delay(delay: NonZeroSpan<D>, initial: LogicLevel) -> Self {
         Self::TransportDelay(TransportDelayConfig::new(delay, initial))
+    }
+
+    /// Creates an InertialDelay with the supplied positive delay and initial level.
+    #[must_use]
+    pub const fn inertial_delay(delay: NonZeroSpan<D>, initial: LogicLevel) -> Self {
+        Self::InertialDelay(InertialDelayConfig::new(delay, initial))
     }
 }
 
@@ -1216,6 +1230,55 @@ impl<D> TransportDelayConfig<D> {
     }
 }
 
+/// The semantic configuration of an authored [`NodeKind::InertialDelay`] claim.
+pub struct InertialDelayConfig<D> {
+    /// The strictly positive delay before a stable input transition is reproduced.
+    pub delay: NonZeroSpan<D>,
+    /// The initial remembered input and output level.
+    pub initial: LogicLevel,
+}
+
+impl<D> Clone for InertialDelayConfig<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<D> Copy for InertialDelayConfig<D> {}
+
+impl<D> PartialEq for InertialDelayConfig<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.delay == other.delay && self.initial == other.initial
+    }
+}
+
+impl<D> Eq for InertialDelayConfig<D> {}
+
+impl<D> Hash for InertialDelayConfig<D> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.delay.hash(state);
+        self.initial.hash(state);
+    }
+}
+
+impl<D> fmt::Debug for InertialDelayConfig<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("InertialDelayConfig")
+            .field("delay", &self.delay)
+            .field("initial", &self.initial)
+            .finish()
+    }
+}
+
+impl<D> InertialDelayConfig<D> {
+    /// Creates an InertialDelay configuration with a statically nonzero delay.
+    #[must_use]
+    pub const fn new(delay: NonZeroSpan<D>, initial: LogicLevel) -> Self {
+        Self { delay, initial }
+    }
+}
+
 impl ToggleConfig {
     /// Creates a Toggle configuration with explicit declared initial state.
     #[must_use]
@@ -1250,6 +1313,8 @@ pub enum InputPortRole {
     PulseDelay,
     /// The level input of [`NodeKind::TransportDelay`].
     TransportDelay,
+    /// The level input of [`NodeKind::InertialDelay`].
+    InertialDelay,
     /// The pulse batch controlled by a level-controlled pulse primitive.
     Pulses,
     /// The High-enabled control of [`NodeKind::PulseGate`].

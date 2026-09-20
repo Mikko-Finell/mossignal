@@ -6,9 +6,9 @@ use mossignal::metadata::DiagnosticMeta;
 use mossignal::signal::{Level, LogicLevel, Pulse, PulseCount};
 use mossignal::time::{NonZeroSpan, Time};
 use mossignal::{
-    CauseInspection, ModuleBuilder, ModuleDef, NetworkBuilder, NodeSubject, OutputEvent,
-    ProvenanceSubject, PulseDelayConfig, PulsePortSubject, RuntimeFailureEvidence, RuntimePolicy,
-    Schedule, TimeDomainId, ToggleConfig, Transaction, TransportDelayConfig,
+    CauseInspection, InertialDelayConfig, ModuleBuilder, ModuleDef, NetworkBuilder, NodeSubject,
+    OutputEvent, ProvenanceSubject, PulseDelayConfig, PulsePortSubject, RuntimeFailureEvidence,
+    RuntimePolicy, Schedule, TimeDomainId, ToggleConfig, Transaction, TransportDelayConfig,
 };
 
 fn policy(operation_limit: u64) -> RuntimePolicy {
@@ -217,6 +217,89 @@ fn transport_delay_keeps_qualified_state_and_pending_work_inside_a_module() {
     assert_eq!(transport.committed(), LogicLevel::Low);
     assert_eq!(transport.pending().len(), 1);
     assert_eq!(transport.pending()[0].deadline(), Time::from_ticks(4));
+}
+
+#[test]
+fn inertial_delay_keeps_qualified_state_and_pending_work_inside_a_module() {
+    let input = ModuleInputKey::<Level>::from_u128(101);
+    let output = ModuleOutputKey::<Level>::from_u128(102);
+    let node = NodeKey::from_u128(103);
+    let mut module = ModuleBuilder::<()>::new();
+    let source = module
+        .add_level_input(input, DiagnosticMeta::default())
+        .unwrap();
+    let delayed = module
+        .add_inertial_delay(
+            node,
+            source,
+            InertialDelayConfig::new(NonZeroSpan::from_ticks(4).unwrap(), LogicLevel::Low),
+            DiagnosticMeta::default(),
+        )
+        .unwrap()
+        .into_outputs();
+    module
+        .add_level_output(output, delayed, DiagnosticMeta::default())
+        .unwrap();
+    let module = module.finish().require_artifact().unwrap();
+
+    let instance = ModuleInstanceKey::from_u128(110);
+    let external_input = ExternalInputKey::<Level>::from_u128(111);
+    let external_output = ExternalOutputKey::<Level>::from_u128(112);
+    let mut network = NetworkBuilder::<()>::new(TimeDomainId::from_u128(113));
+    let external = network
+        .add_level_input(external_input, DiagnosticMeta::default())
+        .unwrap();
+    let added = network
+        .instantiate(&module, instance, DiagnosticMeta::default())
+        .unwrap()
+        .bind_level(input, external)
+        .unwrap()
+        .finish()
+        .unwrap();
+    network
+        .add_level_output(
+            external_output,
+            added.level_output(output).unwrap(),
+            DiagnosticMeta::default(),
+        )
+        .unwrap();
+    let compiled = network
+        .finish()
+        .require_artifact()
+        .unwrap()
+        .compile()
+        .require_artifact()
+        .unwrap();
+    let mut machine = compiled.spawn(policy(10_000));
+    machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            compiled
+                .input_snapshot()
+                .set(external_input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    let inspection = machine.inspect_module(instance).unwrap();
+    let node_inspection = inspection
+        .nodes()
+        .iter()
+        .find(|candidate| candidate.node().node() == node)
+        .unwrap();
+    let inertial = node_inspection.inertial_delay().unwrap();
+    assert!(matches!(
+        inertial.node(),
+        NodeSubject::Qualified(qualified) if qualified.instances() == [instance]
+    ));
+    assert_eq!(inertial.remembered_input(), LogicLevel::High);
+    assert_eq!(inertial.committed(), LogicLevel::Low);
+    assert_eq!(
+        inertial.pending().map(|pending| pending.deadline()),
+        Some(Time::from_ticks(4))
+    );
 }
 
 struct StatefulModule {

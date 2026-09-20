@@ -413,6 +413,18 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
                 writer.variant_null("pending_transport_transition")
             });
         }
+        NodeKind::InertialDelay(config) => {
+            writer.variant_start(identity_tag);
+            writer.record_start(4);
+            writer.field("delay_ticks", |writer| writer.uint(config.delay.ticks()));
+            writer.field("initial", |writer| logic_level(writer, config.initial));
+            writer.field("state_schema", |writer| {
+                writer.variant_null("remembered_input_output")
+            });
+            writer.field("temporal_schema", |writer| {
+                writer.variant_null("pending_inertial_candidate")
+            });
+        }
     }
 }
 
@@ -454,6 +466,7 @@ fn input_port_role(role: InputPortRole) -> &'static str {
         InputPortRole::Sample => "sample",
         InputPortRole::PulseDelay => "pulse_delay",
         InputPortRole::TransportDelay => "transport_delay",
+        InputPortRole::InertialDelay => "inertial_delay",
     }
 }
 

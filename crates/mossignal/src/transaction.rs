@@ -14,8 +14,8 @@ use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
 use crate::input::{InputDelta, InputSnapshot};
 use crate::key::{ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey};
 use crate::machine::{
-    Machine, MachineStatus, NetworkRevision, PendingEvent, PendingEventKey, PendingPulseDelay,
-    PendingTransportDelay, Schedule,
+    Machine, MachineStatus, NetworkRevision, PendingEvent, PendingEventKey, PendingInertialDelay,
+    PendingPulseDelay, PendingTransportDelay, Schedule,
 };
 use crate::module::{NodeSubject, PulsePortSubject, QualifiedNodeRef};
 use crate::policy::{RuntimePolicy, RuntimePolicyLimit};
@@ -146,6 +146,11 @@ pub enum RuntimeFailureEvidence {
         delay_ticks: u64,
     },
     TransportTimeOverflow {
+        node: NodeSubject,
+        origin_ticks: u64,
+        delay_ticks: u64,
+    },
+    InertialTimeOverflow {
         node: NodeSubject,
         origin_ticks: u64,
         delay_ticks: u64,
@@ -311,6 +316,19 @@ impl RuntimeFailureEvidence {
                 evidence: TimeEvidence {
                     owner: Some(node_evidence(node)),
                     operation: TimeOperation::TransportDelayDeadline,
+                    left_ticks: *origin_ticks,
+                    right_ticks: *delay_ticks,
+                },
+                marker: PhantomData,
+            },
+            Self::InertialTimeOverflow {
+                node,
+                origin_ticks,
+                delay_ticks,
+            } => ProblemEvidence::RuntimeTimeOverflow {
+                evidence: TimeEvidence {
+                    owner: Some(node_evidence(node)),
+                    operation: TimeOperation::InertialDelayDeadline,
                     left_ticks: *origin_ticks,
                     right_ticks: *delay_ticks,
                 },
@@ -545,6 +563,15 @@ enum ProvenanceRecord<D> {
         revision: NetworkRevision,
         supporters: Vec<CauseRef>,
     },
+    PendingInertialDelay {
+        event: PendingEventKey,
+        owner: NodeSubject,
+        origin: Time<D>,
+        deadline: Time<D>,
+        target: LogicLevel,
+        revision: NetworkRevision,
+        supporters: Vec<CauseRef>,
+    },
     Derived {
         subject: ProvenanceSubject,
         supporters: Vec<CauseRef>,
@@ -592,6 +619,15 @@ pub enum CauseInspection<'a, D> {
         supporters: &'a [CauseRef],
     },
     PendingTransportDelay {
+        event: PendingEventKey,
+        owner: &'a NodeSubject,
+        origin: Time<D>,
+        deadline: Time<D>,
+        target: LogicLevel,
+        revision: NetworkRevision,
+        supporters: &'a [CauseRef],
+    },
+    PendingInertialDelay {
         event: PendingEventKey,
         owner: &'a NodeSubject,
         origin: Time<D>,
@@ -713,6 +749,7 @@ struct ProvenanceBuild<D> {
     transport_output_transitions: BTreeMap<NodeKey, CauseRef>,
     pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
     transport_delay_schedules: BTreeMap<NodeKey, CauseRef>,
+    inertial_delay_schedules: BTreeMap<NodeKey, CauseRef>,
 }
 
 struct EvaluationProvenanceInputs<'a, D> {
@@ -721,6 +758,7 @@ struct EvaluationProvenanceInputs<'a, D> {
     pulses: &'a BTreeMap<ExternalInputKey<Pulse>, CauseRef>,
     due_pulse_delays: &'a BTreeMap<NodeKey, Vec<CauseRef>>,
     due_transport_delays: &'a BTreeMap<NodeKey, Vec<CauseRef>>,
+    due_inertial_delays: &'a BTreeMap<NodeKey, Vec<CauseRef>>,
 }
 
 struct PreviousLevelOutputs<'a> {
@@ -819,6 +857,23 @@ impl<D> ProvenanceView<D> {
                 revision: *revision,
                 supporters,
             },
+            ProvenanceRecord::PendingInertialDelay {
+                event,
+                owner,
+                origin,
+                deadline,
+                target,
+                revision,
+                supporters,
+            } => CauseInspection::PendingInertialDelay {
+                event: *event,
+                owner,
+                origin: *origin,
+                deadline: *deadline,
+                target: *target,
+                revision: *revision,
+                supporters,
+            },
             ProvenanceRecord::Derived {
                 subject,
                 supporters,
@@ -900,6 +955,30 @@ impl<D> ProvenanceView<D> {
             self.scope,
             records,
             ProvenanceRecord::PendingTransportDelay {
+                event: pending.key,
+                owner,
+                origin: pending.origin,
+                deadline: pending.deadline,
+                target: pending.target,
+                revision: pending.revision,
+                supporters: vec![scheduling_cause],
+            },
+        )
+    }
+
+    fn append_pending_inertial_delay(
+        &mut self,
+        pending: &PendingInertialDelay<D>,
+        owner: NodeSubject,
+        scheduling_cause: CauseRef,
+    ) -> CauseRef {
+        let Some(records) = Arc::get_mut(&mut self.records) else {
+            panic!("new transaction provenance must be uniquely owned before publication");
+        };
+        push_record(
+            self.scope,
+            records,
+            ProvenanceRecord::PendingInertialDelay {
                 event: pending.key,
                 owner,
                 origin: pending.origin,
@@ -1131,6 +1210,7 @@ impl<D> Machine<D> {
         let mut created_pending_events = 0_u64;
         let mut pending_events = BTreeMap::new();
         let mut next_pending_event_serial = 0;
+        let mut inertial_cancellation_causes = BTreeMap::new();
         schedule_pulse_delays(
             PulseDelayScheduling {
                 compiled: &self.compiled,
@@ -1143,6 +1223,8 @@ impl<D> Machine<D> {
             &evaluation,
             &built.pulse_delay_schedules,
             &built.transport_delay_schedules,
+            &built.inertial_delay_schedules,
+            &mut inertial_cancellation_causes,
             &mut built.provenance,
             &self.policy,
         )?;
@@ -1151,6 +1233,7 @@ impl<D> Machine<D> {
             self.compiled.network_key(),
             self.compiled.fingerprint(),
         );
+        remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
         remap_pending_causes(&mut pending_events, built.provenance.scope);
         reconcile_level_episodes(
             &self.compiled,
@@ -1209,6 +1292,7 @@ impl<D> Machine<D> {
                 toggle_inversion_causes: built.toggle_inversion_causes,
                 establishment_causes: built.establishment_causes,
                 transport_transition_causes: built.transport_output_transitions,
+                inertial_cancellation_causes,
                 active_episodes,
                 pending_events,
                 next_pending_event_serial,
@@ -1258,6 +1342,7 @@ impl<D> Machine<D> {
         let mut toggle_inversion_causes = self.store.toggle_inversion_causes.clone();
         let mut establishment_causes = self.store.establishment_causes.clone();
         let mut transport_transition_causes = self.store.transport_transition_causes.clone();
+        let mut inertial_cancellation_causes = self.store.inertial_cancellation_causes.clone();
         let mut provenance = match self.store.provenance.as_ref() {
             Some(provenance) => provenance.clone(),
             None => panic!("ready machine must retain committed provenance"),
@@ -1295,6 +1380,7 @@ impl<D> Machine<D> {
                     &stored_levels,
                     &due.counts,
                     &due.transport_targets,
+                    &due.inertial_targets,
                 )
                 .map_err(|failure| {
                     evaluation_failure(&self.compiled, failure, deadline, revision)
@@ -1325,6 +1411,7 @@ impl<D> Machine<D> {
                 &transport_transition_causes,
                 &due.causes,
                 &due.transport_causes,
+                &due.inertial_causes,
             );
             remap_pending_causes(&mut pending_events, built.provenance.scope);
             remap_output_event_causes(&mut output_events, built.provenance.scope);
@@ -1354,6 +1441,8 @@ impl<D> Machine<D> {
                 &internal,
                 &built.pulse_delay_schedules,
                 &built.transport_delay_schedules,
+                &built.inertial_delay_schedules,
+                &mut inertial_cancellation_causes,
                 &mut built.provenance,
                 &self.policy,
             )?;
@@ -1362,6 +1451,7 @@ impl<D> Machine<D> {
                 self.compiled.network_key(),
                 self.compiled.fingerprint(),
             );
+            remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
             remap_pending_causes(&mut pending_events, built.provenance.scope);
             remap_output_event_causes(&mut output_events, built.provenance.scope);
             reconcile_level_episodes(
@@ -1413,6 +1503,7 @@ impl<D> Machine<D> {
                 &stored_levels,
                 &due.counts,
                 &due.transport_targets,
+                &due.inertial_targets,
             )
             .map_err(|failure| evaluation_failure(&self.compiled, failure, at, revision))?;
         occurrences.extend(pulse_latch_occurrences(
@@ -1441,6 +1532,7 @@ impl<D> Machine<D> {
             &transport_transition_causes,
             &due.causes,
             &due.transport_causes,
+            &due.inertial_causes,
         );
         remap_pending_causes(&mut pending_events, built.provenance.scope);
         remap_output_event_causes(&mut output_events, built.provenance.scope);
@@ -1466,6 +1558,8 @@ impl<D> Machine<D> {
             &evaluation,
             &built.pulse_delay_schedules,
             &built.transport_delay_schedules,
+            &built.inertial_delay_schedules,
+            &mut inertial_cancellation_causes,
             &mut built.provenance,
             &self.policy,
         )?;
@@ -1474,6 +1568,7 @@ impl<D> Machine<D> {
             self.compiled.network_key(),
             self.compiled.fingerprint(),
         );
+        remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
         remap_pending_causes(&mut pending_events, built.provenance.scope);
         remap_output_event_causes(&mut output_events, built.provenance.scope);
         reconcile_level_episodes(
@@ -1525,6 +1620,7 @@ impl<D> Machine<D> {
                 toggle_inversion_causes: built.toggle_inversion_causes,
                 establishment_causes: built.establishment_causes,
                 transport_transition_causes: built.transport_output_transitions,
+                inertial_cancellation_causes,
                 active_episodes,
                 pending_events,
                 next_pending_event_serial,
@@ -1827,6 +1923,9 @@ struct DuePulseDelays {
     transport_targets: BTreeMap<NodeKey, LogicLevel>,
     transport_origins: BTreeMap<NodeKey, u64>,
     transport_causes: BTreeMap<NodeKey, Vec<CauseRef>>,
+    inertial_targets: BTreeMap<NodeKey, LogicLevel>,
+    inertial_origins: BTreeMap<NodeKey, u64>,
+    inertial_causes: BTreeMap<NodeKey, Vec<CauseRef>>,
 }
 
 struct PulseDelayScheduling<'a, D> {
@@ -1879,6 +1978,26 @@ fn aggregate_due<D>(
                     .or_default()
                     .push(event.cause);
             }
+            PendingEvent::Inertial(event) => {
+                let replace = match due.inertial_origins.get(&event.node).copied() {
+                    None => true,
+                    Some(previous) if event.origin.ticks() > previous => true,
+                    Some(previous) if event.origin.ticks() < previous => false,
+                    Some(_) => due
+                        .inertial_targets
+                        .get(&event.node)
+                        .is_none_or(|target| event.target > *target),
+                };
+                if replace {
+                    due.inertial_targets.insert(event.node, event.target);
+                    due.inertial_origins
+                        .insert(event.node, event.origin.ticks());
+                }
+                due.inertial_causes
+                    .entry(event.node)
+                    .or_default()
+                    .push(event.cause);
+            }
         }
     }
     for causes in due.causes.values_mut() {
@@ -1886,6 +2005,10 @@ fn aggregate_due<D>(
         causes.dedup();
     }
     for causes in due.transport_causes.values_mut() {
+        causes.sort();
+        causes.dedup();
+    }
+    for causes in due.inertial_causes.values_mut() {
         causes.sort();
         causes.dedup();
     }
@@ -1900,12 +2023,15 @@ fn schedule_pulse_delays<D>(
     evaluation: &FullEvaluation,
     proposal_causes: &BTreeMap<NodeKey, CauseRef>,
     transport_proposal_causes: &BTreeMap<NodeKey, CauseRef>,
+    inertial_proposal_causes: &BTreeMap<NodeKey, CauseRef>,
+    cancellation_causes: &mut BTreeMap<NodeKey, CauseRef>,
     provenance: &mut ProvenanceView<D>,
     policy: &RuntimePolicy,
 ) -> Result<(), RuntimeFailure<D>> {
     enum Proposal<'a> {
         Pulse(&'a crate::compile::PulseDelayProposal),
         Transport(&'a crate::compile::TransportDelayProposal),
+        Inertial(&'a crate::compile::InertialDelayProposal),
     }
     let mut proposals = evaluation
         .pulse_delay_proposals
@@ -1917,6 +2043,12 @@ fn schedule_pulse_delays<D>(
             .transport_delay_proposals
             .iter()
             .map(|proposal| (proposal.node, Proposal::Transport(proposal))),
+    );
+    proposals.extend(
+        evaluation
+            .inertial_delay_proposals
+            .iter()
+            .map(|proposal| (proposal.node, Proposal::Inertial(proposal))),
     );
     // Mixed temporal kinds allocate public serials by stable owner identity.
     proposals.sort_by_key(|(node, _)| *node);
@@ -2021,6 +2153,62 @@ fn schedule_pulse_delays<D>(
                     *scheduling.created_events,
                 )?;
             }
+            Proposal::Inertial(proposal) => {
+                if let Some(canceled) = remove_inertial_candidate(scheduling.pending, proposal.node)
+                {
+                    cancellation_causes.insert(proposal.node, canceled.cause);
+                }
+                if proposal.target == proposal.output {
+                    continue;
+                }
+                let deadline = origin
+                    .checked_add(Span::from_ticks(proposal.delay_ticks))
+                    .map_err(|_| {
+                        RuntimeFailure::new(RuntimeFailureEvidence::InertialTimeOverflow {
+                            node: scheduling.compiled.node_subject(proposal.node),
+                            origin_ticks: origin.ticks(),
+                            delay_ticks: proposal.delay_ticks,
+                        })
+                    })?;
+                let key = PendingEventKey::from_serial(*scheduling.next_serial);
+                *scheduling.next_serial =
+                    scheduling.next_serial.checked_add(1).ok_or_else(|| {
+                        RuntimeFailure::new(RuntimeFailureEvidence::BudgetExceeded {
+                            budget: RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
+                            limit: policy.max_events_created_per_transaction(),
+                            consumed: u64::MAX,
+                        })
+                    })?;
+                let scheduling_cause = match inertial_proposal_causes.get(&proposal.node).copied() {
+                    Some(cause) => cause,
+                    None => panic!("every InertialDelay proposal must retain a scheduling cause"),
+                };
+                let mut pending = PendingInertialDelay {
+                    key,
+                    node: proposal.node,
+                    origin,
+                    deadline,
+                    target: proposal.target,
+                    revision,
+                    cause: scheduling_cause,
+                };
+                pending.cause = provenance.append_pending_inertial_delay(
+                    &pending,
+                    scheduling.compiled.node_subject(pending.node),
+                    scheduling_cause,
+                );
+                scheduling
+                    .pending
+                    .entry(deadline)
+                    .or_default()
+                    .push(PendingEvent::Inertial(pending));
+                *scheduling.created_events = scheduling.created_events.saturating_add(1);
+                enforce_budget::<D>(
+                    policy,
+                    RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
+                    *scheduling.created_events,
+                )?;
+            }
         }
     }
     let pending_count = scheduling.pending.values().map(Vec::len).sum::<usize>();
@@ -2030,6 +2218,38 @@ fn schedule_pulse_delays<D>(
         count_as_u64(pending_count),
     )?;
     Ok(())
+}
+
+fn remove_inertial_candidate<D>(
+    pending: &mut BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
+    node: NodeKey,
+) -> Option<PendingInertialDelay<D>> {
+    let deadlines = pending.keys().copied().collect::<Vec<_>>();
+    let mut removed = None;
+    for deadline in deadlines {
+        let Some(batch) = pending.get_mut(&deadline) else {
+            continue;
+        };
+        let mut retained = Vec::with_capacity(batch.len());
+        for event in batch.drain(..) {
+            match event {
+                PendingEvent::Inertial(candidate)
+                    if candidate.node == node && removed.is_none() =>
+                {
+                    removed = Some(candidate);
+                }
+                other => retained.push(other),
+            }
+        }
+        *batch = retained;
+        if batch.is_empty() {
+            pending.remove(&deadline);
+        }
+        if removed.is_some() {
+            break;
+        }
+    }
+    removed
 }
 
 fn enforce_outer_reaction_budgets<D>(
@@ -2089,7 +2309,14 @@ fn remap_pending_causes<D>(
         match event {
             PendingEvent::PulseDelay(event) => event.cause = remap_cause(event.cause, scope),
             PendingEvent::TransportDelay(event) => event.cause = remap_cause(event.cause, scope),
+            PendingEvent::Inertial(event) => event.cause = remap_cause(event.cause, scope),
         }
+    }
+}
+
+fn remap_cause_map(causes: &mut BTreeMap<NodeKey, CauseRef>, scope: ProvenanceScope) {
+    for cause in causes.values_mut() {
+        *cause = remap_cause(*cause, scope);
     }
 }
 
@@ -2116,6 +2343,7 @@ struct PublishedCandidate<D> {
     toggle_inversion_causes: BTreeMap<NodeKey, CauseRef>,
     establishment_causes: BTreeMap<NodeKey, CauseRef>,
     transport_transition_causes: BTreeMap<NodeKey, CauseRef>,
+    inertial_cancellation_causes: BTreeMap<NodeKey, CauseRef>,
     active_episodes: crate::episode::ActiveEpisodes<D>,
     pending_events: BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
     next_pending_event_serial: u64,
@@ -2134,6 +2362,7 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
         toggle_inversion_causes,
         establishment_causes,
         transport_transition_causes,
+        inertial_cancellation_causes,
         active_episodes,
         pending_events,
         next_pending_event_serial,
@@ -2158,6 +2387,7 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     candidate.toggle_inversion_causes = toggle_inversion_causes;
     candidate.establishment_causes = establishment_causes;
     candidate.transport_transition_causes = transport_transition_causes;
+    candidate.inertial_cancellation_causes = inertial_cancellation_causes;
     candidate.active_episodes = active_episodes;
     candidate.pending_events = pending_events;
     candidate.next_pending_event_serial = next_pending_event_serial;
@@ -2331,6 +2561,24 @@ fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRec
             hasher.update(&revision.value().to_be_bytes());
             hash_causes(hasher, supporters);
         }
+        ProvenanceRecord::PendingInertialDelay {
+            event,
+            owner,
+            origin,
+            deadline,
+            target,
+            revision,
+            supporters,
+        } => {
+            hasher.update(&[9]);
+            hasher.update(&event.value().to_be_bytes());
+            hash_node_subject(hasher, owner);
+            hasher.update(&origin.ticks().to_be_bytes());
+            hasher.update(&deadline.ticks().to_be_bytes());
+            hasher.update(&[u8::from(target.is_high())]);
+            hasher.update(&revision.value().to_be_bytes());
+            hash_causes(hasher, supporters);
+        }
         ProvenanceRecord::Derived {
             subject,
             supporters,
@@ -2448,6 +2696,7 @@ fn build_initialization_provenance<D>(
             pulses: &pulse_input_causes,
             due_pulse_delays: &BTreeMap::new(),
             due_transport_delays: &BTreeMap::new(),
+            due_inertial_delays: &BTreeMap::new(),
         },
         None,
         None,
@@ -2468,6 +2717,7 @@ fn build_initialization_provenance<D>(
         transport_output_transitions: evaluation_causes.transport_output_transitions,
         pulse_delay_schedules: evaluation_causes.pulse_delay_schedules,
         transport_delay_schedules: evaluation_causes.transport_delay_schedules,
+        inertial_delay_schedules: evaluation_causes.inertial_delay_schedules,
     }
 }
 
@@ -2489,6 +2739,7 @@ fn build_ready_provenance<D>(
     previous_transport_transition_causes: &BTreeMap<NodeKey, CauseRef>,
     due_pulse_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
     due_transport_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
+    due_inertial_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
 ) -> ProvenanceBuild<D> {
     let scope = UNFINALIZED_PROVENANCE_SCOPE;
     let mut records = previous
@@ -2545,6 +2796,7 @@ fn build_ready_provenance<D>(
             pulses: &pulse_input_causes,
             due_pulse_delays,
             due_transport_delays,
+            due_inertial_delays,
         },
         Some(PreviousLevelOutputs {
             causes: &remapped_output_causes,
@@ -2573,6 +2825,7 @@ fn build_ready_provenance<D>(
         transport_output_transitions: evaluation_causes.transport_output_transitions,
         pulse_delay_schedules: evaluation_causes.pulse_delay_schedules,
         transport_delay_schedules: evaluation_causes.transport_delay_schedules,
+        inertial_delay_schedules: evaluation_causes.inertial_delay_schedules,
     }
 }
 
@@ -2586,6 +2839,7 @@ struct EvaluationCauseMaps {
     transport_output_transitions: BTreeMap<NodeKey, CauseRef>,
     pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
     transport_delay_schedules: BTreeMap<NodeKey, CauseRef>,
+    inertial_delay_schedules: BTreeMap<NodeKey, CauseRef>,
 }
 
 fn append_evaluation_provenance<D>(
@@ -2986,6 +3240,35 @@ fn append_evaluation_provenance<D>(
                 }
                 reference
             }
+            EvaluationCause::InertialDelay { node } => {
+                let mut supporters = vec![transaction_cause];
+                if let Some(previous) = transport_output_transitions.get(node).copied() {
+                    supporters.push(previous);
+                }
+                supporters.extend(
+                    input_causes
+                        .due_inertial_delays
+                        .get(node)
+                        .into_iter()
+                        .flatten()
+                        .map(|cause| remap_cause(*cause, scope)),
+                );
+                supporters.sort();
+                supporters.dedup();
+                let reference = push_record(
+                    scope,
+                    records,
+                    ProvenanceRecord::Derived {
+                        subject: provenance_subject(input_causes.compiled, *node),
+                        supporters,
+                    },
+                );
+                if previous_state.is_none() || evaluation.stored_level_establishments.contains(node)
+                {
+                    transport_output_transitions.insert(*node, reference);
+                }
+                reference
+            }
             EvaluationCause::Alias(source) => operation_cause(&operation_causes, *source),
             EvaluationCause::ExternalOutput { output, source } => {
                 let unchanged_cause = previous_output_baselines
@@ -3073,6 +3356,24 @@ fn append_evaluation_provenance<D>(
         );
         transport_delay_schedules.insert(proposal.node, reference);
     }
+    let mut inertial_delay_schedules = BTreeMap::new();
+    for proposal in &evaluation.inertial_delay_proposals {
+        let mut supporters = vec![
+            transaction_cause,
+            operation_cause(&operation_causes, proposal.input_source),
+        ];
+        supporters.sort();
+        supporters.dedup();
+        let reference = push_record(
+            scope,
+            records,
+            ProvenanceRecord::Derived {
+                subject: provenance_subject(input_causes.compiled, proposal.node),
+                supporters,
+            },
+        );
+        inertial_delay_schedules.insert(proposal.node, reference);
+    }
     EvaluationCauseMaps {
         operation_causes,
         level_outputs: output_causes,
@@ -3083,6 +3384,7 @@ fn append_evaluation_provenance<D>(
         transport_output_transitions,
         pulse_delay_schedules,
         transport_delay_schedules,
+        inertial_delay_schedules,
     }
 }
 
@@ -3143,6 +3445,9 @@ fn finalize_provenance_build<D>(
     for cause in build.transport_delay_schedules.values_mut() {
         *cause = remap_cause(*cause, scope);
     }
+    for cause in build.inertial_delay_schedules.values_mut() {
+        *cause = remap_cause(*cause, scope);
+    }
 }
 
 fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> ProvenanceRecord<D> {
@@ -3183,6 +3488,26 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> Prov
             origin: *origin,
             deadline: *deadline,
             count: *count,
+            revision: *revision,
+            supporters: supporters
+                .iter()
+                .map(|cause| remap_cause(*cause, scope))
+                .collect(),
+        },
+        ProvenanceRecord::PendingInertialDelay {
+            event,
+            owner,
+            origin,
+            deadline,
+            target,
+            revision,
+            supporters,
+        } => ProvenanceRecord::PendingInertialDelay {
+            event: *event,
+            owner: owner.clone(),
+            origin: *origin,
+            deadline: *deadline,
+            target: *target,
             revision: *revision,
             supporters: supporters
                 .iter()
@@ -4488,7 +4813,8 @@ mod tests {
             {
                 CauseInspection::Derived { supporters, .. }
                 | CauseInspection::PendingPulseDelay { supporters, .. }
-                | CauseInspection::PendingTransportDelay { supporters, .. } => {
+                | CauseInspection::PendingTransportDelay { supporters, .. }
+                | CauseInspection::PendingInertialDelay { supporters, .. } => {
                     assert!(
                         !supporters.is_empty(),
                         "derived provenance must terminate in authoritative roots"

@@ -913,6 +913,9 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         NodeKind::TransportDelay(config) => {
                             DuplicateNodeKind::TransportDelay(config.delay.ticks(), config.initial)
                         }
+                        NodeKind::InertialDelay(config) => {
+                            DuplicateNodeKind::InertialDelay(config.delay.ticks(), config.initial)
+                        }
                     },
                     inputs: node.ports().inputs().to_vec(),
                     input_roles: node.ports().input_roles().to_vec(),
