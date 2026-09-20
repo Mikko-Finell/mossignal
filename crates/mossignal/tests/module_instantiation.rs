@@ -1,11 +1,12 @@
 use mossignal::authored::{
     ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, ModuleBinding,
-    ModuleBindingSet, ModuleInstanceDef, NodeDef, NodeKind, NodePorts, UncheckedNetwork,
+    ModuleBindingSet, ModuleInputDef, ModuleInstanceDef, ModuleInterfaceMapping, ModuleOutputDef,
+    NodeDef, NodeKind, NodePorts, UncheckedModule, UncheckedNetwork,
 };
 use mossignal::diagnostics::{DiagnosticCode, ProblemEvidence};
 use mossignal::key::{
-    AnySignalSourceKey, ConnectionKey, ExternalInputKey, ExternalOutputKey, InPortKey,
-    ModuleInputKey, ModuleInstanceKey, ModuleOutputKey, NetworkKey, NodeKey, OutPortKey,
+    AnyInPortKey, AnySignalSourceKey, ConnectionKey, ExternalInputKey, ExternalOutputKey,
+    InPortKey, ModuleInputKey, ModuleInstanceKey, ModuleOutputKey, NetworkKey, NodeKey, OutPortKey,
     SignalSourceKey,
 };
 use mossignal::metadata::DiagnosticMeta;
@@ -602,6 +603,252 @@ fn nested_instances_compile_and_retain_fingerprints() {
     let expected = validated.fingerprint();
     let compiled = validated.compile_ref().require_artifact().unwrap();
     assert_eq!(compiled.fingerprint(), expected);
+}
+
+#[test]
+fn nested_module_connection_sources_are_fingerprinted_without_order_dependence() {
+    let forward = nested_connection_module(10, 100, 200, false, false);
+    let reversed = nested_connection_module(10, 100, 200, false, true);
+    assert_eq!(forward.fingerprint(), reversed.fingerprint());
+
+    let changed_instance = nested_connection_module(11, 100, 200, false, false);
+    let changed_output = nested_connection_module(10, 101, 200, false, false);
+    let rerouted = nested_connection_module(10, 100, 200, true, false);
+    assert_ne!(forward.fingerprint(), changed_instance.fingerprint());
+    assert_ne!(forward.fingerprint(), changed_output.fingerprint());
+    assert_ne!(forward.fingerprint(), rerouted.fingerprint());
+}
+
+#[test]
+fn module_input_connection_sources_are_fingerprinted_and_sensitive() {
+    let first = module_input_connection_module(&[1, 2], 1);
+    let changed_source = module_input_connection_module(&[1, 2], 2);
+    let changed_input_key = module_input_connection_module(&[3], 3);
+
+    assert_ne!(first.fingerprint(), changed_source.fingerprint());
+    assert_ne!(first.fingerprint(), changed_input_key.fingerprint());
+}
+
+fn module_input_connection_module(input_keys: &[u128], source_key: u128) -> ModuleDef<()> {
+    let input_keys: Vec<_> = input_keys
+        .iter()
+        .copied()
+        .map(ModuleInputKey::<Level>::from_u128)
+        .collect();
+    let node_input = InPortKey::<Level>::from_u128(11);
+    let node_output = OutPortKey::<Level>::from_u128(12);
+    let output = ModuleOutputKey::<Level>::from_u128(20);
+    let source = ModuleInputKey::<Level>::from_u128(source_key);
+    UncheckedModule::new_user(
+        DiagnosticMeta::default(),
+        input_keys
+            .iter()
+            .copied()
+            .map(|key| ModuleInputDef::new(key.into(), DiagnosticMeta::default()))
+            .collect(),
+        vec![ModuleOutputDef::new(
+            output.into(),
+            DiagnosticMeta::default(),
+        )],
+        vec![ModuleInterfaceMapping::output(
+            output.into(),
+            ConnectionEndpoint::node_output(node_output.into()),
+        )],
+        vec![NodeDef::new(
+            NodeKey::from_u128(10),
+            NodeKind::not(),
+            NodePorts::new(vec![node_input.into()], vec![node_output.into()]),
+            DiagnosticMeta::default(),
+        )],
+        vec![ConnectionDef::new(
+            ConnectionKey::from_u128(30),
+            ConnectionEndpoint::module_input(source.into()),
+            ConnectionEndpoint::node_input(node_input.into()),
+            DiagnosticMeta::default(),
+        )],
+    )
+    .validate()
+    .require_artifact()
+    .unwrap()
+}
+
+fn nested_connection_module(
+    instance_key: u128,
+    first_inner_output: u128,
+    second_inner_output: u128,
+    reroute_sources: bool,
+    reverse_authoring: bool,
+) -> ModuleDef<()> {
+    let inner_input = ModuleInputKey::<Level>::from_u128(1);
+    let first_output = ModuleOutputKey::<Level>::from_u128(first_inner_output);
+    let second_output = ModuleOutputKey::<Level>::from_u128(second_inner_output);
+    let mut inner = ModuleBuilder::<()>::new();
+    let inner_signal = inner
+        .add_level_input(inner_input, DiagnosticMeta::default())
+        .unwrap();
+    let first_inner_signal = inner_signal;
+    let second_inner_signal = inner_signal;
+    if reverse_authoring {
+        inner
+            .add_level_output(
+                second_output,
+                second_inner_signal,
+                DiagnosticMeta::default(),
+            )
+            .unwrap();
+        inner
+            .add_level_output(first_output, first_inner_signal, DiagnosticMeta::default())
+            .unwrap();
+    } else {
+        inner
+            .add_level_output(first_output, first_inner_signal, DiagnosticMeta::default())
+            .unwrap();
+        inner
+            .add_level_output(
+                second_output,
+                second_inner_signal,
+                DiagnosticMeta::default(),
+            )
+            .unwrap();
+    }
+    let inner = inner.finish().require_artifact().unwrap();
+
+    let outer_input = ModuleInputKey::<Level>::from_u128(10);
+    let mut outer = ModuleBuilder::<()>::new();
+    let outer_signal = outer
+        .add_level_input(outer_input, DiagnosticMeta::default())
+        .unwrap();
+    let nested = outer
+        .instantiate(
+            &inner,
+            ModuleInstanceKey::from_u128(instance_key),
+            DiagnosticMeta::default(),
+        )
+        .unwrap()
+        .bind_level(inner_input, outer_signal)
+        .unwrap()
+        .finish()
+        .unwrap();
+    let first_nested_signal = nested.level_output(first_output).unwrap();
+    let second_nested_signal = nested.level_output(second_output).unwrap();
+    let (first_source, second_source) = if reroute_sources {
+        (second_nested_signal, first_nested_signal)
+    } else {
+        (first_nested_signal, second_nested_signal)
+    };
+    let first_node = NodeKey::from_u128(20);
+    let second_node = NodeKey::from_u128(30);
+    let (first_inverted, second_inverted) = if reverse_authoring {
+        let second_inverted = outer
+            .add_not_with_ports(
+                second_node,
+                InPortKey::from_u128(31),
+                OutPortKey::from_u128(32),
+                second_source,
+                DiagnosticMeta::default(),
+            )
+            .unwrap()
+            .into_outputs();
+        let first_inverted = outer
+            .add_not_with_ports(
+                first_node,
+                InPortKey::from_u128(21),
+                OutPortKey::from_u128(22),
+                first_source,
+                DiagnosticMeta::default(),
+            )
+            .unwrap()
+            .into_outputs();
+        (first_inverted, second_inverted)
+    } else {
+        let first_inverted = outer
+            .add_not_with_ports(
+                first_node,
+                InPortKey::from_u128(21),
+                OutPortKey::from_u128(22),
+                first_source,
+                DiagnosticMeta::default(),
+            )
+            .unwrap()
+            .into_outputs();
+        let second_inverted = outer
+            .add_not_with_ports(
+                second_node,
+                InPortKey::from_u128(31),
+                OutPortKey::from_u128(32),
+                second_source,
+                DiagnosticMeta::default(),
+            )
+            .unwrap()
+            .into_outputs();
+        (first_inverted, second_inverted)
+    };
+    let first_outer_output = ModuleOutputKey::<Level>::from_u128(40);
+    let second_outer_output = ModuleOutputKey::<Level>::from_u128(41);
+    if reverse_authoring {
+        outer
+            .add_level_output(
+                second_outer_output,
+                second_inverted,
+                DiagnosticMeta::default(),
+            )
+            .unwrap();
+        outer
+            .add_level_output(
+                first_outer_output,
+                first_inverted,
+                DiagnosticMeta::default(),
+            )
+            .unwrap();
+    } else {
+        outer
+            .add_level_output(
+                first_outer_output,
+                first_inverted,
+                DiagnosticMeta::default(),
+            )
+            .unwrap();
+        outer
+            .add_level_output(
+                second_outer_output,
+                second_inverted,
+                DiagnosticMeta::default(),
+            )
+            .unwrap();
+    }
+    let unchecked = outer.into_unchecked();
+    let connections = unchecked
+        .connections()
+        .iter()
+        .map(|connection| {
+            let ConnectionEndpoint::NodeInput(target) = connection.to() else {
+                panic!("nested connection fixture must target a node input")
+            };
+            let target_key = match target {
+                AnyInPortKey::Level(key) => key.as_u128(),
+                AnyInPortKey::Pulse(key) => key.as_u128(),
+                _ => panic!("nested connection fixture uses an unknown input-port kind"),
+            };
+            ConnectionDef::new(
+                ConnectionKey::from_u128(target_key),
+                connection.from(),
+                connection.to(),
+                connection.meta().clone(),
+            )
+        })
+        .collect();
+    UncheckedModule::new_user_with_instances(
+        unchecked.meta().clone(),
+        unchecked.inputs().to_vec(),
+        unchecked.outputs().to_vec(),
+        unchecked.mappings().to_vec(),
+        unchecked.nodes().to_vec(),
+        connections,
+        unchecked.module_instances().to_vec(),
+    )
+    .validate()
+    .require_artifact()
+    .unwrap()
 }
 
 #[test]

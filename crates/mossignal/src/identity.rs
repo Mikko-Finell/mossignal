@@ -299,17 +299,31 @@ fn module_connections(writer: &mut Cbor, connections: &[ConnectionDef]) {
     connections.sort_by_key(|connection| connection.key().as_u128());
     writer.array_start(connections.len());
     for connection in connections {
-        let ConnectionEndpoint::NodeOutput(source) = connection.from() else {
-            panic!("validated module connection must source a node output");
-        };
+        let source = connection.from();
         let ConnectionEndpoint::NodeInput(target) = connection.to() else {
             panic!("validated module connection must target a node input");
         };
         writer.record_start(4);
         writer.field("key", |writer| writer.key(connection.key().as_u128()));
         writer.field("signal_kind", |writer| signal_kind(writer, source.kind()));
-        writer.field("source", |writer| writer.key(out_port_key(source)));
+        writer.field("source", |writer| module_connection_source(writer, source));
         writer.field("target", |writer| writer.key(in_port_key(target)));
+    }
+}
+
+fn module_connection_source(writer: &mut Cbor, endpoint: ConnectionEndpoint) {
+    // SPEC: docs/specs/contracts/module-fingerprint.yaml
+    // "complete-user-module-projection" — retain every typed stable source incidence.
+    match endpoint {
+        ConnectionEndpoint::NodeOutput(key) => writer.key(out_port_key(key)),
+        ConnectionEndpoint::ModuleInput(key) => source_module_input(writer, key),
+        ConnectionEndpoint::ModuleOutput { instance, output } => {
+            source_module_output(writer, instance, output)
+        }
+        ConnectionEndpoint::ExternalInput(key) => source_external_input(writer, key),
+        ConnectionEndpoint::NodeInput(_) | ConnectionEndpoint::ExternalOutput(_) => {
+            panic!("validated module connection source must be a source endpoint")
+        }
     }
 }
 

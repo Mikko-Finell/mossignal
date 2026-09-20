@@ -6,13 +6,11 @@
 
 use std::collections::BTreeSet;
 
-use mossignal::key::{ModuleInputKey, ModuleInstanceKey, ModuleOutputKey};
-use mossignal::metadata::DiagnosticMeta;
-use mossignal::signal::{Level, LogicLevel, PulseCount};
+use mossignal::signal::{LogicLevel, PulseCount};
 use mossignal::time::Time;
 use mossignal::{
-    CauseInspection, CauseRef, ModuleBuilder, NetworkBuilder, OutputEvent, ProvenanceView,
-    RuntimePolicy, TimeDomainId, Transaction,
+    CauseInspection, CauseRef, NetworkBuilder, OutputEvent, ProvenanceView, RuntimePolicy,
+    TimeDomainId, Transaction,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -113,53 +111,6 @@ fn collect_observed_pulse_inputs<D>(
         }
         _ => {}
     }
-}
-
-#[test]
-#[ignore = "bug: module fingerprint panics on connections sourced from nested module outputs"]
-fn nested_module_output_feeding_an_internal_node_must_fingerprint() {
-    let mut inner = ModuleBuilder::<TestDomain>::new();
-    let inner_in = ModuleInputKey::<Level>::from_u128(1);
-    let inner_out = ModuleOutputKey::<Level>::from_u128(2);
-    let source = inner
-        .add_level_input(inner_in, DiagnosticMeta::default())
-        .unwrap_or_else(|failure| panic!("inner input must author: {failure:?}"));
-    inner
-        .add_level_output(inner_out, source, DiagnosticMeta::default())
-        .unwrap_or_else(|failure| panic!("inner output must author: {failure:?}"));
-    let inner = inner
-        .finish()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("passthrough module must validate: {failure:?}"));
-
-    let nested = ModuleInstanceKey::from_u128(10);
-    let mut outer = ModuleBuilder::<TestDomain>::new();
-    let (_, outer_source) = outer.level_input("in");
-    let added = outer
-        .instantiate(&inner, nested, DiagnosticMeta::default())
-        .unwrap_or_else(|failure| panic!("nested instance must begin: {failure:?}"))
-        .bind_level(inner_in, outer_source)
-        .and_then(|builder| builder.finish())
-        .unwrap_or_else(|failure| panic!("nested instance must bind: {failure:?}"));
-    let nested_out = added
-        .level_output(inner_out)
-        .unwrap_or_else(|failure| panic!("nested output must exist: {failure:?}"));
-    let inverted = outer
-        .not(nested_out)
-        .unwrap_or_else(|failure| panic!("internal Not of nested output must author: {failure:?}"));
-    outer
-        .level_output("out", inverted)
-        .unwrap_or_else(|failure| panic!("outer output must author: {failure:?}"));
-    let report = outer.finish();
-    assert!(
-        report.artifact().is_some(),
-        "a nested module output feeding an internal node must validate and fingerprint; diagnostics: {:?}",
-        report
-            .diagnostics()
-            .iter()
-            .map(|diagnostic| diagnostic.problem().code())
-            .collect::<Vec<_>>()
-    );
 }
 
 #[test]
