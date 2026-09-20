@@ -1190,6 +1190,11 @@ impl<D> CompiledInner<D> {
                                 high_count = high_count.saturating_add(1);
                             }
                         }
+                        // SPEC: docs/specs/contracts/level-combinational-expansion.yaml
+                        // "at-least-total-law" — threshold zero and thresholds above arity are constant.
+                        let constant_result = *threshold == 0
+                            || usize::try_from(*threshold)
+                                .map_or(true, |threshold| threshold > inputs.len());
                         (
                             EvaluationValue::Level(if high_count >= *threshold {
                                 LogicLevel::High
@@ -1198,9 +1203,7 @@ impl<D> CompiledInner<D> {
                             }),
                             EvaluationCause::Node {
                                 node: *key,
-                                // SPEC: docs/specs/built_in_node_semantics.md §27 "AtLeast"
-                                // Threshold zero is constant High and has no current input support.
-                                predecessors: if *threshold == 0 {
+                                predecessors: if constant_result {
                                     Vec::new()
                                 } else {
                                     self.predecessors[index]

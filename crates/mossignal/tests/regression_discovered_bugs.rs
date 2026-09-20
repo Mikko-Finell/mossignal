@@ -62,59 +62,6 @@ fn collect_observed_level_inputs<D>(
 }
 
 #[test]
-#[ignore = "bug: AtLeast(threshold > arity) provenance retains inputs that cannot affect the constant Low result"]
-fn at_least_above_arity_constant_low_provenance_excludes_inputs() {
-    let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(25));
-    let (left_key, left) = builder.level_input("left");
-    let (right_key, right) = builder.level_input("right");
-    let constant_low = builder
-        .at_least(3, [left, right])
-        .unwrap_or_else(|failure| panic!("AtLeast(3) of two inputs must author: {failure:?}"));
-    let output = builder
-        .level_output("out", constant_low)
-        .unwrap_or_else(|failure| panic!("output must author: {failure:?}"));
-    let compiled = builder
-        .finish()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("AtLeast(3) must validate: {failure:?}"))
-        .compile()
-        .require_artifact()
-        .unwrap_or_else(|failure| panic!("AtLeast(3) must compile: {failure:?}"));
-    let snapshot = compiled
-        .input_snapshot()
-        .set(left_key, LogicLevel::High)
-        .and_then(|builder| builder.set(right_key, LogicLevel::High))
-        .and_then(mossignal::InputSnapshotBuilder::finish)
-        .unwrap_or_else(|failure| panic!("snapshot must build: {failure}"));
-    let mut machine = compiled.spawn(policy());
-    let result = machine
-        .apply(Transaction::initialize(
-            Time::from_ticks(0),
-            machine.revision(),
-            snapshot,
-        ))
-        .unwrap_or_else(|failure| panic!("AtLeast(3) must initialize: {failure}"));
-    let [
-        OutputEvent::LevelEstablished {
-            output: established,
-            value,
-            cause,
-            ..
-        },
-    ] = result.output_events()
-    else {
-        panic!("initialization must establish constant Low");
-    };
-    assert_eq!(*established, output);
-    assert_eq!(*value, LogicLevel::Low);
-    let observed = observed_level_inputs(result.provenance(), *cause);
-    assert!(
-        observed.is_empty(),
-        "AtLeast(3) of two inputs is independent of those inputs, but provenance retained {observed:?}"
-    );
-}
-
-#[test]
 #[ignore = "bug: AtLeast High provenance treats Low inputs as current supporters after the threshold is met"]
 fn at_least_high_provenance_excludes_low_inputs_once_the_threshold_is_met() {
     let mut builder = NetworkBuilder::<TestDomain>::new(TimeDomainId::from_u128(27));

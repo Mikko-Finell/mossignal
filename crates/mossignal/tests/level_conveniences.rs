@@ -580,6 +580,89 @@ fn at_least_zero_provenance_is_independent_of_inputs() {
 }
 
 #[test]
+fn at_least_above_arity_provenance_is_independent_of_inputs() {
+    let mut builder = NetworkBuilder::<TestTicks>::new(TimeDomainId::from_u128(DOMAIN_ID));
+    let (left_key, left) = builder.level_input("left");
+    let (right_key, right) = builder.level_input("right");
+    let constant_low = builder
+        .at_least(3, [left, right])
+        .unwrap_or_else(|failure| panic!("AtLeast(3) of two inputs must author: {failure:?}"));
+    let output = builder
+        .level_output("constant-low", constant_low)
+        .unwrap_or_else(|failure| panic!("AtLeast(3) output must author: {failure:?}"));
+    let nullary_low = builder
+        .at_least(1, [])
+        .unwrap_or_else(|failure| panic!("nullary AtLeast(1) must author: {failure:?}"));
+    let nullary_output = builder
+        .level_output("nullary-low", nullary_low)
+        .unwrap_or_else(|failure| panic!("nullary AtLeast(1) output must author: {failure:?}"));
+    let compiled = builder
+        .finish()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("AtLeast(3) must validate: {failure:?}"))
+        .compile()
+        .require_artifact()
+        .unwrap_or_else(|failure| panic!("AtLeast(3) must compile: {failure:?}"));
+
+    let snapshot = compiled
+        .input_snapshot()
+        .set(left_key, LogicLevel::High)
+        .and_then(|builder| builder.set(right_key, LogicLevel::High))
+        .and_then(mossignal::InputSnapshotBuilder::finish)
+        .unwrap_or_else(|failure| panic!("AtLeast(3) snapshot must build: {failure}"));
+    let mut machine = compiled.spawn(runtime_policy());
+    let initialized = machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            snapshot,
+        ))
+        .unwrap_or_else(|failure| panic!("AtLeast(3) initialization must succeed: {failure}"));
+    for expected_output in [output, nullary_output] {
+        let (value, cause) = initialized
+            .output_events()
+            .iter()
+            .find_map(|event| match event {
+                OutputEvent::LevelEstablished {
+                    output: established,
+                    value,
+                    cause,
+                    ..
+                } if *established == expected_output => Some((*value, *cause)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("constant Low output must establish"));
+        assert_eq!(value, LogicLevel::Low);
+        assert!(observed_level_inputs(initialized.provenance(), cause).is_empty());
+    }
+
+    for (time, left_level, right_level) in [
+        (1, LogicLevel::Low, LogicLevel::High),
+        (2, LogicLevel::High, LogicLevel::Low),
+    ] {
+        let changed = machine
+            .apply(Transaction::advance(
+                Time::from_ticks(time),
+                machine.revision(),
+                compiled
+                    .input_delta()
+                    .set(left_key, left_level)
+                    .and_then(|builder| builder.set(right_key, right_level))
+                    .and_then(mossignal::InputDeltaBuilder::finish)
+                    .unwrap_or_else(|failure| panic!("AtLeast delta must build: {failure}")),
+            ))
+            .unwrap_or_else(|failure| panic!("AtLeast input change must succeed: {failure}"));
+        assert!(changed.output_events().is_empty());
+        for expected_output in [output, nullary_output] {
+            let cause = machine
+                .output_cause(expected_output)
+                .unwrap_or_else(|| panic!("constant Low output must retain a cause"));
+            assert!(observed_level_inputs(changed.provenance(), cause).is_empty());
+        }
+    }
+}
+
+#[test]
 fn foreign_signals_fail_before_either_builder_authors_a_convenience_node() {
     let mut foreign_network = NetworkBuilder::<TestTicks>::new(TimeDomainId::from_u128(DOMAIN_ID));
     let foreign = foreign_network.level_input("foreign").1;
