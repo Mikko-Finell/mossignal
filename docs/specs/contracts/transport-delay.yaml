@@ -2,10 +2,10 @@ schema_version: "0.1"
 id: mossignal.node.transport_delay
 title: Transport-delayed Level transitions
 kind: node
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: 3909e6850b0f113c2e93c420bb7004e11bf749f9
+  commit: f9fb2c6f85bbb645a84744d4a6f4eeccbfac9295
   working_tree: clean
 
 summary: >-
@@ -137,48 +137,64 @@ sources:
   transport-law:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part VI — Temporal nodes, 52. `TransportDelay`]
+    reviewed_hash: sha256:90ff925d0d814b35995d104b90298aed4dc2b5f9427622b0a29fbceabea42050
   temporal-initialization:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part VI — Temporal nodes, 50. Temporal initialization]
+    reviewed_hash: sha256:319dc1e0c17339f409f801b5101b152961d9f1980f53a93f857b28f10bdea0d4
   dependency-signatures:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
   exact-deadline:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part VI — Temporal nodes, 49. Exact-deadline principle]
+    reviewed_hash: sha256:c6cd154d3936e1a08678d6e28e27feeced9066f8fed720f4e74041a3f6dc636d
   node-inspection:
     document: docs/specs/built_in_node_semantics.md
     heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 61. Node inspection]
+    reviewed_hash: sha256:109589c8402f33c1ea69f83627b4d39073bd3e3f37fc24e0494f8daaf2c5c88d
   temporal-inspection:
     document: docs/specs/built_in_node_semantics.md
     heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 62. Temporal inspection]
+    reviewed_hash: sha256:8443220398b6d411c9fad55a65408b86674cbafca845ec53880fbf68bd093ae2
   causes:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part I — Shared semantic rules, 18. Explanations and causes]
+    reviewed_hash: sha256:af07465662f1f93e504301c409b8a58c05f1558940699e318face0445feec256
   concrete-config:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VII — Typed network authoring, 29. Built-in configuration values]
+    reviewed_hash: sha256:b989b03bf932e65581c5878a208b6d619f3667762f9a547c2daa6366db6abc84
   concrete-builders:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
   concrete-dynamic:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
   level-delay-distinction:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VII — Stateful and temporal semantics, 38. Level delay]
+    reviewed_hash: sha256:37294983c88cb20a7e2cbd70b869c1c69ae9be6ce190f7073dd3904e8400b371
   transport-state-schema:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 91. Built-in state schemas]
+    reviewed_hash: sha256:bcd3acfcc57b21fe48ea8ee2a94094339138c900cf3f9fc1ff65ed4676c492a8
   transport-event-schema:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 92. Pending event records]
+    reviewed_hash: sha256:9d40b747e57c3e3392c351477272393b2c91536672b112fd87c2df41889d7c20
   network-identity:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.1 Network fingerprint]
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
   initialization-tests:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part VI — Initialization verification, 28. Temporal initialization]
+    reviewed_hash: sha256:1f8018be6049f1d3e096355f32454b72fc111d5f61c920584145d4d8fa895966
   transport-tests:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part IX — Temporal verification, 48. `TransportDelay`]
+    reviewed_hash: sha256:1a048583fd94e1657f54b636b3e2fde74647ddd0c315d464d411a9dea93db787
