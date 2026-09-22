@@ -107,7 +107,8 @@ verification, and planned work.
 | [`docs/specs/reconfiguration_and_topology_patch_spec.md`](docs/specs/reconfiguration_and_topology_patch_spec.md) | Future topology-patch, correspondence, migration, and atomic replacement semantics. |
 | [`docs/specs/standard_module_catalogue_spec.md`](docs/specs/standard_module_catalogue_spec.md) | Standard catalogue boundaries, identity, expansion, inspection, migration, and future catalogue requirements. |
 | [`docs/specs/contracts/`](docs/specs/contracts) | Compact reviewed contract records for reusable specification-backed rules. |
-| [`docs/premium_continuation_roadmap.md`](docs/premium_continuation_roadmap.md) | Active implementation roadmap. The completed slice currently reaches item 46. |
+| [`docs/premium_continuation_roadmap.md`](docs/premium_continuation_roadmap.md) | Active implementation roadmap and links to earlier roadmap context. |
+| [`.beads/`](.beads/) | Tracked implementation tasks, dependencies, and completion records; inspect with `br`. |
 | [`docs/testing_and_verification_policy.md`](docs/testing_and_verification_policy.md) | Required verification depth, reference semantics, differential testing, atomicity, invariant, and regression obligations. |
 
 ### Verification code
@@ -410,41 +411,25 @@ forecasting, and reconfiguration paths must preserve that relationship.
 The executable gate definitions are in [`Makefile`](Makefile); required
 workflow and tooling rules are in [`AGENTS.md`](AGENTS.md).
 
-## Current roadmap boundary
+## Roadmaps and task status
 
-The active continuation roadmap is [`docs/premium_continuation_roadmap.md`](docs/premium_continuation_roadmap.md).
-The completed implementation currently reaches item 46, `TransportDelay`:
+Use the active [continuation roadmap](docs/premium_continuation_roadmap.md)
+and its linked earlier roadmap for implementation planning and progress.
+Use the [beads records](.beads/) for task scope, dependencies, and completion
+details. Inspect approved claimable work with `br ready --json` and individual
+tasks with `br show <id> --json`.
 
-- module interface identities and unchecked definitions;
-- validated modules and semantic module fingerprints;
-- typed module authoring;
-- exact and nested module instantiation;
-- module-aware compilation, execution, and observation;
-- standard catalogue foundation and stateless expansion;
-- aliases and builder conveniences;
-- application bindings and the bound execution façade;
-- pulse-combinational and level-controlled pulse primitives;
-- edge detectors;
-- toggle and set/reset latch families;
-- persistent level-latch diagnostic episodes;
-- sample-hold;
-- pulse and transport delays.
-
-Items after 46 are roadmap/specification work, not current implementation:
-inertial and periodic timing, stateful standard modules, additional
-conveniences, stable execution/observable digests, snapshots, restoration,
-replay, forecasting, topology patches, migration, richer queries/probes,
-reference-oracle tooling, incremental evaluation, calendar optimization, and
-additional ergonomics. This inventory is a repository-state snapshot; verify
-the source and roadmap before relying on it for a new task.
+Consult those records and the source for current implementation status when
+starting a task. This README does not track the latest completed roadmap item.
 
 ## Agent navigation recipes
 
 Useful searches:
 
 ```bash
-# Find the current roadmap and its completion boundary.
+# Inspect roadmap headings and approved claimable tasks.
 rg -n '^## ' docs/premium_continuation_roadmap.md
+br ready --json
 
 # Find the authoritative rule for a concept before changing semantics.
 rg -n 'NetworkFingerprint|topology patch|current-reaction|PulseDelay' docs/specs/
