@@ -436,6 +436,10 @@ enum OperationDescriptor {
 /// This remains crate-private staging behind the public transaction result.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct FullEvaluation {
+    // Historical observation inputs; never consumed as state by a later reaction.
+    pub(crate) operation_pulses: Vec<Option<PulseCount>>,
+    pub(crate) previous_stored_levels: Vec<LogicLevel>,
+    pub(crate) previous_edge_observations: Vec<EdgeObservation>,
     pub(crate) values: Vec<LogicLevel>,
     pub(crate) operation_levels: Vec<Option<LogicLevel>>,
     pub(crate) causes: Vec<EvaluationCause>,
@@ -1096,6 +1100,15 @@ impl<D> CompiledNetwork<D> {
             Some(qualified) => PulsePortSubject::Qualified(qualified.clone()),
             None => PulsePortSubject::Port(port),
         }
+    }
+
+    pub(crate) fn standard_modules(
+        &self,
+    ) -> impl Iterator<Item = (&QualifiedModuleRef, &ModuleDef<D>)> {
+        self.inner
+            .modules
+            .iter()
+            .filter(|(_, definition)| definition.standard_declaration().is_some())
     }
 
     pub(crate) fn module(&self, module: &QualifiedModuleRef) -> Option<&ModuleDef<D>> {
@@ -2206,6 +2219,15 @@ impl<D> CompiledInner<D> {
             .collect::<Option<Vec<_>>>()
             .ok_or(EvaluationFailure::Incomplete)?;
         Ok(FullEvaluation {
+            operation_pulses: complete_values
+                .iter()
+                .map(|value| match value {
+                    EvaluationValue::Pulse(count) => Some(*count),
+                    _ => None,
+                })
+                .collect(),
+            previous_stored_levels: previous_stored_levels.to_vec(),
+            previous_edge_observations: previous_edge_observations.to_vec(),
             values: complete_values
                 .iter()
                 .filter_map(|value| match value {

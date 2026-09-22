@@ -83,6 +83,9 @@ fn catalogue_discovers_all_stateless_descriptors_and_validates_requests() {
             StandardModuleRef::exactly(),
             StandardModuleRef::at_most(),
             StandardModuleRef::all_equal(),
+            StandardModuleRef::pulse_resettable_toggle(),
+            StandardModuleRef::level_resettable_toggle(),
+            StandardModuleRef::level_resettable_sample_hold(),
         ]
     );
 

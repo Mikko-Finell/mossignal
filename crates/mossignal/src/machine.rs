@@ -1259,6 +1259,7 @@ pub struct ModuleInspection<D> {
     exactly: Option<ExactlyInspection>,
     at_most: Option<AtMostInspection>,
     all_equal: Option<AllEqualInspection>,
+    stateful_standard: Option<crate::standard::StatefulStandardInspection<D>>,
     revision: NetworkRevision,
     at: Option<Time<D>>,
     inputs: Vec<ModuleInputInspection>,
@@ -1296,6 +1297,11 @@ impl<D> ModuleInspection<D> {
     #[must_use]
     pub const fn all_equal(&self) -> Option<&AllEqualInspection> {
         self.all_equal.as_ref()
+    }
+    /// Returns aggregate state and explicitly historical reaction facts for a stateful standard module.
+    #[must_use]
+    pub fn stateful_standard(&self) -> Option<&crate::standard::StatefulStandardInspection<D>> {
+        self.stateful_standard.as_ref()
     }
     #[must_use]
     pub const fn revision(&self) -> NetworkRevision {
@@ -1470,6 +1476,9 @@ impl<D> fmt::Debug for MachineStatus<D> {
 }
 
 pub(crate) struct MachineStore<D> {
+    // Explicit last-reaction history, never input to network evaluation.
+    pub(crate) standard_history:
+        BTreeMap<QualifiedModuleRef, crate::standard::stateful::StandardHistory>,
     pub(crate) status: MachineStatus<D>,
     pub(crate) revision: NetworkRevision,
     pub(crate) external_levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
@@ -1498,6 +1507,7 @@ pub(crate) struct MachineStore<D> {
 impl<D> Clone for MachineStore<D> {
     fn clone(&self) -> Self {
         Self {
+            standard_history: self.standard_history.clone(),
             status: self.status,
             revision: self.revision,
             external_levels: self.external_levels.clone(),
@@ -2290,6 +2300,7 @@ impl<D> Machine<D> {
             compiled,
             policy,
             store: MachineStore {
+                standard_history: BTreeMap::new(),
                 status: MachineStatus::AwaitingInitialization,
                 revision: NetworkRevision::INITIAL,
                 external_levels: BTreeMap::new(),
@@ -2842,15 +2853,17 @@ impl<D> Machine<D> {
             pending.sort_by_key(|event| (event.deadline, event.event));
             nodes.push(ModuleNodeInspection {
                 node: qualified.clone(),
-                standard_role: definition.standard_declaration().and_then(|declaration| {
-                    declaration
-                        .internal_roles()
-                        .find(|role| {
-                            role.category() == StandardInternalCategory::Node
-                                && role.key() == qualified.node().as_u128()
-                        })
-                        .map(|role| role.role().to_owned())
-                }),
+                standard_role: owner_definition
+                    .standard_declaration()
+                    .and_then(|declaration| {
+                        declaration
+                            .internal_roles()
+                            .find(|role| {
+                                role.category() == StandardInternalCategory::Node
+                                    && role.key() == qualified.node().as_u128()
+                            })
+                            .map(|role| role.role().to_owned())
+                    }),
                 kind,
                 level: level_at(self.compiled.node_operation(flat)),
                 cause: self
@@ -2947,7 +2960,9 @@ impl<D> Machine<D> {
                 .and_then(ModuleOutputInspection::level)?;
             Some(AllEqualInspection::new(levels?.into_iter(), result))
         });
+        let stateful_standard = crate::standard::stateful::inspect(self, &module);
         Ok(ModuleInspection {
+            stateful_standard,
             module,
             origin: definition.origin().clone(),
             fingerprint: definition.fingerprint(),

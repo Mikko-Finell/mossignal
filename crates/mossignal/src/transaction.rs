@@ -1362,6 +1362,13 @@ impl<D> Machine<D> {
             self.compiled.network_key(),
             self.compiled.fingerprint(),
         );
+        let standard_history = crate::standard::stateful::observe_reaction(
+            &self.compiled,
+            &evaluation,
+            &built.operation_causes,
+            &BTreeMap::new(),
+            |cause| remap_cause(cause, built.provenance.scope),
+        );
         remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
         remap_cause_map(&mut periodic_anchor_causes, built.provenance.scope);
         remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
@@ -1412,6 +1419,7 @@ impl<D> Machine<D> {
         publish_candidate(
             self,
             PublishedCandidate {
+                standard_history,
                 at,
                 levels,
                 evaluation,
@@ -1464,6 +1472,7 @@ impl<D> Machine<D> {
 
         let revision = self.store.revision;
         let (explicit_levels, pulses) = input.into_parts();
+        let mut standard_history = self.store.standard_history.clone();
         let mut levels = self.store.external_levels.clone();
         let mut pending_events = self.store.pending_events.clone();
         let mut next_pending_event_serial = self.store.next_pending_event_serial;
@@ -1597,6 +1606,13 @@ impl<D> Machine<D> {
                 self.compiled.network_key(),
                 self.compiled.fingerprint(),
             );
+            standard_history = crate::standard::stateful::observe_reaction(
+                &self.compiled,
+                &internal,
+                &built.operation_causes,
+                &standard_history,
+                |cause| remap_cause(cause, built.provenance.scope),
+            );
             remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
             remap_cause_map(&mut periodic_anchor_causes, built.provenance.scope);
             remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
@@ -1725,6 +1741,13 @@ impl<D> Machine<D> {
             self.compiled.network_key(),
             self.compiled.fingerprint(),
         );
+        standard_history = crate::standard::stateful::observe_reaction(
+            &self.compiled,
+            &evaluation,
+            &built.operation_causes,
+            &standard_history,
+            |cause| remap_cause(cause, built.provenance.scope),
+        );
         remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
         remap_cause_map(&mut periodic_anchor_causes, built.provenance.scope);
         remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
@@ -1768,6 +1791,7 @@ impl<D> Machine<D> {
         publish_candidate(
             self,
             PublishedCandidate {
+                standard_history,
                 at,
                 levels,
                 evaluation,
@@ -2681,6 +2705,8 @@ fn remap_output_event_causes<D>(events: &mut [OutputEvent<D>], scope: Provenance
 }
 
 struct PublishedCandidate<D> {
+    standard_history:
+        BTreeMap<crate::QualifiedModuleRef, crate::standard::stateful::StandardHistory>,
     at: Time<D>,
     levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     evaluation: FullEvaluation,
@@ -2703,6 +2729,7 @@ struct PublishedCandidate<D> {
 
 fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<D>) {
     let PublishedCandidate {
+        standard_history,
         at,
         levels,
         evaluation,
@@ -2725,6 +2752,7 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     // SPEC: docs/specs/processor_and_runtime_architecture.md §50 "Reference execution strategy"
     // Every fallible step precedes replacement of the complete private candidate.
     let mut candidate = machine.store.clone();
+    candidate.standard_history = standard_history;
     candidate.status = MachineStatus::Ready { now: at };
     candidate.external_levels = levels;
     candidate.settled_levels = evaluation.values;

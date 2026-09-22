@@ -1,4 +1,7 @@
-//! Immutable standard-module catalogue and canonical stateless construction.
+//! Immutable standard-module catalogue and canonical primitive construction.
+
+pub(crate) mod stateful;
+pub use stateful::*;
 
 use crate::ModuleDef;
 use crate::authored::{
@@ -201,6 +204,36 @@ impl StandardModuleRef {
     #[must_use]
     pub const fn expansion_version(&self) -> StandardModuleExpansionVersion {
         self.expansion_version
+    }
+
+    /// Returns the canonical `PulseResettableToggle` descriptor reference.
+    #[must_use]
+    pub fn pulse_resettable_toggle() -> Self {
+        Self::new(
+            StandardModuleId("mossignal.standard.pulse_resettable_toggle".to_owned()),
+            StandardModuleSemanticVersion::one(),
+            StandardModuleExpansionVersion::one(),
+        )
+    }
+
+    /// Returns the canonical `LevelResettableToggle` descriptor reference.
+    #[must_use]
+    pub fn level_resettable_toggle() -> Self {
+        Self::new(
+            StandardModuleId("mossignal.standard.level_resettable_toggle".to_owned()),
+            StandardModuleSemanticVersion::one(),
+            StandardModuleExpansionVersion::one(),
+        )
+    }
+
+    /// Returns the canonical `LevelResettableSampleHold` descriptor reference.
+    #[must_use]
+    pub fn level_resettable_sample_hold() -> Self {
+        Self::new(
+            StandardModuleId("mossignal.standard.level_resettable_sample_hold".to_owned()),
+            StandardModuleSemanticVersion::one(),
+            StandardModuleExpansionVersion::one(),
+        )
     }
 
     /// Returns the current provisional `Exactly` descriptor reference.
@@ -589,6 +622,16 @@ impl<D> StandardModuleDeclaration<D> {
     /// Returns the public current-reaction dependency relation for this declaration.
     #[must_use]
     pub fn public_dependencies(&self) -> Vec<StandardPublicDependency> {
+        if let Some(kind) = stateful::Kind::from_ref(&self.module_ref) {
+            return kind
+                .inputs()
+                .into_iter()
+                .map(|(_, input)| StandardPublicDependency {
+                    input,
+                    output: kind.output().into(),
+                })
+                .collect();
+        }
         let output = if self.exactly_dependency() == Some(ExactlyDependency::EveryInput) {
             exactly_result_key()
         } else if self.at_most_dependency() == Some(AtMostDependency::EveryInput) {
@@ -970,6 +1013,9 @@ impl<D> StandardCatalogue<D> {
                 StandardModuleDescriptor::exactly(),
                 StandardModuleDescriptor::at_most(),
                 StandardModuleDescriptor::all_equal(),
+                stateful::Kind::PulseToggle.descriptor(),
+                stateful::Kind::LevelToggle.descriptor(),
+                stateful::Kind::SampleHold.descriptor(),
             ],
         }
     }
@@ -1048,6 +1094,9 @@ impl<D> StandardCatalogue<D> {
         if let Err(failure) = self.descriptor(&request.module_ref) {
             insert_problem(&mut diagnostics, failure.into_problem());
             return Report::new(None, diagnostics);
+        }
+        if let Some(kind) = stateful::Kind::from_ref(&request.module_ref) {
+            return stateful::build(kind, request);
         }
         let Some(kind) = StatelessStandardKind::from_ref(&request.module_ref) else {
             insert_evidence(

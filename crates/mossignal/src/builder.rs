@@ -825,6 +825,201 @@ impl<D> NetworkBuilder<D> {
         })
     }
 
+    /// Adds a canonical `PulseResettableToggle` with a locally allocated instance key.
+    pub fn pulse_resettable_toggle(
+        &mut self,
+        toggle: Signal<Pulse>,
+        reset: Signal<Pulse>,
+        initial: LogicLevel,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        D: PartialEq,
+    {
+        let key = self.next_module_instance_key();
+        Ok(self
+            .add_pulse_resettable_toggle(key, toggle, reset, initial, DiagnosticMeta::default())?
+            .into_outputs())
+    }
+    /// Adds an explicitly identified canonical `PulseResettableToggle`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pulse_resettable_toggle(
+        &mut self,
+        key: ModuleInstanceKey,
+        toggle: Signal<Pulse>,
+        reset: Signal<Pulse>,
+        initial: LogicLevel,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        D: PartialEq,
+    {
+        let module_ref = StandardModuleRef::pulse_resettable_toggle();
+        let request = StandardModuleRequest::new(module_ref.clone()).with_parameter(
+            StandardParameterKey::new("initial"),
+            StandardParameterValue::LogicLevel(initial),
+        );
+        let (module, _) = StandardCatalogue::current().build(request).into_parts();
+        let Some(module) = module else {
+            return Err(AuthoringFailure::StandardModuleConstruction(module_ref));
+        };
+        let instance = self
+            .instantiate(&module, key, meta)?
+            .bind_pulse(
+                crate::standard::pulse_resettable_toggle_toggle_key(),
+                toggle,
+            )?
+            .bind_pulse(crate::standard::pulse_resettable_toggle_reset_key(), reset)?
+            .finish()?;
+        let outputs = instance.level_output(crate::standard::pulse_resettable_toggle_state_key())?;
+        Ok(AddedStandardModule {
+            instance,
+            outputs,
+            module_ref,
+        })
+    }
+    /// Adds a canonical `LevelResettableToggle` with a locally allocated instance key.
+    pub fn level_resettable_toggle(
+        &mut self,
+        toggle: Signal<Pulse>,
+        reset: Signal<Level>,
+        initial: LogicLevel,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        D: PartialEq,
+    {
+        let key = self.next_module_instance_key();
+        Ok(self
+            .add_level_resettable_toggle(key, toggle, reset, initial, DiagnosticMeta::default())?
+            .into_outputs())
+    }
+    /// Adds an explicitly identified canonical `LevelResettableToggle`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_level_resettable_toggle(
+        &mut self,
+        key: ModuleInstanceKey,
+        toggle: Signal<Pulse>,
+        reset: Signal<Level>,
+        initial: LogicLevel,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        D: PartialEq,
+    {
+        let module_ref = StandardModuleRef::level_resettable_toggle();
+        let request = StandardModuleRequest::new(module_ref.clone()).with_parameter(
+            StandardParameterKey::new("initial"),
+            StandardParameterValue::LogicLevel(initial),
+        );
+        let (module, _) = StandardCatalogue::current().build(request).into_parts();
+        let Some(module) = module else {
+            return Err(AuthoringFailure::StandardModuleConstruction(module_ref));
+        };
+        let instance = self
+            .instantiate(&module, key, meta)?
+            .bind_pulse(
+                crate::standard::level_resettable_toggle_toggle_key(),
+                toggle,
+            )?
+            .bind_level(crate::standard::level_resettable_toggle_reset_key(), reset)?
+            .finish()?;
+        let outputs = instance.level_output(crate::standard::level_resettable_toggle_state_key())?;
+        Ok(AddedStandardModule {
+            instance,
+            outputs,
+            module_ref,
+        })
+    }
+    /// Adds a canonical `LevelResettableSampleHold` with a locally allocated instance key.
+    ///
+    /// ```
+    /// use mossignal::{NetworkBuilder, TimeDomainId};
+    /// use mossignal::signal::LogicLevel;
+    /// let mut builder = NetworkBuilder::<()>::new(TimeDomainId::from_u128(1));
+    /// let (_, value) = builder.level_input("value");
+    /// let (_, sample) = builder.pulse_input("sample");
+    /// let (_, reset) = builder.level_input("reset");
+    /// let held = builder.level_resettable_sample_hold(
+    ///     value, sample, reset, LogicLevel::Low, LogicLevel::High,
+    /// ).unwrap();
+    /// builder.level_output("held", held).unwrap();
+    /// assert!(builder.finish().artifact().is_some());
+    /// ```
+    pub fn level_resettable_sample_hold(
+        &mut self,
+        value: Signal<Level>,
+        sample: Signal<Pulse>,
+        reset: Signal<Level>,
+        initial: LogicLevel,
+        reset_to: LogicLevel,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        D: PartialEq,
+    {
+        let key = self.next_module_instance_key();
+        Ok(self
+            .add_level_resettable_sample_hold(
+                key,
+                value,
+                sample,
+                reset,
+                initial,
+                reset_to,
+                DiagnosticMeta::default(),
+            )?
+            .into_outputs())
+    }
+    /// Adds an explicitly identified canonical `LevelResettableSampleHold`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_level_resettable_sample_hold(
+        &mut self,
+        key: ModuleInstanceKey,
+        value: Signal<Level>,
+        sample: Signal<Pulse>,
+        reset: Signal<Level>,
+        initial: LogicLevel,
+        reset_to: LogicLevel,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        D: PartialEq,
+    {
+        let module_ref = StandardModuleRef::level_resettable_sample_hold();
+        let request = StandardModuleRequest::new(module_ref.clone())
+            .with_parameter(
+                StandardParameterKey::new("initial"),
+                StandardParameterValue::LogicLevel(initial),
+            )
+            .with_parameter(
+                StandardParameterKey::new("reset_to"),
+                StandardParameterValue::LogicLevel(reset_to),
+            );
+        let (module, _) = StandardCatalogue::current().build(request).into_parts();
+        let Some(module) = module else {
+            return Err(AuthoringFailure::StandardModuleConstruction(module_ref));
+        };
+        let instance = self
+            .instantiate(&module, key, meta)?
+            .bind_level(
+                crate::standard::level_resettable_sample_hold_value_key(),
+                value,
+            )?
+            .bind_pulse(
+                crate::standard::level_resettable_sample_hold_sample_key(),
+                sample,
+            )?
+            .bind_level(
+                crate::standard::level_resettable_sample_hold_reset_key(),
+                reset,
+            )?
+            .finish()?;
+        let outputs =
+            instance.level_output(crate::standard::level_resettable_sample_hold_held_key())?;
+        Ok(AddedStandardModule {
+            instance,
+            outputs,
+            module_ref,
+        })
+    }
     /// Adds a convenience level input with locally allocated stable identity.
     pub fn level_input(
         &mut self,
@@ -3319,6 +3514,95 @@ impl<D> ModuleBuilder<D> {
         self.graph.add_all_equal(key, inputs, meta)
     }
 
+    /// Adds a canonical `PulseResettableToggle` with a locally allocated instance key.
+    pub fn pulse_resettable_toggle(
+        &mut self,
+        toggle: Signal<Pulse>,
+        reset: Signal<Pulse>,
+        initial: LogicLevel,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        D: PartialEq,
+    {
+        self.graph.pulse_resettable_toggle(toggle, reset, initial)
+    }
+    /// Adds an explicitly identified canonical `PulseResettableToggle`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pulse_resettable_toggle(
+        &mut self,
+        key: ModuleInstanceKey,
+        toggle: Signal<Pulse>,
+        reset: Signal<Pulse>,
+        initial: LogicLevel,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        D: PartialEq,
+    {
+        self.graph
+            .add_pulse_resettable_toggle(key, toggle, reset, initial, meta)
+    }
+    /// Adds a canonical `LevelResettableToggle` with a locally allocated instance key.
+    pub fn level_resettable_toggle(
+        &mut self,
+        toggle: Signal<Pulse>,
+        reset: Signal<Level>,
+        initial: LogicLevel,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        D: PartialEq,
+    {
+        self.graph.level_resettable_toggle(toggle, reset, initial)
+    }
+    /// Adds an explicitly identified canonical `LevelResettableToggle`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_level_resettable_toggle(
+        &mut self,
+        key: ModuleInstanceKey,
+        toggle: Signal<Pulse>,
+        reset: Signal<Level>,
+        initial: LogicLevel,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        D: PartialEq,
+    {
+        self.graph
+            .add_level_resettable_toggle(key, toggle, reset, initial, meta)
+    }
+    /// Adds a canonical `LevelResettableSampleHold` with a locally allocated instance key.
+    pub fn level_resettable_sample_hold(
+        &mut self,
+        value: Signal<Level>,
+        sample: Signal<Pulse>,
+        reset: Signal<Level>,
+        initial: LogicLevel,
+        reset_to: LogicLevel,
+    ) -> Result<Signal<Level>, AuthoringFailure>
+    where
+        D: PartialEq,
+    {
+        self.graph
+            .level_resettable_sample_hold(value, sample, reset, initial, reset_to)
+    }
+    /// Adds an explicitly identified canonical `LevelResettableSampleHold`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_level_resettable_sample_hold(
+        &mut self,
+        key: ModuleInstanceKey,
+        value: Signal<Level>,
+        sample: Signal<Pulse>,
+        reset: Signal<Level>,
+        initial: LogicLevel,
+        reset_to: LogicLevel,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedStandardModule<Signal<Level>>, AuthoringFailure>
+    where
+        D: PartialEq,
+    {
+        self.graph
+            .add_level_resettable_sample_hold(key, value, sample, reset, initial, reset_to, meta)
+    }
     /// Adds a convenience level input with locally allocated stable identity.
     pub fn level_input(
         &mut self,

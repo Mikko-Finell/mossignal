@@ -672,7 +672,7 @@ Explicitly exclude:
 
 # Part IV — Complete the initial high-level catalogue
 
-## 49. Stateful standard modules
+## 49. [DONE] Stateful standard modules
 
 Using the accepted module, catalogue, latch, and sample-hold machinery,
 implement the initial stateful standard modules:

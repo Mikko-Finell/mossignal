@@ -72,14 +72,15 @@ pub use policy::{
 };
 pub use standard::{
     AllEqualDependency, AllEqualExplanation, AllEqualInspection, AtMostDependency,
-    AtMostExplanation, AtMostInspection, CatalogueFailure, ExactlyDependency, ExactlyExplanation,
-    ExactlyInspection, StandardCatalogue, StandardCatalogueVersion, StandardEnumValue,
-    StandardInternalCategory, StandardInternalRole, StandardModuleAvailability,
-    StandardModuleCategory, StandardModuleDeclaration, StandardModuleDescriptor,
-    StandardModuleExpansionFingerprint, StandardModuleExpansionVersion, StandardModuleId,
-    StandardModuleIdError, StandardModuleRef, StandardModuleRequest, StandardModuleSemanticVersion,
-    StandardParameterAssignment, StandardParameterKey, StandardParameterKind,
-    StandardParameterSchema, StandardParameterValue, StandardPortSchema, StandardPublicDependency,
+    AtMostExplanation, AtMostInspection, CaptureKind, CatalogueFailure, ExactlyDependency,
+    ExactlyExplanation, ExactlyInspection, ResetObservation, StandardCatalogue,
+    StandardCatalogueVersion, StandardEnumValue, StandardInternalCategory, StandardInternalRole,
+    StandardModuleAvailability, StandardModuleCategory, StandardModuleDeclaration,
+    StandardModuleDescriptor, StandardModuleExpansionFingerprint, StandardModuleExpansionVersion,
+    StandardModuleId, StandardModuleIdError, StandardModuleRef, StandardModuleRequest,
+    StandardModuleSemanticVersion, StandardParameterAssignment, StandardParameterKey,
+    StandardParameterKind, StandardParameterSchema, StandardParameterValue, StandardPortSchema,
+    StandardPublicDependency, StatefulStandardInspection, StatefulStandardReaction, StatefulWhyNot,
     all_equal_result_key, at_most_result_key, exactly_result_key,
 };
 pub use transaction::{

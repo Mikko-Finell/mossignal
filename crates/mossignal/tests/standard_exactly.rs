@@ -53,7 +53,7 @@ fn catalogue_discovery_and_dynamic_failures_are_structured() {
     let catalogue = StandardCatalogue::<()>::current();
     assert_eq!(catalogue.version().get(), 1);
     let descriptors = catalogue.descriptors().collect::<Vec<_>>();
-    assert_eq!(descriptors.len(), 3);
+    assert_eq!(descriptors.len(), 6);
     let descriptor = descriptors
         .iter()
         .find(|descriptor| descriptor.module_ref() == &StandardModuleRef::exactly())
