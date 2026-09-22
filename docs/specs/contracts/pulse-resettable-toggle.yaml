@@ -1,0 +1,119 @@
+schema_version: "0.1"
+id: mossignal.standard.pulse_resettable_toggle
+title: PulseResettableToggle standard module
+kind: artifact
+status: reviewed
+source_baseline:
+  commit: de711760a2ac0d84ea90f668affad9362bc16dc9
+  working_tree: dirty
+summary: >-
+  Pulse-resettable parity state derived from an ordinary Toggle and reset-sampled baseline, with reset dominating the same-reaction toggle batch.
+scope:
+  includes:
+    - exact descriptor interface, parameters, law, and canonical expansion
+    - fresh initialization, aggregate state, inspection, and explanation
+    - ordinary current-reaction dependencies and bounded conformance
+  excludes:
+    - shared catalogue construction, key derivation, and fingerprint algorithms
+    - topology replacement, parameter migration, snapshots, and replay
+known_uncovered:
+  - Same-descriptor state preservation, parameter changes, and whole-module migration reset
+  - Snapshot restoration and validation of canonical internal state
+aliases: [PulseResettableToggle, mossignal.standard.pulse_resettable_toggle]
+requirements:
+  - id: identity-interface-and-parameters
+    kind: public_surface
+    statement: >-
+      PulseResettableToggle is mossignal.standard.pulse_resettable_toggle at
+      semantic and expansion version 1, introduced in catalogue 1 as stateful.
+      Fixed inputs toggle and reset are Pulse; fixed output state is Level.
+      The initial LogicLevel parameter is required with no implicit default.
+    sources: [module-law, parameters]
+  - id: reset-dominant-parity-law
+    kind: semantic
+    statement: >-
+      For previous aggregate q, toggle count n, and reset count r, positive r
+      makes current output and successor Low; otherwise odd n inverts q and
+      even n retains q. Reset multiplicity changes no reset decision, while
+      all reset causes remain available. Both inputs affect state in the
+      current reaction.
+    sources: [module-law]
+  - id: canonical-expansion-and-aggregate
+    kind: semantic
+    statement: >-
+      Canonical roles are toggle_state = Toggle(toggle, initial),
+      reset_baseline = SampleHold(toggle_state, reset, Low), and
+      relative_state = Parity([toggle_state, reset_baseline]); state exports
+      relative_state. Aggregate q is the XOR of the two stored levels a and b.
+      Reset samples the post-toggle current value, so simultaneous reset wins
+      without hidden module state or delayed settlement. No pending work exists.
+      Debug verification checks that exactly the expected state owners exist
+      under their correct roles, with no unexpected owners, and that aggregate
+      state derives successfully.
+    sources: [module-law, cross-internal]
+  - id: initialization
+    kind: lifecycle
+    statement: >-
+      Fresh internal levels are a = initial and b = Low. The ordinary first
+      reaction applies initial toggle parity, or resets aggregate state to Low
+      when an initialization reset pulse is present.
+    sources: [module-law]
+  - id: aggregate-inspection-and-explanation
+    kind: public_surface
+    statement: >-
+      Inspection exposes aggregate state, configured initial, latest reset
+      cause, latest accepted toggle cause, and latest reaction toggle parity
+      when available; expanded inspection exposes a, b, and stable roles.
+      Explanation distinguishes previous aggregate state, toggle count and
+      parity, reset presence and contributing count, reset dominance, and result,
+      with primitive drill-down to post-toggle baseline sampling. Why-not-change
+      identifies zero or even toggle counts; why-not-High identifies reset or
+      resulting parity. Pulse counts are reaction facts or explicitly labeled
+      history, never persistent current values.
+    sources: [module-law, pulse-activity]
+  - id: exhaustive-reference-conformance
+    kind: verification
+    statement: >-
+      Enumerate both aggregate states and every consistent internal a/b pair,
+      absent and present reset, toggle counts including 0, 1, 2, 3 and larger
+      parity representatives, simultaneous reset and toggle, and initialization
+      pulses. Compare the direct public law with the canonical expansion for
+      output, successor aggregate state, normalized internal-state projection,
+      diagnostics, and normalized provenance.
+    sources: [verification, dual-view]
+
+recommendations:
+  - id: independent-public-reference
+    statement: >-
+      Implement the direct public reference law independently of the primitive
+      expansion control flow for equivalence verification.
+    sources: [dual-view]
+implementation_freedom:
+  - Private inspection and explanation types may vary if the required structured facts and primitive drill-down remain available.
+  - Optional retained pulse facts must be explicitly historical; no extra semantic module state is required to provide result-owned observations.
+open_questions: []
+sources:
+  module-law:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VI — Stateful standard modules, 40. `PulseResettableToggle`]
+    reviewed_hash: sha256:5fd87550b69769fc123b550e6e40bf4243b7280e15e0787107eab960cf43531e
+  parameters:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 14. Parameter representation]
+    reviewed_hash: sha256:5ea4bbd1bc8a006fefe985b45c3c83360ec9ae34378694b18876b5eebad5b3d6
+  pulse-activity:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IV — Shared standard-module semantics, 34. Public pulse activity]
+    reviewed_hash: sha256:1424d103a835798c20fd6402789648675ea8d724e6fde3697cf9b408aaa91ea5
+  verification:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 78. Exhaustive stateful verification, 78.1 Pulse-resettable toggle]
+    reviewed_hash: sha256:52bf1caf9d5ceab1b7867de1fcc8c607aabac0d9a2a542f0f2704d1dab550798
+  dual-view:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 76. Dual-view equivalence]
+    reviewed_hash: sha256:36ec30fd29e229fb2b56bcd748d86590186a9c2fb9dd4551a327f189d6b099f9
+  cross-internal:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IV — Shared standard-module semantics, 30. Cross-internal state invariants]
+    reviewed_hash: sha256:a38c31c002bccf7f9a27afd94d24eac0f648ba5a2658811a8a2a2bbe57d5d0b1

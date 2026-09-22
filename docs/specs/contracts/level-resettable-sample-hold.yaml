@@ -1,0 +1,128 @@
+schema_version: "0.1"
+id: mossignal.standard.level_resettable_sample_hold
+title: LevelResettableSampleHold standard module
+kind: artifact
+status: reviewed
+source_baseline:
+  commit: de711760a2ac0d84ea90f668affad9362bc16dc9
+  working_tree: dirty
+summary: >-
+  Resettable Level storage whose reset edge or sample batch captures the selected reset target or current value through an ordinary canonical SampleHold expansion.
+scope:
+  includes:
+    - exact descriptor interface, parameters, law, and canonical expansion
+    - fresh initialization, aggregate state, inspection, and explanation
+    - ordinary current-reaction dependencies and bounded conformance
+  excludes:
+    - shared catalogue construction, key derivation, and fingerprint algorithms
+    - topology replacement, parameter migration, snapshots, and replay
+known_uncovered:
+  - Same-descriptor state preservation, parameter changes, and whole-module migration reset
+  - Snapshot restoration and validation of canonical internal state
+aliases: [LevelResettableSampleHold, mossignal.standard.level_resettable_sample_hold]
+requirements:
+  - id: identity-interface-and-parameters
+    kind: public_surface
+    statement: >-
+      LevelResettableSampleHold is mossignal.standard.level_resettable_sample_hold
+      at semantic and expansion version 1, introduced in catalogue 1 as stateful.
+      Fixed inputs are value: Level, sample: Pulse, reset: Level; held is a Level
+      output. Explicit initial and reset_to LogicLevel parameters have no defaults;
+      initial governs fresh state and reset_to is the reset-controlled capture target.
+    sources: [module-law, parameters]
+  - id: capture-and-successor-law
+    kind: semantic
+    statement: >-
+      Reference state is held q and previous_reset. In a successful ordinary
+      reaction, capture occurs when sample
+      count is positive or previous_reset is Low and current reset High.
+      Capture chooses reset_to when reset High and settled value when reset Low;
+      otherwise q is retained. Current output equals successor q and successor
+      previous_reset equals current reset. Falling reset alone does not sample.
+      Multiple samples have one capture effect while preserving their causes.
+      All three inputs conservatively affect held in the current reaction.
+    sources: [module-law, closed-boundary]
+  - id: canonical-expansion
+    kind: semantic
+    statement: >-
+      Canonical roles are reset_value_constant = Constant(reset_to),
+      capture_value = Select(reset, value, reset_value_constant), reset_edge =
+      RisingEdge(reset, Assume(Low)), capture_pulses = Merge([sample, reset_edge]),
+      and held_state = SampleHold(capture_value, capture_pulses, initial).
+      Held exports held_state. Internal retained state is the held level and
+      reset-edge observation, not an additional module-owned state store.
+      Debug verification checks that exactly the expected state owners exist
+      under their correct roles, with no unexpected owners, and checks aggregate
+      derivation and reset observation consistency with settled input.
+    sources: [module-law, cross-internal]
+  - id: initialization
+    kind: lifecycle
+    statement: >-
+      Fresh reference state is q = initial and previous_reset = Low. Initial
+      reset Low captures settled value only with a sample, otherwise retaining
+      initial. Initial reset High emits the rising edge and captures reset_to
+      in the first ordinary reaction regardless of current value or simultaneous
+      sample presence, subject to ordinary primitive execution failures.
+    sources: [module-law, closed-boundary]
+  - id: aggregate-inspection-and-explanation
+    kind: public_surface
+    statement: >-
+      Inspection exposes held value, configured initial and reset_to, reset
+      level, remembered reset observation, latest capture kind (sample, reset,
+      both, or none), and latest capture cause. Expanded inspection exposes the
+      edge and held-state owners. Explanation distinguishes previous held value,
+      parameters, current value, sample count, reset level and rise, capture
+      decision, selected value, and resulting held value. Why-not-change identifies
+      absent sample and reset rise; why-not-sample-value identifies reset selecting
+      reset_to. Pulse counts are reaction facts or explicitly labeled history.
+    sources: [module-law, pulse-activity]
+  - id: exhaustive-reference-conformance
+    kind: verification
+    statement: >-
+      Cover both held values, both value inputs, Low/High and rising/falling/steady
+      reset, absent and present samples with several counts, simultaneous sample
+      and reset rise, initial reset High, and initialization samples. Compare the
+      public law and canonical expansion for output, successor aggregate state,
+      normalized internal state, diagnostics, and normalized provenance. Parameter
+      changes with preserved state belong to migration conformance.
+    sources: [verification, dual-view]
+
+recommendations:
+  - id: independent-public-reference
+    statement: >-
+      Implement the direct public reference law independently of the primitive
+      expansion control flow for equivalence verification.
+    sources: [dual-view]
+implementation_freedom:
+  - Private inspection and explanation types may vary if the required structured facts and primitive drill-down remain available.
+  - Optional retained pulse facts must be explicitly historical; no extra semantic module state is required to provide result-owned observations.
+open_questions: []
+sources:
+  module-law:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VI — Stateful standard modules, 42. `LevelResettableSampleHold`]
+    reviewed_hash: sha256:097e09a9bf44f4dc1d6b7e1e4f6974e0bc75cfd2734b59c752b00f2069517c77
+  parameters:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 14. Parameter representation]
+    reviewed_hash: sha256:5ea4bbd1bc8a006fefe985b45c3c83360ec9ae34378694b18876b5eebad5b3d6
+  pulse-activity:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IV — Shared standard-module semantics, 34. Public pulse activity]
+    reviewed_hash: sha256:1424d103a835798c20fd6402789648675ea8d724e6fde3697cf9b408aaa91ea5
+  verification:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 78. Exhaustive stateful verification, 78.3 Level-resettable sample hold]
+    reviewed_hash: sha256:96df11894806ad63df8a6c0650772a53dbd9b158c79ad95924c0a2d00961434c
+  dual-view:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XII — Verification and generated artifacts, 76. Dual-view equivalence]
+    reviewed_hash: sha256:36ec30fd29e229fb2b56bcd748d86590186a9c2fb9dd4551a327f189d6b099f9
+  closed-boundary:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part I — Boundaries and classification, 4. Closed semantic boundary]
+    reviewed_hash: sha256:82fe03b778457af8e4cab541adfcdc20845076045f88a038619cda73abf46f26
+  cross-internal:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IV — Shared standard-module semantics, 30. Cross-internal state invariants]
+    reviewed_hash: sha256:a38c31c002bccf7f9a27afd94d24eac0f648ba5a2658811a8a2a2bbe57d5d0b1
