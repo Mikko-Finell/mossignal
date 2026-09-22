@@ -1,0 +1,333 @@
+schema_version: "0.1"
+id: mossignal.node.periodic
+title: Periodic logical-time pulse primitive
+kind: node
+status: reviewed
+
+source_baseline:
+  commit: aa1186b2f12dc2136a8c43bffed61eda8fba4c84
+  working_tree: dirty
+
+summary: >-
+  Periodic is a fixed Level-controlled temporal primitive that uses an exact
+  logical-time phase and emits one Pulse at each eligible boundary under
+  explicit first-emission and re-enable policies.
+
+scope:
+  includes:
+    - fixed Level-enable to Pulse shape and closed semantic configuration
+    - anchor, previous-enable, and optional-next-boundary temporal state
+    - first enable, disable, re-enable, and exact-boundary behavior
+    - recurring calendar work, chronological advancement, and causal inspection
+    - typed/dynamic authoring, validation, compilation, identity, and conformance
+  excludes:
+    - wall-clock, cron, callback, thread, sleep, polling, and autonomous advancement behavior
+    - topology replacement and period or policy migration
+    - generic timer handles, snapshot/replay APIs, and optimized calendar structures
+    - temporal standard modules built from Periodic
+
+known_uncovered:
+  - Explicit Periodic migration policies for an existing anchor or next boundary
+  - Snapshot restoration, replay, and digest encoding of periodic state and work
+  - Generic pending-event queries, subscriptions, and complete explanation rendering
+
+aliases:
+  - Periodic
+  - PeriodicConfig<D>
+  - FirstEmissionPolicy
+  - ReenablePhasePolicy
+  - periodic boundary
+
+requirements:
+  - id: fixed-shape-and-configuration
+    kind: public_surface
+    statement: >-
+      Periodic has exactly one Level input with semantic role `enable`, one Pulse
+      output, a positive NonZeroSpan<D> period, a FirstEmissionPolicy of
+      Immediate or AfterFirstPeriod, and a ReenablePhasePolicy of RestartPhase
+      or PreservePhase. PeriodicConfig<D> contains those semantic values and no
+      metadata or runtime state. Typed convenience and explicit keyed builders
+      expose the primitive, and dynamic definitions preserve its distinct
+      semantics within the closed, non-callback node-kind family.
+    sources: [builtin-law, concrete-config, concrete-builders, concrete-node-kind]
+
+  - id: fresh-initialization
+    kind: lifecycle
+    statement: >-
+      A fresh Periodic has no phase anchor, previous enabled observation, or
+      next boundary. A first settled Low enable leaves it anchorless and emits
+      nothing. The first settled High enable establishes the anchor at its
+      reaction time, including when initialization was disabled. At enabled
+      initialization, Immediate may emit once directly in that reaction;
+      AfterFirstPeriod schedules the first boundary one full period later.
+      PreservePhase has no earlier phase to preserve before this first anchor.
+    sources: [builtin-initialization, builtin-law, runtime-initialization, verification-initialization]
+
+  - id: enable-and-phase-state
+    kind: semantic
+    statement: >-
+      Every reaction proposes settled current enable as the next remembered
+      enable value. A disabled-to-enabled transition under RestartPhase creates
+      a new anchor at that reaction time; Immediate emits once in the enabling
+      reaction and AfterFirstPeriod waits one period. PreservePhase retains an
+      existing anchor while disabled and resumes its cadence on re-enable.
+      Disabling removes the eligible scheduled boundary; disabled phase
+      boundaries emit nothing, do not accumulate, and are never replayed.
+    sources: [builtin-law, api-periodic, periodic-migration]
+
+  - id: exact-phase-boundaries
+    kind: semantic
+    statement: >-
+      For anchor A and positive period P, boundaries are A + n*P for
+      non-negative ordinal n admitted by the active policies. Each eligible
+      boundary emits exactly one Pulse in the reaction at that time; boundaries
+      sharing a time participate in one simultaneous batch. An enabled emitted
+      boundary schedules the next strictly future
+      ordinal. Boundaries at different times are never collapsed into one later
+      multiplicity; ordinary same-reaction Pulse algebra combines other causes
+      that reach the same output at the same boundary.
+    sources: [builtin-law, builtin-pending-events, periodic-event-record, strict-future]
+
+  - id: preserved-phase-reenable
+    kind: semantic
+    statement: >-
+      With an existing preserved anchor, re-enable between phase boundaries
+      schedules the next boundary under either first-emission policy. Re-enable
+      exactly on a phase boundary permits that boundary under Immediate, while
+      AfterFirstPeriod waits for the next boundary strictly after re-enable.
+      Missed disabled boundaries remain unobservable.
+    sources: [builtin-law]
+
+  - id: same-time-enable-dependency
+    kind: semantic
+    statement: >-
+      Periodic has a conservative current-reaction dependency from enable and a
+      due boundary to Pulse output. A boundary due at T is controlled by fully
+      settled enable at T: Low suppresses it; High permits it according to the
+      phase and first-emission rules. This instantaneous enable path participates
+      in ordinary current-reaction cycle validation even though future boundary
+      scheduling remains a temporal terminal effect.
+    sources: [builtin-dependencies, builtin-law, runtime-causality, runtime-exact-deadline]
+
+  - id: machine-owned-recurring-work
+    kind: system_effect
+    statement: >-
+      At most one next eligible Periodic boundary is represented as machine-owned
+      pending work for a node. Its public record retains stable event identity,
+      owner, exact deadline, phase anchor, non-negative boundary ordinal,
+      originating time, revision, causal origin, and applicable policy. After
+      firing, that record is no longer pending and an enabled node has its next
+      eligible boundary scheduled; disabling leaves no Periodic work that can
+      fire or determine the machine's next deadline.
+    sources: [builtin-pending-events, builtin-law, periodic-state-schema, periodic-event-record]
+
+  - id: chronological-runtime-and-budgets
+    kind: system_effect
+    statement: >-
+      Direct advancement evaluates distinct eligible deadlines strictly before
+      target T chronologically as internal reactions; boundaries due exactly at
+      T join the target-time input batch. It yields the same one-pulse sequence
+      at actual boundary times as stepwise advancement.
+      Checked time arithmetic and existing limits for internal reactions,
+      evaluated operations, pending events, created events, and provenance apply
+      before one atomic publication; budget exhaustion or overflow rejects the
+      complete outer transaction rather than skipping or coalescing boundaries.
+    sources: [builtin-law, runtime-advancement, runtime-jump, runtime-atomic, runtime-preparation, runtime-policy-source, verification-time, verification-periodic]
+
+  - id: focused-inspection-and-provenance
+    kind: public_surface
+    statement: >-
+      Structural inspection exposes Periodic's configuration before machine
+      initialization. Ready focused inspection distinguishes current enable,
+      remembered enable, optional phase anchor, optional next eligible boundary,
+      observed time and revision, schedule, and causal justification. Pending
+      facts expose stable identity, anchor, ordinal, origin, deadline, policies,
+      and causal ancestry. Provenance distinguishes settled enable, anchoring,
+      due obligations, future scheduling, and cancellation. An emission retains
+      its applicable enabling or anchoring cause and any due boundary that
+      contributes; an immediate enabling emission does not require a prior
+      pending event. Canceled work is absent from pending inspection, and its
+      cancellation is explicit and inspectable without requiring retained history.
+    sources: [builtin-law, builtin-causes, builtin-pending-events, builtin-inspection, builtin-temporal-inspection, api-inspection, periodic-event-record, runtime-provenance]
+
+  - id: semantic-identity
+    kind: semantic
+    statement: >-
+      Network semantic identity includes Periodic's distinct node kind, typed
+      enable and output roles, positive period, both closed policies, and its
+      anchor/previous-enable/next-boundary state and periodic-boundary temporal
+      schemas. Runtime anchor values, boundary ordinals, pending keys, private
+      positions, allocation order, and presentation metadata do not contribute.
+    sources: [api-fingerprint, network-fingerprint-source, periodic-state-schema, periodic-event-record]
+
+  - id: periodic-conformance
+    kind: verification
+    statement: >-
+      Temporal conformance covers both first-emission policies crossed with both
+      re-enable policies, fresh and previously anchored state, and enable changes
+      strictly before, exactly at, and after a boundary. It also covers disabled
+      suppression without accumulation, arbitrary initial times, non-unit
+      periods, checked overflow, strictly future pending work, exact one-pulse
+      emissions, stable inspection and causes, equal-deadline interaction,
+      direct-jump versus stepwise equivalence, runtime-budget boundaries, and
+      complete failure atomicity. Budget tests cover one below, exactly at,
+      and one above each implemented limit where representable; rejected
+      transactions are compared against complete pre-transaction observations.
+      Pending and emitted facts must have causal paths to authoritative roots.
+      Authoring, module-wrapped, identity, and
+      permutation coverage remains owned by their applicable contracts.
+    sources: [verification-initialization, verification-time, strict-future, verification-batching, verification-triad, verification-periodic, verification-budgets, verification-budget-atomicity, verification-atomicity, verification-roots]
+
+implementation_freedom:
+  - The implementation may retain the anchor and ordinal directly or derive one from other exact periodic state, provided inspection and every boundary remain exact and deterministic.
+  - Disabled PreservePhase may calculate the next eligible ordinal arithmetically when re-enabled rather than scheduling work for missed disabled boundaries; checked arithmetic and no-replay behavior must remain observable.
+  - Choose the simplest deterministic public event allocation and provenance-supporter ordering where specifications leave order open, test it, and record the concrete choice.
+  - Focused inspection representation is unconstrained provided configuration, committed state, pending facts, and causal facts remain distinguishable.
+
+open_questions: []
+
+sources:
+  builtin-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 54. `Periodic`]
+    reviewed_hash: sha256:db831f50fa06edd08d1cc37b0516d8a161cbd256e97a111ccfb933a52531737a
+  builtin-initialization:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 50. Temporal initialization]
+    reviewed_hash: sha256:319dc1e0c17339f409f801b5101b152961d9f1980f53a93f857b28f10bdea0d4
+  builtin-pending-events:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 48. Pending events]
+    reviewed_hash: sha256:4a12fbbb26768a755ecfcba0ca51c811ff0d8bdce4aecf8efd99eb3374ace179
+  builtin-dependencies:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
+    reviewed_hash: sha256:5130b3afa57cf9a1d8c2eb9232c1e101a261eef2ca37e98c9c21b01574bc94ae
+  builtin-causes:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 18. Explanations and causes]
+    reviewed_hash: sha256:af07465662f1f93e504301c409b8a58c05f1558940699e318face0445feec256
+  builtin-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 61. Node inspection]
+    reviewed_hash: sha256:109589c8402f33c1ea69f83627b4d39073bd3e3f37fc24e0494f8daaf2c5c88d
+  builtin-temporal-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 62. Temporal inspection]
+    reviewed_hash: sha256:8443220398b6d411c9fad55a65408b86674cbafca845ec53880fbf68bd093ae2
+  api-periodic:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VII — Stateful and temporal semantics, 39. Periodic behavior]
+    reviewed_hash: sha256:08120f23d20bbe24ada3a18fcac0eb4d40414475e360484437cf86f37b3d9901
+  api-inspection:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 50. Node inspection]
+    reviewed_hash: sha256:7f7ea35ea75be92ce5b6c936a20f45d2cc824d64c747959ae65233bcf143f5f4
+  api-fingerprint:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: ["Part III — Identity, bindings, and metadata", "19. Revision, fingerprint, digests, and runtime policy", 19.2 Network fingerprint]
+    reviewed_hash: sha256:cd66beda04632e5936af447825a20e58cbe84a72313c38ef193b53d838c2eb5c
+  concrete-config:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 29. Built-in configuration values]
+    reviewed_hash: sha256:b989b03bf932e65581c5878a208b6d619f3667762f9a547c2daa6366db6abc84
+  concrete-builders:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  concrete-node-kind:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VIII — Dynamic network definitions, 37. Dynamic node definitions]
+    reviewed_hash: sha256:ca73b2b2fcc8e30888a3f46c65f9e367e3632a331ac05c6b0163ffa9f71f3834
+  runtime-initialization:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part II — Initialization, 11. Periodic initialization]
+    reviewed_hash: sha256:8cd5f10f191319f92342490e69c59722ea8e83c02439a6b71cab2cf632e3f1cd
+  runtime-causality:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 16. Dependency-specific causality barriers]
+    reviewed_hash: sha256:61d5a8687ed510a7e8b059d411c6b65b8c7e7d813e832f9240300a3b796de0f7
+  runtime-exact-deadline:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 43. Exact-deadline obligations]
+    reviewed_hash: sha256:3c14537449d7b4ebc8e1e0640dad2dc910ceafa973f4adddfb4a2a3b40360fa9
+  runtime-advancement:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 41. Advancing time]
+    reviewed_hash: sha256:2cd676a9ab1fa86bc37437cc7d485b15104ba231359672e214b1c0cff38bc278
+  runtime-jump:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 42. Large-time-jump equivalence]
+    reviewed_hash: sha256:af5b05c8286794fc47ca7318ca477aae3208739ee6a00967151c4982e1413370
+  runtime-atomic:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 48. Single commit point]
+    reviewed_hash: sha256:2f52d5b43dc3cb41ef234b07953c0648120301b22c62d91af1bc0aaef6f7d184
+  runtime-preparation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 49. Preparation and commitment]
+    reviewed_hash: sha256:163dacd480758eeb4ec962bdc4c0b78f09dee01337e4bbf9868efea30c3687df
+  runtime-policy-source:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XIV — Runtime policy and replay, 89. Runtime policy]
+    reviewed_hash: sha256:8f8c51a64e8b106269bde9516f9b69ae73f33813854efb7ad6a8664a872eed21
+  network-fingerprint-source:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, "54. Network and input-schema fingerprints", 54.1 Network fingerprint]
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  periodic-state-schema:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 91. Built-in state schemas]
+    reviewed_hash: sha256:bcd3acfcc57b21fe48ea8ee2a94094339138c900cf3f9fc1ff65ed4676c492a8
+  periodic-event-record:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 92. Pending event records]
+    reviewed_hash: sha256:9d40b747e57c3e3392c351477272393b2c91536672b112fd87c2df41889d7c20
+  periodic-migration:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 51. `Periodic` migration]
+    reviewed_hash: sha256:bb55292863a2d91f95fc602cc566258ea4c475c66f7bc0e8e6156c963de713f7
+  verification-initialization:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part VI — Initialization verification, 28. Temporal initialization]
+    reviewed_hash: sha256:1f8018be6049f1d3e096355f32454b72fc111d5f61c920584145d4d8fa895966
+  verification-time:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 42. Exact discrete time]
+    reviewed_hash: sha256:2cc1494b4a42e2186af3553ed5bfc1bf0bc1fff8020bdaf853feaccbd018eb8b
+  strict-future:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 43. Strictly future scheduling]
+    reviewed_hash: sha256:5bcb9cce33c8832ac1d9c732bdda5a38ff034bb32335221a68e727335c1573d4
+  verification-batching:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 45. Equal-deadline batching]
+    reviewed_hash: sha256:c3cdac96d22950302e7992e040651702a9f45b225d7113ffc1560279ae768c01
+  verification-triad:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 46. Exact-deadline boundary triad]
+    reviewed_hash: sha256:e401b899a1602862d334623b5a1cf026c71ad773f0f6e57cfb28e33300ce1d8a
+  verification-periodic:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 50. `Periodic`]
+    reviewed_hash: sha256:2fa72151a99724e36ecfd91f351bbbbd7a5e0efc0267db7c59a70da5a3de35e2
+  runtime-provenance:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 65. Current support and transition cause]
+    reviewed_hash: sha256:5d08e732804e9aad13ba3e00ed410d86020e8c126a8dcf318ab7359b3c6cee14
+  verification-budgets:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XVI — Runtime-policy and budget verification, 92. Budget boundaries]
+    reviewed_hash: sha256:cff7fe7bd3bcc9e478cfdf31ec758817d34bf117517d9eb4250402db640d6789
+  verification-budget-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XVI — Runtime-policy and budget verification, 93. Budget failure atomicity]
+    reviewed_hash: sha256:07821de58ac184a3c2946b5c0868c3324f2282ad61f15ed5fc12f581663239bc
+  verification-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
+  verification-roots:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 68. Authoritative-root completeness]
+    reviewed_hash: sha256:31301008860a4fec9c0cd20e272a80b5323700daa6818a7c21cc57bd3de40523
