@@ -1989,7 +1989,7 @@ impl<D> CompiledInner<D> {
                         ..
                     } => {
                         // SPEC: docs/specs/contracts/periodic.yaml
-                        // "settled-enable-and-exact-boundary" — due work emits only after the
+                        // "same-time-enable-dependency" — due work emits only after the
                         // current reaction's enable has settled; preserved exact-boundary
                         // re-enables use the same reaction without replaying missed boundaries.
                         let current = self.level_input_value(*enable, &values)?;

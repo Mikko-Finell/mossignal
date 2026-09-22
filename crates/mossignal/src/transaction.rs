@@ -2406,7 +2406,7 @@ fn schedule_pulse_delays<D>(
             }
             Proposal::Periodic(proposal) => {
                 // SPEC: docs/specs/contracts/periodic.yaml
-                // "recurring-pending-work" and "disabled-suppression" — retain at most one
+                // "machine-owned-recurring-work" — retain at most one
                 // strictly future boundary while enabled and no calendar work while disabled.
                 let scheduling_cause = match periodic_proposal_causes.get(&proposal.node).copied() {
                     Some(cause) => cause,
@@ -4844,6 +4844,11 @@ mod tests {
             Vec<crate::machine::PendingEvent<()>>,
         >,
         next_pending_event_serial: u64,
+        transport_transition_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
+        inertial_cancellation_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
+        periodic_anchors: std::collections::BTreeMap<NodeKey, crate::time::Time<()>>,
+        periodic_anchor_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
+        periodic_cancellation_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
     }
 
     fn observe(machine: &crate::Machine<()>) -> MachineObservation {
@@ -4893,6 +4898,127 @@ mod tests {
             establishment_causes: machine.store.establishment_causes.clone(),
             pending_events: machine.store.pending_events.clone(),
             next_pending_event_serial: machine.store.next_pending_event_serial,
+            transport_transition_causes: machine.store.transport_transition_causes.clone(),
+            inertial_cancellation_causes: machine.store.inertial_cancellation_causes.clone(),
+            periodic_anchors: machine.store.periodic_anchors.clone(),
+            periodic_anchor_causes: machine.store.periodic_anchor_causes.clone(),
+            periodic_cancellation_causes: machine.store.periodic_cancellation_causes.clone(),
+        }
+    }
+
+    #[test]
+    fn periodic_late_budget_failures_preserve_complete_machine() {
+        use crate::time::{NonZeroSpan, Time};
+        use crate::{FirstEmissionPolicy, NetworkBuilder, PeriodicConfig, ReenablePhasePolicy};
+        let mut builder = NetworkBuilder::<()>::new(TimeDomainId::from_u128(2));
+        let input = ExternalInputKey::from_u128(10);
+        let second_input = ExternalInputKey::from_u128(11);
+        let enable = builder
+            .add_level_input(input, DiagnosticMeta::default())
+            .unwrap();
+        let second_enable = builder
+            .add_level_input(second_input, DiagnosticMeta::default())
+            .unwrap();
+        for (node, enable) in [(20, enable), (21, second_enable)] {
+            let signal = builder
+                .add_periodic(
+                    NodeKey::from_u128(node),
+                    enable,
+                    PeriodicConfig::new(
+                        NonZeroSpan::from_ticks(5).unwrap(),
+                        FirstEmissionPolicy::AfterFirstPeriod,
+                        ReenablePhasePolicy::PreservePhase,
+                    ),
+                    DiagnosticMeta::default(),
+                )
+                .unwrap()
+                .into_outputs();
+            builder
+                .add_pulse_output(
+                    ExternalOutputKey::from_u128(node),
+                    signal,
+                    DiagnosticMeta::default(),
+                )
+                .unwrap();
+        }
+        let compiled = builder
+            .finish()
+            .require_artifact()
+            .unwrap()
+            .compile()
+            .require_artifact()
+            .unwrap();
+        let initialize = |policy| {
+            let mut machine = compiled.spawn(policy);
+            let snapshot = compiled
+                .input_snapshot()
+                .set(input, LogicLevel::High)
+                .unwrap()
+                .set(second_input, LogicLevel::Low)
+                .unwrap()
+                .finish()
+                .unwrap();
+            machine
+                .apply(Transaction::initialize(
+                    Time::from_ticks(0),
+                    machine.revision(),
+                    snapshot,
+                ))
+                .unwrap();
+            machine
+        };
+        let transaction = |revision| {
+            Transaction::advance(
+                Time::from_ticks(16),
+                revision,
+                compiled
+                    .input_delta()
+                    .set(second_input, LogicLevel::High)
+                    .unwrap()
+                    .finish()
+                    .unwrap(),
+            )
+        };
+        let mut probe = initialize(policy_with([100, 10_000, 100, 1_000, 10_000]));
+        let initial_records = probe.store.provenance.as_ref().unwrap().len();
+        let success = probe.apply(transaction(probe.revision())).unwrap();
+        let growth = (success.provenance().len() - initial_records) as u64;
+        for (index, limit, budget) in [
+            (0, 3, RuntimePolicyLimit::MaxInternalReactions),
+            (
+                1,
+                compiled.operation_count() as u64 * 3,
+                RuntimePolicyLimit::MaxEvaluatedOperations,
+            ),
+            (2, 1, RuntimePolicyLimit::MaxPendingEvents),
+            (3, 5, RuntimePolicyLimit::MaxEventsCreatedPerTransaction),
+            (
+                4,
+                growth - 1,
+                RuntimePolicyLimit::MaxRequiredProvenanceGrowth,
+            ),
+        ] {
+            let mut limits = [100, 10_000, 100, 1_000, 10_000];
+            limits[index] = limit;
+            let mut machine = initialize(policy_with(limits));
+            let before = observe(&machine);
+            let failure = machine.apply(transaction(machine.revision())).unwrap_err();
+            assert!(
+                matches!(failure.evidence(), RuntimeFailureEvidence::BudgetExceeded { budget: actual, .. } if *actual == budget)
+            );
+            assert_eq!(observe(&machine), before, "budget {budget:?}");
+            let inspected = machine.inspect_periodic(NodeKey::from_u128(20)).unwrap();
+            recursively_assert_acyclic(inspected.provenance(), inspected.current_support());
+            recursively_assert_acyclic(inspected.provenance(), inspected.anchor_cause().unwrap());
+            recursively_assert_acyclic(
+                inspected.provenance(),
+                inspected.pending().unwrap().cause(),
+            );
+        }
+        for event in success.output_events() {
+            if let OutputEvent::Pulsed { cause, .. } = event {
+                recursively_assert_acyclic(success.provenance(), *cause);
+            }
         }
     }
 

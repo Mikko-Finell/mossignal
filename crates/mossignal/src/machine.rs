@@ -645,7 +645,7 @@ impl<D> PeriodicDefinitionInspection<D> {
 /// One owned observation of a pending Periodic phase boundary.
 pub struct PendingPeriodicBoundaryInspection<D> {
     event: PendingEventKey,
-    node: NodeKey,
+    node: NodeSubject,
     origin: Time<D>,
     deadline: Time<D>,
     anchor: Time<D>,
@@ -660,7 +660,7 @@ impl<D> Clone for PendingPeriodicBoundaryInspection<D> {
     fn clone(&self) -> Self {
         Self {
             event: self.event,
-            node: self.node,
+            node: self.node.clone(),
             origin: self.origin,
             deadline: self.deadline,
             anchor: self.anchor,
@@ -679,8 +679,8 @@ impl<D> PendingPeriodicBoundaryInspection<D> {
         self.event
     }
     #[must_use]
-    pub const fn node(&self) -> NodeKey {
-        self.node
+    pub const fn node(&self) -> &NodeSubject {
+        &self.node
     }
     #[must_use]
     pub const fn origin(&self) -> Time<D> {
@@ -2686,7 +2686,7 @@ impl<D> Machine<D> {
                 PendingEvent::Periodic(event) if event.node == node => {
                     Some(PendingPeriodicBoundaryInspection {
                         event: event.key,
-                        node: event.node,
+                        node: self.compiled.node_subject(event.node),
                         origin: event.origin,
                         deadline: event.deadline,
                         anchor: event.anchor,

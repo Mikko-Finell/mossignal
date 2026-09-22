@@ -1290,17 +1290,25 @@ impl<D> InertialDelayConfig<D> {
     }
 }
 
-/// Whether an enabling reaction emits immediately or after one full period.
+/// The first eligible emission when a Periodic node becomes enabled.
+///
+/// With a fresh or restarted phase, emission is immediate or one full period
+/// later. With a preserved anchor, both policies wait for the next phase boundary
+/// when enabled between boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FirstEmissionPolicy {
+    /// Emit on enable for a fresh phase, or on an exact preserved boundary.
     Immediate,
+    /// Wait until a phase boundary strictly after enable.
     AfterFirstPeriod,
 }
 
 /// Whether re-enabling restarts phase or resumes an established phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReenablePhasePolicy {
+    /// Establish a new phase anchor on every disabled-to-enabled transition.
     RestartPhase,
+    /// Retain the anchor while disabled, without replaying missed boundaries.
     PreservePhase,
 }
 

@@ -604,10 +604,14 @@ fn dynamic_and_typed_construction_have_the_same_semantic_identity() {
     let input = InPortKey::<Level>::from_u128(30);
     let output_port = OutPortKey::<Pulse>::from_u128(31);
     let output = ExternalOutputKey::<Pulse>::from_u128(40);
+    let meta = || DiagnosticMeta {
+        name: Some("display-only periodic annotation".into()),
+        ..DiagnosticMeta::default()
+    };
     let dynamic = UncheckedNetwork::<TestDomain>::new(
         NetworkKey::from_u128(1),
         TimeDomainId::from_u128(2),
-        DiagnosticMeta::default(),
+        meta(),
         vec![NodeDef::new(
             node,
             NodeKind::periodic(PeriodicConfig::new(
@@ -620,28 +624,45 @@ fn dynamic_and_typed_construction_have_the_same_semantic_identity() {
                 vec![InputPortRole::Enable],
                 vec![output_port.into()],
             ),
-            DiagnosticMeta::default(),
+            meta(),
         )],
-        vec![ExternalInputDef::new(
-            enable.into(),
-            DiagnosticMeta::default(),
-        )],
+        vec![ExternalInputDef::new(enable.into(), meta())],
         vec![ExternalOutputDef::new(
             output.into(),
             SignalSourceKey::NodeOutput(output_port).into(),
-            DiagnosticMeta::default(),
+            meta(),
         )],
         vec![ConnectionDef::new(
             ConnectionKey::from_u128(0),
             enable.into(),
             input.into(),
-            DiagnosticMeta::default(),
+            meta(),
         )],
     )
     .validate()
     .require_artifact()
     .unwrap();
     assert_eq!(typed.compiled.fingerprint(), dynamic.fingerprint());
+
+    let dynamic = Fixture {
+        compiled: dynamic.compile().require_artifact().unwrap(),
+        enable,
+        output,
+        node,
+    };
+    let (mut typed_machine, typed_initial) = initialize(&typed, LogicLevel::High, 0);
+    let (mut dynamic_machine, dynamic_initial) = initialize(&dynamic, LogicLevel::High, 0);
+    assert_eq!(pulses(&typed_initial), pulses(&dynamic_initial));
+    for (at, level) in [
+        (2, Some(LogicLevel::Low)),
+        (7, Some(LogicLevel::High)),
+        (21, None),
+    ] {
+        let typed_result = advance(&typed, &mut typed_machine, at, level);
+        let dynamic_result = advance(&dynamic, &mut dynamic_machine, at, level);
+        assert_eq!(pulses(&typed_result), pulses(&dynamic_result));
+        assert_eq!(typed_result.schedule(), dynamic_result.schedule());
+    }
 
     let changed_first = fixture(
         FirstEmissionPolicy::AfterFirstPeriod,
@@ -748,6 +769,8 @@ fn module_wrapped_periodic_retains_qualified_inspection_and_execution() {
         periodic.node(),
         NodeSubject::Qualified(qualified) if qualified.instances() == [instance]
     ));
+    // Both inspection layers must name the same public owner, never a flattened key.
+    assert_eq!(periodic.pending().unwrap().node(), periodic.node());
     assert_eq!(periodic.pending().unwrap().deadline(), Time::from_ticks(7));
     let result = machine
         .apply(Transaction::advance(
@@ -1010,4 +1033,87 @@ fn malformed_roles_and_current_reaction_cycles_are_rejected_structurally() {
     )
     .validate();
     assert!(cycle.artifact().is_none());
+}
+
+#[test]
+fn policy_matrix_covers_first_enable_and_reenable_around_boundaries() {
+    for first in [
+        FirstEmissionPolicy::Immediate,
+        FirstEmissionPolicy::AfterFirstPeriod,
+    ] {
+        for phase in [
+            ReenablePhasePolicy::RestartPhase,
+            ReenablePhasePolicy::PreservePhase,
+        ] {
+            for anchored in [false, true] {
+                for enabled_at in [14, 15, 16] {
+                    let fixture = fixture(first, phase);
+                    let (mut machine, _) = initialize(
+                        &fixture,
+                        if anchored {
+                            LogicLevel::High
+                        } else {
+                            LogicLevel::Low
+                        },
+                        10,
+                    );
+                    advance(&fixture, &mut machine, 12, Some(LogicLevel::Low));
+                    let result =
+                        advance(&fixture, &mut machine, enabled_at, Some(LogicLevel::High));
+                    let anchor = if anchored && phase == ReenablePhasePolicy::PreservePhase {
+                        10
+                    } else {
+                        enabled_at
+                    };
+                    let eligible = |at: u64| (at - anchor) % 5 == 0;
+                    let immediate = first == FirstEmissionPolicy::Immediate && eligible(enabled_at);
+                    assert_eq!(pulses(&result).len(), usize::from(immediate));
+                    let observation = machine.inspect_periodic(fixture.node).unwrap();
+                    assert_eq!(observation.anchor(), Some(Time::from_ticks(anchor)));
+                    let next = (enabled_at + 1..=enabled_at + 5)
+                        .find(|at| eligible(*at))
+                        .unwrap();
+                    assert_eq!(observation.next_deadline(), Some(Time::from_ticks(next)));
+                    let later = advance(&fixture, &mut machine, 27, None);
+                    let expected: Vec<_> = (enabled_at + 1..=27)
+                        .filter(|at| eligible(*at))
+                        .map(|at| (fixture.output.as_u128(), 1, at))
+                        .collect();
+                    assert_eq!(pulses(&later), expected);
+                }
+            }
+            for disabled_at in [14, 15, 16] {
+                let fixture = fixture(first, phase);
+                let (mut machine, _) = initialize(&fixture, LogicLevel::High, 10);
+                let result = advance(&fixture, &mut machine, disabled_at, Some(LogicLevel::Low));
+                assert_eq!(pulses(&result).len(), usize::from(disabled_at > 15));
+                assert_eq!(machine.schedule().unwrap(), Schedule::Dormant);
+                assert!(pulses(&advance(&fixture, &mut machine, 30, None)).is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn periodic_inspection_respects_lifecycle_and_maximum_time_cancellation() {
+    let fixture = fixture_with_period(
+        1,
+        FirstEmissionPolicy::AfterFirstPeriod,
+        ReenablePhasePolicy::PreservePhase,
+    );
+    let mut machine = fixture.compiled.spawn(policy());
+    let definition = machine.inspect_periodic_definition(fixture.node).unwrap();
+    assert_eq!(definition.period().ticks(), 1);
+    assert!(matches!(
+        machine.inspect_periodic(fixture.node),
+        Err(mossignal::PeriodicInspectionFailure::NotInitialized)
+    ));
+    assert!(matches!(
+        machine.inspect_periodic_definition(NodeKey::from_u128(999)),
+        Err(mossignal::PeriodicInspectionFailure::UnknownNode(_))
+    ));
+    initialize_machine(&fixture, &mut machine, LogicLevel::High, u64::MAX - 1).unwrap();
+    let result = advance(&fixture, &mut machine, u64::MAX, Some(LogicLevel::Low));
+    assert!(pulses(&result).is_empty());
+    assert_eq!(result.schedule(), Schedule::Dormant);
 }
