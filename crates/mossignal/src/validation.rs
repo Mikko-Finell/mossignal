@@ -916,6 +916,11 @@ impl<'a, D: PartialEq> StructuralValidator<'a, D> {
                         NodeKind::InertialDelay(config) => {
                             DuplicateNodeKind::InertialDelay(config.delay.ticks(), config.initial)
                         }
+                        NodeKind::Periodic(config) => DuplicateNodeKind::Periodic(
+                            config.period.ticks(),
+                            config.first_emission,
+                            config.reenable_phase,
+                        ),
                     },
                     inputs: node.ports().inputs().to_vec(),
                     input_roles: node.ports().input_roles().to_vec(),

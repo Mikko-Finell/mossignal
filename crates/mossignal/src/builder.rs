@@ -4,8 +4,8 @@ use crate::authored::{
     ConnectionDef, ConnectionEndpoint, EdgeConfig, ExternalInputDef, ExternalOutputDef,
     InertialDelayConfig, LevelSetResetConfig, ModuleBinding, ModuleBindingSet, ModuleInputDef,
     ModuleInstanceDef, ModuleInterfaceMapping, ModuleOutputDef, NodeDef, NodeKind, NodePorts,
-    OutputPortRole, PulseDelayConfig, PulseSetResetConfig, SampleHoldConfig, ToggleConfig,
-    TransportDelayConfig, UncheckedModule, UncheckedNetwork,
+    OutputPortRole, PeriodicConfig, PulseDelayConfig, PulseSetResetConfig, SampleHoldConfig,
+    ToggleConfig, TransportDelayConfig, UncheckedModule, UncheckedNetwork,
 };
 use crate::diagnostics::Report;
 use crate::diagnostics::{
@@ -2041,6 +2041,85 @@ impl<D> NetworkBuilder<D> {
             self.allocator.connection(),
             source_endpoint(input.source),
             ConnectionEndpoint::node_input(input_port.into()),
+            DiagnosticMeta::default(),
+        ));
+        Ok(AddedNode {
+            key,
+            outputs: self.signal(SignalSourceKey::NodeOutput(output_port)),
+        })
+    }
+
+    /// Adds a Periodic source with locally allocated stable identities.
+    pub fn periodic(
+        &mut self,
+        enable: Signal<Level>,
+        config: PeriodicConfig<D>,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        let key = self.next_node_key();
+        let enable_port = self.next_in_port_key();
+        let output_port = self.next_pulse_out_port_key();
+        Ok(self
+            .add_periodic_with_ports(
+                key,
+                enable_port,
+                output_port,
+                enable,
+                config,
+                DiagnosticMeta::default(),
+            )?
+            .into_outputs())
+    }
+
+    /// Adds an explicitly keyed Periodic source with locally allocated ports.
+    pub fn add_periodic(
+        &mut self,
+        key: NodeKey,
+        enable: Signal<Level>,
+        config: PeriodicConfig<D>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        let enable_port = self.next_in_port_key();
+        let output_port = self.next_pulse_out_port_key();
+        self.add_periodic_with_ports(key, enable_port, output_port, enable, config, meta)
+    }
+
+    /// Adds an explicitly keyed Periodic source with exact fixed ports.
+    pub fn add_periodic_with_ports(
+        &mut self,
+        key: NodeKey,
+        enable_port: InPortKey<Level>,
+        output_port: OutPortKey<Pulse>,
+        enable: Signal<Level>,
+        config: PeriodicConfig<D>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.require_local(enable)?;
+        if self.node_keys.contains(&key) {
+            return Err(AuthoringFailure::DuplicateNodeKey(key));
+        }
+        if self.in_port_keys.contains(&enable_port) {
+            return Err(AuthoringFailure::DuplicateInPortKey(enable_port));
+        }
+        if self.pulse_out_port_keys.contains(&output_port) {
+            return Err(AuthoringFailure::DuplicatePulseOutPortKey(output_port));
+        }
+        self.node_keys.insert(key);
+        self.in_port_keys.insert(enable_port);
+        self.pulse_out_port_keys.insert(output_port);
+        self.nodes.push(NodeDef::new(
+            key,
+            NodeKind::periodic(config),
+            NodePorts::with_input_roles(
+                vec![enable_port.into()],
+                vec![crate::authored::InputPortRole::Enable],
+                vec![output_port.into()],
+            ),
+            meta,
+        ));
+        self.connections.push(ConnectionDef::new(
+            self.allocator.connection(),
+            source_endpoint(enable.source),
+            ConnectionEndpoint::node_input(enable_port.into()),
             DiagnosticMeta::default(),
         ));
         Ok(AddedNode {
@@ -4440,6 +4519,45 @@ impl<D> ModuleBuilder<D> {
         self.graph.require_local(input)?;
         self.graph
             .add_inertial_delay_with_ports(key, input_port, output_port, input, config, meta)
+    }
+
+    /// Adds a Periodic source.
+    pub fn periodic(
+        &mut self,
+        enable: Signal<Level>,
+        config: PeriodicConfig<D>,
+    ) -> Result<Signal<Pulse>, AuthoringFailure> {
+        self.graph.require_local(enable)?;
+        self.graph.periodic(enable, config)
+    }
+
+    /// Adds an explicitly keyed Periodic source with locally allocated ports.
+    pub fn add_periodic(
+        &mut self,
+        key: NodeKey,
+        enable: Signal<Level>,
+        config: PeriodicConfig<D>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(enable)?;
+        self.require_unused_node_key(key)?;
+        self.graph.add_periodic(key, enable, config, meta)
+    }
+
+    /// Adds an explicitly keyed Periodic source with exact ports.
+    pub fn add_periodic_with_ports(
+        &mut self,
+        key: NodeKey,
+        enable_port: InPortKey<Level>,
+        output_port: OutPortKey<Pulse>,
+        enable: Signal<Level>,
+        config: PeriodicConfig<D>,
+        meta: DiagnosticMeta,
+    ) -> Result<AddedNode<Signal<Pulse>>, AuthoringFailure> {
+        self.graph.require_local(enable)?;
+        self.require_unused_node_key(key)?;
+        self.graph
+            .add_periodic_with_ports(key, enable_port, output_port, enable, config, meta)
     }
 
     /// Consumes the builder into the canonical unchecked user-module definition.

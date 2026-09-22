@@ -15,7 +15,7 @@ use crate::input::{InputDelta, InputSnapshot};
 use crate::key::{ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey};
 use crate::machine::{
     Machine, MachineStatus, NetworkRevision, PendingEvent, PendingEventKey, PendingInertialDelay,
-    PendingPulseDelay, PendingTransportDelay, Schedule,
+    PendingPeriodicBoundary, PendingPulseDelay, PendingTransportDelay, Schedule,
 };
 use crate::module::{NodeSubject, PulsePortSubject, QualifiedNodeRef};
 use crate::policy::{RuntimePolicy, RuntimePolicyLimit};
@@ -154,6 +154,11 @@ pub enum RuntimeFailureEvidence {
         node: NodeSubject,
         origin_ticks: u64,
         delay_ticks: u64,
+    },
+    PeriodicTimeOverflow {
+        node: NodeSubject,
+        origin_ticks: u64,
+        period_ticks: u64,
     },
     PulseLatchConflict {
         node: NodeSubject,
@@ -331,6 +336,19 @@ impl RuntimeFailureEvidence {
                     operation: TimeOperation::InertialDelayDeadline,
                     left_ticks: *origin_ticks,
                     right_ticks: *delay_ticks,
+                },
+                marker: PhantomData,
+            },
+            Self::PeriodicTimeOverflow {
+                node,
+                origin_ticks,
+                period_ticks,
+            } => ProblemEvidence::RuntimeTimeOverflow {
+                evidence: TimeEvidence {
+                    owner: Some(node_evidence(node)),
+                    operation: TimeOperation::PeriodicDeadline,
+                    left_ticks: *origin_ticks,
+                    right_ticks: *period_ticks,
                 },
                 marker: PhantomData,
             },
@@ -572,6 +590,18 @@ enum ProvenanceRecord<D> {
         revision: NetworkRevision,
         supporters: Vec<CauseRef>,
     },
+    PendingPeriodicBoundary {
+        event: PendingEventKey,
+        owner: NodeSubject,
+        origin: Time<D>,
+        deadline: Time<D>,
+        anchor: Time<D>,
+        ordinal: u64,
+        first_emission: crate::authored::FirstEmissionPolicy,
+        reenable_phase: crate::authored::ReenablePhasePolicy,
+        revision: NetworkRevision,
+        supporters: Vec<CauseRef>,
+    },
     Derived {
         subject: ProvenanceSubject,
         supporters: Vec<CauseRef>,
@@ -633,6 +663,18 @@ pub enum CauseInspection<'a, D> {
         origin: Time<D>,
         deadline: Time<D>,
         target: LogicLevel,
+        revision: NetworkRevision,
+        supporters: &'a [CauseRef],
+    },
+    PendingPeriodicBoundary {
+        event: PendingEventKey,
+        owner: &'a NodeSubject,
+        origin: Time<D>,
+        deadline: Time<D>,
+        anchor: Time<D>,
+        ordinal: u64,
+        first_emission: crate::authored::FirstEmissionPolicy,
+        reenable_phase: crate::authored::ReenablePhasePolicy,
         revision: NetworkRevision,
         supporters: &'a [CauseRef],
     },
@@ -750,6 +792,7 @@ struct ProvenanceBuild<D> {
     pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
     transport_delay_schedules: BTreeMap<NodeKey, CauseRef>,
     inertial_delay_schedules: BTreeMap<NodeKey, CauseRef>,
+    periodic_schedules: BTreeMap<NodeKey, CauseRef>,
 }
 
 struct EvaluationProvenanceInputs<'a, D> {
@@ -759,6 +802,7 @@ struct EvaluationProvenanceInputs<'a, D> {
     due_pulse_delays: &'a BTreeMap<NodeKey, Vec<CauseRef>>,
     due_transport_delays: &'a BTreeMap<NodeKey, Vec<CauseRef>>,
     due_inertial_delays: &'a BTreeMap<NodeKey, Vec<CauseRef>>,
+    due_periodic_boundaries: &'a BTreeMap<NodeKey, Vec<CauseRef>>,
 }
 
 struct PreviousLevelOutputs<'a> {
@@ -771,6 +815,7 @@ struct PreviousStateCauses<'a> {
     toggle_inversions: &'a BTreeMap<NodeKey, CauseRef>,
     establishments: &'a BTreeMap<NodeKey, CauseRef>,
     transport_transitions: &'a BTreeMap<NodeKey, CauseRef>,
+    periodic_anchors: &'a BTreeMap<NodeKey, CauseRef>,
 }
 
 impl<D> Clone for ProvenanceView<D> {
@@ -871,6 +916,29 @@ impl<D> ProvenanceView<D> {
                 origin: *origin,
                 deadline: *deadline,
                 target: *target,
+                revision: *revision,
+                supporters,
+            },
+            ProvenanceRecord::PendingPeriodicBoundary {
+                event,
+                owner,
+                origin,
+                deadline,
+                anchor,
+                ordinal,
+                first_emission,
+                reenable_phase,
+                revision,
+                supporters,
+            } => CauseInspection::PendingPeriodicBoundary {
+                event: *event,
+                owner,
+                origin: *origin,
+                deadline: *deadline,
+                anchor: *anchor,
+                ordinal: *ordinal,
+                first_emission: *first_emission,
+                reenable_phase: *reenable_phase,
                 revision: *revision,
                 supporters,
             },
@@ -984,6 +1052,33 @@ impl<D> ProvenanceView<D> {
                 origin: pending.origin,
                 deadline: pending.deadline,
                 target: pending.target,
+                revision: pending.revision,
+                supporters: vec![scheduling_cause],
+            },
+        )
+    }
+
+    fn append_pending_periodic_boundary(
+        &mut self,
+        pending: &PendingPeriodicBoundary<D>,
+        owner: NodeSubject,
+        scheduling_cause: CauseRef,
+    ) -> CauseRef {
+        let Some(records) = Arc::get_mut(&mut self.records) else {
+            panic!("new transaction provenance must be uniquely owned before publication");
+        };
+        push_record(
+            self.scope,
+            records,
+            ProvenanceRecord::PendingPeriodicBoundary {
+                event: pending.key,
+                owner,
+                origin: pending.origin,
+                deadline: pending.deadline,
+                anchor: pending.anchor,
+                ordinal: pending.ordinal,
+                first_emission: pending.first_emission,
+                reenable_phase: pending.reenable_phase,
                 revision: pending.revision,
                 supporters: vec![scheduling_cause],
             },
@@ -1221,6 +1316,7 @@ impl<D> Machine<D> {
             &self.store.stored_levels,
             at,
             revision,
+            &BTreeMap::new(),
         )?;
         let occurrences = pulse_latch_occurrences(&self.compiled, at, revision, &evaluation);
         let mut active_episodes = self.store.active_episodes.clone();
@@ -1237,6 +1333,9 @@ impl<D> Machine<D> {
         let mut pending_events = BTreeMap::new();
         let mut next_pending_event_serial = 0;
         let mut inertial_cancellation_causes = BTreeMap::new();
+        let mut periodic_anchors = BTreeMap::new();
+        let mut periodic_anchor_causes = BTreeMap::new();
+        let mut periodic_cancellation_causes = BTreeMap::new();
         schedule_pulse_delays(
             PulseDelayScheduling {
                 compiled: &self.compiled,
@@ -1250,7 +1349,11 @@ impl<D> Machine<D> {
             &built.pulse_delay_schedules,
             &built.transport_delay_schedules,
             &built.inertial_delay_schedules,
+            &built.periodic_schedules,
             &mut inertial_cancellation_causes,
+            &mut periodic_anchors,
+            &mut periodic_anchor_causes,
+            &mut periodic_cancellation_causes,
             &mut built.provenance,
             &self.policy,
         )?;
@@ -1260,6 +1363,8 @@ impl<D> Machine<D> {
             self.compiled.fingerprint(),
         );
         remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
+        remap_cause_map(&mut periodic_anchor_causes, built.provenance.scope);
+        remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
         remap_pending_causes(&mut pending_events, built.provenance.scope);
         reconcile_level_episodes(
             &self.compiled,
@@ -1319,6 +1424,9 @@ impl<D> Machine<D> {
                 establishment_causes: built.establishment_causes,
                 transport_transition_causes: built.transport_output_transitions,
                 inertial_cancellation_causes,
+                periodic_anchors,
+                periodic_anchor_causes,
+                periodic_cancellation_causes,
                 active_episodes,
                 pending_events,
                 next_pending_event_serial,
@@ -1369,6 +1477,9 @@ impl<D> Machine<D> {
         let mut establishment_causes = self.store.establishment_causes.clone();
         let mut transport_transition_causes = self.store.transport_transition_causes.clone();
         let mut inertial_cancellation_causes = self.store.inertial_cancellation_causes.clone();
+        let mut periodic_anchors = self.store.periodic_anchors.clone();
+        let mut periodic_anchor_causes = self.store.periodic_anchor_causes.clone();
+        let mut periodic_cancellation_causes = self.store.periodic_cancellation_causes.clone();
         let mut provenance = match self.store.provenance.as_ref() {
             Some(provenance) => provenance.clone(),
             None => panic!("ready machine must retain committed provenance"),
@@ -1407,6 +1518,9 @@ impl<D> Machine<D> {
                     &due.counts,
                     &due.transport_targets,
                     &due.inertial_targets,
+                    &due.periodic_ordinals,
+                    deadline,
+                    &periodic_anchors,
                 )
                 .map_err(|failure| {
                     evaluation_failure(&self.compiled, failure, deadline, revision)
@@ -1435,9 +1549,11 @@ impl<D> Machine<D> {
                 &toggle_inversion_causes,
                 &establishment_causes,
                 &transport_transition_causes,
+                &periodic_anchor_causes,
                 &due.causes,
                 &due.transport_causes,
                 &due.inertial_causes,
+                &due.periodic_causes,
             );
             remap_pending_causes(&mut pending_events, built.provenance.scope);
             remap_output_event_causes(&mut output_events, built.provenance.scope);
@@ -1468,7 +1584,11 @@ impl<D> Machine<D> {
                 &built.pulse_delay_schedules,
                 &built.transport_delay_schedules,
                 &built.inertial_delay_schedules,
+                &built.periodic_schedules,
                 &mut inertial_cancellation_causes,
+                &mut periodic_anchors,
+                &mut periodic_anchor_causes,
+                &mut periodic_cancellation_causes,
                 &mut built.provenance,
                 &self.policy,
             )?;
@@ -1478,6 +1598,8 @@ impl<D> Machine<D> {
                 self.compiled.fingerprint(),
             );
             remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
+            remap_cause_map(&mut periodic_anchor_causes, built.provenance.scope);
+            remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
             remap_pending_causes(&mut pending_events, built.provenance.scope);
             remap_output_event_causes(&mut output_events, built.provenance.scope);
             reconcile_level_episodes(
@@ -1530,6 +1652,9 @@ impl<D> Machine<D> {
                 &due.counts,
                 &due.transport_targets,
                 &due.inertial_targets,
+                &due.periodic_ordinals,
+                at,
+                &periodic_anchors,
             )
             .map_err(|failure| evaluation_failure(&self.compiled, failure, at, revision))?;
         occurrences.extend(pulse_latch_occurrences(
@@ -1556,9 +1681,11 @@ impl<D> Machine<D> {
             &toggle_inversion_causes,
             &establishment_causes,
             &transport_transition_causes,
+            &periodic_anchor_causes,
             &due.causes,
             &due.transport_causes,
             &due.inertial_causes,
+            &due.periodic_causes,
         );
         remap_pending_causes(&mut pending_events, built.provenance.scope);
         remap_output_event_causes(&mut output_events, built.provenance.scope);
@@ -1585,7 +1712,11 @@ impl<D> Machine<D> {
             &built.pulse_delay_schedules,
             &built.transport_delay_schedules,
             &built.inertial_delay_schedules,
+            &built.periodic_schedules,
             &mut inertial_cancellation_causes,
+            &mut periodic_anchors,
+            &mut periodic_anchor_causes,
+            &mut periodic_cancellation_causes,
             &mut built.provenance,
             &self.policy,
         )?;
@@ -1595,6 +1726,8 @@ impl<D> Machine<D> {
             self.compiled.fingerprint(),
         );
         remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
+        remap_cause_map(&mut periodic_anchor_causes, built.provenance.scope);
+        remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
         remap_pending_causes(&mut pending_events, built.provenance.scope);
         remap_output_event_causes(&mut output_events, built.provenance.scope);
         reconcile_level_episodes(
@@ -1647,6 +1780,9 @@ impl<D> Machine<D> {
                 establishment_causes: built.establishment_causes,
                 transport_transition_causes: built.transport_output_transitions,
                 inertial_cancellation_causes,
+                periodic_anchors,
+                periodic_anchor_causes,
+                periodic_cancellation_causes,
                 active_episodes,
                 pending_events,
                 next_pending_event_serial,
@@ -1728,6 +1864,7 @@ fn validate_delta_binding<D>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate_reaction<D>(
     compiled: &crate::CompiledNetwork<D>,
     levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
@@ -1736,12 +1873,15 @@ fn evaluate_reaction<D>(
     previous_stored_levels: &[LogicLevel],
     at: Time<D>,
     revision: NetworkRevision,
+    periodic_anchors: &BTreeMap<NodeKey, Time<D>>,
 ) -> Result<FullEvaluation, RuntimeFailure<D>> {
     match compiled.evaluate_reaction_with_state(
         levels,
         pulses,
         previous_edge_observations,
         previous_stored_levels,
+        at,
+        periodic_anchors,
     ) {
         Ok(evaluation) => Ok(evaluation),
         Err(EvaluationFailure::PulseCountOverflow { node, left, right }) => Err(
@@ -1952,6 +2092,8 @@ struct DuePulseDelays {
     inertial_targets: BTreeMap<NodeKey, LogicLevel>,
     inertial_origins: BTreeMap<NodeKey, u64>,
     inertial_causes: BTreeMap<NodeKey, Vec<CauseRef>>,
+    periodic_ordinals: BTreeMap<NodeKey, u64>,
+    periodic_causes: BTreeMap<NodeKey, Vec<CauseRef>>,
 }
 
 struct PulseDelayScheduling<'a, D> {
@@ -2024,6 +2166,13 @@ fn aggregate_due<D>(
                     .or_default()
                     .push(event.cause);
             }
+            PendingEvent::Periodic(event) => {
+                due.periodic_ordinals.insert(event.node, event.ordinal);
+                due.periodic_causes
+                    .entry(event.node)
+                    .or_default()
+                    .push(event.cause);
+            }
         }
     }
     for causes in due.causes.values_mut() {
@@ -2035,6 +2184,10 @@ fn aggregate_due<D>(
         causes.dedup();
     }
     for causes in due.inertial_causes.values_mut() {
+        causes.sort();
+        causes.dedup();
+    }
+    for causes in due.periodic_causes.values_mut() {
         causes.sort();
         causes.dedup();
     }
@@ -2050,7 +2203,11 @@ fn schedule_pulse_delays<D>(
     proposal_causes: &BTreeMap<NodeKey, CauseRef>,
     transport_proposal_causes: &BTreeMap<NodeKey, CauseRef>,
     inertial_proposal_causes: &BTreeMap<NodeKey, CauseRef>,
+    periodic_proposal_causes: &BTreeMap<NodeKey, CauseRef>,
     cancellation_causes: &mut BTreeMap<NodeKey, CauseRef>,
+    periodic_anchors: &mut BTreeMap<NodeKey, Time<D>>,
+    periodic_anchor_causes: &mut BTreeMap<NodeKey, CauseRef>,
+    periodic_cancellation_causes: &mut BTreeMap<NodeKey, CauseRef>,
     provenance: &mut ProvenanceView<D>,
     policy: &RuntimePolicy,
 ) -> Result<(), RuntimeFailure<D>> {
@@ -2058,6 +2215,7 @@ fn schedule_pulse_delays<D>(
         Pulse(&'a crate::compile::PulseDelayProposal),
         Transport(&'a crate::compile::TransportDelayProposal),
         Inertial(&'a crate::compile::InertialDelayProposal),
+        Periodic(&'a crate::compile::PeriodicProposal),
     }
     let mut proposals = evaluation
         .pulse_delay_proposals
@@ -2075,6 +2233,12 @@ fn schedule_pulse_delays<D>(
             .inertial_delay_proposals
             .iter()
             .map(|proposal| (proposal.node, Proposal::Inertial(proposal))),
+    );
+    proposals.extend(
+        evaluation
+            .periodic_proposals
+            .iter()
+            .map(|proposal| (proposal.node, Proposal::Periodic(proposal))),
     );
     // Mixed temporal kinds allocate public serials by stable owner identity.
     proposals.sort_by_key(|(node, _)| *node);
@@ -2240,6 +2404,129 @@ fn schedule_pulse_delays<D>(
                     *scheduling.created_events,
                 )?;
             }
+            Proposal::Periodic(proposal) => {
+                // SPEC: docs/specs/contracts/periodic.yaml
+                // "recurring-pending-work" and "disabled-suppression" — retain at most one
+                // strictly future boundary while enabled and no calendar work while disabled.
+                let scheduling_cause = match periodic_proposal_causes.get(&proposal.node).copied() {
+                    Some(cause) => cause,
+                    None => panic!("every Periodic proposal must retain a scheduling cause"),
+                };
+                let transitioned = proposal.previous_enable != proposal.enable;
+                if proposal.enable.is_low() {
+                    if transitioned || proposal.due_ordinal.is_some() {
+                        let canceled = remove_periodic_boundary(scheduling.pending, proposal.node)
+                            .map(|event| event.cause)
+                            .unwrap_or(scheduling_cause);
+                        let cancellation = provenance.append_inertial_cancellation(
+                            scheduling.compiled.node_subject(proposal.node),
+                            canceled,
+                            scheduling_cause,
+                        );
+                        periodic_cancellation_causes.insert(proposal.node, cancellation);
+                    }
+                    if transitioned
+                        && proposal.reenable_phase
+                            == crate::authored::ReenablePhasePolicy::RestartPhase
+                    {
+                        periodic_anchors.remove(&proposal.node);
+                        periodic_anchor_causes.remove(&proposal.node);
+                    }
+                    continue;
+                }
+
+                let rising = proposal.previous_enable.is_low();
+                if !rising && proposal.due_ordinal.is_none() {
+                    continue;
+                }
+                if rising
+                    && (proposal.reenable_phase
+                        == crate::authored::ReenablePhasePolicy::RestartPhase
+                        || !periodic_anchors.contains_key(&proposal.node))
+                {
+                    periodic_anchors.insert(proposal.node, origin);
+                    periodic_anchor_causes.insert(proposal.node, scheduling_cause);
+                }
+                let anchor = match periodic_anchors.get(&proposal.node).copied() {
+                    Some(anchor) => anchor,
+                    None => panic!("enabled Periodic proposal must retain a phase anchor"),
+                };
+                let ordinal = if let Some(due) = proposal.due_ordinal {
+                    due.checked_add(1)
+                } else {
+                    let elapsed = origin.ticks().checked_sub(anchor.ticks());
+                    elapsed
+                        .map(|ticks| ticks / proposal.period_ticks)
+                        .and_then(|completed| completed.checked_add(1))
+                }
+                .ok_or_else(|| {
+                    RuntimeFailure::new(RuntimeFailureEvidence::PeriodicTimeOverflow {
+                        node: scheduling.compiled.node_subject(proposal.node),
+                        origin_ticks: origin.ticks(),
+                        period_ticks: proposal.period_ticks,
+                    })
+                })?;
+                let offset = proposal.period_ticks.checked_mul(ordinal).ok_or_else(|| {
+                    RuntimeFailure::new(RuntimeFailureEvidence::PeriodicTimeOverflow {
+                        node: scheduling.compiled.node_subject(proposal.node),
+                        origin_ticks: origin.ticks(),
+                        period_ticks: proposal.period_ticks,
+                    })
+                })?;
+                let deadline = anchor.checked_add(Span::from_ticks(offset)).map_err(|_| {
+                    RuntimeFailure::new(RuntimeFailureEvidence::PeriodicTimeOverflow {
+                        node: scheduling.compiled.node_subject(proposal.node),
+                        origin_ticks: origin.ticks(),
+                        period_ticks: proposal.period_ticks,
+                    })
+                })?;
+                if deadline <= origin {
+                    return Err(RuntimeFailure::new(
+                        RuntimeFailureEvidence::PeriodicTimeOverflow {
+                            node: scheduling.compiled.node_subject(proposal.node),
+                            origin_ticks: origin.ticks(),
+                            period_ticks: proposal.period_ticks,
+                        },
+                    ));
+                }
+                let key = PendingEventKey::from_serial(*scheduling.next_serial);
+                *scheduling.next_serial =
+                    scheduling.next_serial.checked_add(1).ok_or_else(|| {
+                        RuntimeFailure::new(RuntimeFailureEvidence::BudgetExceeded {
+                            budget: RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
+                            limit: policy.max_events_created_per_transaction(),
+                            consumed: u64::MAX,
+                        })
+                    })?;
+                let mut pending = PendingPeriodicBoundary {
+                    key,
+                    node: proposal.node,
+                    origin,
+                    deadline,
+                    anchor,
+                    ordinal,
+                    first_emission: proposal.first_emission,
+                    reenable_phase: proposal.reenable_phase,
+                    revision,
+                    cause: scheduling_cause,
+                };
+                pending.cause = provenance.append_pending_periodic_boundary(
+                    &pending,
+                    scheduling.compiled.node_subject(pending.node),
+                    scheduling_cause,
+                );
+                scheduling
+                    .pending
+                    .entry(deadline)
+                    .or_default()
+                    .push(PendingEvent::Periodic(pending));
+                *scheduling.created_events = scheduling.created_events.saturating_add(1);
+                enforce_budget::<D>(
+                    policy,
+                    RuntimePolicyLimit::MaxEventsCreatedPerTransaction,
+                    *scheduling.created_events,
+                )?;
+            }
         }
     }
     let pending_count = scheduling.pending.values().map(Vec::len).sum::<usize>();
@@ -2268,6 +2555,36 @@ fn remove_inertial_candidate<D>(
                     if candidate.node == node && removed.is_none() =>
                 {
                     removed = Some(candidate);
+                }
+                other => retained.push(other),
+            }
+        }
+        *batch = retained;
+        if batch.is_empty() {
+            pending.remove(&deadline);
+        }
+        if removed.is_some() {
+            break;
+        }
+    }
+    removed
+}
+
+fn remove_periodic_boundary<D>(
+    pending: &mut BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
+    node: NodeKey,
+) -> Option<PendingPeriodicBoundary<D>> {
+    let deadlines = pending.keys().copied().collect::<Vec<_>>();
+    let mut removed = None;
+    for deadline in deadlines {
+        let Some(batch) = pending.get_mut(&deadline) else {
+            continue;
+        };
+        let mut retained = Vec::with_capacity(batch.len());
+        for event in batch.drain(..) {
+            match event {
+                PendingEvent::Periodic(boundary) if boundary.node == node && removed.is_none() => {
+                    removed = Some(boundary);
                 }
                 other => retained.push(other),
             }
@@ -2341,6 +2658,7 @@ fn remap_pending_causes<D>(
             PendingEvent::PulseDelay(event) => event.cause = remap_cause(event.cause, scope),
             PendingEvent::TransportDelay(event) => event.cause = remap_cause(event.cause, scope),
             PendingEvent::Inertial(event) => event.cause = remap_cause(event.cause, scope),
+            PendingEvent::Periodic(event) => event.cause = remap_cause(event.cause, scope),
         }
     }
 }
@@ -2375,6 +2693,9 @@ struct PublishedCandidate<D> {
     establishment_causes: BTreeMap<NodeKey, CauseRef>,
     transport_transition_causes: BTreeMap<NodeKey, CauseRef>,
     inertial_cancellation_causes: BTreeMap<NodeKey, CauseRef>,
+    periodic_anchors: BTreeMap<NodeKey, Time<D>>,
+    periodic_anchor_causes: BTreeMap<NodeKey, CauseRef>,
+    periodic_cancellation_causes: BTreeMap<NodeKey, CauseRef>,
     active_episodes: crate::episode::ActiveEpisodes<D>,
     pending_events: BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
     next_pending_event_serial: u64,
@@ -2394,6 +2715,9 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
         establishment_causes,
         transport_transition_causes,
         inertial_cancellation_causes,
+        periodic_anchors,
+        periodic_anchor_causes,
+        periodic_cancellation_causes,
         active_episodes,
         pending_events,
         next_pending_event_serial,
@@ -2419,6 +2743,9 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     candidate.establishment_causes = establishment_causes;
     candidate.transport_transition_causes = transport_transition_causes;
     candidate.inertial_cancellation_causes = inertial_cancellation_causes;
+    candidate.periodic_anchors = periodic_anchors;
+    candidate.periodic_anchor_causes = periodic_anchor_causes;
+    candidate.periodic_cancellation_causes = periodic_cancellation_causes;
     candidate.active_episodes = active_episodes;
     candidate.pending_events = pending_events;
     candidate.next_pending_event_serial = next_pending_event_serial;
@@ -2610,6 +2937,36 @@ fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRec
             hasher.update(&revision.value().to_be_bytes());
             hash_causes(hasher, supporters);
         }
+        ProvenanceRecord::PendingPeriodicBoundary {
+            event,
+            owner,
+            origin,
+            deadline,
+            anchor,
+            ordinal,
+            first_emission,
+            reenable_phase,
+            revision,
+            supporters,
+        } => {
+            hasher.update(&[10]);
+            hasher.update(&event.value().to_be_bytes());
+            hash_node_subject(hasher, owner);
+            hasher.update(&origin.ticks().to_be_bytes());
+            hasher.update(&deadline.ticks().to_be_bytes());
+            hasher.update(&anchor.ticks().to_be_bytes());
+            hasher.update(&ordinal.to_be_bytes());
+            hasher.update(&[match first_emission {
+                crate::authored::FirstEmissionPolicy::Immediate => 0,
+                crate::authored::FirstEmissionPolicy::AfterFirstPeriod => 1,
+            }]);
+            hasher.update(&[match reenable_phase {
+                crate::authored::ReenablePhasePolicy::RestartPhase => 0,
+                crate::authored::ReenablePhasePolicy::PreservePhase => 1,
+            }]);
+            hasher.update(&revision.value().to_be_bytes());
+            hash_causes(hasher, supporters);
+        }
         ProvenanceRecord::Derived {
             subject,
             supporters,
@@ -2728,6 +3085,7 @@ fn build_initialization_provenance<D>(
             due_pulse_delays: &BTreeMap::new(),
             due_transport_delays: &BTreeMap::new(),
             due_inertial_delays: &BTreeMap::new(),
+            due_periodic_boundaries: &BTreeMap::new(),
         },
         None,
         None,
@@ -2749,6 +3107,7 @@ fn build_initialization_provenance<D>(
         pulse_delay_schedules: evaluation_causes.pulse_delay_schedules,
         transport_delay_schedules: evaluation_causes.transport_delay_schedules,
         inertial_delay_schedules: evaluation_causes.inertial_delay_schedules,
+        periodic_schedules: evaluation_causes.periodic_schedules,
     }
 }
 
@@ -2768,9 +3127,11 @@ fn build_ready_provenance<D>(
     previous_toggle_inversion_causes: &BTreeMap<NodeKey, CauseRef>,
     previous_establishment_causes: &BTreeMap<NodeKey, CauseRef>,
     previous_transport_transition_causes: &BTreeMap<NodeKey, CauseRef>,
+    previous_periodic_anchor_causes: &BTreeMap<NodeKey, CauseRef>,
     due_pulse_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
     due_transport_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
     due_inertial_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
+    due_periodic_boundaries: &BTreeMap<NodeKey, Vec<CauseRef>>,
 ) -> ProvenanceBuild<D> {
     let scope = UNFINALIZED_PROVENANCE_SCOPE;
     let mut records = previous
@@ -2828,6 +3189,7 @@ fn build_ready_provenance<D>(
             due_pulse_delays,
             due_transport_delays,
             due_inertial_delays,
+            due_periodic_boundaries,
         },
         Some(PreviousLevelOutputs {
             causes: &remapped_output_causes,
@@ -2838,6 +3200,7 @@ fn build_ready_provenance<D>(
             toggle_inversions: previous_toggle_inversion_causes,
             establishments: previous_establishment_causes,
             transport_transitions: previous_transport_transition_causes,
+            periodic_anchors: previous_periodic_anchor_causes,
         }),
     );
 
@@ -2857,6 +3220,7 @@ fn build_ready_provenance<D>(
         pulse_delay_schedules: evaluation_causes.pulse_delay_schedules,
         transport_delay_schedules: evaluation_causes.transport_delay_schedules,
         inertial_delay_schedules: evaluation_causes.inertial_delay_schedules,
+        periodic_schedules: evaluation_causes.periodic_schedules,
     }
 }
 
@@ -2871,6 +3235,7 @@ struct EvaluationCauseMaps {
     pulse_delay_schedules: BTreeMap<NodeKey, CauseRef>,
     transport_delay_schedules: BTreeMap<NodeKey, CauseRef>,
     inertial_delay_schedules: BTreeMap<NodeKey, CauseRef>,
+    periodic_schedules: BTreeMap<NodeKey, CauseRef>,
 }
 
 fn append_evaluation_provenance<D>(
@@ -2909,6 +3274,12 @@ fn append_evaluation_provenance<D>(
         .as_ref()
         .into_iter()
         .flat_map(|previous| previous.transport_transitions.iter())
+        .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
+        .collect::<BTreeMap<_, _>>();
+    let periodic_anchor_causes = previous_state
+        .as_ref()
+        .into_iter()
+        .flat_map(|previous| previous.periodic_anchors.iter())
         .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
         .collect::<BTreeMap<_, _>>();
     let mut transport_delay_schedules = BTreeMap::new();
@@ -3300,6 +3671,38 @@ fn append_evaluation_provenance<D>(
                 }
                 reference
             }
+            EvaluationCause::Periodic {
+                node,
+                enable,
+                due: _,
+                emitted: _,
+            } => {
+                let mut supporters = vec![
+                    transaction_cause,
+                    operation_cause(&operation_causes, *enable),
+                ];
+                supporters.extend(
+                    input_causes
+                        .due_periodic_boundaries
+                        .get(node)
+                        .into_iter()
+                        .flatten()
+                        .map(|cause| remap_cause(*cause, scope)),
+                );
+                if let Some(anchor) = periodic_anchor_causes.get(node).copied() {
+                    supporters.push(anchor);
+                }
+                supporters.sort();
+                supporters.dedup();
+                push_record(
+                    scope,
+                    records,
+                    ProvenanceRecord::Derived {
+                        subject: provenance_subject(input_causes.compiled, *node),
+                        supporters,
+                    },
+                )
+            }
             EvaluationCause::Alias(source) => operation_cause(&operation_causes, *source),
             EvaluationCause::ExternalOutput { output, source } => {
                 let unchanged_cause = previous_output_baselines
@@ -3405,6 +3808,35 @@ fn append_evaluation_provenance<D>(
         );
         inertial_delay_schedules.insert(proposal.node, reference);
     }
+    let mut periodic_schedules = BTreeMap::new();
+    for proposal in &evaluation.periodic_proposals {
+        let mut supporters = vec![
+            transaction_cause,
+            operation_cause(&operation_causes, proposal.input_source),
+        ];
+        supporters.extend(
+            input_causes
+                .due_periodic_boundaries
+                .get(&proposal.node)
+                .into_iter()
+                .flatten()
+                .map(|cause| remap_cause(*cause, scope)),
+        );
+        if let Some(anchor) = periodic_anchor_causes.get(&proposal.node).copied() {
+            supporters.push(anchor);
+        }
+        supporters.sort();
+        supporters.dedup();
+        let reference = push_record(
+            scope,
+            records,
+            ProvenanceRecord::Derived {
+                subject: provenance_subject(input_causes.compiled, proposal.node),
+                supporters,
+            },
+        );
+        periodic_schedules.insert(proposal.node, reference);
+    }
     EvaluationCauseMaps {
         operation_causes,
         level_outputs: output_causes,
@@ -3416,6 +3848,7 @@ fn append_evaluation_provenance<D>(
         pulse_delay_schedules,
         transport_delay_schedules,
         inertial_delay_schedules,
+        periodic_schedules,
     }
 }
 
@@ -3479,6 +3912,9 @@ fn finalize_provenance_build<D>(
     for cause in build.inertial_delay_schedules.values_mut() {
         *cause = remap_cause(*cause, scope);
     }
+    for cause in build.periodic_schedules.values_mut() {
+        *cause = remap_cause(*cause, scope);
+    }
 }
 
 fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> ProvenanceRecord<D> {
@@ -3519,6 +3955,32 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> Prov
             origin: *origin,
             deadline: *deadline,
             count: *count,
+            revision: *revision,
+            supporters: supporters
+                .iter()
+                .map(|cause| remap_cause(*cause, scope))
+                .collect(),
+        },
+        ProvenanceRecord::PendingPeriodicBoundary {
+            event,
+            owner,
+            origin,
+            deadline,
+            anchor,
+            ordinal,
+            first_emission,
+            reenable_phase,
+            revision,
+            supporters,
+        } => ProvenanceRecord::PendingPeriodicBoundary {
+            event: *event,
+            owner: owner.clone(),
+            origin: *origin,
+            deadline: *deadline,
+            anchor: *anchor,
+            ordinal: *ordinal,
+            first_emission: *first_emission,
+            reenable_phase: *reenable_phase,
             revision: *revision,
             supporters: supporters
                 .iter()
@@ -4845,7 +5307,8 @@ mod tests {
                 CauseInspection::Derived { supporters, .. }
                 | CauseInspection::PendingPulseDelay { supporters, .. }
                 | CauseInspection::PendingTransportDelay { supporters, .. }
-                | CauseInspection::PendingInertialDelay { supporters, .. } => {
+                | CauseInspection::PendingInertialDelay { supporters, .. }
+                | CauseInspection::PendingPeriodicBoundary { supporters, .. } => {
                     assert!(
                         !supporters.is_empty(),
                         "derived provenance must terminate in authoritative roots"

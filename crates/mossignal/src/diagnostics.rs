@@ -3,7 +3,10 @@
 //! The opening catalogue is intentionally small.  Its types are the common
 //! representation used by later graph construction and validation modules.
 
-use crate::authored::{ConflictPolicy, EdgeInitialization, InputPortRole, OutputPortRole};
+use crate::authored::{
+    ConflictPolicy, EdgeInitialization, FirstEmissionPolicy, InputPortRole, OutputPortRole,
+    ReenablePhasePolicy,
+};
 use crate::identity::{InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint};
 use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, AnyInPortKey, AnyModuleInputKey, AnyModuleOutputKey,
@@ -457,6 +460,7 @@ pub enum DuplicateNodeKind {
     PulseDelay(u64),
     TransportDelay(u64, LogicLevel),
     InertialDelay(u64, LogicLevel),
+    Periodic(u64, FirstEmissionPolicy, ReenablePhasePolicy),
 }
 
 /// The stable identity of one required fixed input that is absent.
@@ -526,6 +530,7 @@ pub enum TimeOperation {
     PulseDelayDeadline,
     TransportDelayDeadline,
     InertialDelayDeadline,
+    PeriodicDeadline,
 }
 
 /// Exact operands and relation for a logical-time condition.
@@ -584,6 +589,7 @@ pub enum InspectionSubjectKind {
     PulseDelay,
     TransportDelay,
     InertialDelay,
+    Periodic,
     EdgeDetector,
     Toggle,
     PulseSetResetLatch,
@@ -2492,7 +2498,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 101);
+        assert_eq!(leaves.len(), 105);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {

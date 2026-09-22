@@ -643,7 +643,7 @@ Explicitly exclude:
 
 ---
 
-## 48. `Periodic`
+## 48. [DONE] `Periodic`
 
 Implement the first recurring temporal primitive:
 

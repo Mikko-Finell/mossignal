@@ -28,6 +28,7 @@ pub(crate) enum SemanticNodeKind {
     PulseDelay,
     TransportDelay,
     InertialDelay,
+    Periodic,
 }
 
 impl SemanticNodeKind {
@@ -56,6 +57,7 @@ impl SemanticNodeKind {
             Self::PulseDelay => "pulse_delay",
             Self::TransportDelay => "transport_delay",
             Self::InertialDelay => "inertial_delay",
+            Self::Periodic => "periodic",
         }
     }
 }
@@ -65,6 +67,7 @@ pub(crate) enum StateFamily {
     EdgeObservation,
     StoredLevel,
     TransportLevel,
+    PeriodicEnable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +75,7 @@ pub(crate) enum TemporalFamily {
     PendingPulseGroup,
     PendingTransportTransition,
     InertialCandidate,
+    PeriodicBoundary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,6 +323,10 @@ const INERTIAL_DELAY_INPUT: &[InputPortSchema] = &[InputPortSchema::future_only(
     InputPortRole::InertialDelay,
     SignalKind::Level,
 )];
+const PERIODIC_ENABLE_INPUT: &[InputPortSchema] = &[InputPortSchema::current(
+    InputPortRole::Enable,
+    SignalKind::Level,
+)];
 
 const LEVEL_OUTPUT: &[OutputPortSchema] = &[OutputPortSchema::new(
     OutputPortRole::Output,
@@ -421,6 +429,11 @@ pub(crate) const fn schema_for_kind(kind: SemanticNodeKind) -> NodeSchema {
             temporal_family: Some(TemporalFamily::InertialCandidate),
             ..fixed(kind, INERTIAL_DELAY_INPUT, LEVEL_OUTPUT)
         },
+        SemanticNodeKind::Periodic => NodeSchema {
+            state_family: Some(StateFamily::PeriodicEnable),
+            temporal_family: Some(TemporalFamily::PeriodicBoundary),
+            ..fixed(kind, PERIODIC_ENABLE_INPUT, PULSE_OUTPUT)
+        },
     }
 }
 
@@ -452,6 +465,7 @@ pub(crate) const fn node_schema<D>(kind: &NodeKind<D>) -> NodeSchema {
         NodeKind::PulseDelay(_) => SemanticNodeKind::PulseDelay,
         NodeKind::TransportDelay(_) => SemanticNodeKind::TransportDelay,
         NodeKind::InertialDelay(_) => SemanticNodeKind::InertialDelay,
+        NodeKind::Periodic(_) => SemanticNodeKind::Periodic,
     };
     schema_for_kind(semantic_kind)
 }
@@ -497,6 +511,11 @@ mod tests {
             NodeKind::pulse_delay(delay),
             NodeKind::transport_delay(delay, LogicLevel::Low),
             NodeKind::inertial_delay(delay, LogicLevel::Low),
+            NodeKind::periodic(crate::PeriodicConfig::new(
+                delay,
+                crate::FirstEmissionPolicy::Immediate,
+                crate::ReenablePhasePolicy::RestartPhase,
+            )),
         ]
     }
 
@@ -617,6 +636,17 @@ mod tests {
         );
         inertial_delay.state = Some(StateFamily::TransportLevel);
         inertial_delay.temporal = Some(TemporalFamily::InertialCandidate);
+        let mut periodic = fixed(
+            NodeKind::periodic(crate::PeriodicConfig::new(
+                delay,
+                crate::FirstEmissionPolicy::Immediate,
+                crate::ReenablePhasePolicy::RestartPhase,
+            )),
+            vec![(InputPortRole::Enable, SignalKind::Level, true)],
+            pulse_output(),
+        );
+        periodic.state = Some(StateFamily::PeriodicEnable);
+        periodic.temporal = Some(TemporalFamily::PeriodicBoundary);
 
         vec![
             fixed(
@@ -713,13 +743,14 @@ mod tests {
             pulse_delay,
             transport_delay,
             inertial_delay,
+            periodic,
         ]
     }
 
     #[test]
     fn every_closed_node_kind_has_one_distinct_schema_identity() {
         let schemas: Vec<_> = every_kind().iter().map(node_schema).collect();
-        assert_eq!(schemas.len(), 23);
+        assert_eq!(schemas.len(), 24);
         assert_eq!(
             schemas
                 .iter()
@@ -741,7 +772,7 @@ mod tests {
     #[test]
     fn every_closed_node_kind_matches_the_complete_schema_matrix() {
         let cases = schema_cases();
-        assert_eq!(cases.len(), 23);
+        assert_eq!(cases.len(), 24);
         for case in cases {
             let schema = node_schema(&case.kind);
             assert_eq!(schema.expected_input_count(), case.expected_input_count);

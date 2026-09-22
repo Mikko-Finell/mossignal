@@ -23,8 +23,9 @@ mod validation;
 
 pub use authored::{
     ConflictPolicy, EdgeConfig, EdgeDetectorKind, EdgeInitialization, EdgeObservation,
-    InertialDelayConfig, LevelSetResetConfig, ModuleBinding, ModuleBindingSet, ModuleInstanceDef,
-    PulseDelayConfig, PulseSetResetConfig, SampleHoldConfig, ToggleConfig, TransportDelayConfig,
+    FirstEmissionPolicy, InertialDelayConfig, LevelSetResetConfig, ModuleBinding, ModuleBindingSet,
+    ModuleInstanceDef, PeriodicConfig, PulseDelayConfig, PulseSetResetConfig, ReenablePhasePolicy,
+    SampleHoldConfig, ToggleConfig, TransportDelayConfig,
 };
 pub use binding::{
     BindingFailure, BindingSet, BindingSetBuilder, BoundApplyFailure, BoundMachine,
@@ -52,13 +53,14 @@ pub use machine::{
     LevelSetResetLatchInspection, LevelSetResetLatchInspectionFailure, Machine, MachineStatus,
     ModuleInputInspection, ModuleInspection, ModuleInspectionFailure, ModuleNodeInspection,
     ModuleOutputInspection, ModulePendingPulseDelayInspection, NetworkRevision, PendingEventKey,
-    PendingInertialDelayInspection, PendingPulseDelayInspection, PendingTransportDelayInspection,
-    PulseDelayDefinitionInspection, PulseDelayInspection, PulseDelayInspectionFailure,
-    PulseSetResetLatchDefinitionInspection, PulseSetResetLatchInspection,
-    PulseSetResetLatchInspectionFailure, SampleHoldDefinitionInspection, SampleHoldInspection,
-    SampleHoldInspectionFailure, Schedule, ScheduleFailure, ToggleDefinitionInspection,
-    ToggleInspection, ToggleInspectionFailure, TransportDelayDefinitionInspection,
-    TransportDelayInspection, TransportDelayInspectionFailure,
+    PendingInertialDelayInspection, PendingPeriodicBoundaryInspection, PendingPulseDelayInspection,
+    PendingTransportDelayInspection, PeriodicDefinitionInspection, PeriodicInspection,
+    PeriodicInspectionFailure, PulseDelayDefinitionInspection, PulseDelayInspection,
+    PulseDelayInspectionFailure, PulseSetResetLatchDefinitionInspection,
+    PulseSetResetLatchInspection, PulseSetResetLatchInspectionFailure,
+    SampleHoldDefinitionInspection, SampleHoldInspection, SampleHoldInspectionFailure, Schedule,
+    ScheduleFailure, ToggleDefinitionInspection, ToggleInspection, ToggleInspectionFailure,
+    TransportDelayDefinitionInspection, TransportDelayInspection, TransportDelayInspectionFailure,
 };
 pub use module::{
     DefinitionGraphView, ModuleDef, ModuleInputIter, ModuleOrigin, ModuleOutputIter, NodeSubject,

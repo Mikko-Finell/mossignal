@@ -1,7 +1,8 @@
 //! Mutable machine lifecycle over an immutable compiled topology.
 
 use crate::authored::{
-    ConflictPolicy, EdgeDetectorKind, EdgeInitialization, EdgeObservation, NodeKind,
+    ConflictPolicy, EdgeDetectorKind, EdgeInitialization, EdgeObservation, FirstEmissionPolicy,
+    NodeKind, ReenablePhasePolicy,
 };
 use crate::compile::CompiledNetwork;
 use crate::diagnostics::{
@@ -177,10 +178,33 @@ impl<D> Clone for PendingInertialDelay<D> {
 impl<D> Copy for PendingInertialDelay<D> {}
 
 #[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PendingPeriodicBoundary<D> {
+    pub(crate) key: PendingEventKey,
+    pub(crate) node: NodeKey,
+    pub(crate) origin: Time<D>,
+    pub(crate) deadline: Time<D>,
+    pub(crate) anchor: Time<D>,
+    pub(crate) ordinal: u64,
+    pub(crate) first_emission: FirstEmissionPolicy,
+    pub(crate) reenable_phase: ReenablePhasePolicy,
+    pub(crate) revision: NetworkRevision,
+    pub(crate) cause: CauseRef,
+}
+
+impl<D> Clone for PendingPeriodicBoundary<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<D> Copy for PendingPeriodicBoundary<D> {}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PendingEvent<D> {
     PulseDelay(PendingPulseDelay<D>),
     TransportDelay(PendingTransportDelay<D>),
     Inertial(PendingInertialDelay<D>),
+    Periodic(PendingPeriodicBoundary<D>),
 }
 
 impl<D> Clone for PendingEvent<D> {
@@ -591,6 +615,245 @@ impl InertialDelayInspectionFailure {
     }
 }
 
+/// Structural information available for one compiled Periodic source.
+pub struct PeriodicDefinitionInspection<D> {
+    node: NodeKey,
+    period: NonZeroSpan<D>,
+    first_emission: FirstEmissionPolicy,
+    reenable_phase: ReenablePhasePolicy,
+}
+
+impl<D> PeriodicDefinitionInspection<D> {
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+    #[must_use]
+    pub const fn period(&self) -> NonZeroSpan<D> {
+        self.period
+    }
+    #[must_use]
+    pub const fn first_emission(&self) -> FirstEmissionPolicy {
+        self.first_emission
+    }
+    #[must_use]
+    pub const fn reenable_phase(&self) -> ReenablePhasePolicy {
+        self.reenable_phase
+    }
+}
+
+/// One owned observation of a pending Periodic phase boundary.
+pub struct PendingPeriodicBoundaryInspection<D> {
+    event: PendingEventKey,
+    node: NodeKey,
+    origin: Time<D>,
+    deadline: Time<D>,
+    anchor: Time<D>,
+    ordinal: u64,
+    first_emission: FirstEmissionPolicy,
+    reenable_phase: ReenablePhasePolicy,
+    revision: NetworkRevision,
+    cause: CauseRef,
+}
+
+impl<D> Clone for PendingPeriodicBoundaryInspection<D> {
+    fn clone(&self) -> Self {
+        Self {
+            event: self.event,
+            node: self.node,
+            origin: self.origin,
+            deadline: self.deadline,
+            anchor: self.anchor,
+            ordinal: self.ordinal,
+            first_emission: self.first_emission,
+            reenable_phase: self.reenable_phase,
+            revision: self.revision,
+            cause: self.cause,
+        }
+    }
+}
+
+impl<D> PendingPeriodicBoundaryInspection<D> {
+    #[must_use]
+    pub const fn event(&self) -> PendingEventKey {
+        self.event
+    }
+    #[must_use]
+    pub const fn node(&self) -> NodeKey {
+        self.node
+    }
+    #[must_use]
+    pub const fn origin(&self) -> Time<D> {
+        self.origin
+    }
+    #[must_use]
+    pub const fn deadline(&self) -> Time<D> {
+        self.deadline
+    }
+    #[must_use]
+    pub const fn anchor(&self) -> Time<D> {
+        self.anchor
+    }
+    #[must_use]
+    pub const fn ordinal(&self) -> u64 {
+        self.ordinal
+    }
+    #[must_use]
+    pub const fn first_emission(&self) -> FirstEmissionPolicy {
+        self.first_emission
+    }
+    #[must_use]
+    pub const fn reenable_phase(&self) -> ReenablePhasePolicy {
+        self.reenable_phase
+    }
+    #[must_use]
+    pub const fn revision(&self) -> NetworkRevision {
+        self.revision
+    }
+    #[must_use]
+    pub const fn cause(&self) -> CauseRef {
+        self.cause
+    }
+}
+
+/// One owned ready-machine observation of Periodic phase and pending work.
+pub struct PeriodicInspection<D> {
+    node: NodeSubject,
+    period: NonZeroSpan<D>,
+    first_emission: FirstEmissionPolicy,
+    reenable_phase: ReenablePhasePolicy,
+    remembered_enable: LogicLevel,
+    enable: LogicLevel,
+    anchor: Option<Time<D>>,
+    revision: NetworkRevision,
+    at: Time<D>,
+    current_support: CauseRef,
+    anchor_cause: Option<CauseRef>,
+    pending: Option<PendingPeriodicBoundaryInspection<D>>,
+    next_deadline: Option<Time<D>>,
+    last_cancellation: Option<CauseRef>,
+    provenance: ProvenanceView<D>,
+}
+
+impl<D> Clone for PeriodicInspection<D> {
+    fn clone(&self) -> Self {
+        Self {
+            node: self.node.clone(),
+            period: self.period,
+            first_emission: self.first_emission,
+            reenable_phase: self.reenable_phase,
+            remembered_enable: self.remembered_enable,
+            enable: self.enable,
+            anchor: self.anchor,
+            revision: self.revision,
+            at: self.at,
+            current_support: self.current_support,
+            anchor_cause: self.anchor_cause,
+            pending: self.pending.clone(),
+            next_deadline: self.next_deadline,
+            last_cancellation: self.last_cancellation,
+            provenance: self.provenance.clone(),
+        }
+    }
+}
+
+impl<D> PeriodicInspection<D> {
+    #[must_use]
+    pub const fn node(&self) -> &NodeSubject {
+        &self.node
+    }
+    #[must_use]
+    pub const fn period(&self) -> NonZeroSpan<D> {
+        self.period
+    }
+    #[must_use]
+    pub const fn first_emission(&self) -> FirstEmissionPolicy {
+        self.first_emission
+    }
+    #[must_use]
+    pub const fn reenable_phase(&self) -> ReenablePhasePolicy {
+        self.reenable_phase
+    }
+    #[must_use]
+    pub const fn remembered_enable(&self) -> LogicLevel {
+        self.remembered_enable
+    }
+    #[must_use]
+    pub const fn enable(&self) -> LogicLevel {
+        self.enable
+    }
+    #[must_use]
+    pub const fn anchor(&self) -> Option<Time<D>> {
+        self.anchor
+    }
+    #[must_use]
+    pub const fn revision(&self) -> NetworkRevision {
+        self.revision
+    }
+    #[must_use]
+    pub const fn at(&self) -> Time<D> {
+        self.at
+    }
+    #[must_use]
+    pub const fn current_support(&self) -> CauseRef {
+        self.current_support
+    }
+    #[must_use]
+    pub const fn anchor_cause(&self) -> Option<CauseRef> {
+        self.anchor_cause
+    }
+    #[must_use]
+    pub const fn pending(&self) -> Option<&PendingPeriodicBoundaryInspection<D>> {
+        self.pending.as_ref()
+    }
+    #[must_use]
+    pub const fn next_deadline(&self) -> Option<Time<D>> {
+        self.next_deadline
+    }
+    #[must_use]
+    pub const fn last_cancellation(&self) -> Option<CauseRef> {
+        self.last_cancellation
+    }
+    #[must_use]
+    pub const fn provenance(&self) -> &ProvenanceView<D> {
+        &self.provenance
+    }
+}
+
+/// A structural or lifecycle failure to inspect one node as Periodic.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeriodicInspectionFailure {
+    UnknownNode(NodeKey),
+    NotPeriodic(NodeKey),
+    NotInitialized,
+}
+
+impl PeriodicInspectionFailure {
+    #[must_use]
+    pub fn code(self) -> DiagnosticCode {
+        self.problem::<()>().code()
+    }
+    #[must_use]
+    pub fn severity(self) -> Severity {
+        self.code().severity()
+    }
+    #[must_use]
+    pub fn responsibility(self) -> Responsibility {
+        self.code().responsibility()
+    }
+    #[must_use]
+    pub fn problem<D>(self) -> Problem<D> {
+        match self {
+            Self::UnknownNode(node) => inspection_unknown(node, InspectionSubjectKind::Periodic),
+            Self::NotPeriodic(node) => inspection_wrong_kind(node, InspectionSubjectKind::Periodic),
+            Self::NotInitialized => {
+                lifecycle_not_initialized(OperationSubjectRef::MachineLifecycle)
+            }
+        }
+    }
+}
+
 impl<D> Clone for TransportDelayInspection<D> {
     fn clone(&self) -> Self {
         Self {
@@ -899,6 +1162,7 @@ pub struct ModuleNodeInspection<D> {
     sample_hold: Option<SampleHoldInspection<D>>,
     transport_delay: Option<TransportDelayInspection<D>>,
     inertial_delay: Option<InertialDelayInspection<D>>,
+    periodic: Option<PeriodicInspection<D>>,
     pending: Vec<ModulePendingPulseDelayInspection<D>>,
 }
 
@@ -975,6 +1239,10 @@ impl<D> ModuleNodeInspection<D> {
     #[must_use]
     pub const fn inertial_delay(&self) -> Option<&InertialDelayInspection<D>> {
         self.inertial_delay.as_ref()
+    }
+    #[must_use]
+    pub const fn periodic(&self) -> Option<&PeriodicInspection<D>> {
+        self.periodic.as_ref()
     }
     #[must_use]
     pub fn pending(&self) -> &[ModulePendingPulseDelayInspection<D>] {
@@ -1219,6 +1487,9 @@ pub(crate) struct MachineStore<D> {
     pub(crate) establishment_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) transport_transition_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) inertial_cancellation_causes: BTreeMap<NodeKey, CauseRef>,
+    pub(crate) periodic_anchors: BTreeMap<NodeKey, Time<D>>,
+    pub(crate) periodic_anchor_causes: BTreeMap<NodeKey, CauseRef>,
+    pub(crate) periodic_cancellation_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) active_episodes: crate::episode::ActiveEpisodes<D>,
     pub(crate) pending_events: BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
     pub(crate) next_pending_event_serial: u64,
@@ -1244,6 +1515,9 @@ impl<D> Clone for MachineStore<D> {
             establishment_causes: self.establishment_causes.clone(),
             transport_transition_causes: self.transport_transition_causes.clone(),
             inertial_cancellation_causes: self.inertial_cancellation_causes.clone(),
+            periodic_anchors: self.periodic_anchors.clone(),
+            periodic_anchor_causes: self.periodic_anchor_causes.clone(),
+            periodic_cancellation_causes: self.periodic_cancellation_causes.clone(),
             active_episodes: self.active_episodes.clone(),
             pending_events: self.pending_events.clone(),
             next_pending_event_serial: self.next_pending_event_serial,
@@ -2033,6 +2307,9 @@ impl<D> Machine<D> {
                 establishment_causes: BTreeMap::new(),
                 transport_transition_causes: BTreeMap::new(),
                 inertial_cancellation_causes: BTreeMap::new(),
+                periodic_anchors: BTreeMap::new(),
+                periodic_anchor_causes: BTreeMap::new(),
+                periodic_cancellation_causes: BTreeMap::new(),
                 active_episodes: BTreeMap::new(),
                 pending_events: BTreeMap::new(),
                 next_pending_event_serial: 0,
@@ -2355,6 +2632,100 @@ impl<D> Machine<D> {
         })
     }
 
+    /// Returns Periodic's immutable definition in either lifecycle phase.
+    pub fn inspect_periodic_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<PeriodicDefinitionInspection<D>, PeriodicInspectionFailure> {
+        if self.compiled.qualified_node(node).is_some() {
+            return Err(PeriodicInspectionFailure::UnknownNode(node));
+        }
+        let Some((period, first_emission, reenable_phase, _)) = self.compiled.periodic(node) else {
+            return Err(if self.compiled.contains_node(node) {
+                PeriodicInspectionFailure::NotPeriodic(node)
+            } else {
+                PeriodicInspectionFailure::UnknownNode(node)
+            });
+        };
+        Ok(PeriodicDefinitionInspection {
+            node,
+            period,
+            first_emission,
+            reenable_phase,
+        })
+    }
+
+    /// Returns committed phase and pending boundary facts for one Periodic source.
+    pub fn inspect_periodic(
+        &self,
+        node: NodeKey,
+    ) -> Result<PeriodicInspection<D>, PeriodicInspectionFailure> {
+        self.inspect_periodic_definition(node)?;
+        if !self.is_initialized() {
+            return Err(PeriodicInspectionFailure::NotInitialized);
+        }
+        self.periodic_observation(node)
+            .ok_or(PeriodicInspectionFailure::NotPeriodic(node))
+    }
+
+    fn periodic_observation(&self, node: NodeKey) -> Option<PeriodicInspection<D>> {
+        let MachineStatus::Ready { now } = self.store.status else {
+            return None;
+        };
+        let (period, first_emission, reenable_phase, previous_enable) =
+            self.compiled.periodic(node)?;
+        let enable_operation = self.compiled.periodic_enable_operation(node)?;
+        let operation = self.compiled.node_operation(node)?;
+        let current_support = *self.store.operation_causes.get(operation)?;
+        let pending = self
+            .store
+            .pending_events
+            .values()
+            .flatten()
+            .find_map(|event| match event {
+                PendingEvent::Periodic(event) if event.node == node => {
+                    Some(PendingPeriodicBoundaryInspection {
+                        event: event.key,
+                        node: event.node,
+                        origin: event.origin,
+                        deadline: event.deadline,
+                        anchor: event.anchor,
+                        ordinal: event.ordinal,
+                        first_emission: event.first_emission,
+                        reenable_phase: event.reenable_phase,
+                        revision: event.revision,
+                        cause: event.cause,
+                    })
+                }
+                _ => None,
+            });
+        let next_deadline = pending
+            .as_ref()
+            .map(PendingPeriodicBoundaryInspection::deadline);
+        Some(PeriodicInspection {
+            node: self.compiled.node_subject(node),
+            period,
+            first_emission,
+            reenable_phase,
+            remembered_enable: *self.store.stored_levels.get(previous_enable.value())?,
+            enable: self
+                .store
+                .operation_levels
+                .get(enable_operation)?
+                .as_ref()
+                .copied()?,
+            anchor: self.store.periodic_anchors.get(&node).copied(),
+            revision: self.store.revision,
+            at: now,
+            current_support,
+            anchor_cause: self.store.periodic_anchor_causes.get(&node).copied(),
+            pending,
+            next_deadline,
+            last_cancellation: self.store.periodic_cancellation_causes.get(&node).copied(),
+            provenance: self.store.provenance.as_ref()?.clone(),
+        })
+    }
+
     /// Returns an owned observation of one top-level user-module instance.
     pub fn inspect_module(
         &self,
@@ -2498,6 +2869,7 @@ impl<D> Machine<D> {
                 sample_hold: self.sample_hold_observation(flat),
                 transport_delay: self.transport_delay_observation(flat),
                 inertial_delay: self.inertial_delay_observation(flat),
+                periodic: self.periodic_observation(flat),
                 pending,
             });
         }

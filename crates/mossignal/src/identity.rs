@@ -425,6 +425,29 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
                 writer.variant_null("pending_inertial_candidate")
             });
         }
+        NodeKind::Periodic(config) => {
+            writer.variant_start(identity_tag);
+            writer.record_start(5);
+            writer.field("period_ticks", |writer| writer.uint(config.period.ticks()));
+            writer.field("first_emission", |writer| {
+                writer.variant_null(match config.first_emission {
+                    crate::authored::FirstEmissionPolicy::Immediate => "immediate",
+                    crate::authored::FirstEmissionPolicy::AfterFirstPeriod => "after_first_period",
+                })
+            });
+            writer.field("reenable_phase", |writer| {
+                writer.variant_null(match config.reenable_phase {
+                    crate::authored::ReenablePhasePolicy::RestartPhase => "restart_phase",
+                    crate::authored::ReenablePhasePolicy::PreservePhase => "preserve_phase",
+                })
+            });
+            writer.field("state_schema", |writer| {
+                writer.variant_null("periodic_anchor_previous_enable")
+            });
+            writer.field("temporal_schema", |writer| {
+                writer.variant_null("pending_periodic_boundary")
+            });
+        }
     }
 }
 

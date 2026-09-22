@@ -2,8 +2,9 @@
 
 use crate::authored::{
     ConflictPolicy, ConnectionDef, ConnectionEndpoint, EdgeDetectorKind, EdgeObservation,
-    ExternalInputDef, ExternalOutputDef, InputPortRole, ModuleInstanceDef, ModuleInterfaceMapping,
-    NodeDef, NodeKind, NodePorts, OutputPortRole, UncheckedNetwork,
+    ExternalInputDef, ExternalOutputDef, FirstEmissionPolicy, InputPortRole, ModuleInstanceDef,
+    ModuleInterfaceMapping, NodeDef, NodeKind, NodePorts, OutputPortRole, ReenablePhasePolicy,
+    UncheckedNetwork,
 };
 use crate::diagnostics::{DiagnosticSet, Report};
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint, TimeDomainId};
@@ -21,7 +22,7 @@ use crate::module::{
 use crate::node_schema::{SemanticNodeKind, StateFamily, TemporalFamily, schema_for_kind};
 use crate::policy::RuntimePolicy;
 use crate::signal::{Level, LogicLevel, Pulse, PulseCount, SignalKind};
-use crate::time::NonZeroSpan;
+use crate::time::{NonZeroSpan, Time};
 use crate::validation::{
     NetworkDefinitionGraphView, ReactionDependencyGraph, ReactionVertex, ValidatedNetwork,
     compilation_reaction_graph,
@@ -217,6 +218,13 @@ enum CompiledNodeKind {
         output: StoredLevelStateIndex,
         delay_ticks: u64,
     },
+    Periodic {
+        enable: PortIndex,
+        previous_enable: StoredLevelStateIndex,
+        period_ticks: u64,
+        first_emission: FirstEmissionPolicy,
+        reenable_phase: ReenablePhasePolicy,
+    },
 }
 
 impl CompiledNodeKind {
@@ -247,6 +255,7 @@ impl CompiledNodeKind {
             Self::PulseDelay { .. } => SemanticNodeKind::PulseDelay,
             Self::TransportDelay { .. } => SemanticNodeKind::TransportDelay,
             Self::InertialDelay { .. } => SemanticNodeKind::InertialDelay,
+            Self::Periodic { .. } => SemanticNodeKind::Periodic,
         }
     }
 
@@ -329,11 +338,13 @@ impl CompiledNodeKind {
             Self::InertialDelay { input, .. } if port == input => {
                 Some(InputPortRole::InertialDelay)
             }
+            Self::Periodic { enable, .. } if port == enable => Some(InputPortRole::Enable),
             Self::EdgeDetector { .. }
             | Self::Toggle { .. }
             | Self::PulseDelay { .. }
             | Self::TransportDelay { .. }
-            | Self::InertialDelay { .. } => None,
+            | Self::InertialDelay { .. }
+            | Self::Periodic { .. } => None,
         }
     }
 
@@ -365,6 +376,7 @@ impl CompiledNodeKind {
             | Self::SampleHold { .. } => Some(StateFamily::StoredLevel),
             Self::TransportDelay { .. } => Some(StateFamily::TransportLevel),
             Self::InertialDelay { .. } => Some(StateFamily::TransportLevel),
+            Self::Periodic { .. } => Some(StateFamily::PeriodicEnable),
             _ => None,
         }
     }
@@ -374,6 +386,7 @@ impl CompiledNodeKind {
             Self::PulseDelay { .. } => Some(TemporalFamily::PendingPulseGroup),
             Self::TransportDelay { .. } => Some(TemporalFamily::PendingTransportTransition),
             Self::InertialDelay { .. } => Some(TemporalFamily::InertialCandidate),
+            Self::Periodic { .. } => Some(TemporalFamily::PeriodicBoundary),
             _ => None,
         }
     }
@@ -437,6 +450,7 @@ pub(crate) struct FullEvaluation {
     pub(crate) pulse_delay_proposals: Vec<PulseDelayProposal>,
     pub(crate) transport_delay_proposals: Vec<TransportDelayProposal>,
     pub(crate) inertial_delay_proposals: Vec<InertialDelayProposal>,
+    pub(crate) periodic_proposals: Vec<PeriodicProposal>,
     #[cfg(test)]
     execution_counts: Vec<usize>,
 }
@@ -464,6 +478,19 @@ pub(crate) struct InertialDelayProposal {
     pub(crate) target: LogicLevel,
     pub(crate) output: LogicLevel,
     pub(crate) input_source: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PeriodicProposal {
+    pub(crate) node: NodeKey,
+    pub(crate) period_ticks: u64,
+    pub(crate) previous_enable: LogicLevel,
+    pub(crate) enable: LogicLevel,
+    pub(crate) input_source: usize,
+    pub(crate) due_ordinal: Option<u64>,
+    pub(crate) emitted: bool,
+    pub(crate) first_emission: FirstEmissionPolicy,
+    pub(crate) reenable_phase: ReenablePhasePolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -563,6 +590,12 @@ pub(crate) enum EvaluationCause {
     },
     InertialDelay {
         node: NodeKey,
+    },
+    Periodic {
+        node: NodeKey,
+        enable: usize,
+        due: bool,
+        emitted: bool,
     },
     Alias(usize),
     ExternalOutput {
@@ -763,12 +796,20 @@ impl<D> CompiledNetwork<D> {
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
         previous_edge_observations: &[EdgeObservation],
         previous_stored_levels: &[LogicLevel],
+        at: Time<D>,
+        periodic_anchors: &BTreeMap<NodeKey, Time<D>>,
     ) -> Result<FullEvaluation, EvaluationFailure> {
-        self.inner.evaluate_reaction(
+        self.inner.evaluate_reaction_with_due(
             external_levels,
             external_pulses,
             previous_edge_observations,
             previous_stored_levels,
+            at,
+            periodic_anchors,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
         )
     }
 
@@ -782,15 +823,21 @@ impl<D> CompiledNetwork<D> {
         due_pulses: &BTreeMap<NodeKey, PulseCount>,
         due_transports: &BTreeMap<NodeKey, LogicLevel>,
         due_inertials: &BTreeMap<NodeKey, LogicLevel>,
+        due_periodics: &BTreeMap<NodeKey, u64>,
+        at: Time<D>,
+        periodic_anchors: &BTreeMap<NodeKey, Time<D>>,
     ) -> Result<FullEvaluation, EvaluationFailure> {
         self.inner.evaluate_reaction_with_due(
             external_levels,
             external_pulses,
             previous_edge_observations,
             previous_stored_levels,
+            at,
+            periodic_anchors,
             due_pulses,
             due_transports,
             due_inertials,
+            due_periodics,
         )
     }
 
@@ -993,6 +1040,42 @@ impl<D> CompiledNetwork<D> {
         Some(self.inner.input_source(input).ok()?.0)
     }
 
+    pub(crate) fn periodic(
+        &self,
+        node: NodeKey,
+    ) -> Option<(
+        NonZeroSpan<D>,
+        FirstEmissionPolicy,
+        ReenablePhasePolicy,
+        StoredLevelStateIndex,
+    )> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        let CompiledNodeKind::Periodic {
+            period_ticks,
+            first_emission,
+            reenable_phase,
+            previous_enable,
+            ..
+        } = descriptor.kind
+        else {
+            return None;
+        };
+        Some((
+            NonZeroSpan::from_ticks(period_ticks).ok()?,
+            first_emission,
+            reenable_phase,
+            previous_enable,
+        ))
+    }
+
+    pub(crate) fn periodic_enable_operation(&self, node: NodeKey) -> Option<usize> {
+        let descriptor = self.inner.nodes.get(self.inner.node_lookup.get(&node)?.0)?;
+        let CompiledNodeKind::Periodic { enable, .. } = descriptor.kind else {
+            return None;
+        };
+        Some(self.inner.input_source(enable).ok()?.0)
+    }
+
     pub(crate) fn contains_node(&self, node: NodeKey) -> bool {
         self.inner.node_lookup.contains_key(&node)
     }
@@ -1081,6 +1164,7 @@ impl<D> CompiledNetwork<D> {
 }
 
 impl<D> CompiledInner<D> {
+    #[cfg(test)]
     fn evaluate_reaction(
         &self,
         external_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
@@ -1093,6 +1177,9 @@ impl<D> CompiledInner<D> {
             external_pulses,
             previous_edge_observations,
             previous_stored_levels,
+            Time::from_ticks(0),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
@@ -1106,9 +1193,12 @@ impl<D> CompiledInner<D> {
         external_pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
         previous_edge_observations: &[EdgeObservation],
         previous_stored_levels: &[LogicLevel],
+        at: Time<D>,
+        periodic_anchors: &BTreeMap<NodeKey, Time<D>>,
         due_pulses: &BTreeMap<NodeKey, PulseCount>,
         due_transports: &BTreeMap<NodeKey, LogicLevel>,
         due_inertials: &BTreeMap<NodeKey, LogicLevel>,
+        due_periodics: &BTreeMap<NodeKey, u64>,
     ) -> Result<FullEvaluation, EvaluationFailure> {
         if previous_edge_observations.len() != self.edge_initial_observations.len()
             || previous_stored_levels.len() != self.stored_level_initial_states.len()
@@ -1128,6 +1218,7 @@ impl<D> CompiledInner<D> {
         let mut pulse_delay_proposals = Vec::new();
         let mut transport_delay_proposals = Vec::new();
         let mut inertial_delay_proposals = Vec::new();
+        let mut periodic_proposals = Vec::new();
         #[cfg(test)]
         let mut execution_counts = vec![0; self.operations.len()];
 
@@ -1885,6 +1976,65 @@ impl<D> CompiledInner<D> {
                             EvaluationCause::InertialDelay { node: *key },
                         )
                     }
+                    NodeDescriptor {
+                        key,
+                        kind:
+                            CompiledNodeKind::Periodic {
+                                enable,
+                                previous_enable,
+                                period_ticks,
+                                first_emission,
+                                reenable_phase,
+                            },
+                        ..
+                    } => {
+                        // SPEC: docs/specs/contracts/periodic.yaml
+                        // "settled-enable-and-exact-boundary" — due work emits only after the
+                        // current reaction's enable has settled; preserved exact-boundary
+                        // re-enables use the same reaction without replaying missed boundaries.
+                        let current = self.level_input_value(*enable, &values)?;
+                        let previous = previous_stored_levels
+                            .get(previous_enable.0)
+                            .copied()
+                            .ok_or(EvaluationFailure::Incomplete)?;
+                        proposed_stored_levels[previous_enable.0] = current;
+                        let due = due_periodics.get(key).copied();
+                        let rising = previous.is_low() && current.is_high();
+                        let immediate = rising
+                            && *first_emission == FirstEmissionPolicy::Immediate
+                            && match (*reenable_phase, periodic_anchors.get(key).copied()) {
+                                (ReenablePhasePolicy::RestartPhase, _) | (_, None) => true,
+                                (ReenablePhasePolicy::PreservePhase, Some(anchor)) => {
+                                    at.ticks() >= anchor.ticks()
+                                        && (at.ticks() - anchor.ticks()) % *period_ticks == 0
+                                }
+                            };
+                        let emitted = current.is_high() && (due.is_some() || immediate);
+                        periodic_proposals.push(PeriodicProposal {
+                            node: *key,
+                            period_ticks: *period_ticks,
+                            previous_enable: previous,
+                            enable: current,
+                            input_source: self.input_source(*enable)?.0,
+                            due_ordinal: due,
+                            emitted,
+                            first_emission: *first_emission,
+                            reenable_phase: *reenable_phase,
+                        });
+                        (
+                            EvaluationValue::Pulse(if emitted {
+                                PulseCount::ONE
+                            } else {
+                                PulseCount::ZERO
+                            }),
+                            EvaluationCause::Periodic {
+                                node: *key,
+                                enable: self.input_source(*enable)?.0,
+                                due: due.is_some(),
+                                emitted,
+                            },
+                        )
+                    }
                 },
                 OperationDescriptor::NodeOutput(port) => {
                     let predecessor = self.predecessors[index]
@@ -2082,6 +2232,7 @@ impl<D> CompiledInner<D> {
             pulse_delay_proposals,
             transport_delay_proposals,
             inertial_delay_proposals,
+            periodic_proposals,
             #[cfg(test)]
             execution_counts,
         })
@@ -2399,6 +2550,20 @@ impl<D> CompiledInner<D> {
                         delay_ticks: config.delay.ticks(),
                     }
                 }
+                NodeKind::Periodic(config) => {
+                    let enable = inputs.first().copied().unwrap_or_else(|| {
+                        panic!("validated Periodic descriptor must retain its enable input")
+                    });
+                    let previous_enable = StoredLevelStateIndex(stored_level_initial_states.len());
+                    stored_level_initial_states.push(LogicLevel::Low);
+                    CompiledNodeKind::Periodic {
+                        enable,
+                        previous_enable,
+                        period_ticks: config.period.ticks(),
+                        first_emission: config.first_emission,
+                        reenable_phase: config.reenable_phase,
+                    }
+                }
             };
             nodes.push(NodeDescriptor {
                 key: node.key(),
@@ -2635,6 +2800,16 @@ impl<D> CompiledInner<D> {
                         && delay_ticks > 0
                         && remembered_input.0 + 1 == output.0
                         && output.0 < self.stored_level_initial_states.len()
+                }
+                CompiledNodeKind::Periodic {
+                    enable,
+                    previous_enable,
+                    period_ticks,
+                    ..
+                } => {
+                    node.inputs.contains(&enable)
+                        && period_ticks > 0
+                        && previous_enable.0 < self.stored_level_initial_states.len()
                 }
                 CompiledNodeKind::Select {
                     selector,
@@ -3461,6 +3636,7 @@ fn clone_definition<D>(definition: &UncheckedNetwork<D>) -> UncheckedNetwork<D> 
                 NodeKind::InertialDelay(config) => {
                     NodeKind::inertial_delay(config.delay, config.initial)
                 }
+                NodeKind::Periodic(config) => NodeKind::periodic(*config),
             };
             crate::authored::NodeDef::new(
                 node.key(),

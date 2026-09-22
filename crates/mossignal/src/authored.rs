@@ -661,6 +661,8 @@ pub enum NodeKind<D> {
     TransportDelay(TransportDelayConfig<D>),
     /// A temporal Level transition reproducer that filters unstable changes.
     InertialDelay(InertialDelayConfig<D>),
+    /// A Level-enabled recurring logical-time Pulse source.
+    Periodic(PeriodicConfig<D>),
 }
 
 impl<D> Clone for NodeKind<D> {
@@ -689,6 +691,7 @@ impl<D> Clone for NodeKind<D> {
             Self::PulseDelay(config) => Self::PulseDelay(*config),
             Self::TransportDelay(config) => Self::TransportDelay(*config),
             Self::InertialDelay(config) => Self::InertialDelay(*config),
+            Self::Periodic(config) => Self::Periodic(*config),
         }
     }
 }
@@ -719,6 +722,7 @@ impl<D> PartialEq for NodeKind<D> {
             (Self::PulseDelay(left), Self::PulseDelay(right)) => left == right,
             (Self::TransportDelay(left), Self::TransportDelay(right)) => left == right,
             (Self::InertialDelay(left), Self::InertialDelay(right)) => left == right,
+            (Self::Periodic(left), Self::Periodic(right)) => left == right,
             _ => false,
         }
     }
@@ -766,6 +770,7 @@ impl<D> fmt::Debug for NodeKind<D> {
                 .debug_tuple("InertialDelay")
                 .field(config)
                 .finish(),
+            Self::Periodic(config) => formatter.debug_tuple("Periodic").field(config).finish(),
         }
     }
 }
@@ -907,6 +912,12 @@ impl<D> NodeKind<D> {
     #[must_use]
     pub const fn inertial_delay(delay: NonZeroSpan<D>, initial: LogicLevel) -> Self {
         Self::InertialDelay(InertialDelayConfig::new(delay, initial))
+    }
+
+    /// Creates a Periodic node with the supplied exact phase policies.
+    #[must_use]
+    pub const fn periodic(config: PeriodicConfig<D>) -> Self {
+        Self::Periodic(config)
     }
 }
 
@@ -1276,6 +1287,79 @@ impl<D> InertialDelayConfig<D> {
     #[must_use]
     pub const fn new(delay: NonZeroSpan<D>, initial: LogicLevel) -> Self {
         Self { delay, initial }
+    }
+}
+
+/// Whether an enabling reaction emits immediately or after one full period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FirstEmissionPolicy {
+    Immediate,
+    AfterFirstPeriod,
+}
+
+/// Whether re-enabling restarts phase or resumes an established phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReenablePhasePolicy {
+    RestartPhase,
+    PreservePhase,
+}
+
+/// The semantic configuration of an authored [`NodeKind::Periodic`] claim.
+pub struct PeriodicConfig<D> {
+    pub period: NonZeroSpan<D>,
+    pub first_emission: FirstEmissionPolicy,
+    pub reenable_phase: ReenablePhasePolicy,
+}
+
+impl<D> Clone for PeriodicConfig<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<D> Copy for PeriodicConfig<D> {}
+
+impl<D> PartialEq for PeriodicConfig<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.period == other.period
+            && self.first_emission == other.first_emission
+            && self.reenable_phase == other.reenable_phase
+    }
+}
+
+impl<D> Eq for PeriodicConfig<D> {}
+
+impl<D> Hash for PeriodicConfig<D> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.period.hash(state);
+        self.first_emission.hash(state);
+        self.reenable_phase.hash(state);
+    }
+}
+
+impl<D> fmt::Debug for PeriodicConfig<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PeriodicConfig")
+            .field("period", &self.period)
+            .field("first_emission", &self.first_emission)
+            .field("reenable_phase", &self.reenable_phase)
+            .finish()
+    }
+}
+
+impl<D> PeriodicConfig<D> {
+    #[must_use]
+    pub const fn new(
+        period: NonZeroSpan<D>,
+        first_emission: FirstEmissionPolicy,
+        reenable_phase: ReenablePhasePolicy,
+    ) -> Self {
+        Self {
+            period,
+            first_emission,
+            reenable_phase,
+        }
     }
 }
 
