@@ -1245,6 +1245,53 @@ impl<D> CompiledNetwork<D> {
         slots
     }
 
+    pub(crate) fn snapshot_nodes(&self) -> Vec<SnapshotNode> {
+        let mut nodes = Vec::new();
+        for node in &self.inner.nodes {
+            let family = match node.kind {
+                CompiledNodeKind::EdgeDetector { state, .. } => SnapshotNodeFamily::Edge {
+                    index: state.value(),
+                },
+                CompiledNodeKind::Toggle { state, .. }
+                | CompiledNodeKind::PulseSetResetLatch { state, .. }
+                | CompiledNodeKind::LevelSetResetLatch { state, .. }
+                | CompiledNodeKind::SampleHold { state, .. } => SnapshotNodeFamily::StoredLevel {
+                    index: state.value(),
+                },
+                CompiledNodeKind::PulseDelay { .. } => SnapshotNodeFamily::PulseDelay,
+                CompiledNodeKind::TransportDelay {
+                    remembered_input,
+                    output,
+                    ..
+                } => SnapshotNodeFamily::Transport {
+                    remembered: remembered_input.value(),
+                    output: output.value(),
+                },
+                CompiledNodeKind::InertialDelay {
+                    remembered_input,
+                    output,
+                    ..
+                } => SnapshotNodeFamily::Inertial {
+                    remembered: remembered_input.value(),
+                    output: output.value(),
+                },
+                CompiledNodeKind::Periodic {
+                    previous_enable, ..
+                } => SnapshotNodeFamily::Periodic {
+                    previous_enable: previous_enable.value(),
+                },
+                _ => continue,
+            };
+            nodes.push(SnapshotNode {
+                owner: self.stable_owner(node.key),
+                flat: node.key,
+                kind: node.kind.semantic_kind().identity_tag(),
+                family,
+            });
+        }
+        nodes
+    }
+
     pub(crate) fn settled_level_slots(&self) -> Vec<SettledLevelSlot> {
         let mut slots = Vec::new();
         for (key, port_index) in &self.inner.input_port_lookup {
@@ -1364,6 +1411,22 @@ pub(crate) enum DigestStateFamily {
     Transport { remembered: usize, output: usize },
     Inertial { remembered: usize, output: usize },
     Periodic { previous_enable: usize },
+}
+
+pub(crate) enum SnapshotNodeFamily {
+    Edge { index: usize },
+    StoredLevel { index: usize },
+    PulseDelay,
+    Transport { remembered: usize, output: usize },
+    Inertial { remembered: usize, output: usize },
+    Periodic { previous_enable: usize },
+}
+
+pub(crate) struct SnapshotNode {
+    pub owner: StableOwner,
+    pub flat: NodeKey,
+    pub kind: &'static str,
+    pub family: SnapshotNodeFamily,
 }
 
 pub(crate) enum SettledEndpoint {

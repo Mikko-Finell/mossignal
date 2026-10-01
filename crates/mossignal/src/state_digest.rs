@@ -151,6 +151,58 @@ impl ProjectionContext {
     }
 }
 
+pub(crate) struct CauseDigestIndex {
+    records: BTreeMap<[u8; 32], Vec<u8>>,
+    machine: Vec<[u8; 32]>,
+    episodes: Vec<Vec<[u8; 32]>>,
+}
+
+impl CauseDigestIndex {
+    pub(crate) fn records(&self) -> &BTreeMap<[u8; 32], Vec<u8>> {
+        &self.records
+    }
+
+    pub(crate) fn machine_digest(&self, ordinal: usize) -> [u8; 32] {
+        match self.machine.get(ordinal).copied() {
+            Some(digest) => digest,
+            None => panic!("committed cause ordinal must resolve in its provenance view"),
+        }
+    }
+
+    pub(crate) fn episode_digest(&self, episode: usize, ordinal: usize) -> [u8; 32] {
+        let digests = match self.episodes.get(episode) {
+            Some(digests) => digests,
+            None => panic!("active episode provenance must be indexed with its episode"),
+        };
+        match digests.get(ordinal).copied() {
+            Some(digest) => digest,
+            None => panic!("committed cause ordinal must resolve in its provenance view"),
+        }
+    }
+}
+
+pub(crate) fn cause_digest_index<D>(machine: &Machine<D>) -> CauseDigestIndex {
+    let context = ProjectionContext::build(machine);
+    let mut reached = context.machine_reachable.clone();
+    for episode in &context.episode_reachable {
+        reached.extend(episode.iter().copied());
+    }
+    let mut records = BTreeMap::new();
+    for digest in reached {
+        match context.table.payloads.get(&digest) {
+            Some(payload) => {
+                records.insert(digest, payload.clone());
+            }
+            None => panic!("reachable provenance digest must retain its canonical record"),
+        }
+    }
+    CauseDigestIndex {
+        records,
+        machine: context.machine_digests,
+        episodes: context.episode_digests,
+    }
+}
+
 fn machine_roots<D>(machine: &Machine<D>) -> Vec<CauseRef> {
     let mut roots = Vec::new();
     roots.extend(machine.store.input_causes.values().copied());
@@ -932,6 +984,31 @@ fn write_pulse_port(writer: &mut Cbor, port: &PulsePortSubject) {
             body.field("port", |writer| writer.key(local));
             writer.nested(&body.finish());
         }
+    }
+}
+
+pub(crate) fn encode_stable_owner(owner: &StableOwner) -> Vec<u8> {
+    owner_bytes(owner)
+}
+
+pub(crate) fn encode_settled_endpoint(endpoint: &SettledEndpoint) -> Vec<u8> {
+    endpoint_bytes(endpoint)
+}
+
+pub(crate) fn encode_node_subject(subject: &NodeSubject) -> Vec<u8> {
+    node_subject_bytes(subject)
+}
+
+pub(crate) fn encode_episode_evidence<D>(problem: &crate::diagnostics::Problem<D>) -> Vec<u8> {
+    evidence_bytes(problem)
+}
+
+pub(crate) fn episode_evidence_revision<D>(problem: &crate::diagnostics::Problem<D>) -> u64 {
+    match problem.evidence() {
+        crate::diagnostics::ProblemEvidence::RuntimeLevelLatchConflictRetained {
+            evidence, ..
+        } => evidence.revision.value(),
+        _ => panic!("active episode evidence must be a retained level conflict"),
     }
 }
 

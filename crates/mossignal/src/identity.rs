@@ -19,6 +19,7 @@ const MODULE_DOMAIN: &str = "mossignal/module_fingerprint/v1";
 pub(crate) const EXECUTION_STATE_DOMAIN: &str = "mossignal/execution_state_digest/v1";
 pub(crate) const OBSERVABLE_STATE_DOMAIN: &str = "mossignal/observable_state_digest/v1";
 pub(crate) const PROVENANCE_RECORD_DOMAIN: &str = "mossignal/provenance_record/v1";
+pub(crate) const SNAPSHOT_DIGEST_DOMAIN: &str = "mossignal/snapshot_digest/v1";
 
 /// Caller-owned persistent identity for the meaning of one logical tick.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -109,6 +110,10 @@ fingerprint!(
 fingerprint!(
     ObservableStateDigest,
     "The opaque identity of one committed machine's required current observation."
+);
+fingerprint!(
+    SnapshotDigest,
+    "The opaque integrity identity of one canonical machine snapshot."
 );
 
 pub(crate) fn domain_separated(domain: &str, version: u64, payload: &[u8]) -> Vec<u8> {

@@ -13,6 +13,7 @@ mod machine;
 pub mod metadata;
 mod module;
 mod node_schema;
+mod persistence;
 mod policy;
 pub mod signal;
 pub mod standard;
@@ -45,7 +46,7 @@ pub use episode::{
 };
 pub use identity::{
     ExecutionStateDigest, InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint,
-    ObservableStateDigest, TimeDomainId,
+    ObservableStateDigest, SnapshotDigest, TimeDomainId,
 };
 pub use input::{
     InputBuildFailure, InputDelta, InputDeltaBuilder, InputSnapshot, InputSnapshotBuilder,
@@ -70,6 +71,9 @@ pub use module::{
     DefinitionGraphView, ModuleDef, ModuleInputIter, ModuleOrigin, ModuleOutputIter, NodeSubject,
     PulsePortSubject, QualifiedConnectionRef, QualifiedInPortRef, QualifiedModuleRef,
     QualifiedNodeRef,
+};
+pub use persistence::{
+    ArtifactBytes, EncodeFailure, MachineSnapshot, PersistenceContext, encode_snapshot,
 };
 pub use policy::{
     PolicyFailure, RuntimePolicy, RuntimePolicyBuilder, RuntimePolicyId, RuntimePolicyLimit,

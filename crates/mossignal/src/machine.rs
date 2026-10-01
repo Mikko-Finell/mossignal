@@ -2444,6 +2444,24 @@ impl<D> Machine<D> {
         crate::state_digest::observable_state_digest(self)
     }
 
+    /// Returns an owned snapshot of this committed machine.
+    ///
+    /// Creation reads one complete committed version. It does not borrow or
+    /// mutate the machine. Encoding the returned value is
+    /// [`encode_snapshot`](crate::encode_snapshot).
+    ///
+    /// ```compile_fail
+    /// use mossignal::{ExecutionStateDigest, Machine, SnapshotDigest};
+    /// fn accepts(_: SnapshotDigest) {}
+    /// fn reject<D>(machine: &Machine<D>) {
+    ///     accepts(machine.execution_state_digest());
+    /// }
+    /// ```
+    #[must_use]
+    pub fn snapshot(&self) -> crate::persistence::MachineSnapshot<D> {
+        crate::persistence::snapshot_from_machine(self)
+    }
+
     #[cfg(test)]
     pub(crate) fn reverse_pending_batches_for_test(&mut self) {
         for batch in self.store.pending_events.values_mut() {

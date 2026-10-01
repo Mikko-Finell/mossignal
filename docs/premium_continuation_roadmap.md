@@ -791,7 +791,7 @@ Explicitly exclude:
 
 ---
 
-## 53. Canonical snapshot encoding
+## 53. [DONE] Canonical snapshot encoding
 
 Implement one versioned, self-contained machine snapshot artifact covering:
 
