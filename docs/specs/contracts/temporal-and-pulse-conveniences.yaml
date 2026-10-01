@@ -1,0 +1,199 @@
+schema_version: "0.1"
+id: mossignal.authoring.temporal_and_pulse_conveniences
+title: Debounce alias and any_pulse composition
+kind: family
+status: reviewed
+
+source_baseline:
+  commit: 96de43eddf6d3bc0264ddf314b709b94ea81adfd
+  working_tree: dirty
+
+summary: >-
+  debounce is a primitive alias for one caller-configured InertialDelay, and
+  any_pulse is a builder-only Merge followed by Coalesce. Both are authoring
+  conveniences over ordinary primitives, with no module, identity, migration,
+  or diagnostic boundary of their own.
+
+scope:
+  includes:
+    - catalogue classification and exact lowering of debounce and any_pulse
+    - debounce parameter exposure and any_pulse composition order
+    - authoring failure, identity, inspection, and conformance consequences
+  excludes:
+    - xor, level_gate, majority, nand, nor, and xnor
+    - standard modules and user ModuleDef wrappers
+    - annotate_signal and other metadata-only authoring
+    - InertialDelay, Merge, and Coalesce primitive laws
+    - deferred pulse multiplication, pulse cap, pulse parity, and low-enabled spellings
+    - persistence codecs, topology patches, and migration implementation
+
+known_uncovered:
+  - Optional retention of the convenience spelling as non-semantic authoring metadata
+  - InertialDelay duration-change and topology-migration policy, which debounce does not define
+
+aliases:
+  - debounce
+  - any_pulse
+  - AnyPulse
+
+requirements:
+  - id: exact-convenience-classification
+    kind: semantic
+    statement: >-
+      debounce and any_pulse each belong to exactly one convenience category.
+      debounce is a primitive alias for InertialDelay. any_pulse is a
+      builder-only operation. Neither is a standard module, a metadata-only
+      operation, a new primitive kind, or an independent semantic object, and
+      an expansion of more than one primitive does not by itself make any_pulse
+      a module.
+    sources: [classification, initial-aliases, initial-builder-operations, any-pulse-candidate, classification-summary]
+
+  - id: debounce-alias-lowering
+    kind: semantic
+    statement: >-
+      debounce creates exactly one InertialDelay whose Level input is the
+      supplied signal and whose semantic configuration is the caller-supplied
+      positive delay and explicit initial LogicLevel. It exposes every semantic
+      InertialDelay parameter, invents neither an initial level nor a migration
+      policy, and creates no other node and no ModuleInstance.
+    sources: [classification, initial-aliases, primitive-alias-api, inertial-parameters]
+
+  - id: any-pulse-lowering
+    kind: semantic
+    statement: >-
+      any_pulse(inputs) authors exactly Merge(inputs) connected, in caller
+      iterator order, to one Coalesce, and its result is that Coalesce output.
+      Empty and unary input lists remain valid. The checked Merge sum occurs
+      before the presence bound. The operation creates no ModuleInstance or
+      additional node and defines no separate multiplicity, ordering, or
+      overflow law, so Merge's checked sum and Coalesce's presence bound apply
+      unchanged.
+    sources: [classification, initial-builder-operations, any-pulse-candidate, coalesce-composition, merge-law, pulse-counts, variadic-construction]
+
+  - id: ordinary-primitive-boundary
+    kind: system_effect
+    statement: >-
+      debounce uses InertialDelay's compatibility, diagnostics, inspection,
+      identity, and runtime behavior, and inspection exposes the InertialDelay
+      kind. any_pulse is inspected, diagnosed, persisted, and identified only as
+      its Merge node, its Coalesce node, and the connection between them.
+      Neither convenience adds a descriptor, version, hierarchy, independent
+      fingerprint field, migration rule, runtime state, or convenience-owned
+      diagnostic, and neither suppresses diagnostics of the authored primitives.
+    sources: [classification, primitive-alias-api, initial-builder-operations]
+
+  - id: typed-builder-scope-preservation
+    kind: public_surface
+    statement: >-
+      Convenience methods offered on NetworkBuilder and ModuleBuilder consume
+      typed signals under the same builder-scope rules as their underlying
+      constructors. A foreign signal returns AuthoringFailure::ForeignSignal
+      rather than panicking or connecting that signal. Successful calls lower
+      into the same canonical primitive graph as direct construction.
+    sources: [builder-signal-scope, module-builder-parity, primitive-alias-api]
+    basis: derived
+
+  - id: exact-lowering-conformance
+    kind: verification
+    statement: >-
+      Verification must show each convenience's classification, exact node
+      kinds, configuration, caller-iterator incidence, and absence of a
+      ModuleInstance. Where a typed builder offers the method, the same inputs
+      and parameters must be semantically equivalent to direct inertial_delay,
+      or to direct merge followed by coalesce. Coverage includes both explicit
+      debounce initial levels and empty, unary, and sum-overflowing any_pulse
+      inputs, and it must not suppress primitive diagnostics or replace Merge
+      overflow with a successful presence pulse. When both paths allocate the
+      same stable keys, the network or user-module fingerprint matches the
+      direct construction because the convenience adds no fingerprint of its own.
+    sources: [semantic-equivalence, initial-aliases, initial-builder-operations, any-pulse-candidate, network-fingerprint, module-fingerprint]
+    basis: derived
+
+recommendations:
+  - id: concise-builder-methods
+    statement: >-
+      The typed builders should expose a concise any_pulse method. The crate
+      should not add a separate named convenience for every inversion, polarity,
+      priority, or branch permutation.
+    sources: [initial-builder-operations]
+
+  - id: no-misleading-keyed-form
+    statement: >-
+      any_pulse should not provide a keyed form that presents the two-primitive
+      composition as one semantic object. A caller who needs durable composition
+      identity should author the primitives explicitly or wrap them in a user module.
+    sources: [classification, initial-builder-operations]
+
+implementation_freedom:
+  - Offer debounce as a concise method. Accept InertialDelayConfig or separate delay and initial arguments. Both semantic parameters remain required and neither receives a default. Prefer passing the existing InertialDelayConfig through to the ordinary inertial_delay constructor.
+  - Implement any_pulse by delegating to the existing Merge and Coalesce constructors in that order. Share private helpers between NetworkBuilder and ModuleBuilder when that preserves builder scope and call order.
+  - Concise calls use the ordinary local key allocator. No explicit keyed convenience form is required; callers who need stable keys use the primitive constructors. Reject a foreign signal before creating any of the convenience's nodes, or fail at the same point as the underlying constructor. Both conform when the foreign signal is not connected. The first avoids a partial expansion.
+  - The convenience spelling need not be retained as metadata. If retained, it remains non-semantic and follows the existing metadata fingerprint exclusions.
+
+open_questions: []
+
+sources:
+  classification:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part I — Boundaries and classification, 5. Exhaustive convenience classification]
+    reviewed_hash: sha256:78c9cf85f9327b9774251f62b772f50cbbc6d01db04e9c422a8cb3b044e3456f
+  initial-aliases:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part III — Initial catalogue and non-module conveniences, 23. Primitive aliases in version 1]
+    reviewed_hash: sha256:e9ed5a80dadd84b63ff248c610f3c04ccb4b4522ecdfb915266b428eaadd1017
+  initial-builder-operations:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part III — Initial catalogue and non-module conveniences, 24. Builder-only operations in version 1]
+    reviewed_hash: sha256:85be9d7f63b787448e4fc8a116c1161c32c2ed14ab6657e69067a3d262dc0123
+  any-pulse-candidate:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VII — Deferred and rejected initial candidates, 44. Pulse algebra candidates, 44.1 `AnyPulse`]
+    reviewed_hash: sha256:d8e4ea88035fde8c9ad625ec0b341238075da0d56dee363cef01e0349ef54a45
+  classification-summary:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Appendix C — Convenience classification summary]
+    reviewed_hash: sha256:0739ae10d4570281dae0ab39909545d4f36cff85c0d0c5e8fce6dd50d506f176
+  primitive-alias-api:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 31. Primitive aliases and standard modules, 31.1 Primitive aliases]
+    reviewed_hash: sha256:131333f4f9b4e5cf85a4d8440a459eb4f0ddd38b93c0d1a4a0b2d9757e2f9b43
+  builder-signal-scope:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 23. Builder-scoped signals]
+    reviewed_hash: sha256:b200d59e0de48f3f401776baa69a2e37fa07f8cebded5b7663fd771436e4d72d
+  module-builder-parity:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 33. Reusable module definitions]
+    reviewed_hash: sha256:de8ed7d677513f9268ea2aa34ab57661a9153405ab31ae41e8e3a95ed5203ca4
+  inertial-parameters:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 53. `InertialDelay`]
+    reviewed_hash: sha256:c89dd8ff8c697281a3a992167ef37cca5b6f67f14afd98b89ce0688da9f92144
+  coalesce-composition:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part III — Pulse combinational nodes, 31. `Coalesce`]
+    reviewed_hash: sha256:4abdf91d78641556d0749a332c60662d4e64a69df2a8d42006a08b2d8854c290
+  merge-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part III — Pulse combinational nodes, 30. `Merge`]
+    reviewed_hash: sha256:c28ec1b934c49e30847b01d33dac705bb86a42b3023270e30753f0775e4116b1
+  pulse-counts:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part III — Fundamental signal types, 12. Pulse counts]
+    reviewed_hash: sha256:2b37aa087122229ea39aa53b64e32889b43a1806ac08cedb742a45cf66e9eada
+  variadic-construction:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part VII — Typed network authoring, 30. Complete primitive constructor family]
+    reviewed_hash: sha256:c2e7c5ba7fcc2ddc1e61bdb74b7094eecee3b0040ca63d1711fb4db1ec955b2e
+  network-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.1 Network fingerprint]
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  module-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 55. Module fingerprint]
+    reviewed_hash: sha256:6b41a847681a35c84fbb36310dd608fd9d5342f48c02e14ee1681f01ec0380d0
+  semantic-equivalence:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part I — Verification model, 5. Semantic equivalence]
+    reviewed_hash: sha256:06d22a3a0b8a06b4af3a9b73e759cae3e2e379e8a9ca827a70b0952003eaf173
