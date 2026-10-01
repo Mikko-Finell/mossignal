@@ -2519,6 +2519,42 @@ impl<D> NetworkBuilder<D> {
         self.not(parity)
     }
 
+    /// Authors the primitive alias `debounce` as exactly one `InertialDelay`.
+    ///
+    /// The caller supplies every semantic parameter through `InertialDelayConfig`:
+    /// the positive delay and the explicit initial level. Neither parameter is
+    /// defaulted, and the alias adds no migration policy. Inspection, identity,
+    /// and runtime behavior are those of the ordinary `InertialDelay` primitive.
+    /// This alias creates no module instance or independent semantic object.
+    pub fn debounce(
+        &mut self,
+        input: Signal<Level>,
+        config: InertialDelayConfig<D>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        // SPEC: docs/specs/contracts/temporal-and-pulse-conveniences.yaml
+        // "typed-builder-scope-preservation"
+        // Reject before inertial_delay allocates node and port keys.
+        self.require_local(input)?;
+        self.inertial_delay(input, config)
+    }
+
+    /// Authors the builder-only operation `any_pulse(inputs)` as exactly
+    /// `Coalesce(Merge(inputs))` in caller iterator order.
+    ///
+    /// Only the ordinary `Merge` and downstream `Coalesce` primitives are
+    /// retained. Empty and unary inputs stay valid, and an overflowing `Merge`
+    /// sum is not rewritten into a successful presence pulse. The composition
+    /// has no module instance, keyed form, or independent semantic identity.
+    /// Callers that need a durable boundary can author the primitives
+    /// explicitly or wrap them in a user module.
+    pub fn any_pulse<I>(&mut self, inputs: I) -> Result<Signal<Pulse>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Pulse>>,
+    {
+        let merged = self.merge(inputs)?;
+        self.coalesce(merged)
+    }
+
     /// Adds a fixed level branch selector with locally allocated identities.
     pub fn select(
         &mut self,
@@ -4033,6 +4069,31 @@ impl<D> ModuleBuilder<D> {
         b: Signal<Level>,
     ) -> Result<Signal<Level>, AuthoringFailure> {
         self.graph.xnor(a, b)
+    }
+
+    /// Authors the primitive alias `debounce` as exactly one `InertialDelay`.
+    ///
+    /// The module retains the ordinary primitive and its caller-supplied
+    /// `InertialDelayConfig`. No nested module instance, migration policy, or
+    /// independent convenience identity is created.
+    pub fn debounce(
+        &mut self,
+        input: Signal<Level>,
+        config: InertialDelayConfig<D>,
+    ) -> Result<Signal<Level>, AuthoringFailure> {
+        self.graph.debounce(input, config)
+    }
+
+    /// Authors the builder-only operation `any_pulse(inputs)` as exactly
+    /// `Coalesce(Merge(inputs))` in caller iterator order.
+    ///
+    /// The module retains only those ordinary primitives. The composition has
+    /// no nested module instance or independent semantic identity.
+    pub fn any_pulse<I>(&mut self, inputs: I) -> Result<Signal<Pulse>, AuthoringFailure>
+    where
+        I: IntoIterator<Item = Signal<Pulse>>,
+    {
+        self.graph.any_pulse(inputs)
     }
 
     /// Adds a fixed level branch selector.

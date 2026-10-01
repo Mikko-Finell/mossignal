@@ -700,7 +700,7 @@ Explicitly exclude:
 
 ---
 
-## 50. Remaining specified conveniences
+## 50. [DONE] Remaining specified conveniences
 
 Complete the initial convenience surface whose dependencies now exist,
 including aliases or builder-only operations such as:
