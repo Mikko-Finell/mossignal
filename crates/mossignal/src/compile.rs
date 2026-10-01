@@ -71,6 +71,7 @@ struct CompiledInner<D> {
     qualified_node_lookup: BTreeMap<QualifiedNodeRef, NodeKey>,
     qualified_node_reverse: BTreeMap<NodeKey, QualifiedNodeRef>,
     qualified_input_reverse: BTreeMap<AnyInPortKey, QualifiedInPortRef>,
+    qualified_output_reverse: BTreeMap<AnyOutPortKey, AnyOutPortKey>,
     qualified_connection_lookup: BTreeMap<QualifiedConnectionRef, ConnectionKey>,
     modules: BTreeMap<QualifiedModuleRef, ModuleDef<D>>,
     module_inputs: BTreeMap<(QualifiedModuleRef, crate::key::AnyModuleInputKey), OperationIndex>,
@@ -82,6 +83,7 @@ struct LoweredMetadata<D> {
     qualified_node_lookup: BTreeMap<QualifiedNodeRef, NodeKey>,
     qualified_node_reverse: BTreeMap<NodeKey, QualifiedNodeRef>,
     qualified_input_reverse: BTreeMap<AnyInPortKey, QualifiedInPortRef>,
+    qualified_output_reverse: BTreeMap<AnyOutPortKey, AnyOutPortKey>,
     qualified_connection_lookup: BTreeMap<QualifiedConnectionRef, ConnectionKey>,
     modules: BTreeMap<QualifiedModuleRef, ModuleDef<D>>,
     module_input_sources:
@@ -96,6 +98,7 @@ impl<D> Default for LoweredMetadata<D> {
             qualified_node_lookup: BTreeMap::new(),
             qualified_node_reverse: BTreeMap::new(),
             qualified_input_reverse: BTreeMap::new(),
+            qualified_output_reverse: BTreeMap::new(),
             qualified_connection_lookup: BTreeMap::new(),
             modules: BTreeMap::new(),
             module_input_sources: BTreeMap::new(),
@@ -1174,6 +1177,226 @@ impl<D> CompiledNetwork<D> {
             .get(&ReactionVertex::NodeOperation(node))
             .map(|index| index.0)
     }
+
+    pub(crate) fn stable_owner(&self, node: NodeKey) -> StableOwner {
+        match self.inner.qualified_node_reverse.get(&node) {
+            Some(qualified) => {
+                let instances = qualified.instances();
+                if instances.is_empty() {
+                    panic!("qualified module identity must retain a non-empty instance path");
+                }
+                StableOwner {
+                    instances: instances.to_vec(),
+                    node: qualified.node(),
+                }
+            }
+            None => StableOwner {
+                instances: Vec::new(),
+                node,
+            },
+        }
+    }
+
+    pub(crate) fn state_slots(&self) -> Vec<DigestStateSlot> {
+        let mut slots = Vec::new();
+        for node in &self.inner.nodes {
+            let owner = self.stable_owner(node.key);
+            let family = match node.kind {
+                CompiledNodeKind::EdgeDetector { state, .. } => {
+                    DigestStateFamily::Edge { index: state.0 }
+                }
+                CompiledNodeKind::Toggle { state, .. }
+                | CompiledNodeKind::PulseSetResetLatch { state, .. }
+                | CompiledNodeKind::LevelSetResetLatch { state, .. }
+                | CompiledNodeKind::SampleHold { state, .. } => {
+                    DigestStateFamily::StoredLevel { index: state.0 }
+                }
+                CompiledNodeKind::TransportDelay {
+                    remembered_input,
+                    output,
+                    ..
+                } => DigestStateFamily::Transport {
+                    remembered: remembered_input.0,
+                    output: output.0,
+                },
+                CompiledNodeKind::InertialDelay {
+                    remembered_input,
+                    output,
+                    ..
+                } => DigestStateFamily::Inertial {
+                    remembered: remembered_input.0,
+                    output: output.0,
+                },
+                CompiledNodeKind::Periodic {
+                    previous_enable, ..
+                } => DigestStateFamily::Periodic {
+                    previous_enable: previous_enable.0,
+                },
+                // SPEC: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+                // "91. Built-in state schemas" — pulse-delay temporal state is the pending calendar.
+                _ => continue,
+            };
+            slots.push(DigestStateSlot {
+                owner,
+                flat: node.key,
+                family,
+            });
+        }
+        slots
+    }
+
+    pub(crate) fn settled_level_slots(&self) -> Vec<SettledLevelSlot> {
+        let mut slots = Vec::new();
+        for (key, port_index) in &self.inner.input_port_lookup {
+            let AnyInPortKey::Level(_) = key else {
+                continue;
+            };
+            let port = local_in_port_key(
+                *key,
+                self.inner
+                    .qualified_input_reverse
+                    .get(key)
+                    .map(|qualified| qualified.port()),
+            );
+            let node = self.inner.ports[port_index.0].owner;
+            let owner = self.stable_owner(self.inner.nodes[node.0].key);
+            let operation = self
+                .inner
+                .connections
+                .iter()
+                .find(|connection| connection.target == *port_index)
+                .map(|connection| connection.source.0)
+                .unwrap_or_else(|| {
+                    panic!("compiled level input must have one driver");
+                });
+            slots.push(SettledLevelSlot {
+                endpoint: SettledEndpoint::NodeInput { owner, port },
+                operation,
+            });
+        }
+        for (key, port_index) in &self.inner.output_port_lookup {
+            let AnyOutPortKey::Level(_) = key else {
+                continue;
+            };
+            let port =
+                local_out_port_key(*key, self.inner.qualified_output_reverse.get(key).copied());
+            let node = self.inner.ports[port_index.0].owner;
+            let owner = self.stable_owner(self.inner.nodes[node.0].key);
+            let operation = self
+                .inner
+                .operation_lookup
+                .get(&ReactionVertex::NodeOutput(*key))
+                .map(|index| index.0)
+                .unwrap_or_else(|| panic!("compiled level output must have an operation"));
+            slots.push(SettledLevelSlot {
+                endpoint: SettledEndpoint::NodeOutput { owner, port },
+                operation,
+            });
+        }
+        for output in &self.inner.external_outputs {
+            let AnyExternalOutputKey::Level(key) = output.key else {
+                continue;
+            };
+            let operation = self
+                .inner
+                .operation_lookup
+                .get(&ReactionVertex::ExternalOutput(output.key))
+                .map(|index| index.0)
+                .unwrap_or_else(|| panic!("compiled external level output must have an operation"));
+            slots.push(SettledLevelSlot {
+                endpoint: SettledEndpoint::ExternalOutput(key.as_u128()),
+                operation,
+            });
+        }
+        slots
+    }
+
+    pub(crate) fn external_level_outputs(&self) -> Vec<ExternalOutputKey<Level>> {
+        self.inner
+            .external_outputs
+            .iter()
+            .filter_map(|output| match output.key {
+                AnyExternalOutputKey::Level(key) => Some(key),
+                AnyExternalOutputKey::Pulse(_) => None,
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn module_flat_keys(&self) -> (Vec<u128>, Vec<u128>, Vec<u128>) {
+        let nodes = self
+            .inner
+            .qualified_node_reverse
+            .keys()
+            .map(|key| key.as_u128())
+            .collect();
+        let inputs = self
+            .inner
+            .qualified_input_reverse
+            .keys()
+            .map(|key| erased_in_port(*key))
+            .collect();
+        let outputs = self
+            .inner
+            .qualified_output_reverse
+            .keys()
+            .map(|key| erased_out_port(*key))
+            .collect();
+        (nodes, inputs, outputs)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct StableOwner {
+    pub instances: Vec<ModuleInstanceKey>,
+    pub node: NodeKey,
+}
+
+pub(crate) struct DigestStateSlot {
+    pub owner: StableOwner,
+    pub flat: NodeKey,
+    pub family: DigestStateFamily,
+}
+
+pub(crate) enum DigestStateFamily {
+    Edge { index: usize },
+    StoredLevel { index: usize },
+    Transport { remembered: usize, output: usize },
+    Inertial { remembered: usize, output: usize },
+    Periodic { previous_enable: usize },
+}
+
+pub(crate) enum SettledEndpoint {
+    NodeInput { owner: StableOwner, port: u128 },
+    NodeOutput { owner: StableOwner, port: u128 },
+    ExternalOutput(u128),
+}
+
+pub(crate) struct SettledLevelSlot {
+    pub endpoint: SettledEndpoint,
+    pub operation: usize,
+}
+
+fn erased_in_port(key: AnyInPortKey) -> u128 {
+    match key {
+        AnyInPortKey::Level(key) => key.as_u128(),
+        AnyInPortKey::Pulse(key) => key.as_u128(),
+    }
+}
+
+fn erased_out_port(key: AnyOutPortKey) -> u128 {
+    match key {
+        AnyOutPortKey::Level(key) => key.as_u128(),
+        AnyOutPortKey::Pulse(key) => key.as_u128(),
+    }
+}
+
+fn local_in_port_key(flat: AnyInPortKey, local: Option<AnyInPortKey>) -> u128 {
+    erased_in_port(local.unwrap_or(flat))
+}
+
+fn local_out_port_key(flat: AnyOutPortKey, local: Option<AnyOutPortKey>) -> u128 {
+    erased_out_port(local.unwrap_or(flat))
 }
 
 impl<D> CompiledInner<D> {
@@ -2706,6 +2929,7 @@ impl<D> CompiledInner<D> {
             qualified_node_lookup: metadata.qualified_node_lookup,
             qualified_node_reverse: metadata.qualified_node_reverse,
             qualified_input_reverse: metadata.qualified_input_reverse,
+            qualified_output_reverse: metadata.qualified_output_reverse,
             qualified_connection_lookup: metadata.qualified_connection_lookup,
             modules: metadata.modules,
             module_inputs,
@@ -3302,7 +3526,7 @@ impl<'a, D> ModuleLowerer<'a, D> {
                 NodePorts::with_roles(
                     inputs.clone(),
                     node.ports().input_roles().to_vec(),
-                    outputs,
+                    outputs.clone(),
                     node.ports().output_roles().to_vec(),
                 ),
                 node.meta().clone(),
@@ -3320,6 +3544,9 @@ impl<'a, D> ModuleLowerer<'a, D> {
                         *flat,
                         QualifiedInPortRef::new(module.instances().to_vec(), *local),
                     );
+                }
+                for (local, flat) in node.ports().outputs().iter().zip(&outputs) {
+                    self.metadata.qualified_output_reverse.insert(*flat, *local);
                 }
             }
         }

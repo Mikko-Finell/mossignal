@@ -27,6 +27,10 @@ impl DiagnosticConditionKey {
     pub const fn code(&self) -> DiagnosticCode {
         self.code
     }
+
+    pub(crate) const fn discriminator(&self) -> u8 {
+        self.discriminator
+    }
     /// Returns the stable primitive owner, including its full instance path.
     #[must_use]
     pub const fn owner(&self) -> &NodeSubject {

@@ -763,7 +763,7 @@ Explicitly exclude:
 
 ---
 
-## 52. Execution-state and observable-state digests
+## 52. [DONE] Execution-state and observable-state digests
 
 Implement canonical semantic projections and identities for running-machine
 state:

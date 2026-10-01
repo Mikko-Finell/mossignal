@@ -9,7 +9,9 @@ use crate::diagnostics::{
     DiagnosticCode, InspectionEvidence, InspectionSubjectKind, LifecycleEvidence,
     OperationSubjectRef, Problem, ProblemEvidence, Responsibility, Severity, SubjectRef,
 };
-use crate::identity::{ModuleFingerprint, NetworkFingerprint};
+use crate::identity::{
+    ExecutionStateDigest, ModuleFingerprint, NetworkFingerprint, ObservableStateDigest,
+};
 use crate::key::{
     AnyModuleInputKey, AnyModuleOutputKey, ExternalInputKey, ExternalOutputKey, ModuleInstanceKey,
     NodeKey,
@@ -214,6 +216,63 @@ impl<D> Clone for PendingEvent<D> {
 }
 
 impl<D> Copy for PendingEvent<D> {}
+
+impl<D> PendingEvent<D> {
+    pub(crate) fn identity(
+        self,
+    ) -> (
+        PendingEventKey,
+        NodeKey,
+        Time<D>,
+        Time<D>,
+        NetworkRevision,
+        CauseRef,
+    ) {
+        match self {
+            Self::PulseDelay(event) => (
+                event.key,
+                event.node,
+                event.origin,
+                event.deadline,
+                event.revision,
+                event.cause,
+            ),
+            Self::TransportDelay(event) => (
+                event.key,
+                event.node,
+                event.origin,
+                event.deadline,
+                event.revision,
+                event.cause,
+            ),
+            Self::Inertial(event) => (
+                event.key,
+                event.node,
+                event.origin,
+                event.deadline,
+                event.revision,
+                event.cause,
+            ),
+            Self::Periodic(event) => (
+                event.key,
+                event.node,
+                event.origin,
+                event.deadline,
+                event.revision,
+                event.cause,
+            ),
+        }
+    }
+
+    pub(crate) const fn kind_name(self) -> &'static str {
+        match self {
+            Self::PulseDelay(_) => "pulse_delay",
+            Self::TransportDelay(_) => "transport_delay",
+            Self::Inertial(_) => "inertial_delay",
+            Self::Periodic(_) => "periodic",
+        }
+    }
+}
 
 /// Structural information available for one compiled PulseDelay.
 pub struct PulseDelayDefinitionInspection<D> {
@@ -2359,6 +2418,91 @@ impl<D> Machine<D> {
     #[must_use]
     pub fn fingerprint(&self) -> NetworkFingerprint {
         self.compiled.fingerprint()
+    }
+
+    /// Returns the execution-state digest of the committed machine.
+    ///
+    /// The query is a pure projection and does not change the machine.
+    ///
+    /// ```compile_fail
+    /// use mossignal::{ExecutionStateDigest, ObservableStateDigest};
+    /// fn accepts(_: ExecutionStateDigest) {}
+    /// fn reject(value: ObservableStateDigest) {
+    ///     accepts(value);
+    /// }
+    /// ```
+    #[must_use]
+    pub fn execution_state_digest(&self) -> ExecutionStateDigest {
+        crate::state_digest::execution_state_digest(self)
+    }
+
+    /// Returns the observable-state digest of the committed machine.
+    ///
+    /// The query is a pure projection and does not change the machine.
+    #[must_use]
+    pub fn observable_state_digest(&self) -> ObservableStateDigest {
+        crate::state_digest::observable_state_digest(self)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reverse_pending_batches_for_test(&mut self) {
+        for batch in self.store.pending_events.values_mut() {
+            batch.reverse();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_keys_in_storage_order(&self) -> Vec<u64> {
+        self.store
+            .pending_events
+            .values()
+            .flat_map(|batch| batch.iter().map(|event| event.identity().0.value()))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reverse_provenance_supporters_for_test(&mut self)
+    where
+        D: Clone,
+    {
+        if let Some(view) = &mut self.store.provenance {
+            view.reverse_unordered_supporters();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn supporter_ordinals_for_test(&self) -> Vec<u32> {
+        match &self.store.provenance {
+            Some(view) => view.supporter_ordinals(),
+            None => Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_standard_history_for_test(&mut self) {
+        self.store.standard_history.clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn standard_history_len_for_test(&self) -> usize {
+        self.store.standard_history.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_output_baseline_for_test(
+        &mut self,
+        output: ExternalOutputKey<Level>,
+        level: LogicLevel,
+    ) {
+        self.store.output_baselines.insert(output, level);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rebuild_episodes_reversed_for_test(&mut self) {
+        let episodes = std::mem::take(&mut self.store.active_episodes);
+        let mut pairs: Vec<_> = episodes.into_iter().collect();
+        pairs.reverse();
+        self.store.active_episodes = pairs.into_iter().collect();
     }
 
     /// Returns the immutable compiled topology installed in this machine.

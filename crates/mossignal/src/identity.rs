@@ -16,6 +16,9 @@ use core::fmt;
 const NETWORK_DOMAIN: &str = "mossignal/network_fingerprint/v1";
 const INPUT_SCHEMA_DOMAIN: &str = "mossignal/input_schema_fingerprint/v1";
 const MODULE_DOMAIN: &str = "mossignal/module_fingerprint/v1";
+pub(crate) const EXECUTION_STATE_DOMAIN: &str = "mossignal/execution_state_digest/v1";
+pub(crate) const OBSERVABLE_STATE_DOMAIN: &str = "mossignal/observable_state_digest/v1";
+pub(crate) const PROVENANCE_RECORD_DOMAIN: &str = "mossignal/provenance_record/v1";
 
 /// Caller-owned persistent identity for the meaning of one logical tick.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -65,7 +68,7 @@ macro_rules! fingerprint {
                 self.0
             }
 
-            const fn from_digest(bytes: [u8; 32]) -> Self {
+            pub(crate) const fn from_digest(bytes: [u8; 32]) -> Self {
                 Self(bytes)
             }
         }
@@ -99,6 +102,23 @@ fingerprint!(
     ModuleFingerprint,
     "The opaque semantic identity of one validated reusable module."
 );
+fingerprint!(
+    ExecutionStateDigest,
+    "The opaque identity of one committed machine's future-determining state."
+);
+fingerprint!(
+    ObservableStateDigest,
+    "The opaque identity of one committed machine's required current observation."
+);
+
+pub(crate) fn domain_separated(domain: &str, version: u64, payload: &[u8]) -> Vec<u8> {
+    let mut writer = Cbor::default();
+    writer.record_start(3);
+    writer.field("domain", |writer| writer.text(domain));
+    writer.field("payload", |writer| writer.nested(payload));
+    writer.field("version", |writer| writer.uint(version));
+    writer.finish()
+}
 
 pub(crate) fn module_fingerprint<D>(module: &UncheckedModule<D>) -> ModuleFingerprint {
     ModuleFingerprint::from_digest(*blake3::hash(&module_digest_input(module)).as_bytes())
@@ -993,7 +1013,7 @@ fn target(writer: &mut Cbor, endpoint: ConnectionEndpoint) {
     writer.field("signal_kind", |writer| signal_kind(writer, key.kind()));
 }
 
-fn logic_level(writer: &mut Cbor, value: LogicLevel) {
+pub(crate) fn logic_level(writer: &mut Cbor, value: LogicLevel) {
     writer.variant_null(match value {
         LogicLevel::Low => "low",
         LogicLevel::High => "high",
@@ -1062,9 +1082,17 @@ impl Cbor {
         self.major(0, value);
     }
 
-    fn bytes(&mut self, value: &[u8]) {
+    pub(crate) fn bytes(&mut self, value: &[u8]) {
         self.major(2, value.len() as u64);
         self.0.extend_from_slice(value);
+    }
+
+    pub(crate) fn nested(&mut self, cbor: &[u8]) {
+        self.0.extend_from_slice(cbor);
+    }
+
+    pub(crate) fn boolean(&mut self, value: bool) {
+        self.0.push(if value { 0xf5 } else { 0xf4 });
     }
 
     pub(crate) fn text(&mut self, value: &str) {
@@ -1072,7 +1100,7 @@ impl Cbor {
         self.0.extend_from_slice(value.as_bytes());
     }
 
-    fn array_start(&mut self, length: usize) {
+    pub(crate) fn array_start(&mut self, length: usize) {
         self.major(4, length as u64);
     }
 
@@ -1086,21 +1114,21 @@ impl Cbor {
         value(self);
     }
 
-    fn variant_start(&mut self, name: &str) {
+    pub(crate) fn variant_start(&mut self, name: &str) {
         self.array_start(2);
         self.text(name);
     }
 
-    fn variant_null(&mut self, name: &str) {
+    pub(crate) fn variant_null(&mut self, name: &str) {
         self.variant_start(name);
         self.null();
     }
 
-    fn key(&mut self, value: u128) {
+    pub(crate) fn key(&mut self, value: u128) {
         self.bytes(&value.to_be_bytes());
     }
 
-    fn null(&mut self) {
+    pub(crate) fn null(&mut self) {
         self.0.push(0xf6);
     }
 

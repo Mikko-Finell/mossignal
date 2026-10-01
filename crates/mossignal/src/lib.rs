@@ -16,6 +16,7 @@ mod node_schema;
 mod policy;
 pub mod signal;
 pub mod standard;
+mod state_digest;
 pub mod time;
 mod transaction;
 
@@ -42,7 +43,10 @@ pub use episode::{
     ActiveDiagnosticEpisode, DiagnosticConditionKey, DiagnosticEpisodeChange,
     DiagnosticEpisodeChangeKind, DiagnosticEpisodeId,
 };
-pub use identity::{InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint, TimeDomainId};
+pub use identity::{
+    ExecutionStateDigest, InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint,
+    ObservableStateDigest, TimeDomainId,
+};
 pub use input::{
     InputBuildFailure, InputDelta, InputDeltaBuilder, InputSnapshot, InputSnapshotBuilder,
 };

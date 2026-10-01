@@ -10,7 +10,9 @@ use crate::diagnostics::{
     Problem, ProblemEvidence, ProvenanceEvidence, Responsibility, RevisionMismatchEvidence,
     Severity, SubjectRef, TimeEvidence, TimeOperation,
 };
-use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
+use crate::identity::{
+    ExecutionStateDigest, InputSchemaFingerprint, NetworkFingerprint, ObservableStateDigest,
+};
 use crate::input::{InputDelta, InputSnapshot};
 use crate::key::{ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey};
 use crate::machine::{
@@ -511,6 +513,33 @@ impl fmt::Debug for CauseRef {
     }
 }
 
+impl CauseRef {
+    #[cfg(test)]
+    pub(crate) const fn ordinal(self) -> u32 {
+        self.ordinal
+    }
+}
+
+pub(crate) enum ProvenanceSubjectKind<'a> {
+    Node(NodeKey),
+    Qualified(&'a QualifiedNodeRef),
+    ExternalOutput(ExternalOutputKey<Level>),
+    PulseExternalOutput(ExternalOutputKey<Pulse>),
+}
+
+impl ProvenanceSubject {
+    pub(crate) fn kind(&self) -> ProvenanceSubjectKind<'_> {
+        match self {
+            Self::Node(node) => ProvenanceSubjectKind::Node(*node),
+            Self::QualifiedNode(node) => ProvenanceSubjectKind::Qualified(node),
+            Self::ExternalOutput(output) => ProvenanceSubjectKind::ExternalOutput(*output),
+            Self::PulseExternalOutput(output) => {
+                ProvenanceSubjectKind::PulseExternalOutput(*output)
+            }
+        }
+    }
+}
+
 /// The semantic subject of one derived initialization cause.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -546,7 +575,8 @@ impl PulseContribution {
     }
 }
 
-enum ProvenanceRecord<D> {
+#[derive(Clone)]
+pub(crate) enum ProvenanceRecord<D> {
     InitializationTransaction {
         at: Time<D>,
         revision: NetworkRevision,
@@ -618,6 +648,53 @@ enum ProvenanceRecord<D> {
         result: LogicLevel,
         supporters: Vec<CauseRef>,
     },
+}
+
+impl<D> ProvenanceRecord<D> {
+    pub(crate) fn supporters(&self) -> &[CauseRef] {
+        match self {
+            Self::PendingPulseDelay { supporters, .. }
+            | Self::PendingTransportDelay { supporters, .. }
+            | Self::PendingInertialDelay { supporters, .. }
+            | Self::PendingPeriodicBoundary { supporters, .. }
+            | Self::Derived { supporters, .. }
+            | Self::PulseDerived { supporters, .. }
+            | Self::PulseControlledLevel { supporters, .. } => supporters,
+            Self::InitializationTransaction { .. }
+            | Self::ReadyTransaction { .. }
+            | Self::ExternalObservation { .. }
+            | Self::ExternalPulseObservation { .. } => &[],
+        }
+    }
+
+    pub(crate) fn predecessor_causes(&self) -> Vec<CauseRef> {
+        let mut causes = self.supporters().to_vec();
+        match self {
+            Self::PulseDerived { contributions, .. }
+            | Self::PulseControlledLevel { contributions, .. } => {
+                causes.extend(contributions.iter().map(PulseContribution::cause));
+            }
+            _ => {}
+        }
+        causes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reverse_unordered_supporters(&mut self) {
+        match self {
+            Self::PendingPulseDelay { supporters, .. }
+            | Self::PendingTransportDelay { supporters, .. }
+            | Self::PendingInertialDelay { supporters, .. }
+            | Self::PendingPeriodicBoundary { supporters, .. }
+            | Self::Derived { supporters, .. }
+            | Self::PulseDerived { supporters, .. }
+            | Self::PulseControlledLevel { supporters, .. } => supporters.reverse(),
+            Self::InitializationTransaction { .. }
+            | Self::ReadyTransaction { .. }
+            | Self::ExternalObservation { .. }
+            | Self::ExternalPulseObservation { .. } => {}
+        }
+    }
 }
 
 /// A borrowed structured projection of one immutable causal record.
@@ -986,6 +1063,42 @@ impl<D> ProvenanceView<D> {
         self.records.is_empty()
     }
 
+    pub(crate) fn records(&self) -> &[ProvenanceRecord<D>] {
+        &self.records
+    }
+
+    pub(crate) fn resolve_ordinal(&self, cause: CauseRef) -> usize {
+        if cause.scope != self.scope {
+            panic!("committed cause must belong to its provenance view");
+        }
+        let ordinal = cause.ordinal as usize;
+        if ordinal >= self.records.len() {
+            panic!("committed cause ordinal must resolve in its provenance view");
+        }
+        ordinal
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reverse_unordered_supporters(&mut self)
+    where
+        D: Clone,
+    {
+        // Episodes retain their own view of the same records. Cloning the
+        // shared vector reverses only this view's storage order.
+        for record in Arc::make_mut(&mut self.records) {
+            record.reverse_unordered_supporters();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn supporter_ordinals(&self) -> Vec<u32> {
+        self.records
+            .iter()
+            .flat_map(ProvenanceRecord::supporters)
+            .map(|cause| cause.ordinal())
+            .collect()
+    }
+
     fn append_pending_pulse_delay(
         &mut self,
         pending: &PendingPulseDelay<D>,
@@ -1195,6 +1308,9 @@ pub struct TransactionResult<D> {
     requested_time: Time<D>,
     before_revision: NetworkRevision,
     after_revision: NetworkRevision,
+    before_execution_digest: ExecutionStateDigest,
+    after_execution_digest: ExecutionStateDigest,
+    after_observable_digest: ObservableStateDigest,
     output_events: Vec<OutputEvent<D>>,
     occurrences: Vec<DiagnosticOccurrence<D>>,
     diagnostic_episode_changes: Vec<crate::DiagnosticEpisodeChange<D>>,
@@ -1250,6 +1366,24 @@ impl<D> TransactionResult<D> {
     pub const fn provenance(&self) -> &ProvenanceView<D> {
         &self.provenance
     }
+
+    /// Returns the execution digest of the machine before this transaction published.
+    #[must_use]
+    pub const fn before_execution_digest(&self) -> ExecutionStateDigest {
+        self.before_execution_digest
+    }
+
+    /// Returns the execution digest of the machine after this transaction published.
+    #[must_use]
+    pub const fn after_execution_digest(&self) -> ExecutionStateDigest {
+        self.after_execution_digest
+    }
+
+    /// Returns the observable digest of the machine after this transaction published.
+    #[must_use]
+    pub const fn after_observable_digest(&self) -> ObservableStateDigest {
+        self.after_observable_digest
+    }
 }
 
 impl<D> fmt::Debug for TransactionResult<D> {
@@ -1259,6 +1393,9 @@ impl<D> fmt::Debug for TransactionResult<D> {
             .field("requested_time", &self.requested_time)
             .field("before_revision", &self.before_revision)
             .field("after_revision", &self.after_revision)
+            .field("before_execution_digest", &self.before_execution_digest)
+            .field("after_execution_digest", &self.after_execution_digest)
+            .field("after_observable_digest", &self.after_observable_digest)
             .field("output_events", &self.output_events)
             .field("occurrence_count", &self.occurrences.len())
             .field("schedule", &self.schedule)
@@ -1405,19 +1542,20 @@ impl<D> Machine<D> {
                 .saturating_add(diagnostic_episode_changes.len()),
         )?;
         let schedule = schedule_from_pending(&pending_events);
-        let result = TransactionResult {
-            requested_time: at,
-            before_revision: revision,
-            after_revision: revision,
-            output_events,
-            occurrences,
-            diagnostic_episode_changes,
-            schedule,
-            provenance: built.provenance.clone(),
-        };
-
-        publish_candidate(
+        let before_execution_digest = self.execution_state_digest();
+        let provenance = built.provenance.clone();
+        Ok(publish_success(
             self,
+            PublicationReport {
+                before_execution_digest,
+                requested_time: at,
+                revision,
+                output_events,
+                occurrences,
+                diagnostic_episode_changes,
+                schedule,
+                provenance,
+            },
             PublishedCandidate {
                 standard_history,
                 at,
@@ -1439,8 +1577,7 @@ impl<D> Machine<D> {
                 pending_events,
                 next_pending_event_serial,
             },
-        );
-        Ok(result)
+        ))
     }
 
     fn apply_advance(
@@ -1777,19 +1914,20 @@ impl<D> Machine<D> {
             previous_provenance_len,
         )?;
         let schedule = schedule_from_pending(&pending_events);
-        let result = TransactionResult {
-            requested_time: at,
-            before_revision: revision,
-            after_revision: revision,
-            output_events,
-            occurrences,
-            diagnostic_episode_changes,
-            schedule,
-            provenance: built.provenance.clone(),
-        };
-
-        publish_candidate(
+        let before_execution_digest = self.execution_state_digest();
+        let provenance = built.provenance.clone();
+        Ok(publish_success(
             self,
+            PublicationReport {
+                before_execution_digest,
+                requested_time: at,
+                revision,
+                output_events,
+                occurrences,
+                diagnostic_episode_changes,
+                schedule,
+                provenance,
+            },
             PublishedCandidate {
                 standard_history,
                 at,
@@ -1811,8 +1949,7 @@ impl<D> Machine<D> {
                 pending_events,
                 next_pending_event_serial,
             },
-        );
-        Ok(result)
+        ))
     }
 }
 
@@ -2725,6 +2862,38 @@ struct PublishedCandidate<D> {
     active_episodes: crate::episode::ActiveEpisodes<D>,
     pending_events: BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
     next_pending_event_serial: u64,
+}
+
+struct PublicationReport<D> {
+    before_execution_digest: ExecutionStateDigest,
+    requested_time: Time<D>,
+    revision: NetworkRevision,
+    output_events: Vec<OutputEvent<D>>,
+    occurrences: Vec<DiagnosticOccurrence<D>>,
+    diagnostic_episode_changes: Vec<crate::DiagnosticEpisodeChange<D>>,
+    schedule: Schedule<D>,
+    provenance: ProvenanceView<D>,
+}
+
+fn publish_success<D>(
+    machine: &mut Machine<D>,
+    report: PublicationReport<D>,
+    candidate: PublishedCandidate<D>,
+) -> TransactionResult<D> {
+    publish_candidate(machine, candidate);
+    TransactionResult {
+        requested_time: report.requested_time,
+        before_revision: report.revision,
+        after_revision: report.revision,
+        before_execution_digest: report.before_execution_digest,
+        after_execution_digest: machine.execution_state_digest(),
+        after_observable_digest: machine.observable_state_digest(),
+        output_events: report.output_events,
+        occurrences: report.occurrences,
+        diagnostic_episode_changes: report.diagnostic_episode_changes,
+        schedule: report.schedule,
+        provenance: report.provenance,
+    }
 }
 
 fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<D>) {
