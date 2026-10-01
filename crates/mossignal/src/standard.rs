@@ -650,33 +650,6 @@ impl<D> StandardModuleDeclaration<D> {
             })
             .collect()
     }
-
-    pub(crate) fn fingerprint_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        push_text(&mut bytes, self.module_ref.id.as_str());
-        bytes.extend_from_slice(&self.module_ref.semantic_version.get().to_be_bytes());
-        bytes.extend_from_slice(&self.module_ref.expansion_version.get().to_be_bytes());
-        for parameter in &self.parameters {
-            push_text(&mut bytes, parameter.key.as_str());
-            match &parameter.value {
-                StandardParameterValue::LogicLevel(value) => bytes.push(u8::from(value.is_high())),
-                StandardParameterValue::U64(value) => bytes.extend_from_slice(&value.to_be_bytes()),
-                StandardParameterValue::Span(value) => {
-                    bytes.extend_from_slice(&value.ticks().to_be_bytes())
-                }
-                StandardParameterValue::NonZeroSpan(value) => {
-                    bytes.extend_from_slice(&value.ticks().to_be_bytes())
-                }
-                StandardParameterValue::Enum(value) => push_text(&mut bytes, value.as_str()),
-            }
-        }
-        for input in &self.variadic_inputs {
-            bytes.extend_from_slice(&input.as_u128().to_be_bytes());
-        }
-        bytes.extend_from_slice(&self.expansion_fingerprint.as_bytes());
-        push_internal_roles(&mut bytes, &self.internal_roles);
-        bytes
-    }
 }
 
 /// Broad descriptor category.

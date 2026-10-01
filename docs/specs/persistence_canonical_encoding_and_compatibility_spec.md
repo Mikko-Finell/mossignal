@@ -995,11 +995,18 @@ Semantically equivalent stable-keyed definitions must produce the same fingerpri
 
 ### 54.2 Restricted network-fingerprint projection version 1
 
-For the restricted foundation containing `Constant`, `Not`, `All`, `Any`,
-`Parity`, `AtLeast`, `Select`, pulse `Merge`, `Coalesce`, `Zip`, `PulseGate`,
-`PulseSelect`, and `PulseRoute`, transition-sensitive `RisingEdge`, `FallingEdge`,
-and `AnyEdge`, stateful `Toggle`, and temporal `PulseDelay`, the exact canonical
-payload is the following record:
+Fingerprint-domain version 1 remains the development projection described in
+§15. The exact payload below is that development projection for the opening
+supported language. Writing these records does not record the named
+stabilization decision and does not add a successor domain.
+
+The projection contains `Constant`, `Not`, `All`, `Any`, `Parity`, `AtLeast`,
+`Select`, pulse `Merge`, `Coalesce`, `Zip`, `PulseGate`, `PulseSelect`, and
+`PulseRoute`, transition-sensitive `RisingEdge`, `FallingEdge`, and `AnyEdge`,
+stateful `Toggle`, `PulseSetResetLatch`, `LevelSetResetLatch`, and `SampleHold`,
+and temporal `PulseDelay`, `TransportDelay`, `InertialDelay`, and `Periodic`,
+together with module-instance identity and state-relevant hierarchy when the
+network contains module instances. The exact canonical payload is:
 
 ```text
 network_fingerprint_payload_v1 = record {
@@ -1009,6 +1016,7 @@ network_fingerprint_payload_v1 = record {
     external_inputs,
     external_outputs,
     network_key,
+    module_instances,   # omitted when the network contains no module instances
     nodes,
     ports,
     time_domain_id,
@@ -1070,9 +1078,57 @@ kind = ["constant", record {
             delay_ticks,
             temporal_schema,
         }]
+     | ["pulse_set_reset_latch", record {
+            conflict,
+            initial,
+            state_schema,
+        }]
+     | ["level_set_reset_latch", record {
+            conflict,
+            initial,
+            state_schema,
+        }]
+     | ["sample_hold", record {
+            initial,
+            state_schema,
+        }]
+     | ["transport_delay", record {
+            delay_ticks,
+            initial,
+            state_schema,
+            temporal_schema,
+        }]
+     | ["inertial_delay", record {
+            delay_ticks,
+            initial,
+            state_schema,
+            temporal_schema,
+        }]
+     | ["periodic", record {
+            first_emission,
+            period_ticks,
+            reenable_phase,
+            state_schema,
+            temporal_schema,
+        }]
 
 value = ["low", null]
       | ["high", null]
+
+initial = value
+
+conflict = ["set_dominant", null]
+         | ["reset_dominant", null]
+         | ["retain_and_diagnose", null]
+         | ["reject_transaction", null]
+
+first_emission = ["immediate", null]
+               | ["after_first_period", null]
+
+reenable_phase = ["restart_phase", null]
+               | ["preserve_phase", null]
+
+period_ticks = unsigned integer
 
 threshold = unsigned integer
 
@@ -1081,10 +1137,15 @@ initialization = ["baseline", null]
 
 state_schema = ["stored_level", null]
              | ["edge_observation", null]
+             | ["remembered_input_output", null]
+             | ["periodic_anchor_previous_enable", null]
 
 delay_ticks = unsigned integer
 
 temporal_schema = ["pending_pulse_group", null]
+                | ["pending_transport_transition", null]
+                | ["pending_inertial_candidate", null]
+                | ["pending_periodic_boundary", null]
 
 port = record {
     direction,
@@ -1103,6 +1164,12 @@ semantic_role = ["input", null]
               | ["enable", null]
               | ["toggle", null]
               | ["pulse_delay", null]
+              | ["set", null]
+              | ["reset", null]
+              | ["value", null]
+              | ["sample", null]
+              | ["transport_delay", null]
+              | ["inertial_delay", null]
               | ["output", null]
 signal_kind   = ["level", null]
               | ["pulse", null]
@@ -1118,6 +1185,15 @@ source = ["external_input", record {
               signal_kind,
           }]
        | ["out_port", record {
+              key,
+              signal_kind,
+          }]
+       | ["module_input", record {
+              key,
+              signal_kind,
+          }]
+       | ["module_output", record {
+              instance,
               key,
               signal_kind,
           }]
@@ -1137,6 +1213,28 @@ external_output = record {
     signal_kind,
     source,
 }
+
+module_instance = record {
+    bindings,
+    key,
+    module_fingerprint,
+    parent,
+}
+
+binding = record {
+    input,
+    source,
+}
+
+bound_input = record {
+    key,
+    signal_kind,
+}
+
+parent = null
+       | 16-byte module-instance key
+
+module_fingerprint = 32-byte ModuleFingerprint
 ```
 
 `PulseGate` uses the `pulses` and `enable` input roles and the ordinary
@@ -1161,6 +1259,23 @@ Each edge-detector kind uses the ordinary `input` role for its Level input and
 `output` for its Pulse output. Its kind record includes either the closed
 `baseline` initialization policy or the closed `assume` policy carrying the
 assumed level, plus the closed one-cell `edge_observation` state schema.
+`PulseSetResetLatch` uses the `set` and `reset` Pulse input roles and the
+`output` Level role. `LevelSetResetLatch` uses those same role names on Level
+inputs and a Level output. `SampleHold` uses the `value` Level input role, the
+`sample` Pulse input role, and the `output` Level role. Each of those three
+kinds includes its declared initial level and the closed `stored_level` state
+schema. Both latches also include the closed conflict policy. `TransportDelay`
+and `InertialDelay` use the `transport_delay` and `inertial_delay` Level input
+roles respectively, and `output` for their Level outputs. Each includes its
+positive delay, declared initial level, closed `remembered_input_output` state
+schema, and its closed temporal schema: `pending_transport_transition` or
+`pending_inertial_candidate`. The inertial candidate is the temporal schema,
+not a second state-schema name. `Periodic` uses the `enable` Level input role
+and the `output` Pulse role. Its kind record includes the positive period, both
+closed policies, the closed `periodic_anchor_previous_enable` state schema, and
+the closed `pending_periodic_boundary` temporal schema. Runtime queue contents,
+anchor values, and pending keys are machine state and are not part of these
+authored records.
 
 Every `key` and `owner` field is the applicable 16-byte stable structural key.
 Node collections are ordered by `NodeKey`; connection collections by
@@ -1168,6 +1283,16 @@ Node collections are ordered by `NodeKey`; connection collections by
 stable key bytes. The heterogeneous port collection is ordered by signal-kind
 canonical tag, direction tag with `input` before `output`, then stable key
 bytes. The canonical signal-kind tags are `level` and `pulse` in that order.
+Module-instance collections are ordered by the 16-byte instance key. Each
+instance record contains only `bindings`, `key`, the referenced definition's
+32-byte `ModuleFingerprint`, and `parent`. A root `parent` is `null`; any
+other parent is that instance's 16-byte key. Bindings are ordered by the bound
+input's signal-kind tag, then that input key, then the source endpoint class
+in this order: external input, node input, node output, module input, module
+output, external output. A module-output source is further ordered by its
+instance key and then its output key. A binding `source` uses the network
+`source` variants above. Display names, descriptions, paths, tags, and caller
+insertion order are absent.
 
 The digest input is exactly:
 
@@ -1244,9 +1369,179 @@ fingerprint unchanged when the complete external-input schema remains equal.
 
 ## 55. Module fingerprint
 
-`ModuleFingerprint` follows the same rules for one reusable module definition and includes module interface keys and module-internal stable identity.
+`ModuleFingerprint` is the opaque identity of one validated reusable module
+definition. Fingerprint-domain version 1 remains the development projection
+described in §15. The exact payload below is that development projection.
+Writing it does not record the named stabilization decision and does not add a
+successor domain.
 
-It excludes module-instance placement and instance metadata.
+User and standard modules share one canonical record. `origin` distinguishes
+them, so a user module and a standard module with the same primitive graph
+have different fingerprints. The standard expansion fingerprint remains the
+distinct catalogue domain `mossignal/standard_module_expansion_fingerprint/v1`
+and is not a field of this record. The canonical semantic expansion is the
+structural payload itself.
+
+The exact canonical payload is:
+
+```text
+module_fingerprint_payload_v1 = record {
+    connections,
+    inputs,
+    mappings,
+    module_instances,   # omitted when the module contains no module instances
+    nodes,
+    origin,
+    outputs,
+    ports,
+}
+```
+
+Record fields use the canonical field ordering from Part IV. Node `kind`
+records, port records, signal kinds, logic levels, state schemas, and temporal
+schemas are the version-1 records from §54.2.
+
+```text
+origin = ["user", null]
+       | ["standard", standard_origin]
+
+standard_origin = record {
+    built_in_node_semantics_version,
+    core_semantics_version,
+    expansion_version,
+    id,
+    internal_roles,
+    parameters,
+    semantic_version,
+}
+
+built_in_node_semantics_version = unsigned integer 1
+core_semantics_version          = unsigned integer 1
+expansion_version               = unsigned integer
+semantic_version                = unsigned integer
+id                              = StandardModuleId text
+
+internal_role = record {
+    category,
+    key,
+    public_input,   # omitted when the role names no public level input
+    role,
+}
+
+category = ["connection", null]
+         | ["export", null]
+         | ["input_port", null]
+         | ["node", null]
+         | ["output_port", null]
+
+public_input = 16-byte level module-input key
+role         = text
+
+parameter = record {
+    key,
+    value,
+}
+
+parameter_value = ["logic_level", initial]
+                | ["u64", unsigned integer]
+                | ["span", unsigned integer]
+                | ["non_zero_span", unsigned integer]
+                | ["enum", text]
+
+input = record {
+    key,
+    signal_kind,
+}
+
+output = record {
+    key,
+    signal_kind,
+}
+
+mapping = ["input", record {
+              input,
+              signal_kind,
+              target,
+          }]
+        | ["output", record {
+              output,
+              signal_kind,
+              source,
+          }]
+
+connection = record {
+    key,
+    signal_kind,
+    source,
+    target,
+}
+```
+
+A module connection is not the network connection record from §54.2. Its
+`target` is the bare 16-byte in-port key. Its `source` is one of:
+
+```text
+module_connection_source = 16-byte out-port key
+                         | ["external_input", record { key, signal_kind }]
+                         | ["module_input", record { key, signal_kind }]
+                         | ["module_output", record { instance, key, signal_kind }]
+```
+
+A mapping `target` is the bare 16-byte in-port key. A mapping `source` is one
+of:
+
+```text
+mapping_source = 16-byte out-port key
+               | ["module_input", 16-byte module-input key]
+               | ["module_output", record { instance, key, signal_kind }]
+```
+
+The mapping `module_input` source is a closed variant whose payload is the bare
+key. It is not the module-connection `module_input` record. The `module_output`
+source uses the same record as a network `module_output` source. Mapping
+`input` and `output` fields are the 16-byte public interface keys.
+
+Every `key` field is the applicable 16-byte stable key. Inputs and outputs are
+ordered by signal-kind tag, then key. Nodes are ordered by node key.
+Connections are ordered by connection key. Mappings are ordered by input
+mappings before output mappings, then the public interface key's signal-kind
+tag and key, then the opposite endpoint class in the §54.2 binding order, then
+that endpoint's key, then a module-output's output key when present. Ports are
+ordered by signal-kind tag, direction with `input` before `output`, port key,
+owner key, then semantic-role name. Module instances, when present, use the
+§54.2 instance record and its order. Internal roles are ordered by category
+name, role text, then key. Parameters are ordered by parameter-key text.
+
+A reusable module definition has no `TimeDomainId`, so that contribution is
+omitted. Catalogue version is omitted. `built_in_node_semantics_version` and
+`core_semantics_version` inside a standard origin are the applicable semantic
+version components. Public interface keys and signal kinds are the `inputs`
+and `outputs` arrays. Standard public and internal roles are the
+`internal_roles` array; node semantic roles also appear on `ports`. Nested
+module references are the `module_fingerprint` fields of nested
+`module_instances`. Empty `connections`, `inputs`, `mappings`, `nodes`,
+`outputs`, and `ports` arrays are present. `module_instances` is omitted when
+empty.
+
+The digest input is exactly:
+
+```text
+record {
+    domain:  "mossignal/module_fingerprint/v1",
+    payload: module_fingerprint_payload_v1,
+    version: 1,
+}
+```
+
+encoded by the canonical CBOR profile and hashed with unkeyed BLAKE3-256.
+
+`ModuleFingerprint` excludes the module's own instance key, placement,
+bindings, and metadata, the containing network's identity, topology revision,
+dense indices, construction and insertion order, memory layout, diagnostic
+names, descriptions, paths, origin metadata, presentation tags and extensions,
+private caches, and the expansion-fingerprint bytes. Nested instances inside
+the definition remain part of the payload. Metadata remains excluded unless a
+future field is explicitly reclassified as semantic.
 
 ## 56. Runtime policy identifier
 

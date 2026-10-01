@@ -2,10 +2,10 @@ schema_version: "0.1"
 id: mossignal.identity.network_fingerprint
 title: Network semantic fingerprint
 kind: artifact
-status: reviewed
+status: draft
 
 source_baseline:
-  commit: 5ffde87853fd17dc5e094bfd8f645d79db3ebda0
+  commit: 1b23f14471c8f7de61a58313ffc746ac17aa959b
   working_tree: dirty
   modified_spec_paths:
     - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
@@ -24,7 +24,7 @@ scope:
     - deterministic identity verification
   excludes:
     - complete definition-artifact encoding and integrity digests
-    - module fingerprints beyond their future contribution to network identity
+    - module fingerprint construction beyond the 32-byte ModuleFingerprint carried by each module instance
     - execution, observable-state, snapshot, policy, and patch digests
 
 aliases:
@@ -70,7 +70,12 @@ requirements:
       `stored_level` state schema, configured `pulse_delay` delay ticks and
       `pending_pulse_group` temporal schema, distinct fixed input roles,
       `PulseRoute` output roles, and the `level` and `pulse` signal-kind
-      variants. Collections use the specified stable semantic order and never
+      variants. It also includes the exact `pulse_set_reset_latch`,
+      `level_set_reset_latch`, `sample_hold`, `transport_delay`,
+      `inertial_delay`, and `periodic` kind records, the added semantic roles,
+      and, when the network contains module instances, the exact module-instance,
+      binding, bound-input, and parent records. `module_instances` is omitted
+      when absent. Collections use the specified stable semantic order and never
       Rust layout, discriminants, or debug text.
     sources: [restricted-projection, canonical-ordering, canonical-enums]
 
@@ -128,8 +133,17 @@ requirements:
       `pulses` and `enable` input roles, PulseSelect's `selector`, `when_low`,
       and `when_high` input roles, and PulseRoute's `selector` and `pulses`
       input roles plus distinct `when_low` and `when_high` output roles.
-      Changing a represented parameter, state or temporal schema, or role
-      changes canonical identity even when stable keys remain unchanged.
+      It includes both latches' conflict policy, initial level, `stored_level`
+      schema, and `set` and `reset` roles; SampleHold's initial level,
+      `stored_level` schema, and `value` and `sample` roles; TransportDelay
+      and InertialDelay delay, initial level, `remembered_input_output` schema,
+      distinct temporal schemas, and distinct input roles; and Periodic's
+      period, first-emission policy, reenable-phase policy, state schema,
+      temporal schema, and `enable` role. When module instances are present,
+      instance key, parent, binding input, binding source, and the referenced
+      module fingerprint participate. Changing a represented parameter, state
+      or temporal schema, role, or instance linkage changes canonical identity
+      even when stable keys remain unchanged.
     sources: [network-projection, restricted-projection, deterministic-compilation]
 
   - id: golden-vector-verification
@@ -142,7 +156,12 @@ requirements:
       canonical digest-input bytes and expected digests for the restricted
       minimal, nontrivial, variadic, remaining level-combinational, pulse-
       combinational, edge-detector, stateful, temporal, and level-controlled
-      pulse cases required by the verification policy.
+      pulse cases required by the verification policy. It also retains complete
+      digest-input bytes and expected digests for inertial delay, periodic
+      operation, and flat and nested module-instance hierarchy, including
+      insertion-order invariance, metadata exclusion, and sensitivity to delay,
+      initial level, period, emission policy, reenable policy, and parent
+      linkage.
     sources: [canonical-vectors, digest-scope-verification, deterministic-compilation]
 
 recommendations:

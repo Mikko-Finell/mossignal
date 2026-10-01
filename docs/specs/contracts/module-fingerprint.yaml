@@ -2,17 +2,21 @@ schema_version: "0.1"
 id: mossignal.identity.module_fingerprint
 title: Reusable module semantic fingerprint
 kind: artifact
-status: reviewed
+status: draft
 
 source_baseline:
-  commit: 9704d2e34aaafb52d75cbcdf167aa5304071a99e
+  commit: 1b23f14471c8f7de61a58313ffc746ac17aa959b
   working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   ModuleFingerprint is the opaque domain-separated identity of one validated
   reusable module's semantic public interface, explicit origin, and module-local
-  primitive structure. It is stable across authored insertion order and private
-  representation while excluding instance placement and presentation metadata.
+  primitive structure. User and standard modules share the exact section 55
+  development-projection record. It is stable across authored insertion order
+  and private representation while excluding this module's instance placement
+  and presentation metadata.
 
 scope:
   includes:
@@ -20,13 +24,10 @@ scope:
     - semantic inclusion, exclusion, sensitivity, and ordering rules for user modules
     - successful ModuleDef ownership and deterministic verification
   excludes:
-    - standard-module declaration and canonical expansion identity
-    - module-instance placement, bindings, and containing-network identity
+    - standard expansion-fingerprint construction and catalogue contribution policy beyond the section 55 origin record
+    - this module's instance placement, network bindings, and containing-network identity
     - complete module-definition artifact encoding and integrity digests
     - compatibility migration and reconfiguration
-
-known_uncovered:
-  - The exact canonical field schema for the version-1 user-module semantic payload is not yet frozen by the persistence specification
 
 aliases:
   - ModuleFingerprint
@@ -55,12 +56,15 @@ requirements:
   - id: complete-user-module-projection
     kind: semantic
     statement: >-
-      The semantic payload for a user module includes explicit User origin, the
-      complete typed public input and output interface with stable keys, every
-      output's source incidence, and the complete module-local primitive semantic
-      graph: stable node, typed port, and connection identities; endpoint
-      incidence; node kinds; semantic port roles; semantic parameters; declared
-      initial state; and state or temporal schemas where applicable.
+      A user module uses the exact section 55 payload with origin ["user", null].
+      That payload includes the complete typed public input and output interface
+      with stable keys, every output's source incidence, and the complete
+      module-local primitive semantic graph: stable node, typed port, and
+      connection identities; endpoint incidence; node kinds; semantic port roles;
+      semantic parameters; declared initial state; and state or temporal schemas
+      where applicable. Module connections and mapping sources use the distinct
+      section 55 spellings, including bare port keys and the bare-key
+      module-input mapping source.
     sources: [api-modules, concrete-modules, module-fingerprint]
     basis: derived
 
@@ -69,8 +73,9 @@ requirements:
     statement: >-
       Module identity excludes caller insertion order, dense indices, memory
       layout, caches, diagnostic names, descriptions, paths, diagnostic origin
-      metadata, presentation tags and extensions, module-instance placement,
-      instance metadata, network bindings, and containing-network identity.
+      metadata, presentation tags and extensions, this module's own instance
+      placement, instance metadata, network bindings, and containing-network
+      identity. Nested instances inside the definition remain in the payload.
     sources: [api-modules, module-fingerprint, metadata, canonical-ordering]
 
   - id: deterministic-and-sensitive-identity
@@ -81,7 +86,11 @@ requirements:
       public interface key or kind, output-source incidence, internal stable
       identity, primitive kind, semantic role, parameter, initial state, state
       schema, temporal schema, or internal connection incidence changes the
-      canonical semantic projection.
+      canonical semantic projection. A standard module uses the same payload
+      with origin ["standard", the section 55 declaration record]. Changing a
+      standard parameter, semantic or expansion version, identifier, or internal
+      role changes that fingerprint. The expansion-fingerprint bytes are not a
+      field of the record.
     sources: [api-modules, concrete-modules, module-fingerprint, testing-determinism]
     basis: derived
 
@@ -96,8 +105,7 @@ requirements:
     basis: derived
 
 implementation_freedom:
-  - Because the exact version-1 module payload record is not yet frozen, implementation may choose the smallest deterministic canonical field schema consistent with every inclusion, exclusion, ordering, and domain rule above; record the exact bytes in golden tests for concrete review.
-  - Reuse of the existing canonical-value encoder and primitive semantic projections is permitted and preferred over a second encoding model; complete artifact envelopes and decoding remain outside this subject.
+  - The section 55 record is the version-1 development projection for both origins. Reuse of the canonical-value encoder and primitive semantic projections is the selected spelling. Complete artifact envelopes and decoding remain outside this subject.
   - Private projection types, encoder decomposition, caching, and module placement are unconstrained when the canonical bytes and public opaque value agree.
 
 open_questions: []

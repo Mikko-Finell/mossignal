@@ -108,12 +108,9 @@ pub(crate) fn standard_module_fingerprint<D>(
     module: &UncheckedModule<D>,
     declaration: &crate::standard::StandardModuleDeclaration<D>,
 ) -> ModuleFingerprint {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(MODULE_DOMAIN.as_bytes());
-    bytes.extend_from_slice(b"/standard");
-    bytes.extend_from_slice(&declaration.fingerprint_bytes());
-    bytes.extend_from_slice(&module_digest_input(module));
-    ModuleFingerprint::from_digest(*blake3::hash(&bytes).as_bytes())
+    ModuleFingerprint::from_digest(
+        *blake3::hash(&standard_module_digest_input(module, declaration)).as_bytes(),
+    )
 }
 
 pub(crate) fn module_canonical_bytes<D>(module: &UncheckedModule<D>) -> Vec<u8> {
@@ -125,16 +122,44 @@ pub(crate) fn canonical_module_input<D>(module: &UncheckedModule<D>) -> Vec<u8> 
     module_digest_input(module)
 }
 
+#[cfg(test)]
+pub(crate) fn canonical_standard_module_input<D>(
+    module: &UncheckedModule<D>,
+    declaration: &crate::standard::StandardModuleDeclaration<D>,
+) -> Vec<u8> {
+    standard_module_digest_input(module, declaration)
+}
+
 fn module_digest_input<D>(module: &UncheckedModule<D>) -> Vec<u8> {
+    module_digest_record(module, |writer| writer.variant_null("user"))
+}
+
+fn standard_module_digest_input<D>(
+    module: &UncheckedModule<D>,
+    declaration: &crate::standard::StandardModuleDeclaration<D>,
+) -> Vec<u8> {
+    // SPEC: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    // "55. Module fingerprint" — one canonical record; origin distinguishes standard modules.
+    module_digest_record(module, |writer| {
+        writer.variant_start("standard");
+        standard_origin(writer, declaration);
+    })
+}
+
+fn module_digest_record<D>(module: &UncheckedModule<D>, origin: impl FnOnce(&mut Cbor)) -> Vec<u8> {
     let mut writer = Cbor::default();
     writer.record_start(3);
     writer.field("domain", |writer| writer.text(MODULE_DOMAIN));
-    writer.field("payload", |writer| module_payload(writer, module));
+    writer.field("payload", |writer| module_payload(writer, module, origin));
     writer.field("version", |writer| writer.uint(1));
     writer.finish()
 }
 
-fn module_payload<D>(writer: &mut Cbor, module: &UncheckedModule<D>) {
+fn module_payload<D>(
+    writer: &mut Cbor,
+    module: &UncheckedModule<D>,
+    origin: impl FnOnce(&mut Cbor),
+) {
     // SPEC: docs/specs/contracts/module-fingerprint.yaml "complete-user-module-projection"
     // Metadata and caller insertion order are deliberately absent.
     writer.record_start(if module.module_instances().is_empty() {
@@ -155,9 +180,112 @@ fn module_payload<D>(writer: &mut Cbor, module: &UncheckedModule<D>) {
         });
     }
     writer.field("nodes", |writer| module_nodes(writer, module.nodes()));
-    writer.field("origin", |writer| writer.variant_null("user"));
+    writer.field("origin", origin);
     writer.field("outputs", |writer| module_outputs(writer, module.outputs()));
     writer.field("ports", |writer| module_ports(writer, module.nodes()));
+}
+
+fn standard_origin<D>(
+    writer: &mut Cbor,
+    declaration: &crate::standard::StandardModuleDeclaration<D>,
+) {
+    writer.record_start(7);
+    writer.field("built_in_node_semantics_version", |writer| writer.uint(1));
+    writer.field("core_semantics_version", |writer| writer.uint(1));
+    writer.field("expansion_version", |writer| {
+        writer.uint(u64::from(
+            declaration.module_ref().expansion_version().get(),
+        ))
+    });
+    writer.field("id", |writer| {
+        writer.text(declaration.module_ref().id().as_str())
+    });
+    writer.field("internal_roles", |writer| {
+        let mut roles: Vec<_> = declaration.internal_roles().collect();
+        roles.sort_by(|left, right| {
+            (
+                standard_role_category(left.category()),
+                left.role(),
+                left.key(),
+            )
+                .cmp(&(
+                    standard_role_category(right.category()),
+                    right.role(),
+                    right.key(),
+                ))
+        });
+        writer.array_start(roles.len());
+        for role in roles {
+            standard_internal_role(writer, role);
+        }
+    });
+    writer.field("parameters", |writer| {
+        let mut parameters: Vec<_> = declaration.parameters().collect();
+        parameters.sort_by(|left, right| left.key().as_str().cmp(right.key().as_str()));
+        writer.array_start(parameters.len());
+        for parameter in parameters {
+            writer.record_start(2);
+            writer.field("key", |writer| writer.text(parameter.key().as_str()));
+            writer.field("value", |writer| {
+                standard_parameter_value(writer, parameter.value())
+            });
+        }
+    });
+    writer.field("semantic_version", |writer| {
+        writer.uint(u64::from(declaration.module_ref().semantic_version().get()))
+    });
+}
+
+fn standard_internal_role(writer: &mut Cbor, role: &crate::standard::StandardInternalRole) {
+    writer.record_start(3 + usize::from(role.public_input().is_some()));
+    writer.field("category", |writer| {
+        writer.variant_null(standard_role_category(role.category()))
+    });
+    writer.field("key", |writer| writer.key(role.key()));
+    if let Some(input) = role.public_input() {
+        writer.field("public_input", |writer| writer.key(input.as_u128()));
+    }
+    writer.field("role", |writer| writer.text(role.role()));
+}
+
+fn standard_role_category(category: crate::standard::StandardInternalCategory) -> &'static str {
+    use crate::standard::StandardInternalCategory;
+    match category {
+        StandardInternalCategory::Connection => "connection",
+        StandardInternalCategory::Export => "export",
+        StandardInternalCategory::InputPort => "input_port",
+        StandardInternalCategory::Node => "node",
+        StandardInternalCategory::OutputPort => "output_port",
+    }
+}
+
+fn standard_parameter_value<D>(
+    writer: &mut Cbor,
+    value: &crate::standard::StandardParameterValue<D>,
+) {
+    use crate::standard::StandardParameterValue;
+    match value {
+        StandardParameterValue::LogicLevel(level) => {
+            writer.variant_start("logic_level");
+            logic_level(writer, *level);
+        }
+        StandardParameterValue::U64(value) => {
+            writer.variant_start("u64");
+            writer.uint(*value);
+        }
+        StandardParameterValue::Span(value) => {
+            writer.variant_start("span");
+            writer.uint(value.ticks());
+        }
+        StandardParameterValue::NonZeroSpan(value) => {
+            writer.variant_start("non_zero_span");
+            writer.uint(value.ticks());
+        }
+        StandardParameterValue::Enum(value) => {
+            writer.variant_start("enum");
+            writer.text(value.as_str());
+        }
+    }
 }
 
 fn module_inputs(writer: &mut Cbor, inputs: &[ModuleInputDef]) {
@@ -328,6 +456,8 @@ fn module_connection_source(writer: &mut Cbor, endpoint: ConnectionEndpoint) {
 }
 
 fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
+    // SPEC: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    // "31. Records" — each kind record emits fields in ascending field-name order.
     let identity_tag = node_schema(kind).semantic_kind().identity_tag();
     match kind {
         NodeKind::Constant(config) => {
@@ -366,32 +496,10 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
             writer.field("state_schema", |writer| writer.variant_null("stored_level"));
         }
         NodeKind::PulseSetResetLatch(config) => {
-            writer.variant_start(identity_tag);
-            writer.record_start(3);
-            writer.field("initial", |writer| logic_level(writer, config.initial));
-            writer.field("conflict", |writer| {
-                writer.variant_null(match config.conflict {
-                    crate::authored::ConflictPolicy::SetDominant => "set_dominant",
-                    crate::authored::ConflictPolicy::ResetDominant => "reset_dominant",
-                    crate::authored::ConflictPolicy::RetainAndDiagnose => "retain_and_diagnose",
-                    crate::authored::ConflictPolicy::RejectTransaction => "reject_transaction",
-                })
-            });
-            writer.field("state_schema", |writer| writer.variant_null("stored_level"));
+            latch_kind(writer, identity_tag, config.initial, config.conflict)
         }
         NodeKind::LevelSetResetLatch(config) => {
-            writer.variant_start(identity_tag);
-            writer.record_start(3);
-            writer.field("initial", |writer| logic_level(writer, config.initial));
-            writer.field("conflict", |writer| {
-                writer.variant_null(match config.conflict {
-                    crate::authored::ConflictPolicy::SetDominant => "set_dominant",
-                    crate::authored::ConflictPolicy::ResetDominant => "reset_dominant",
-                    crate::authored::ConflictPolicy::RetainAndDiagnose => "retain_and_diagnose",
-                    crate::authored::ConflictPolicy::RejectTransaction => "reject_transaction",
-                })
-            });
-            writer.field("state_schema", |writer| writer.variant_null("stored_level"));
+            latch_kind(writer, identity_tag, config.initial, config.conflict)
         }
         NodeKind::PulseDelay(config) => {
             writer.variant_start(identity_tag);
@@ -428,13 +536,13 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
         NodeKind::Periodic(config) => {
             writer.variant_start(identity_tag);
             writer.record_start(5);
-            writer.field("period_ticks", |writer| writer.uint(config.period.ticks()));
             writer.field("first_emission", |writer| {
                 writer.variant_null(match config.first_emission {
                     crate::authored::FirstEmissionPolicy::Immediate => "immediate",
                     crate::authored::FirstEmissionPolicy::AfterFirstPeriod => "after_first_period",
                 })
             });
+            writer.field("period_ticks", |writer| writer.uint(config.period.ticks()));
             writer.field("reenable_phase", |writer| {
                 writer.variant_null(match config.reenable_phase {
                     crate::authored::ReenablePhasePolicy::RestartPhase => "restart_phase",
@@ -449,6 +557,26 @@ fn node_kind<D>(writer: &mut Cbor, kind: &NodeKind<D>) {
             });
         }
     }
+}
+
+fn latch_kind(
+    writer: &mut Cbor,
+    variant: &str,
+    initial: LogicLevel,
+    conflict: crate::authored::ConflictPolicy,
+) {
+    writer.variant_start(variant);
+    writer.record_start(3);
+    writer.field("conflict", |writer| {
+        writer.variant_null(match conflict {
+            crate::authored::ConflictPolicy::SetDominant => "set_dominant",
+            crate::authored::ConflictPolicy::ResetDominant => "reset_dominant",
+            crate::authored::ConflictPolicy::RetainAndDiagnose => "retain_and_diagnose",
+            crate::authored::ConflictPolicy::RejectTransaction => "reject_transaction",
+        })
+    });
+    writer.field("initial", |writer| logic_level(writer, initial));
+    writer.field("state_schema", |writer| writer.variant_null("stored_level"));
 }
 
 fn edge_detector_kind(writer: &mut Cbor, variant: &str, config: crate::authored::EdgeConfig) {
@@ -997,11 +1125,14 @@ impl Cbor {
 mod tests {
     use super::*;
     use crate::authored::{
-        ConnectionDef, ExternalInputDef, ExternalOutputDef, InputPortRole, NodeDef, NodePorts,
+        ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef,
+        FirstEmissionPolicy, InputPortRole, ModuleBinding, ModuleBindingSet, ModuleInputDef,
+        ModuleInstanceDef, ModuleInterfaceMapping, ModuleOutputDef, NodeDef, NodePorts,
+        ReenablePhasePolicy,
     };
     use crate::key::{
-        ConnectionKey, ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey,
-        OutPortKey,
+        ConnectionKey, ExternalInputKey, ExternalOutputKey, InPortKey, ModuleInstanceKey,
+        NetworkKey, NodeKey, OutPortKey, SignalSourceKey,
     };
     use crate::metadata::DiagnosticMeta;
     use crate::signal::{Level, Pulse};
@@ -2140,7 +2271,7 @@ mod tests {
         let fingerprints = validated_fingerprints(network);
         assert_eq!(
             hex(&network_bytes),
-            "838266646f6d61696e78206d6f737369676e616c2f6e6574776f726b5f66696e6765727072696e742f763182677061796c6f61648982781f6275696c745f696e5f6e6f64655f73656d616e746963735f76657273696f6e01826b636f6e6e656374696f6e73828382636b657950000000000000000000000000000000328266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000014826b7369676e616c5f6b696e64826570756c7365f68382636b657950000000000000000000000000000000338266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000b826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000015826b7369676e616c5f6b696e64826570756c7365f68276636f72655f73656d616e746963735f76657273696f6e01826f65787465726e616c5f696e70757473828282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f68282636b6579500000000000000000000000000000000b826b7369676e616c5f6b696e64826570756c7365f6827065787465726e616c5f6f757470757473818382636b65795000000000000000000000000000000028826b7369676e616c5f6b696e6482656c6576656cf68266736f7572636582686f75745f706f72748282636b6579500000000000000000000000000000001e826b7369676e616c5f6b696e6482656c6576656cf6826b6e6574776f726b5f6b6579500000000000000000000000000000000182656e6f646573818282636b6579500000000000000000000000000000000282646b696e64827570756c73655f7365745f72657365745f6c61746368838267696e697469616c82636c6f77f68268636f6e666c696374827372657461696e5f616e645f646961676e6f7365f6826c73746174655f736368656d61826c73746f7265645f6c6576656cf68265706f72747383858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000001e82656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001482656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c658263736574f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001582656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582657265736574f6826b7369676e616c5f6b696e64826570756c7365f6826e74696d655f646f6d61696e5f69645000000000000000000000000000000002826776657273696f6e01"
+            "838266646f6d61696e78206d6f737369676e616c2f6e6574776f726b5f66696e6765727072696e742f763182677061796c6f61648982781f6275696c745f696e5f6e6f64655f73656d616e746963735f76657273696f6e01826b636f6e6e656374696f6e73828382636b657950000000000000000000000000000000328266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000014826b7369676e616c5f6b696e64826570756c7365f68382636b657950000000000000000000000000000000338266736f75726365826e65787465726e616c5f696e7075748282636b6579500000000000000000000000000000000b826b7369676e616c5f6b696e64826570756c7365f682667461726765748267696e5f706f72748282636b65795000000000000000000000000000000015826b7369676e616c5f6b696e64826570756c7365f68276636f72655f73656d616e746963735f76657273696f6e01826f65787465726e616c5f696e70757473828282636b6579500000000000000000000000000000000a826b7369676e616c5f6b696e64826570756c7365f68282636b6579500000000000000000000000000000000b826b7369676e616c5f6b696e64826570756c7365f6827065787465726e616c5f6f757470757473818382636b65795000000000000000000000000000000028826b7369676e616c5f6b696e6482656c6576656cf68266736f7572636582686f75745f706f72748282636b6579500000000000000000000000000000001e826b7369676e616c5f6b696e6482656c6576656cf6826b6e6574776f726b5f6b6579500000000000000000000000000000000182656e6f646573818282636b6579500000000000000000000000000000000282646b696e64827570756c73655f7365745f72657365745f6c61746368838268636f6e666c696374827372657461696e5f616e645f646961676e6f7365f68267696e697469616c82636c6f77f6826c73746174655f736368656d61826c73746f7265645f6c6576656cf68265706f72747383858269646972656374696f6e82666f7574707574f682636b6579500000000000000000000000000000001e82656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582666f7574707574f6826b7369676e616c5f6b696e6482656c6576656cf6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001482656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c658263736574f6826b7369676e616c5f6b696e64826570756c7365f6858269646972656374696f6e8265696e707574f682636b6579500000000000000000000000000000001582656f776e65725000000000000000000000000000000002826d73656d616e7469635f726f6c6582657265736574f6826b7369676e616c5f6b696e64826570756c7365f6826e74696d655f646f6d61696e5f69645000000000000000000000000000000002826776657273696f6e01"
         );
         assert_eq!(
             hex(&input_bytes),
@@ -2148,7 +2279,7 @@ mod tests {
         );
         assert_eq!(
             fingerprints.0.to_string(),
-            "b7b9d03e2c294919122f21b126329a7b66f9ee43c047add788b4b302fbdbf846"
+            "9ea904753942d9f60a0a25e0e3dd2e28c296c0eff36968a0bbc7791927e1dd1d"
         );
         assert_eq!(
             fingerprints.1.to_string(),
@@ -2447,6 +2578,10 @@ mod tests {
         );
         let expected = validated_fingerprints(network);
         assert_eq!(
+            expected.0.to_string(),
+            "28c4a253f80c8fc39729559f53064fe5e231c4b49d66ea00816e0fc63b7b128d"
+        );
+        assert_eq!(
             expected,
             validated_fingerprints(golden_level_set_reset_latch(
                 LogicLevel::Low,
@@ -2495,5 +2630,356 @@ mod tests {
             expected.0,
             validated_fingerprints(golden_toggle(LogicLevel::Low, InputPortRole::Toggle)).0
         );
+    }
+
+    #[test]
+    fn inertial_delay_projection_vector_includes_delay_initial_and_schemas() {
+        let network = golden_inertial_delay(5, LogicLevel::Low);
+        let (bytes, _) = canonical_inputs(&network);
+        let fingerprint = validated_fingerprints(network).0;
+        assert_eq!(
+            hex(&bytes),
+            include_str!("../tests/golden/inertial_delay_projection.hex").trim()
+        );
+        assert_eq!(
+            fingerprint.to_string(),
+            "780eb4a23d23d29d18f8c3b472e7f576061b3fc570e4422f56d3bf20b8fdd1bd"
+        );
+        assert_ne!(
+            fingerprint,
+            validated_fingerprints(golden_inertial_delay(6, LogicLevel::Low)).0
+        );
+        assert_ne!(
+            fingerprint,
+            validated_fingerprints(golden_inertial_delay(5, LogicLevel::High)).0
+        );
+        assert_ne!(
+            fingerprint,
+            validated_fingerprints(golden_transport_delay(5, LogicLevel::Low)).0
+        );
+    }
+
+    #[test]
+    fn periodic_projection_vector_includes_period_policies_and_schemas() {
+        let network = golden_periodic(
+            5,
+            FirstEmissionPolicy::Immediate,
+            ReenablePhasePolicy::RestartPhase,
+        );
+        let (bytes, _) = canonical_inputs(&network);
+        let fingerprint = validated_fingerprints(network).0;
+        assert_eq!(
+            hex(&bytes),
+            include_str!("../tests/golden/periodic_projection.hex").trim()
+        );
+        assert_eq!(
+            fingerprint.to_string(),
+            "4ccc7cfa59f9e4f64bf7eec3bab1e88977ead630536a1b42bfaa36ce37223362"
+        );
+        assert_ne!(
+            fingerprint,
+            validated_fingerprints(golden_periodic(
+                6,
+                FirstEmissionPolicy::Immediate,
+                ReenablePhasePolicy::RestartPhase
+            ))
+            .0
+        );
+        assert_ne!(
+            fingerprint,
+            validated_fingerprints(golden_periodic(
+                5,
+                FirstEmissionPolicy::AfterFirstPeriod,
+                ReenablePhasePolicy::RestartPhase
+            ))
+            .0
+        );
+        assert_ne!(
+            fingerprint,
+            validated_fingerprints(golden_periodic(
+                5,
+                FirstEmissionPolicy::Immediate,
+                ReenablePhasePolicy::PreservePhase
+            ))
+            .0
+        );
+    }
+
+    #[test]
+    fn module_instance_hierarchy_projection_is_exact_and_metadata_free() {
+        let flat = golden_hierarchy(false, false, false);
+        let (bytes, _) = canonical_inputs(&flat);
+        let fingerprints = validated_fingerprints(flat);
+        let nested = golden_hierarchy(true, false, false);
+        let (nested_bytes, _) = canonical_inputs(&nested);
+        let nested_fingerprint = validated_fingerprints(nested).0;
+        assert_eq!(
+            hex(&bytes),
+            include_str!("../tests/golden/module_instance_projection.hex").trim()
+        );
+        assert_eq!(
+            hex(&nested_bytes),
+            include_str!("../tests/golden/nested_module_instance_projection.hex").trim()
+        );
+        assert_eq!(
+            fingerprints.0.to_string(),
+            "a7f431e0048c39459b9f8267b39372029dbf6da68b6dbd2b63328a1f883e8e4d"
+        );
+        assert_eq!(
+            nested_fingerprint.to_string(),
+            "f9033334886e95d6ee5b4d9bb949c4d7e316c163454ec868d7848ed49b88f449"
+        );
+        assert_eq!(
+            fingerprints,
+            validated_fingerprints(golden_hierarchy(false, true, false))
+        );
+        assert_eq!(
+            fingerprints,
+            validated_fingerprints(golden_hierarchy(false, false, true))
+        );
+        assert_ne!(
+            fingerprints.0,
+            validated_fingerprints(golden_hierarchy(true, false, false)).0
+        );
+    }
+
+    #[test]
+    fn standard_module_projection_is_one_canonical_record() {
+        let first = crate::key::ModuleInputKey::<Level>::from_u128(1);
+        let second = crate::key::ModuleInputKey::<Level>::from_u128(2);
+        let module = standard_exactly(1, &[first, second]);
+        let declaration = module
+            .standard_declaration()
+            .expect("exactly retains a standard declaration");
+        let bytes = canonical_standard_module_input(module.definition(), declaration);
+        assert_eq!(
+            hex(&bytes),
+            include_str!("../tests/golden/standard_exactly_projection.hex").trim()
+        );
+        assert_eq!(
+            module.fingerprint().to_string(),
+            "ea9d966a441fe47eca75c190b75d6f13313ea16ae415eb725ae09a8978a71c7c"
+        );
+        assert_ne!(
+            module.fingerprint(),
+            module_fingerprint(module.definition())
+        );
+        assert_ne!(
+            module.fingerprint().as_bytes(),
+            declaration.expansion_fingerprint().as_bytes()
+        );
+        let changed = standard_exactly(2, &[first, second]);
+        assert_ne!(module.fingerprint(), changed.fingerprint());
+    }
+
+    fn golden_inertial_delay(delay_ticks: u64, initial: LogicLevel) -> UncheckedNetwork<()> {
+        let external = ExternalInputKey::<Level>::from_u128(10);
+        let input = InPortKey::<Level>::from_u128(20);
+        let output = OutPortKey::<Level>::from_u128(30);
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(2),
+                NodeKind::inertial_delay(
+                    NonZeroSpan::from_ticks(delay_ticks).unwrap_or_else(|failure| {
+                        panic!("golden delay must be positive: {failure}")
+                    }),
+                    initial,
+                ),
+                NodePorts::with_input_roles(
+                    vec![input.into()],
+                    vec![InputPortRole::InertialDelay],
+                    vec![output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                external.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Level>::from_u128(40).into(),
+                SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(50),
+                external.into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )],
+        )
+    }
+
+    fn golden_periodic(
+        period_ticks: u64,
+        first_emission: FirstEmissionPolicy,
+        reenable_phase: ReenablePhasePolicy,
+    ) -> UncheckedNetwork<()> {
+        let external = ExternalInputKey::<Level>::from_u128(10);
+        let input = InPortKey::<Level>::from_u128(20);
+        let output = OutPortKey::<Pulse>::from_u128(30);
+        UncheckedNetwork::new(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            vec![NodeDef::new(
+                NodeKey::from_u128(2),
+                NodeKind::periodic(crate::authored::PeriodicConfig::new(
+                    NonZeroSpan::from_ticks(period_ticks).unwrap_or_else(|failure| {
+                        panic!("golden period must be positive: {failure}")
+                    }),
+                    first_emission,
+                    reenable_phase,
+                )),
+                NodePorts::with_input_roles(
+                    vec![input.into()],
+                    vec![InputPortRole::Enable],
+                    vec![output.into()],
+                ),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalInputDef::new(
+                external.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                ExternalOutputKey::<Pulse>::from_u128(40).into(),
+                SignalSourceKey::NodeOutput(output).into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ConnectionDef::new(
+                ConnectionKey::from_u128(50),
+                external.into(),
+                input.into(),
+                DiagnosticMeta::default(),
+            )],
+        )
+    }
+
+    fn golden_hierarchy(
+        nested: bool,
+        reverse_instances: bool,
+        annotated: bool,
+    ) -> UncheckedNetwork<()> {
+        let (module, input, output) = golden_inverter();
+        let external_input = ExternalInputKey::<Level>::from_u128(3);
+        let external_output = ExternalOutputKey::<Level>::from_u128(4);
+        let parent = ModuleInstanceKey::from_u128(5);
+        let child = ModuleInstanceKey::from_u128(6);
+        let mut instances = vec![ModuleInstanceDef::new(
+            parent,
+            module.clone(),
+            ModuleBindingSet::new(vec![ModuleBinding::new(
+                input.into(),
+                ConnectionEndpoint::external_input(external_input.into()),
+            )]),
+            None,
+            if annotated {
+                meta("instance")
+            } else {
+                DiagnosticMeta::default()
+            },
+        )];
+        let exported = if nested {
+            instances.push(ModuleInstanceDef::new(
+                child,
+                module,
+                ModuleBindingSet::new(vec![ModuleBinding::new(
+                    input.into(),
+                    ConnectionEndpoint::module_output(parent, output.into()),
+                )]),
+                Some(parent),
+                DiagnosticMeta::default(),
+            ));
+            child
+        } else {
+            parent
+        };
+        if reverse_instances {
+            instances.reverse();
+        }
+        UncheckedNetwork::new_with_instances(
+            NetworkKey::from_u128(1),
+            TimeDomainId::from_u128(2),
+            DiagnosticMeta::default(),
+            Vec::new(),
+            vec![ExternalInputDef::new(
+                external_input.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![ExternalOutputDef::new(
+                external_output.into(),
+                SignalSourceKey::ModuleOutput {
+                    instance: exported,
+                    output,
+                }
+                .into(),
+                DiagnosticMeta::default(),
+            )],
+            Vec::new(),
+            instances,
+        )
+    }
+
+    fn golden_inverter() -> (
+        crate::module::ModuleDef<()>,
+        crate::key::ModuleInputKey<Level>,
+        crate::key::ModuleOutputKey<Level>,
+    ) {
+        let input = crate::key::ModuleInputKey::<Level>::from_u128(1);
+        let output = crate::key::ModuleOutputKey::<Level>::from_u128(2);
+        let node_input = InPortKey::<Level>::from_u128(11);
+        let node_output = OutPortKey::<Level>::from_u128(12);
+        let module = UncheckedModule::new_user(
+            DiagnosticMeta::default(),
+            vec![ModuleInputDef::new(input.into(), DiagnosticMeta::default())],
+            vec![ModuleOutputDef::new(
+                output.into(),
+                DiagnosticMeta::default(),
+            )],
+            vec![
+                ModuleInterfaceMapping::input(input.into(), node_input.into()),
+                ModuleInterfaceMapping::output(output.into(), node_output.into()),
+            ],
+            vec![NodeDef::new(
+                NodeKey::from_u128(10),
+                NodeKind::<()>::not(),
+                NodePorts::new(vec![node_input.into()], vec![node_output.into()]),
+                DiagnosticMeta::default(),
+            )],
+            Vec::new(),
+        );
+        let validated = module.validate_ref();
+        (
+            validated
+                .artifact()
+                .expect("golden inverter validates")
+                .clone(),
+            input,
+            output,
+        )
+    }
+
+    fn standard_exactly(
+        threshold: u64,
+        inputs: &[crate::key::ModuleInputKey<Level>],
+    ) -> crate::module::ModuleDef<()> {
+        let mut request = crate::standard::StandardModuleRequest::new(
+            crate::standard::StandardModuleRef::exactly(),
+        )
+        .with_parameter(
+            crate::standard::StandardParameterKey::threshold(),
+            crate::standard::StandardParameterValue::U64(threshold),
+        );
+        for input in inputs {
+            request = request.with_variadic_input((*input).into());
+        }
+        crate::standard::StandardCatalogue::<()>::current()
+            .build(request)
+            .require_artifact()
+            .expect("golden exactly validates")
     }
 }
