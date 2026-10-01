@@ -2,13 +2,11 @@ schema_version: "0.1"
 id: mossignal.identity.module_fingerprint
 title: Reusable module semantic fingerprint
 kind: artifact
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: 1b23f14471c8f7de61a58313ffc746ac17aa959b
-  working_tree: dirty
-  modified_spec_paths:
-    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+  commit: e735a54ee33851d059d636c438063bff5b0e9fec
+  working_tree: clean
 
 summary: >-
   ModuleFingerprint is the opaque domain-separated identity of one validated
@@ -21,7 +19,7 @@ summary: >-
 scope:
   includes:
     - ModuleFingerprint public value and digest construction
-    - semantic inclusion, exclusion, sensitivity, and ordering rules for user modules
+    - semantic inclusion, exclusion, sensitivity, and ordering rules for the shared section 55 payload
     - successful ModuleDef ownership and deterministic verification
   excludes:
     - standard expansion-fingerprint construction and catalogue contribution policy beyond the section 55 origin record
@@ -48,7 +46,7 @@ requirements:
     statement: >-
       DigestSuiteVersion 1 computes ModuleFingerprint with unkeyed BLAKE3-256
       over a canonical record containing domain label
-      mossignal/module_fingerprint/v1, domain version 1, and the selected
+      mossignal/module_fingerprint/v1, domain version 1, and the section 55
       version-1 canonical semantic module payload. No other digest type may
       reuse that domain label.
     sources: [digest-suite, domain-separation, digest-versions, module-fingerprint]
@@ -57,40 +55,68 @@ requirements:
     kind: semantic
     statement: >-
       A user module uses the exact section 55 payload with origin ["user", null].
-      That payload includes the complete typed public input and output interface
-      with stable keys, every output's source incidence, and the complete
-      module-local primitive semantic graph: stable node, typed port, and
-      connection identities; endpoint incidence; node kinds; semantic port roles;
-      semantic parameters; declared initial state; and state or temporal schemas
-      where applicable. Module connections and mapping sources use the distinct
-      section 55 spellings, including bare port keys and the bare-key
-      module-input mapping source.
+      Record fields use canonical field-name order. The payload includes the
+      typed public inputs and outputs, input and output mappings, and the
+      module-local nodes, ports, and connections, including node kinds,
+      semantic roles, semantic parameters, declared initial state, and state
+      or temporal schemas where the section 54.2 kind records include them.
+      A module connection is not the network connection record: it carries
+      signal kind, its target is the bare in-port key, and its source is a
+      bare out-port key or a section 55 source record. A mapping target is
+      the bare in-port key. A mapping source is a bare out-port key, the
+      bare-key module_input variant, or a module_output record. That mapping
+      module_input variant is not the module-connection module_input record.
+      Inputs and outputs are ordered by signal-kind tag, then key. Nodes are
+      ordered by node key and connections by connection key. Mappings are
+      ordered by input mappings before output mappings, then the public
+      interface key's signal-kind tag and key, then the opposite endpoint
+      class in the section 54.2 binding order, then that endpoint key, then a
+      module-output's output key when present. Ports are ordered by signal-kind tag,
+      direction with input before output, port key, owner key, then
+      semantic-role name. Nested module instances, when present, use the
+      section 54.2 instance record and order. Empty connections, inputs,
+      mappings, nodes, outputs, and ports arrays are present.
+      module_instances is omitted only when empty.
     sources: [api-modules, concrete-modules, module-fingerprint]
-    basis: derived
 
   - id: representation-and-instance-exclusions
     kind: prohibition
     statement: >-
-      Module identity excludes caller insertion order, dense indices, memory
-      layout, caches, diagnostic names, descriptions, paths, diagnostic origin
-      metadata, presentation tags and extensions, this module's own instance
-      placement, instance metadata, network bindings, and containing-network
-      identity. Nested instances inside the definition remain in the payload.
-    sources: [api-modules, module-fingerprint, metadata, canonical-ordering]
+      Module identity excludes construction and insertion order, dense indices,
+      memory layout, private caches, topology revision, diagnostic names,
+      descriptions, paths, diagnostic origin metadata, presentation tags and
+      extensions, this module's own instance key, placement, bindings, and
+      metadata, and the containing network's identity. It also excludes
+      TimeDomainId, catalogue version, and the expansion-fingerprint bytes.
+      The version-1 payload omits TimeDomainId because a reusable module
+      definition has none; that omission does not remove TimeDomainId from
+      NetworkFingerprint. Nested instances inside the definition remain in
+      the payload.
+    sources: [api-modules, module-fingerprint, metadata, canonical-ordering, time-domain-contribution, catalogue-version]
 
   - id: deterministic-and-sensitive-identity
     kind: semantic
     statement: >-
-      Semantically equal stable-keyed user modules produce equal fingerprints
+      Semantically equal stable-keyed modules produce equal fingerprints
       regardless of construction order or private representation. Changing a
-      public interface key or kind, output-source incidence, internal stable
-      identity, primitive kind, semantic role, parameter, initial state, state
-      schema, temporal schema, or internal connection incidence changes the
-      canonical semantic projection. A standard module uses the same payload
-      with origin ["standard", the section 55 declaration record]. Changing a
-      standard parameter, semantic or expansion version, identifier, or internal
-      role changes that fingerprint. The expansion-fingerprint bytes are not a
-      field of the record.
+      public interface key or signal kind, a mapping or connection endpoint,
+      an internal stable identity, primitive kind, semantic role, parameter,
+      initial state, state schema, temporal schema, or a nested instance key,
+      parent, binding, or referenced module fingerprint changes the canonical
+      semantic projection. A user module and a standard module with the same
+      primitive graph have different fingerprints. A standard module uses the
+      same payload with origin ["standard", standard_origin]. Nested records,
+      including standard_origin, use canonical field-name order.
+      standard_origin carries core and built-in semantics versions 1, the
+      semantic version, expansion version, standard identifier, parameters,
+      and internal roles. Role categories are connection, export, input_port,
+      node, and output_port. Parameter values use the closed logic_level, u64,
+      span, non_zero_span, and enum variants. An internal role omits
+      public_input unless it names a public level input, in which case that
+      field is the 16-byte level module-input key. Changing a standard
+      parameter, semantic or expansion version, identifier, or internal role
+      changes that fingerprint. Internal roles are ordered by category name,
+      role text, then key. Parameters are ordered by parameter-key text.
     sources: [api-modules, concrete-modules, module-fingerprint, testing-determinism]
     basis: derived
 
@@ -105,7 +131,7 @@ requirements:
     basis: derived
 
 implementation_freedom:
-  - The section 55 record is the version-1 development projection for both origins. Reuse of the canonical-value encoder and primitive semantic projections is the selected spelling. Complete artifact envelopes and decoding remain outside this subject.
+  - The section 55 record is the version-1 development projection for both origins. Complete artifact envelopes and decoding remain outside this subject.
   - Private projection types, encoder decomposition, caching, and module placement are unconstrained when the canonical bytes and public opaque value agree.
 
 open_questions: []
@@ -134,7 +160,7 @@ sources:
   module-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 55. Module fingerprint]
-    reviewed_hash: sha256:6b41a847681a35c84fbb36310dd608fd9d5342f48c02e14ee1681f01ec0380d0
+    reviewed_hash: sha256:338d9ba18943b76976a9509c3592017e9e17468925623b7afb0db536cf067a5d
   metadata:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VIII — Definition artifacts, 72. Metadata]
@@ -155,3 +181,11 @@ sources:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
     reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72
+  time-domain-contribution:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part II — Persistent time-domain identity, 13. Time-domain contribution to identity]
+    reviewed_hash: sha256:0819432d8165f8d97f066f6c94c6db256f5cd3cc55eadad64272a62c93537a59
+  catalogue-version:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 8. Standard catalogue version]
+    reviewed_hash: sha256:999e453b336fc9001c4b99a65b0a0a36371460ffa184d6f3ead91dd9887f35f9

@@ -2,13 +2,11 @@ schema_version: "0.1"
 id: mossignal.identity.network_fingerprint
 title: Network semantic fingerprint
 kind: artifact
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: 1b23f14471c8f7de61a58313ffc746ac17aa959b
-  working_tree: dirty
-  modified_spec_paths:
-    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+  commit: e735a54ee33851d059d636c438063bff5b0e9fec
+  working_tree: clean
 
 summary: >-
   NetworkFingerprint is the opaque, domain-separated 256-bit identity of a
@@ -48,9 +46,11 @@ requirements:
       DigestSuiteVersion 1 computes NetworkFingerprint as unkeyed BLAKE3 with a
       256-bit output over the canonical record containing domain label
       mossignal/network_fingerprint/v1, domain version 1, and the version-1
-      canonical semantic payload for the restricted Level, Pulse, opening
-      stateful, and opening temporal node family. CoreSemanticsVersion and
-      BuiltInNodeSemanticsVersion are initially 1;
+      canonical semantic payload of the restricted projection. That payload
+      covers the restricted Level, Pulse, stateful, and temporal node family
+      and, when the network contains module instances, their identity and
+      state-relevant hierarchy. CoreSemanticsVersion and
+      BuiltInNodeSemanticsVersion are initially 1.
       TopologyPatchSemanticsVersion does not participate in the restricted
       projection.
     sources: [digest-suite, domain-separation, digest-version-inputs, restricted-projection]
@@ -72,7 +72,7 @@ requirements:
       `PulseRoute` output roles, and the `level` and `pulse` signal-kind
       variants. It also includes the exact `pulse_set_reset_latch`,
       `level_set_reset_latch`, `sample_hold`, `transport_delay`,
-      `inertial_delay`, and `periodic` kind records, the added semantic roles,
+      `inertial_delay`, and `periodic` kind records, their section 54.2 semantic roles,
       and, when the network contains module instances, the exact module-instance,
       binding, bound-input, and parent records. `module_instances` is omitted
       when absent. Collections use the specified stable semantic order and never
@@ -102,12 +102,14 @@ requirements:
   - id: representation-exclusions
     kind: prohibition
     statement: >-
-      NetworkFingerprint excludes topology revision, dense indices, derived
-      reaction-operation allocation, construction and insertion order, hash
-      iteration, memory layout, compiled caches, and all presentation-only
-      diagnostic metadata including names, descriptions, paths, origins, tags,
-      and extensions.
-    sources: [network-projection, restricted-projection, api-fingerprint, runtime-fingerprint, api-metadata]
+      NetworkFingerprint excludes topology revision, dense indices, selected
+      topological order, SCC data, cycle witnesses, derived reaction-operation
+      identity and allocation, construction and insertion order, hash
+      iteration, memory layout, compiled caches, validation-derived private
+      data, TopologyPatchSemanticsVersion, catalogue version, and all
+      presentation-only diagnostic metadata including names, descriptions,
+      paths, origins, tags, and extensions.
+    sources: [network-projection, restricted-projection, api-fingerprint, runtime-fingerprint, api-metadata, deterministic-compilation, catalogue-version]
 
   - id: deterministic-semantic-identity
     kind: semantic
@@ -149,19 +151,16 @@ requirements:
   - id: golden-vector-verification
     kind: verification
     statement: >-
-      Representative NetworkFingerprint values require versioned golden vectors;
-      tests also establish insertion-order invariance, metadata exclusion, and
-      sensitivity to mutable included semantic categories such as `AtLeast`
-      thresholds and `Select` input roles. The initial corpus retains complete
-      canonical digest-input bytes and expected digests for the restricted
-      minimal, nontrivial, variadic, remaining level-combinational, pulse-
-      combinational, edge-detector, stateful, temporal, and level-controlled
-      pulse cases required by the verification policy. It also retains complete
-      digest-input bytes and expected digests for inertial delay, periodic
-      operation, and flat and nested module-instance hierarchy, including
-      insertion-order invariance, metadata exclusion, and sensitivity to delay,
-      initial level, period, emission policy, reenable policy, and parent
-      linkage.
+      Representative NetworkFingerprint values require versioned golden vectors
+      that retain the complete canonical digest-input bytes and the expected
+      32-byte result. Tests also establish insertion-order invariance, metadata
+      exclusion, and sensitivity to mutable included semantic categories such
+      as `AtLeast` thresholds and `Select` input roles. The hand-reviewed
+      corpus required by the verification policy covers an empty or minimal
+      network, a nontrivial `Constant` and `Not` network, a variadic `All`
+      network with distinct stable input ports, and the remaining restricted
+      level-combinational node kinds, including `AtLeast`'s threshold and
+      `Select`'s fixed input roles.
     sources: [canonical-vectors, digest-scope-verification, deterministic-compilation]
 
 recommendations:
@@ -207,7 +206,7 @@ sources:
       - Part VI — Digest and fingerprint suite
       - 54. Network and input-schema fingerprints
       - 54.2 Restricted network-fingerprint projection version 1
-    reviewed_hash: sha256:8de603729bcf0b4382a357e08d48b35e12803f7165333f21113bfed49bce77f9
+    reviewed_hash: sha256:06674f6adf8b2b553c51d7338f44c4e98154f84ba9f93da713b7dac2864fe1ff
   canonical-ordering:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]
@@ -265,3 +264,7 @@ sources:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part III — Version and compatibility model, 15. Version representation]
     reviewed_hash: sha256:a59d0cb9deab2c9b183e95c55b2e4df660b7927c8c6cc074defe68bee36c68b1
+  catalogue-version:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 8. Standard catalogue version]
+    reviewed_hash: sha256:999e453b336fc9001c4b99a65b0a0a36371460ffa184d6f3ead91dd9887f35f9

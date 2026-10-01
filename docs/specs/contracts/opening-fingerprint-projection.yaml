@@ -2,13 +2,11 @@ schema_version: "0.1"
 id: mossignal.identity.opening_fingerprint_projection
 title: Opening fingerprint projection baseline
 kind: concept
-status: draft
+status: reviewed
 
 source_baseline:
-  commit: 1b23f14471c8f7de61a58313ffc746ac17aa959b
-  working_tree: dirty
-  modified_spec_paths:
-    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+  commit: e735a54ee33851d059d636c438063bff5b0e9fec
+  working_tree: clean
 
 summary: >-
   Fingerprint-domain version 1 remains a development projection until an
@@ -31,7 +29,7 @@ scope:
     - exact input-schema payload records already fixed by section 54.3
     - per-node laws and semantic-identity facet lists owned by the applicable node contracts
     - standard-module fingerprint field lists and expansion-fingerprint contents owned by the catalogue specification
-    - user-module digest construction and validated ownership owned by the module fingerprint contract
+    - section 55 payload details and validated module ownership owned by the module fingerprint contract
     - RuntimePolicyId construction
     - execution-state, observable-state, and snapshot digests
     - snapshot encoding, restoration, replay, and topology-patch artifacts
@@ -62,11 +60,13 @@ requirements:
       signal-semantics and timing parameters. The module record includes the
       module interface keys and module-internal stable identity required of a
       module fingerprint.
-      Standard module fingerprints retain the contributions the catalogue
-      fingerprint section already requires. Primitive aliases and builder-only
-      operations contribute only as the ordinary primitives they author. The
-      standard expansion fingerprint remains a distinct catalogue domain and
-      is not a network or module fingerprint domain.
+      Standard module fingerprints use that section 55 record, so catalogue
+      fingerprint contributions apply only where the record retains them.
+      Primitive aliases and builder-only operations contribute only as the
+      ordinary primitives they author. The standard expansion fingerprint
+      remains the distinct catalogue domain
+      mossignal/standard_module_expansion_fingerprint/v1 and is not a network
+      or module fingerprint domain or field.
     sources:
       - network-projection
       - primitive-inventory
@@ -82,18 +82,18 @@ requirements:
     kind: semantic
     statement: >-
       Until the named stabilization decision, fingerprint-domain version 1 is
-      a development projection. An accepted extension or correction whose
-      exact canonical spelling is not already fixed may update that projection
-      in place, without adding a successor domain, historical reader,
-      upgrader, or migration path. The same change updates the exact
+      a development projection. An accepted extension or correction may update
+      that projection in place, without adding a successor domain, historical
+      reader, upgrader, or migration path. The same change updates the exact
       projection specification, the applicable fingerprint contract, and every
-      affected golden vector together. Where a live spelling conflicts with an
-      exact specification rule, that rule replaces it in the same change. New
-      record fields are schema-defined lowercase ASCII snake_case, occur at
-      most once, and use ascending raw UTF-8 byte order of the field name.
-      New closed enums use schema-defined lowercase ASCII snake_case variant
-      names rather than discriminants, debug text, or source declaration
-      position. Unreviewed or accidental byte drift is prohibited.
+      affected golden vector together. Unreviewed or accidental byte drift is
+      prohibited. Fields added by such a change are schema-defined lowercase
+      ASCII snake_case, appear at most once, appear exactly once when
+      required, and use ascending raw UTF-8 byte order of the field name.
+      Optional absent fields are omitted unless the schema explicitly requires
+      null. New closed enums use schema-defined lowercase ASCII snake_case
+      variant names rather than discriminants, debug text, or source
+      declaration position.
     sources: [fingerprint-versions, records, variants, canonical-enums]
     basis: derived
 
@@ -136,14 +136,17 @@ requirements:
       The opening extension preserves the exclusions already required of
       network and module fingerprints. Both continue to exclude topology
       revision, dense indices, construction and insertion order, memory layout,
-      compiled caches, and presentation-only diagnostic metadata. The version-1
-      network projection also continues to exclude selected topological order,
-      SCC data, cycle witnesses, derived reaction-operation identity, and
-      TopologyPatchSemanticsVersion, and validation-derived private data must
-      not affect its bytes. Module fingerprints also continue to exclude
-      module-instance placement and instance metadata. Metadata remains
-      excluded from network and module fingerprints unless a future field is
-      explicitly reclassified as semantic.
+      private or compiled caches, and presentation-only diagnostic metadata,
+      including names, descriptions, paths, origin metadata, tags, and
+      extensions. The version-1 network projection also continues to exclude
+      selected topological order, SCC data, cycle witnesses, derived
+      reaction-operation identity, and TopologyPatchSemanticsVersion, and
+      validation-derived private data must not affect its bytes. A module
+      fingerprint continues to exclude that module's own instance key,
+      placement, bindings, and metadata, and the containing network's
+      identity. Nested instances inside the definition remain in its payload.
+      Metadata remains excluded from network and module fingerprints unless a
+      future field is explicitly reclassified as semantic.
     sources: [network-projection, restricted-projection, module-fingerprint, metadata]
 
   - id: opening-golden-vectors
@@ -156,14 +159,9 @@ requirements:
       golden vector in that same change. The golden change is deliberate:
       either the bytes are proven semantically equivalent under a new encoding
       version, or the reviewed projection update is the explicit break of the
-      previous development bytes. The opening corpus retains complete
-      digest-input bytes and expected digests for the latch, sample-hold,
-      transport-delay, inertial-delay, and periodic kind records, for flat and
-      nested module-instance hierarchy, and for one standard-origin module
-      record, including insertion-order invariance, metadata exclusion, and
-      sensitivity to the represented parameters, roles, schemas, and parent
-      linkage. Before the named baseline, that break does not record the
-      stabilization decision and does not add a successor domain.
+      previous development bytes. Before the named baseline, that break does
+      not record the stabilization decision and does not add a successor
+      domain.
       Execution-state, observable-state, snapshot, replay, patch, and
       runtime-policy vectors are outside this subject.
     sources: [restricted-fingerprint-verification, canonical-encoding-vectors, fingerprint-versions]
@@ -200,11 +198,11 @@ sources:
       - Part VI — Digest and fingerprint suite
       - 54. Network and input-schema fingerprints
       - 54.2 Restricted network-fingerprint projection version 1
-    reviewed_hash: sha256:8de603729bcf0b4382a357e08d48b35e12803f7165333f21113bfed49bce77f9
+    reviewed_hash: sha256:06674f6adf8b2b553c51d7338f44c4e98154f84ba9f93da713b7dac2864fe1ff
   module-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 55. Module fingerprint]
-    reviewed_hash: sha256:6b41a847681a35c84fbb36310dd608fd9d5342f48c02e14ee1681f01ec0380d0
+    reviewed_hash: sha256:338d9ba18943b76976a9509c3592017e9e17468925623b7afb0db536cf067a5d
   records:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part IV — Canonical binary encoding, 31. Records]
