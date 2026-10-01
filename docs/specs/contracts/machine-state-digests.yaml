@@ -1,0 +1,495 @@
+schema_version: "0.1"
+id: mossignal.identity.machine_state_digests
+title: Execution-state and observable-state digests
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: cfec63bec2915a561ac434917f22414224b2a0ba
+  working_tree: clean
+
+summary: >-
+  ExecutionStateDigest and ObservableStateDigest are distinct domain-separated
+  identities of one committed machine. Execution covers future-determining
+  semantic state. Observable extends that projection with required current
+  observation. Neither digest is a snapshot, replay, or restoration artifact.
+
+scope:
+  includes:
+    - the two digest types and their domain-separated construction
+    - execution and observable semantic projections, including stable identity and canonical order
+    - exclusion of policy, caches, allocation, subscribers, and presentation data
+    - committed-machine and successful-result exposure
+    - sensitivity, exclusion, and golden-vector verification for these two digests
+  excludes:
+    - SnapshotDigest, snapshot envelopes, restoration, and replay artifacts
+    - topology migration and patch application
+    - RuntimePolicyId construction
+    - network, module, and input-schema fingerprint payload records
+    - forecast execution and replay-frame construction
+    - subscription delivery and explanation-query APIs
+    - digest equality used in place of exact semantic validation
+
+known_uncovered:
+  - SnapshotDigest and the optional-history or snapshot-metadata cases that exist only to distinguish it
+  - Provenance checkpoint compaction, external checkpoint bundles, and a public CauseDigest diagnostic surface
+  - Optional retained history and completed-episode archives
+  - Topology-patch migration of these projections
+  - Public identity-allocation cursors other than the pending-event serial, until one is introduced
+  - ForecastState, MachineSnapshot, and replay-frame digest accessors
+
+aliases:
+  - ExecutionStateDigest
+  - ObservableStateDigest
+  - execution-state digest
+  - observable-state digest
+
+requirements:
+  - id: distinct-opaque-digests
+    kind: public_surface
+    statement: >-
+      ExecutionStateDigest and ObservableStateDigest are distinct public opaque
+      32-byte identities. Neither is interchangeable with the other,
+      SnapshotDigest, a fingerprint, RuntimePolicyId, or NetworkRevision.
+      Ordinary API use must not expose the digest algorithm as part of either
+      semantic type.
+    sources: [api-digest-scopes, concrete-identities, fixed-digests]
+
+  - id: domain-separated-construction
+    kind: semantic
+    statement: >-
+      DigestSuiteVersion 1 computes each digest as unkeyed BLAKE3-256 over the
+      canonical record of domain label, payload, and domain version. The
+      execution label is mossignal/execution_state_digest/v1 and the observable
+      label is mossignal/observable_state_digest/v1. Each initial domain version
+      is 1. A provenance-record content digest uses
+      mossignal/provenance_record/v1 and must not reuse either machine label.
+      The artifact prefix is not part of either digest.
+    sources: [digest-suite, domain-separation, artifact-prefix]
+
+  - id: canonical-profile
+    kind: semantic
+    statement: >-
+      Each payload uses the canonical CBOR profile. The profile permits only
+      shortest unsigned integers, byte strings, UTF-8 text, definite-length
+      arrays, false, true, and null. It forbids negative integers, floats,
+      indefinite lengths, CBOR maps and tags, undefined, and other simple
+      values. A record is an array of unique field pairs ordered by ascending
+      raw UTF-8 field name. Field names are schema-defined lowercase ASCII
+      snake_case, and an optional absent field is omitted unless its schema
+      requires a present null. A variant is encoded as ["variant_name", payload],
+      using null when it has no payload; the name is the schema name, not a
+      discriminant or debug text. Semantic sequences keep semantic order.
+      Semantic maps are sorted key-value arrays, and semantic sets are sorted
+      arrays without duplicates. Every 128-bit stable key is a 16-byte
+      unsigned big-endian string, and every digest is a 32-byte string.
+    sources: [canonical-values, records, variants, sequences, sets-and-maps, stable-keys, canonical-enums, fixed-digests]
+
+  - id: execution-projection
+    kind: semantic
+    statement: >-
+      The execution projection includes every committed fact that can affect
+      future execution, future structured failure, persistent diagnostic
+      publication, or public pending-event identity. It includes TimeDomainId,
+      network fingerprint, lifecycle, topology revision, stateful-node state,
+      temporal-node state, the pending-event calendar, active diagnostic
+      episodes and their current material evidence, and the next public
+      pending-event serial. While ready it also includes current logical time
+      and the authoritative external level valuation. A later committed cursor
+      that can affect future public identity is included. Each state entry
+      contributes its stable owner, state schema, and state value, and includes
+      state cause or revision context where that state schema requires them.
+      Each pending event contributes its public serial, stable owner, event
+      kind, deadline, and kind-specific semantic payload, including originating
+      time, revision, and originating cause digest where that event record
+      carries them.
+    sources: [execution-digest, persistence-axioms, api-digest-scopes, state-tables, pending-event-records]
+
+  - id: no-fabricated-uninitialized-facts
+    kind: prohibition
+    statement: >-
+      An AwaitingInitialization projection retains declared stateful and
+      temporal state and the next pending-event serial. It contains no
+      fabricated current logical time, external level valuation, settled signal
+      valuation, output baseline, pending schedule, runtime provenance, runtime
+      diagnostic episode, or current explanation. An empty calendar is absence
+      of events, not a fabricated schedule.
+    sources: [uninitialized-snapshot, runtime-lifecycle]
+
+  - id: observable-extension
+    kind: semantic
+    statement: >-
+      Observable state is the execution projection plus required current
+      observation it does not already represent: settled level facts for
+      inspectable level ports and endpoints, external output baseline and
+      establishment state, required provenance roots and their canonical
+      closure or checkpoint roots, the current explanation boundary, and any
+      other required inspection fact that cannot be derived from the execution
+      projection. A fact already represented in the execution projection,
+      including the authoritative external level valuation and active-episode
+      evidence, is not encoded a second time. Ready level outputs have
+      established baselines. Settled level facts are checked observations, not
+      an alternative execution path. Pulse counts are not current port state.
+    sources: [observable-digest, api-digest-scopes, settled-levels, output-baselines, pulse-state, required-provenance]
+
+  - id: content-addressed-provenance
+    kind: semantic
+    statement: >-
+      Provenance derivations are excluded from the execution digest. A cause
+      digest stored inside a state entry or pending-event record remains part
+      of that execution fact. The observable projection adds the required
+      provenance roots and the content-addressed records of their backward
+      closure, or explicit checkpoint roots where ancestry has been compacted.
+      A record contributes its kind, applicable time and revision, stable
+      subject, semantic payload, labeled predecessors, predecessor content
+      digests, supporter multiplicities, and provenance semantics version.
+      Private arena identifiers and in-memory CauseRef values do not
+      participate. Byte-identical canonical records are one record. Retained
+      records are ordered by content digest. Unordered supporters in one role
+      are ordered by role, predecessor digest, and contribution payload.
+      Ordered relations keep their specified order. With no explicit
+      checkpoint, the explanation boundary is complete from initialization
+      through that closure. A checkpoint boundary states its time and revision
+      and must still explain every current fact.
+    sources: [execution-digest, provenance-dag, provenance-relations, provenance-record-order, coalesced-provenance, cause-references, provenance-checkpoints, provenance-retention]
+    basis: derived
+
+  - id: stable-order-independent-of-storage
+    kind: semantic
+    statement: >-
+      Subjects use stable semantic identity. Top-level authored keys stay those
+      keys. Module-owned state and pending-event owners use the pair of
+      ModuleInstanceKey and module-internal stable key, not a
+      compiler-allocated flat key or dense index. State entries are ordered by
+      that owner identity. Pending events are ordered by deadline, stable
+      owner, event kind, and public event key. Equal-deadline storage order is
+      not semantic. Other unordered sets use the default canonical order.
+      Private calendar, heap, or arena placement must not change either digest.
+    sources: [persistence-axioms, canonical-ordering, state-tables, pending-event-records, private-event-storage, catalogue-snapshot-state, module-qualified-identity]
+
+  - id: excluded-non-semantic-state
+    kind: prohibition
+    statement: >-
+      Both digests exclude runtime policy identity, optional and completed
+      history, presentation metadata, subscriber and observer state, probes,
+      the derived schedule, policy-independent caches, dense indices,
+      allocation layout, and private worklists. Neither digest repeats standard
+      descriptor data separately, because the network fingerprint already fixes
+      the module definition. Changing only an excluded fact must not change
+      either digest. Machines may share an execution digest while using
+      different runtime policies.
+    sources: [execution-digest, observable-digest, persistence-metadata, pulse-state, ready-snapshot, client-state, canonical-encoding, policy-identity, probes, catalogue-fingerprints]
+
+  - id: projection-version-rule
+    kind: compatibility
+    statement: >-
+      Each payload includes the version components that define interpretation
+      of its fields. A schema-only encoding change does not change a digest
+      while the semantic projection, digest suite, and domain version stay
+      unchanged. A change to the canonical semantic projection requires a new
+      domain version or digest suite version. Digests from different suites
+      are different namespaces and must not be compared as one identity.
+    sources: [digest-version-inputs, digest-suite-change]
+
+  - id: equality-is-not-validation
+    kind: semantic
+    statement: >-
+      Digest inequality proves inequality under the canonical encoding. Digest
+      equality is not proof of semantic equality. When two canonical records
+      with the same digest are simultaneously available and their bytes differ,
+      the implementation must treat that as a fatal collision or corruption and
+      must not choose one record silently. Digest equality must not replace
+      exact semantic validation.
+    sources: [digest-equality, canonical-encoding]
+
+  - id: pure-machine-and-result-exposure
+    kind: public_surface
+    statement: >-
+      Machine exposes execution_state_digest and observable_state_digest in
+      both lifecycle phases. A successful transaction result exposes the
+      pre-publication execution digest, the post-publication execution digest,
+      and the post-publication observable digest, through fields or equivalent
+      accessors. Both queries are pure projections and must not mutate the
+      machine.
+    sources: [api-machine, concrete-machine, concrete-result, inspection-purity]
+
+  - id: failure-leaves-digests-unchanged
+    kind: system_effect
+    statement: >-
+      A rejected transaction leaves the published machine unchanged, including
+      both digests. Preparing a digest must not publish a partial machine.
+      Inspection and subscriber changes must not change either digest.
+    sources: [publication-atomicity, settlement, failure-atomicity, inspection-purity]
+
+  - id: digest-verification
+    kind: verification
+    statement: >-
+      Representative execution and observable digests have versioned golden
+      vectors retaining the complete canonical digest-input bytes and the
+      expected 32-byte result, including an uninitialized machine and a ready
+      machine. Tests must show that identical payload bytes under the two
+      domains produce different digests, and that changing a version component
+      included in one projection changes that digest unless a specified
+      schema-only rule preserves it. They must show invariance under
+      non-semantic storage order and private layout, including unordered
+      supporter order, pending equal-deadline storage order, and diagnostic
+      collection construction order. They must show sensitivity to included
+      semantic facts and exclusion of policy, presentation metadata, and
+      subscriber state. At least one case must change required current
+      observation while leaving the execution digest unchanged. Rejection and
+      pure inspection leave both digests unchanged. Tests compare canonical
+      bytes and must not treat digest equality as a substitute.
+    sources: [canonical-vectors, digest-scope-verification, digest-domain-tests, permutation-invariance, failure-atomicity, inspection-purity, digest-equality]
+
+recommendations:
+  - id: value-capabilities
+    statement: >-
+      Each digest type should provide Clone, Copy, Eq, Hash, Ord, Debug, and
+      Display with a stable hexadecimal representation.
+    sources: [concrete-identities]
+
+implementation_freedom:
+  - Sections 57 and 58 list facts, not a closed field-level payload record. Choose the simplest deterministic record that meets the inclusions, exclusions, canonical profile, and domain labels. Record that spelling in the golden vectors and the bead close-out. Do not treat the first spelling as a named compatibility freeze, and do not add a successor domain in the slice that introduces it.
+  - The private encoder may reuse the existing fingerprint CBOR writer. Public canonical-byte accessors are unnecessary when tests can observe the digest input.
+  - CauseDigest need not become a public type while provenance content digests use mossignal/provenance_record/v1.
+  - Empty collections may sit inside the lifecycle variant or beside it when uninitialized bytes still contain no fabricated ready facts.
+  - Explicitly labeled last-reaction history and other pure inspection caches stay excluded. A retained standard-module fact enters only the observable projection when current inspection requires it and the execution projection plus required provenance cannot reconstruct it.
+
+open_questions: []
+
+sources:
+  persistence-axioms:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part I — Persistence model and boundaries, 3. Persistence axioms]
+    reviewed_hash: sha256:95127c429a8b6d7d51377397793356171a4d4e902a406f0aa7e8d9d11df22c6e
+  artifact-prefix:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 29. Artifact prefix]
+    reviewed_hash: sha256:e1faf185f6232da93daec79e177b22369e29dc8070ec7afd01034329c17c0994
+  canonical-values:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 30. Allowed canonical values]
+    reviewed_hash: sha256:f5ffdaa29ab7512013016ed1e8b4ee4cea0f68c115ee7eb3821907ce13de5f69
+  records:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 31. Records]
+    reviewed_hash: sha256:9a63846d74dae7dfa1e888a48757ae27f7e424ca2f06ea81d5a64b336a2ccd88
+  variants:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 32. Variants]
+    reviewed_hash: sha256:b46175d2b006ff5a45373de054003c681250e4a525d8cbb38e123af85bb4dbe1
+  sequences:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 34. Sequences]
+    reviewed_hash: sha256:7f09c5e49b2a5a87dd3b02c754c1b60779d3cc466ab8334c37afc037f00c115c
+  sets-and-maps:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 35. Sets and maps]
+    reviewed_hash: sha256:bc52f48704ab0e540049235ae8b384b045f65e4be505bdcdd17c19a9a8bcca2e
+  canonical-ordering:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]
+    reviewed_hash: sha256:5f6570e0c89a0135fe906534620d35ac9d378d28b9866a9e287cd2eeb96fdea1
+  stable-keys:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 38. Stable keys]
+    reviewed_hash: sha256:4e6537e4a342c6d537d306c9bbc11418ddc6c4cdb8dfd28b46477efd85841636
+  fixed-digests:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 40. Fixed digests and fingerprints]
+    reviewed_hash: sha256:d6664f3186f8f4e1965879bc8eed5b5963d6c638519cc204b15580c6266c3ba6
+  canonical-enums:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 41. Diagnostic codes and enum names]
+    reviewed_hash: sha256:70030c7af0f5bee56294e7389672d05ab0b8be39f8cf8316f585868e39765709
+  digest-suite:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 51. Initial digest suite]
+    reviewed_hash: sha256:1469a69036c9809310b8bd1db66a86095160b2bf0b5b6e2b1bc532c04839e477
+  domain-separation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 52. Domain separation]
+    reviewed_hash: sha256:493e3715f1e5f7b4d7b29e0722a638caf6ec000d698320f6c8db93d9cd3a578d
+  digest-version-inputs:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 53. Digest version inputs]
+    reviewed_hash: sha256:39b98aacf5b1e57ba016ed8f9efaac0ce98fdad35878cef7f8d4d7733b017c39
+  execution-digest:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 57. Execution-state digest]
+    reviewed_hash: sha256:5e644a382e4703c2a28408ba49b291a9e0b50fab7b646eaee5cdf795c253627d
+  observable-digest:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 58. Observable-state digest]
+    reviewed_hash: sha256:e0a5ed702d30e059421d802205c22070031ea6733fdc5eb911539bb8bc516578
+  digest-equality:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 60. Digest equality and collision handling]
+    reviewed_hash: sha256:d3107d5b2be4f556227cc90e37b1a582d10a940e390750aaa2930b57312ef88a
+  provenance-dag:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VII — Canonical provenance persistence, 61. Provenance as a Merkle DAG]
+    reviewed_hash: sha256:7cb9d3753559620c4a36c6736c345919889349ae17c2105432fd6401e8a48c1b
+  provenance-relations:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VII — Canonical provenance persistence, 62. Labeled predecessor relations]
+    reviewed_hash: sha256:53709abe0500167fddc87a2bff44f80d8c9955e5232e4d75c52b9e8eef8337c8
+  provenance-record-order:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VII — Canonical provenance persistence, 63. Canonical provenance record order]
+    reviewed_hash: sha256:0a002b048edf09c31ab0a5b3088cb2e2a4920e2fb48061d4a00fe8bb462502c7
+  coalesced-provenance:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VII — Canonical provenance persistence, 64. Coalescing equivalent derivations]
+    reviewed_hash: sha256:999e310f4a4880c4050fe68f9245bd38c6a3828cf6f2416a414440128362eec1
+  cause-references:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VII — Canonical provenance persistence, 66. Cause references in other records]
+    reviewed_hash: sha256:31e58ad687d44283b9fb206b92a115376cc5a4947cb31f0545b008f15ece41d4
+  uninitialized-snapshot:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 86. Uninitialized snapshot]
+    reviewed_hash: sha256:7abb034905f2987801e35f284dfcdcc5ef2a2a9fcaa65a38be9cef59927d1123
+  ready-snapshot:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 87. Ready snapshot]
+    reviewed_hash: sha256:413d0357b7bfe5f06d98a84e27b74e82d9c48a9d3ee28c0e3a74be1eb0f6bc3a
+  state-tables:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 88. Stable-keyed state tables]
+    reviewed_hash: sha256:b4410d6b7337fa9693297254145653e4131cb2556de20dc54b5b8337e0152545
+  settled-levels:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 89. Complete settled level facts]
+    reviewed_hash: sha256:9372e884db96dc483db6aa3afda7bf9f8225ef1e1e04affd40d7256530aa3be6
+  pulse-state:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 90. Pulse state]
+    reviewed_hash: sha256:32074050a50af076d231984bf492df80330c217a4dddda4230bcdb023e2d033c
+  pending-event-records:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 92. Pending event records]
+    reviewed_hash: sha256:9d40b747e57c3e3392c351477272393b2c91536672b112fd87c2df41889d7c20
+  private-event-storage:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 94. Private event storage reconstruction]
+    reviewed_hash: sha256:01b3458b11ada58b1bd1d334c0ebef2fc54e58f59d54d9692c91797b225c99a9
+  output-baselines:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 95. External output baselines]
+    reviewed_hash: sha256:63ff4d95016e13adc616a54b6ce74eb45fdd5c605c2bd9029b6a7c11a0daab52
+  required-provenance:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 97. Required provenance section]
+    reviewed_hash: sha256:962c85fd921d5c05531f5c2b61f2c99c3c6ad3701899bc5c20ca168580be361f
+  persistence-metadata:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 99. Persistence metadata]
+    reviewed_hash: sha256:571f27065428f53ef9d9bd8ce13d714e0f84dc4c4d87db2c5331f497bb864ff7
+  digest-suite-change:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIII — Compatibility rules by artifact family, 128. Digest-suite change]
+    reviewed_hash: sha256:9b8e37a614530d5ac1a0cd15d63033852605ebf16c7e660b214f303195b4b364
+  permutation-invariance:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 153. Permutation invariance]
+    reviewed_hash: sha256:fdfc0f64e47fab7b9d8f119e65cabe8534ff94eed9c623e56aefcbfd22bfc67e
+  digest-domain-tests:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 166. Digest-domain tests]
+    reviewed_hash: sha256:63e05e391ac17fc4b5d7ca85a3280bbc0a2724742ec6c0c80c370f41c367930b
+  api-digest-scopes:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 19. Revision, fingerprint, digests, and runtime policy
+      - 19.3 Digest scopes
+    reviewed_hash: sha256:f56be71ec988d819173cbfb5e15669e87065d500a0b5ab5b64641431edd9d9a9
+  api-machine:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 27. Canonical machine API]
+    reviewed_hash: sha256:bc59f7d2115ba4bfce0da8f2c721b4b0b3d82398723c47e477411ac8fc7e2a9e
+  settlement:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 26. Settlement]
+    reviewed_hash: sha256:875bead35fccd63f762bf9fc87fbe484c579f99908d5e175bc8b135351296e23
+  concrete-identities:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part X — Validation and compilation artifacts, 45. Revision and fingerprints]
+    reviewed_hash: sha256:fd391aa0e34c98a7d34b45710151f0884bd7cce47a8e8682b526f1c6c8f8b13a
+  concrete-machine:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIII — Machine lifecycle and access, 50. Machine status]
+    reviewed_hash: sha256:1858e94e5b0903838f91813ddb733c2e85ac03f1d769c6ee238bc5b30d94bb16
+  concrete-result:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVII — Transaction results and changes, "64. `TransactionResult<D>`"]
+    reviewed_hash: sha256:20fb868dbf44f94e61a1e06e7f9f5ac08b5b7dbd7db5584777630bae19f6f295
+  runtime-lifecycle:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part II — Initialization, 6. Machine lifecycle states]
+    reviewed_hash: sha256:811d943451735f07ae65455bf2fb4e0ba143031d6fabc99bb187b9832561a0fd
+  publication-atomicity:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 47. State-transition model]
+    reviewed_hash: sha256:fcccb31e85f023ec9af8b0fcf6033427bb165f9b34130192dd7d1b00f281abd0
+  provenance-checkpoints:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 67. Provenance checkpoints]
+    reviewed_hash: sha256:6f611e67f50c6d563697cf774b0f4798623f7bf5b63cf0067a4d24c2931016cc
+  provenance-retention:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 68. Retention]
+    reviewed_hash: sha256:90b0e7ad7ff19307fc6fc71d15ae62390c46d47083721153c2911c151e27af94
+  client-state:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XII — Inspection and observer state, 81. Cursors and resynchronization]
+    reviewed_hash: sha256:86256ab78325c1551d8a327347d7d003ec0071b982d08e425dbedf54155a8eba
+  canonical-encoding:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path:
+      - Part XIII — Persistence, replay, and identity
+      - 88. Canonical encoding
+    reviewed_hash: sha256:b022df5c6107d95a44a7a337ebb7d8574b4928b2d8bcc350ad70f4ef83c18e79
+  policy-identity:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XIV — Runtime policy and replay, 90. Runtime policy identity]
+    reviewed_hash: sha256:a27ded70120020eed412ca040ff1384eae93429fbf3f06cb4c13875b9adef899
+  probes:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VII — Boundaries and utilities, 59. Probes and named signals]
+    reviewed_hash: sha256:a2ce4a67bce5af5df015cd087de089db1df35a1826f2fced14c99bb2824ecced
+  catalogue-fingerprints:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 21. Fingerprints]
+    reviewed_hash: sha256:abb2170a454514f1787bb0b030389538baa176cabe8008511058d58a2834f596
+  catalogue-snapshot-state:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XI — Persistence and replay, 72. Snapshot state]
+    reviewed_hash: sha256:c10ec74d1b021c66e4afd073d4cde91fd88ddfde5c05f94c9256f4b2dd783896
+  module-qualified-identity:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path:
+      - Part II — Structural correspondence and identity
+      - 12. Module-qualified internal identity
+    reviewed_hash: sha256:49262636c2e74ccf2cf41f2ba5c50cf3e8e878aa24b1122ecdf075059271e206
+  failure-atomicity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
+  inspection-purity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIV — Inspection and observer verification, 78. Inspection purity]
+    reviewed_hash: sha256:417f23a13d6e0198272e0c3d054ea0d8f43de706803305c8bcf0edcbb2e6e55c
+  digest-scope-verification:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 89. Digest-scope verification
+    reviewed_hash: sha256:21a439831900326e7a8e96230588e78be44bc5b9ca104fd229e0db7db4bb1485
+  canonical-vectors:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 90. Canonical encoding vectors
+    reviewed_hash: sha256:0facb5756d00d5b3d163a453cec7d1ea7d6b11d0d8a5c332eebd93e0388cbaab
