@@ -741,12 +741,14 @@ fn network_payload<D>(writer: &mut Cbor, network: &UncheckedNetwork<D>) {
     writer.field("external_outputs", |writer| {
         external_outputs(writer, network)
     });
-    writer.field("network_key", |writer| writer.key(network.key().as_u128()));
+    // SPEC: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    // "31. Records" — module_instances precedes network_key by field-name order.
     if !network.module_instances().is_empty() {
         writer.field("module_instances", |writer| {
             module_instances(writer, network.module_instances())
         });
     }
+    writer.field("network_key", |writer| writer.key(network.key().as_u128()));
     writer.field("nodes", |writer| nodes(writer, network));
     writer.field("ports", |writer| ports(writer, network));
     writer.field("time_domain_id", |writer| {
@@ -2706,6 +2708,23 @@ mod tests {
     }
 
     #[test]
+    fn module_instance_field_precedes_network_key() {
+        let (bytes, _) = canonical_inputs(&golden_hierarchy(false, false, false));
+        let module_instances = bytes
+            .windows(b"module_instances".len())
+            .position(|window| window == b"module_instances")
+            .expect("networks with instances include module_instances");
+        let network_key = bytes
+            .windows(b"network_key".len())
+            .position(|window| window == b"network_key")
+            .expect("network payload includes network_key");
+        assert!(
+            module_instances < network_key,
+            "module_instances must precede network_key by ascending field-name order"
+        );
+    }
+
+    #[test]
     fn module_instance_hierarchy_projection_is_exact_and_metadata_free() {
         let flat = golden_hierarchy(false, false, false);
         let (bytes, _) = canonical_inputs(&flat);
@@ -2723,11 +2742,11 @@ mod tests {
         );
         assert_eq!(
             fingerprints.0.to_string(),
-            "a7f431e0048c39459b9f8267b39372029dbf6da68b6dbd2b63328a1f883e8e4d"
+            "af16d905c4d04bf383474f2882a6018b8ef41b27ae54d64f7a3413aa591e8683"
         );
         assert_eq!(
             nested_fingerprint.to_string(),
-            "f9033334886e95d6ee5b4d9bb949c4d7e316c163454ec868d7848ed49b88f449"
+            "2dfde77f3a6ba94a934839878b19a900665961fb357cd0dc3f7f8f2fa77b5188"
         );
         assert_eq!(
             fingerprints,

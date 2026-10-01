@@ -1015,8 +1015,8 @@ network_fingerprint_payload_v1 = record {
     core_semantics_version,
     external_inputs,
     external_outputs,
-    network_key,
     module_instances,   # omitted when the network contains no module instances
+    network_key,
     nodes,
     ports,
     time_domain_id,

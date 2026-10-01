@@ -598,7 +598,7 @@ fn nested_instances_compile_and_retain_fingerprints() {
     let validated = network.finish().require_artifact().unwrap();
     assert_eq!(
         validated.fingerprint().to_string(),
-        "d12911bb5de70e571f448759888c268d62dae3884e80d02ed708d63070f85a41"
+        "30eb37a1a34e9b02956b677a575b2ae3283008c63a9f8cd207a418c86148439b"
     );
     let expected = validated.fingerprint();
     let compiled = validated.compile_ref().require_artifact().unwrap();
