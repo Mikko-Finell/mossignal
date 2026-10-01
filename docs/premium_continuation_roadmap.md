@@ -731,7 +731,7 @@ convenience surface should be complete over the implemented primitive language.
 
 # Part V — Semantic identity stabilization and durable execution
 
-## 51. First stable semantic-identity baseline
+## 51. [IN PROGRESS] First stable semantic-identity baseline
 
 After modules, the initial standard catalogue, and the intended opening
 primitive families exist, establish the first explicit compatibility baseline

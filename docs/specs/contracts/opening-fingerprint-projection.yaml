@@ -1,0 +1,261 @@
+schema_version: "0.1"
+id: mossignal.identity.opening_fingerprint_projection
+title: Opening fingerprint projection baseline
+kind: concept
+status: reviewed
+
+source_baseline:
+  commit: 58317ebb47f75df8648b4e11f892e7fb613f853a
+  working_tree: dirty
+
+summary: >-
+  Fingerprint-domain version 1 remains a development projection until an
+  explicit decision names the frozen projection and its supported artifact
+  boundary. The opening projection is the in-place extension of that version
+  to supported network and module contributions whose exact canonical records
+  are not yet fixed. Writing those records does not record the decision.
+
+scope:
+  includes:
+    - opening extension boundary for version-1 network and module contributions whose exact canonical records are not already fixed
+    - in-place development-projection synchronization before the named stabilization decision
+    - distinction between that synchronization and the named stabilization decision
+    - successor-version, digest-suite, and schema-only consequences for fingerprint projections
+    - exclusions the opening extension must retain
+    - golden-vector obligations for that extension
+  excludes:
+    - exact foundation records already fixed for the section 54.2 node family
+    - the pre-stability rule already represented for that foundation by the network fingerprint contract
+    - exact input-schema payload records already fixed by section 54.3
+    - per-node laws and semantic-identity facet lists owned by the applicable node contracts
+    - standard-module fingerprint field lists and expansion-fingerprint contents owned by the catalogue specification
+    - user-module digest construction and validated ownership owned by the module fingerprint contract
+    - RuntimePolicyId construction
+    - execution-state, observable-state, and snapshot digests
+    - snapshot encoding, restoration, replay, and topology-patch artifacts
+    - catalogue release freeze and descriptor migration
+    - node kinds outside the section 64 inventory, including hypothetical future kinds
+    - compatibility promises for private dense representation
+
+known_uncovered:
+  - Post-stabilization historical fingerprint readers and upgraders
+  - Execution-state, observable-state, and snapshot digest projections
+
+aliases:
+  - opening fingerprint projection
+  - fingerprint-domain version 1
+
+requirements:
+  - id: opening-contribution-boundary
+    kind: semantic
+    statement: >-
+      The version-1 opening network projection includes the section 64
+      primitive kinds whose exact records section 54.2 does not fix:
+      PulseSetResetLatch, LevelSetResetLatch, SampleHold, TransportDelay,
+      InertialDelay, and Periodic. For each of those kinds it includes the
+      section 54.1 contributions of stable kind, typed port keys and semantic
+      roles, semantic parameters, state schemas, declared initial state, and
+      signal-semantics and timing parameters. The opening projection also
+      includes, for user and standard modules, the module interface keys and
+      module-internal stable identity required of a module fingerprint, and
+      the module-instance identity and state-relevant hierarchy required of a
+      network fingerprint.
+      Standard module fingerprints retain the contributions the catalogue
+      fingerprint section already requires. Primitive aliases and builder-only
+      operations contribute only as the ordinary primitives they author. The
+      standard expansion fingerprint remains a distinct catalogue domain and
+      is not a network or module fingerprint domain.
+    sources:
+      - network-projection
+      - primitive-inventory
+      - primitive-aliases
+      - builder-only-operations
+      - primitive-alias-visibility
+      - module-fingerprint
+      - standard-fingerprints
+      - domain-separation
+    basis: derived
+
+  - id: synchronized-development-extension
+    kind: semantic
+    statement: >-
+      Until the named stabilization decision, fingerprint-domain version 1 is
+      a development projection. An accepted extension or correction whose
+      exact canonical spelling is not already fixed may update that projection
+      in place, without adding a successor domain, historical reader,
+      upgrader, or migration path. The same change updates the exact
+      projection specification, the applicable fingerprint contract, and every
+      affected golden vector together. Where a live spelling conflicts with an
+      exact specification rule, that rule replaces it in the same change. New
+      record fields are schema-defined lowercase ASCII snake_case, occur at
+      most once, and use ascending raw UTF-8 byte order of the field name.
+      New closed enums use schema-defined lowercase ASCII snake_case variant
+      names rather than discriminants, debug text, or source declaration
+      position. Unreviewed or accidental byte drift is prohibited.
+    sources: [fingerprint-versions, records, variants, canonical-enums]
+    basis: derived
+
+  - id: named-stabilization-decision
+    kind: compatibility
+    statement: >-
+      Synchronizing the opening projection does not record the first stable
+      fingerprint compatibility baseline. That baseline exists only when an
+      explicit decision names the frozen projection and its supported artifact
+      boundary. The decision is distinct from the catalogue release-readiness
+      decision and does not freeze catalogue inventory or descriptor versions.
+    sources: [fingerprint-versions, catalogue-version]
+    basis: derived
+
+  - id: successor-version-selection
+    kind: compatibility
+    statement: >-
+      After the named baseline, a change to a frozen canonical fingerprint
+      projection advances its domain version rather than altering the frozen
+      bytes in place. Except for an in-place fingerprint-domain version 1
+      update before that baseline, a change to canonical semantic projection
+      requires a new domain version or digest suite version. A schema-only
+      representation change need not change a semantic fingerprint when the
+      semantic projection, digest suite, and digest-domain version remain
+      unchanged. A canonical-encoding change may
+      preserve semantic fingerprints only when they use an unchanged
+      independent semantic projection and digest-domain version. A new digest
+      suite places old and new digests in distinct namespaces, and they must
+      never be compared as one namespace.
+    sources:
+      - fingerprint-versions
+      - digest-version-inputs
+      - digest-suite-change
+      - canonical-encoding-change
+    basis: derived
+
+  - id: retained-exclusions
+    kind: prohibition
+    statement: >-
+      The opening extension preserves the exclusions already required of
+      network and module fingerprints. Both continue to exclude topology
+      revision, dense indices, construction and insertion order, memory layout,
+      compiled caches, and presentation-only diagnostic metadata. The version-1
+      network projection also continues to exclude selected topological order,
+      SCC data, cycle witnesses, derived reaction-operation identity, and
+      TopologyPatchSemanticsVersion, and validation-derived private data must
+      not affect its bytes. Module fingerprints also continue to exclude
+      module-instance placement and instance metadata. Metadata remains
+      excluded from network and module fingerprints unless a future field is
+      explicitly reclassified as semantic.
+    sources: [network-projection, restricted-projection, module-fingerprint, metadata]
+
+  - id: opening-golden-vectors
+    kind: verification
+    statement: >-
+      Representative version-1 network-fingerprint golden vectors retain the
+      complete canonical digest-input bytes and the expected 32-byte result,
+      including the hand-reviewed restricted cases required by the verification
+      policy. An accepted opening-extension change updates every affected
+      golden vector in that same change. The golden change is deliberate:
+      either the bytes are proven semantically equivalent under a new encoding
+      version, or the reviewed projection update is the explicit break of the
+      previous development bytes. Before the named baseline, that break does
+      not record the stabilization decision and does not add a successor
+      domain. Execution-state, observable-state, snapshot, replay, patch, and
+      runtime-policy vectors are outside this subject.
+    sources: [restricted-fingerprint-verification, canonical-encoding-vectors, fingerprint-versions]
+    basis: derived
+
+implementation_freedom:
+  - Where the persistence specification does not yet fix an exact spelling, keep the simplest deterministic spelling that satisfies the inclusions, exclusions, field order, and closed-variant rules. Prefer a spelling the coherent implementation already uses, and prefer extending the version-1 network and module records in place. Do not invent a second parallel spelling or a second fingerprint domain for the same network or module identity.
+  - Private encoder decomposition remains unconstrained when the canonical bytes and public opaque fingerprints agree.
+
+open_questions: []
+
+sources:
+  fingerprint-versions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 15. Version representation]
+    reviewed_hash: sha256:a59d0cb9deab2c9b183e95c55b2e4df660b7927c8c6cc074defe68bee36c68b1
+  digest-version-inputs:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 53. Digest version inputs]
+    reviewed_hash: sha256:39b98aacf5b1e57ba016ed8f9efaac0ce98fdad35878cef7f8d4d7733b017c39
+  domain-separation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 52. Domain separation]
+    reviewed_hash: sha256:493e3715f1e5f7b4d7b29e0722a638caf6ec000d698320f6c8db93d9cd3a578d
+  network-projection:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part VI — Digest and fingerprint suite
+      - 54. Network and input-schema fingerprints
+      - 54.1 Network fingerprint
+    reviewed_hash: sha256:f9eb41334c3ec6f93f73de6d3e9ce488999a8aaf82794b3807f46a36a326e7c2
+  restricted-projection:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part VI — Digest and fingerprint suite
+      - 54. Network and input-schema fingerprints
+      - 54.2 Restricted network-fingerprint projection version 1
+    reviewed_hash: sha256:8de603729bcf0b4382a357e08d48b35e12803f7165333f21113bfed49bce77f9
+  module-fingerprint:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 55. Module fingerprint]
+    reviewed_hash: sha256:6b41a847681a35c84fbb36310dd608fd9d5342f48c02e14ee1681f01ec0380d0
+  records:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 31. Records]
+    reviewed_hash: sha256:9a63846d74dae7dfa1e888a48757ae27f7e424ca2f06ea81d5a64b336a2ccd88
+  variants:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 32. Variants]
+    reviewed_hash: sha256:b46175d2b006ff5a45373de054003c681250e4a525d8cbb38e123af85bb4dbe1
+  canonical-enums:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 41. Diagnostic codes and enum names]
+    reviewed_hash: sha256:70030c7af0f5bee56294e7389672d05ab0b8be39f8cf8316f585868e39765709
+  metadata:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VIII — Definition artifacts, 72. Metadata]
+    reviewed_hash: sha256:8ce06c9250e1d87d9a9daaced33afadbe2743096061348f25eb53daeaccf7b31
+  digest-suite-change:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIII — Compatibility rules by artifact family, 128. Digest-suite change]
+    reviewed_hash: sha256:9b8e37a614530d5ac1a0cd15d63033852605ebf16c7e660b214f303195b4b364
+  canonical-encoding-change:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIII — Compatibility rules by artifact family, 129. Canonical-encoding change]
+    reviewed_hash: sha256:84fcadea9bd4dd8a9f866b3ef10f661e956584697317cf8334f7c3bdfc15dc48
+  primitive-inventory:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part IX — Catalogue classification, 64. Built-in primitives]
+    reviewed_hash: sha256:de1851fc57f78c685c09668e8707bebe7987cb587029fc5ae7d2587d43256620
+  primitive-alias-visibility:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part IX — Catalogue classification, 66. Convenience visibility, 66.1 Primitive aliases]
+    reviewed_hash: sha256:7aeb9ddc0d3d8f5ed78d0cd85204f57684a9c31456c4d4e94a00cccee58da1b9
+  catalogue-version:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 8. Standard catalogue version]
+    reviewed_hash: sha256:999e453b336fc9001c4b99a65b0a0a36371460ffa184d6f3ead91dd9887f35f9
+  standard-fingerprints:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 21. Fingerprints]
+    reviewed_hash: sha256:abb2170a454514f1787bb0b030389538baa176cabe8008511058d58a2834f596
+  primitive-aliases:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part III — Initial catalogue and non-module conveniences, 23. Primitive aliases in version 1]
+    reviewed_hash: sha256:e9ed5a80dadd84b63ff248c610f3c04ccb4b4522ecdfb915266b428eaadd1017
+  builder-only-operations:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part III — Initial catalogue and non-module conveniences, 24. Builder-only operations in version 1]
+    reviewed_hash: sha256:85be9d7f63b787448e4fc8a116c1161c32c2ed14ab6657e69067a3d262dc0123
+  restricted-fingerprint-verification:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part V — Validation and compilation verification
+      - 21. Deterministic compilation
+      - 21.1 Restricted semantic fingerprint verification
+    reviewed_hash: sha256:b7f3bccfbfc01a2c4c8e9d1f37d799598091126d00b1fced10e984f9f9c8a777
+  canonical-encoding-vectors:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 90. Canonical encoding vectors
+    reviewed_hash: sha256:0facb5756d00d5b3d163a453cec7d1ea7d6b11d0d8a5c332eebd93e0388cbaab
