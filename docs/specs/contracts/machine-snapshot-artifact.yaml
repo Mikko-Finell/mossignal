@@ -1,0 +1,598 @@
+schema_version: "0.1"
+id: mossignal.persistence.machine_snapshot_artifact
+title: Canonical machine snapshot artifact
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: b3940ebbeb2783f1827f91d08b6ec5c95772a04a
+  working_tree: clean
+
+summary: >-
+  A machine snapshot is one standalone, versioned, self-contained artifact for
+  a committed machine: the MSIG prefix, one canonical CBOR envelope of kind
+  machine_snapshot, and the stable-keyed payload whose envelope integrity
+  digest is SnapshotDigest. Encoding produces those bytes. It does not decode
+  or restore them.
+
+scope:
+  includes:
+    - standalone machine_snapshot framing, envelope, version vector, and SnapshotDigest
+    - payload identity, lifecycle, state, pending events, required observation, and provenance closure
+    - optional history and persistence metadata only as snapshot-digest inputs
+    - pure creation from a committed machine and encoding checks that avoid corrupt bytes
+    - golden artifact bytes and snapshot-digest distinctions for this artifact
+  excludes:
+    - decoding, hostile-byte acceptance, CompiledNetwork::restore, and restoration reports
+    - replay frames and logs, definition and policy artifacts, and checkpoint bundles
+    - topology replacement, semantic migration, and schema-upgrade execution
+    - compression, streaming, encryption, signatures, and file-system access
+    - execution-state and observable-state digest projection rules except embedding their results
+
+known_uncovered:
+  - Syntactic decoding, canonicality rejection, resource limits, and header inspection of untrusted bytes
+  - Restoration validation, settled-state recomputation, and snapshot round trip or sufficiency
+  - Replay artifacts, transaction records, and checkpoint-bundle assembly
+  - ForecastState::snapshot and any forecast digest accessor
+  - A retention policy that produces optional history; absence remains representable
+  - Provenance checkpoint compaction and externally resolved checkpoint dependencies
+  - Payloads for artifact kinds other than machine_snapshot
+  - Compatibility support tables, schema upgraders, and semantic migration reports
+
+aliases:
+  - MachineSnapshot<D>
+  - MachineSnapshotArtifact
+  - SnapshotDigest
+  - machine_snapshot
+  - encode_snapshot
+
+requirements:
+  - id: standalone-framing
+    kind: persistence
+    statement: >-
+      One standalone machine snapshot is exactly eight prefix bytes, 4d 53 49
+      47 0d 0a 1a 0a, followed by one canonical CBOR body. The body is the
+      variant ["mossignal_artifact", envelope_record] and nothing follows it.
+      The body is uncompressed. The prefix is framing, not a digest input.
+      For one supported artifact value and version vector there is exactly one
+      canonical byte sequence. The encoder must not emit a non-shortest or
+      otherwise noncanonical alternate.
+    sources: [encoding-foundation, artifact-prefix, canonical-bytes, compression]
+
+  - id: envelope-and-kind
+    kind: persistence
+    statement: >-
+      The envelope record contains artifact_kind, artifact_schema_version,
+      canonical_encoding_version, core_semantics_version,
+      diagnostic_schema_version, digest_suite_version, envelope_schema_version,
+      integrity_digest, node_semantics_version, patch_semantics_version,
+      payload, provenance_semantics_version, and time_domain_id, each exactly
+      once, in ascending raw UTF-8 field-name order. artifact_kind is
+      machine_snapshot. time_domain_id is the network's bound 16-byte
+      TimeDomainId and is not null. Encoding through a PersistenceContext<D>
+      whose TimeDomainId differs does not emit bytes.
+    sources: [envelope-shape, artifact-kinds, persistence-context, scalar-domains]
+
+  - id: recorded-version-vector
+    kind: compatibility
+    statement: >-
+      The envelope carries the complete version vector: envelope schema,
+      canonical encoding, digest suite, artifact schema, core semantics,
+      built-in node semantics, topology-patch semantics, provenance semantics,
+      and diagnostic schema. Each component is an unsigned 32-bit identifier.
+      Numeric adjacency has no compatibility meaning. DigestSuiteVersion,
+      CoreSemanticsVersion, and BuiltInNodeSemanticsVersion are 1. The payload
+      carries the same semantic components, which are core, built-in node,
+      topology-patch, provenance, and diagnostic schema versions, and does not
+      invent a second numbering. This encoder emits that initial vector only
+      and must not implicitly downgrade or upgrade.
+    sources: [version-vector, version-representation, version-responsibilities, no-downgrade, snapshot-common]
+
+  - id: snapshot-digest-identity
+    kind: semantic
+    statement: >-
+      SnapshotDigest is a public opaque 32-byte identity, distinct from
+      ExecutionStateDigest, ObservableStateDigest, NetworkFingerprint,
+      ModuleFingerprint, InputSchemaFingerprint, RuntimePolicyId, and
+      NetworkRevision. DigestSuiteVersion 1 computes it as unkeyed BLAKE3-256
+      over the canonical domain record with label mossignal/snapshot_digest/v1,
+      domain version 1, and payload equal to the canonical envelope record
+      with integrity_digest omitted. The prefix is not an input. The snapshot
+      payload does not contain a second digest field. The in-memory snapshot
+      exposes that envelope digest as SnapshotDigest. It covers execution
+      state, required observation, any retained optional history, checkpoint
+      metadata, persistence metadata, presentation extensions, and the
+      artifact and semantic version vector, and it excludes only its own
+      digest field. It is not authenticity.
+    sources: [digest-suite, domain-separation, envelope-integrity, digest-placement, snapshot-digest, fixed-digests, api-digest-scopes, concrete-identities, authenticity]
+
+  - id: payload-identity
+    kind: persistence
+    statement: >-
+      The payload is one canonical record and contains network_key,
+      network_fingerprint, time_domain_id, topology_revision, lifecycle,
+      the semantic version components, execution_state_digest,
+      observable_state_digest, runtime_policy_id, next_pending_event_serial,
+      node_state_table, temporal_state_table, active_diagnostic_episodes,
+      and provenance. Those two digests equal the committed machine's
+      execution and observable digests. network_key and time_domain_id are
+      16-byte unsigned big-endian strings. Fingerprints and digests are
+      32-byte strings. Time, revision, and the pending-event serial use the
+      unsigned integer domains. Required fields are present; empty required
+      collections are empty arrays, not omitted fields.
+    sources: [snapshot-common, snapshot-creation, scalar-domains, stable-keys, fixed-digests, api-snapshots]
+
+  - id: lifecycle-shape
+    kind: persistence
+    statement: >-
+      lifecycle is a closed variant. Awaiting initialization contains no
+      fabricated current logical time, external level valuation, settled level
+      facts, output baselines, pending calendar, runtime provenance roots,
+      runtime diagnostic episodes, or derived schedule. Ready contains the
+      current logical time, the authoritative external level valuation, the
+      settled level facts, the established output baselines, the pending
+      calendar, the required provenance roots, and the current explanation
+      checkpoint state. The schedule is derived and is not authoritative
+      payload. Every ready deadline is strictly later than snapshot time, and
+      canceled events are absent.
+    sources: [uninitialized-snapshot, ready-snapshot, pending-events, api-snapshots, runtime-contents]
+
+  - id: state-and-pending-facts
+    kind: persistence
+    statement: >-
+      Node and temporal tables are sorted entries of stable owner, expected
+      node kind, state-schema variant, state value, and cause or revision
+      context where that schema requires them. The initial families include
+      edge-detector observation, Boolean stored level, pulse-delay temporal
+      state, transport remembered input and output, inertial remembered input
+      and output with its optional candidate, and periodic anchor, previous
+      enable, and next eligible boundary. Pending events stay in the calendar
+      and are not copied into opaque node-owned queues. Temporal state refers
+      to a singular candidate or next boundary by public PendingEventKey.
+      Each pending record contains that key, stable owner, event kind,
+      deadline, semantic payload, multiplicity where applicable, originating
+      time, originating revision, and originating CauseDigest. The initial
+      payloads are pulse_delay_group with pulse count and grouped causal
+      contribution records, transport_transition with target level and
+      originating time, inertial_maturation with target level and
+      qualification origin, and periodic_boundary with phase anchor and
+      non-negative boundary ordinal. The event kind must agree with the
+      owning node kind. PendingEventKey is the public monotonic serial.
+      next_pending_event_serial is greater than every pending or retained public serial.
+      Top-level owners stay authored keys. A module-owned state entry, pending
+      event, episode, or provenance subject uses the module-internal stable
+      key qualified by the full outermost-to-innermost ModuleInstanceKey path.
+      Neither a single innermost key nor a compiler flat key or dense index is
+      that owner. Pulse-delay payloads stay in the calendar, and temporal
+      state does not copy them. A temporal entry refers to a public
+      PendingEventKey only for a singular candidate or next boundary.
+      Migration-relevant event metadata is encoded only when the committed
+      event has it. State is ordered by owner. Pending events are ordered by
+      deadline, owner, event kind, and public key. Equal-deadline storage
+      order is not semantic. Instance-path order is semantic.
+    sources: [state-tables, state-schemas, pending-events, event-identity, catalogue-snapshot-state, module-qualified-identity, nested-modules, canonical-ordering, scalar-domains]
+
+  - id: required-observation
+    kind: persistence
+    statement: >-
+      A ready snapshot contains settled level facts for external level inputs,
+      node level inputs, node level outputs, and external level outputs, keyed
+      by typed stable identity. External level inputs remain settled facts
+      when the ready lifecycle also carries the same authoritative valuation.
+      Those facts are observations, not an execution
+      path. Each external level output baseline contains its key, established
+      marker, published level, and current cause root. A ready machine has an
+      established baseline for every such output, and an uninitialized machine
+      has none. Pulse counts are not current port state. Each active episode
+      contains its identity, diagnostic code, primary stable subject,
+      condition discriminator, began_at, last material change, current
+      structured evidence, required cause roots, and revision context.
+      Completed episodes are not active state. Diagnostic codes use their
+      stable code strings.
+    sources: [settled-levels, output-baselines, pulse-state, episodes, canonical-enums, data-classes]
+
+  - id: self-contained-provenance
+    kind: persistence
+    statement: >-
+      The provenance section contains the content-addressed records for the
+      required roots of stateful state, pending events, output baselines, and
+      active diagnostic evidence, plus any checkpoint record and retention
+      boundary the committed machine already has. An ordinary snapshot holds
+      the complete backward closure of every required root and does not leave
+      an unresolved external provenance record. Each persisted record is the
+      canonical provenance record for its CauseDigest; the artifact does not
+      give one cause a second spelling. Records are ordered by
+      CauseDigest. A persisted cause reference is a 32-byte CauseDigest.
+      Private CauseRef values and arena positions are not persisted.
+    sources: [required-provenance, provenance-order, cause-references]
+
+  - id: history-and-metadata
+    kind: persistence
+    statement: >-
+      optional_history, when present, is partitioned into named retention
+      classes, each with a retention boundary and completeness claim.
+      Absence claims nothing and is not empty fabricated history. The
+      evaluator must not consult it. Persistence metadata may include an
+      implementation identifier, human label, source correlation, or
+      presentation extensions, and a caller-supplied wall-clock value is
+      metadata rather than logical time. Presentation extensions are opaque,
+      ordered by namespace, included in SnapshotDigest, and excluded from
+      semantic fingerprints and both state digests. Optional history and
+      metadata must not change either state digest. Two snapshots may share
+      both state digests and differ in SnapshotDigest only because this
+      retained material differs.
+    sources: [optional-history, persistence-metadata, extensions, text, pulse-state, snapshot-digest, runtime-snapshot-digest]
+
+  - id: installed-topology-and-policy
+    kind: persistence
+    statement: >-
+      Installed topology identity in the payload is network_key plus
+      network_fingerprint. The snapshot does not embed a network definition,
+      module definition, standard expansion, runtime-policy body, or checkpoint
+      bundle. Module-owned state uses qualified stable identity.
+      runtime_policy_id is the machine's existing policy identity. A snapshot
+      does not contain the compiled network or policy value; those are supplied
+      outside the artifact.
+    sources: [snapshot-common, checkpoint-bundle, catalogue-snapshot-state, not-serialized, api-snapshots]
+
+  - id: pure-creation
+    kind: public_surface
+    statement: >-
+      Machine::snapshot returns an owned MachineSnapshot<D> of one complete
+      committed machine version. It must not borrow the machine, race with
+      partial publication, or mutate the machine. Creation projects stable
+      semantic state, uses the content-addressed provenance records, copies
+      the two state digests, includes optional history only under an explicit
+      retention policy, canonicalizes the payload, and computes SnapshotDigest
+      by the envelope rule. Encoding validates the in-memory invariants needed
+      to avoid emitting corrupt canonical bytes. The artifact must not persist
+      raw memory, Rust discriminants, dense indices, pointers, arena slots, or
+      platform layout.
+    sources: [snapshot-creation, snapshot-contract, concrete-snapshot, encoding-apis, no-raw-memory]
+
+  - id: encoding-verification
+    kind: verification
+    statement: >-
+      Versioned golden vectors must retain the complete prefixed canonical
+      bytes and SnapshotDigest for an uninitialized machine, a ready machine,
+      every built-in state family this revision can own, pending temporal
+      work, and an active diagnostic episode. Tests must show permutation
+      invariance of non-semantic storage order, order sensitivity where the
+      specification defines semantic order, and that metadata or optional
+      history can change SnapshotDigest while both embedded state digests stay
+      unchanged. They must show that the embedded digests match the machine
+      and that creation and encoding leave the machine unchanged. They compare
+      canonical bytes. The retained bytes must exhibit the required prefix,
+      envelope fields, and payload facts, rather than being accepted only
+      because this encoder emitted them. Digest equality does not replace
+      semantic validation, and this subject does not require a decoder,
+      restorer, or exact round trip.
+    sources: [golden-vectors, canonical-vectors, permutation-invariance, order-sensitivity, digest-scope-tests, encoder-independence, snapshot-creation]
+
+recommendations:
+  - id: persistence-module
+    statement: >-
+      Canonical encoding should live in a persistence module that does not own
+      file-system access, with an encode operation broadly equivalent to
+      encode_snapshot(context, snapshot) -> Result<ArtifactBytes, EncodeFailure>.
+    sources: [persistence-module, encoding-apis]
+
+  - id: snapshot-summary-access
+    statement: >-
+      MachineSnapshot<D> should expose status, revision, fingerprint, both
+      state digests, snapshot_digest, and runtime_policy_id without exposing
+      mutable internals.
+    sources: [concrete-access]
+
+  - id: digest-value-capabilities
+    statement: >-
+      SnapshotDigest should provide Clone, Copy, Eq, Hash, Ord, Debug, and
+      Display with a stable hexadecimal representation.
+    sources: [concrete-identities]
+
+  - id: hand-authored-goldens
+    statement: >-
+      Where a second encoder is impractical, hand-authored golden artifact
+      bytes should supplement tests so shared field-omission defects are
+      visible.
+    sources: [encoder-independence]
+
+implementation_freedom:
+  - EnvelopeSchemaVersion, CanonicalEncodingVersion, ArtifactSchemaVersion, TopologyPatchSemanticsVersion, ProvenanceSemanticsVersion, and DiagnosticSchemaVersion have no specified initial integer. Use 1 for each, lock those integers in the golden vectors, and do not treat that choice or the resulting bytes as a named compatibility freeze.
+  - Sections 85 and 91 name payload facts and state families, not a closed nested CBOR spelling. Use the simplest deterministic spelling. Where section 54.2 already names a state or temporal schema, use that name, including edge_observation, stored_level, pending_pulse_group, remembered_input_output, pending_transport_transition, pending_inertial_candidate, periodic_anchor_previous_enable, and pending_periodic_boundary. Use the section 92 event-kind names rather than any different digest-projection tag. Reuse the existing execution-projection spelling only where it already matches those names and facts. Record the spelling in the goldens and the close-out.
+  - Do not duplicate a common payload fact inside the lifecycle variant. The uninitialized variant may be payloadless when every fact it would carry is already a common field and no ready fact is fabricated.
+  - Omit optional_history, persistence metadata, migration metadata, and presentation extensions when the committed machine has none. Do not add a history-retention producer. A test-only or narrowly explicit metadata input is enough to prove the snapshot-digest distinction.
+  - Grouped pulse-delay contributors are the contributors the committed event still retains, ordered as provenance contributions. Do not change pulse-delay execution to recover contributors the machine did not store, and do not invent them.
+  - When the committed machine has no provenance checkpoint, encode the explanation boundary as complete from initialization, using the same boundary fact as the observable-state digest. Do not omit that ready fact and do not implement checkpoint compaction.
+  - Persist each CauseDigest as 32 bytes in the artifact. Do not add a public CauseDigest type in the slice that introduces snapshot encoding.
+  - Reuse the existing CBOR writer and domain-separated digest function. A public schema registry is unnecessary. ArtifactBytes may be the owned prefixed Vec or an equivalent newtype. Context mismatch is the structured encode failure; projecting a committed machine that already satisfies its invariants need not fail.
+
+open_questions: []
+
+sources:
+  canonical-bytes:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part I — Persistence model and boundaries, 3. Persistence axioms]
+    reviewed_hash: sha256:95127c429a8b6d7d51377397793356171a4d4e902a406f0aa7e8d9d11df22c6e
+  not-serialized:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part I — Persistence model and boundaries, 6. Values not serialized directly]
+    reviewed_hash: sha256:c0052b90a87956ef5fa2dcdbee7c9e38635769a78dfee376b5ca90cae4b7e9d4
+  data-classes:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part I — Persistence model and boundaries
+      - 7. Semantic, observational, and archival data
+    reviewed_hash: sha256:0ac8fd5927796da1d24b05aeac843c1a8c3f1f6088fcc72f89017a35392e3c4b
+  persistence-context:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part II — Persistent time-domain identity, 11. Persistence context]
+    reviewed_hash: sha256:514daf62d0d627e2ae8bc428f6140681fc3c2d38e3b275f991d5e7d975e83220
+  version-vector:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 14. Version vector]
+    reviewed_hash: sha256:e0996ed92474bc243643e2016f0db3e8eb8224542f5067186f42b084ace7bd32
+  version-representation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 15. Version representation]
+    reviewed_hash: sha256:a59d0cb9deab2c9b183e95c55b2e4df660b7927c8c6cc074defe68bee36c68b1
+  version-responsibilities:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 16. Version responsibilities]
+    reviewed_hash: sha256:7b26fab45a31212f07cdde33a42bc7bc5b0378741b9a45d5f623badd66e9f264
+  no-downgrade:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 26. No implicit downgrade]
+    reviewed_hash: sha256:46889f02f1804dbdc579ca3174ef9cca94271fb675da96a917b6fdbe3b27c965
+  encoding-foundation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 28. Encoding foundation]
+    reviewed_hash: sha256:a3b6650e775dec473b552ada3505752e4219ebe98382178506c23388bb9f337b
+  artifact-prefix:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 29. Artifact prefix]
+    reviewed_hash: sha256:e1faf185f6232da93daec79e177b22369e29dc8070ec7afd01034329c17c0994
+  canonical-ordering:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]
+    reviewed_hash: sha256:5f6570e0c89a0135fe906534620d35ac9d378d28b9866a9e287cd2eeb96fdea1
+  text:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 37. Text]
+    reviewed_hash: sha256:63eb95d0726369e89ba6438f9975c0a28d8c2c3442d7485012cdb65c0efb10fb
+  stable-keys:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 38. Stable keys]
+    reviewed_hash: sha256:4e6537e4a342c6d537d306c9bbc11418ddc6c4cdb8dfd28b46477efd85841636
+  scalar-domains:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IV — Canonical binary encoding
+      - 39. Time, span, pulse count, and revision
+    reviewed_hash: sha256:131745cd834f2c7249744cafc5088d13230e85a154750ac1d2638d9331aaad81
+  fixed-digests:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 40. Fixed digests and fingerprints]
+    reviewed_hash: sha256:d6664f3186f8f4e1965879bc8eed5b5963d6c638519cc204b15580c6266c3ba6
+  canonical-enums:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 41. Diagnostic codes and enum names]
+    reviewed_hash: sha256:70030c7af0f5bee56294e7389672d05ab0b8be39f8cf8316f585868e39765709
+  extensions:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 42. Unknown fields and extensions]
+    reviewed_hash: sha256:4c47e45e01e89c5528f663391cd346f380b5d5dbcf45a5a07b4fedce1750a963
+  envelope-shape:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 44. Envelope shape]
+    reviewed_hash: sha256:63e923ff1a03ec3f9afe9769824a33d246d7b2dbd4f62cf7b6f55cbea8473b60
+  artifact-kinds:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 45. Artifact kinds]
+    reviewed_hash: sha256:9674c34b6ba46bafd8c9ed8d1c6db72fbf92ba8dde3f7affbe3206d4193d7bb2
+  envelope-integrity:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 46. Envelope integrity digest]
+    reviewed_hash: sha256:b78a2cde8f71445d88f5363e8a5cd4a1cb33dd758a7788d6b24c4c0676c2b219
+  digest-placement:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 47. Snapshot digest placement]
+    reviewed_hash: sha256:810d381344f48964d06627033a594a8e876d497d5dbae86980202d3befec79af
+  compression:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 49. Compression and wrappers]
+    reviewed_hash: sha256:305dfd354227f351378f3dd59598a5f6211b3d21e9abf96b4bfbc99982e2aceb
+  authenticity:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 50. Encryption and signatures]
+    reviewed_hash: sha256:3c972f471e0be55b486890e69d695ed16413b6521de34c80589c9363df133eed
+  digest-suite:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 51. Initial digest suite]
+    reviewed_hash: sha256:1469a69036c9809310b8bd1db66a86095160b2bf0b5b6e2b1bc532c04839e477
+  domain-separation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 52. Domain separation]
+    reviewed_hash: sha256:493e3715f1e5f7b4d7b29e0722a638caf6ec000d698320f6c8db93d9cd3a578d
+  snapshot-digest:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 59. Snapshot digest]
+    reviewed_hash: sha256:96f03342976abacfbb8af3be194040492d5d001e2d2e853f867cb40ef2880c2a
+  provenance-order:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VII — Canonical provenance persistence, 63. Canonical provenance record order]
+    reviewed_hash: sha256:0a002b048edf09c31ab0a5b3088cb2e2a4920e2fb48061d4a00fe8bb462502c7
+  cause-references:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VII — Canonical provenance persistence, 66. Cause references in other records]
+    reviewed_hash: sha256:31e58ad687d44283b9fb206b92a115376cc5a4947cb31f0545b008f15ece41d4
+  snapshot-contract:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 84. Snapshot contract]
+    reviewed_hash: sha256:c94f9da02afd7004d04a097ee4d5e140c93ee407f0e35994fd270a71181e21b8
+  snapshot-common:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 85. Snapshot common fields]
+    reviewed_hash: sha256:656e18179427f941c40c0f3e417de6bc88f581119a25fdcbd9261e15f11cce9c
+  uninitialized-snapshot:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 86. Uninitialized snapshot]
+    reviewed_hash: sha256:7abb034905f2987801e35f284dfcdcc5ef2a2a9fcaa65a38be9cef59927d1123
+  ready-snapshot:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 87. Ready snapshot]
+    reviewed_hash: sha256:413d0357b7bfe5f06d98a84e27b74e82d9c48a9d3ee28c0e3a74be1eb0f6bc3a
+  state-tables:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 88. Stable-keyed state tables]
+    reviewed_hash: sha256:b4410d6b7337fa9693297254145653e4131cb2556de20dc54b5b8337e0152545
+  settled-levels:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 89. Complete settled level facts]
+    reviewed_hash: sha256:9372e884db96dc483db6aa3afda7bf9f8225ef1e1e04affd40d7256530aa3be6
+  pulse-state:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 90. Pulse state]
+    reviewed_hash: sha256:32074050a50af076d231984bf492df80330c217a4dddda4230bcdb023e2d033c
+  state-schemas:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 91. Built-in state schemas]
+    reviewed_hash: sha256:bcd3acfcc57b21fe48ea8ee2a94094339138c900cf3f9fc1ff65ed4676c492a8
+  pending-events:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 92. Pending event records]
+    reviewed_hash: sha256:9d40b747e57c3e3392c351477272393b2c91536672b112fd87c2df41889d7c20
+  event-identity:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 93. Public pending-event identity]
+    reviewed_hash: sha256:5a58fb2c0a11c9af98011cc3753ff44e9633f7d9046a10683281e5549aa87d67
+  output-baselines:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 95. External output baselines]
+    reviewed_hash: sha256:63ff4d95016e13adc616a54b6ce74eb45fdd5c605c2bd9029b6a7c11a0daab52
+  episodes:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 96. Active diagnostic episodes]
+    reviewed_hash: sha256:54f0e74350e4537f219ed4dddafaccb90ea6caf9a8c2b39b8dee33f09dc2f8e5
+  required-provenance:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 97. Required provenance section]
+    reviewed_hash: sha256:962c85fd921d5c05531f5c2b61f2c99c3c6ad3701899bc5c20ca168580be361f
+  optional-history:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 98. Optional history section]
+    reviewed_hash: sha256:551af6edf7566bbfd902dcf1804e01e99af231ade90e55d4944b731b731b5586
+  persistence-metadata:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 99. Persistence metadata]
+    reviewed_hash: sha256:571f27065428f53ef9d9bd8ce13d714e0f84dc4c4d87db2c5331f497bb864ff7
+  snapshot-creation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 100. Snapshot creation]
+    reviewed_hash: sha256:3bb7ff7ee6857f38ac24dd292ca51f35a85932c16d4f36061b67a2347d00a2cc
+  checkpoint-bundle:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 106. Checkpoint bundle]
+    reviewed_hash: sha256:ac23fa983c76c656b63d72ce7f7ca7ecbe2d5e86332ddde3de62e412c30d182d
+  persistence-module:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIV — Public persistence API responsibilities, 131. Persistence module]
+    reviewed_hash: sha256:a475a0644e928eda47a44fb5f80539d62d7b8a2632dc1a2e4c3b595f23c9590f
+  encoding-apis:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIV — Public persistence API responsibilities, 134. Encoding APIs]
+    reviewed_hash: sha256:ac7f6f69a9a2db7352c982878892a23f75bf7f9a60f031ce412678191140c2b5
+  golden-vectors:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 152. Golden vectors]
+    reviewed_hash: sha256:6656ae3d8bc69c908a5677546b5b1efb488d8aff886afd1ebae57cf5df23bb7a
+  permutation-invariance:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 153. Permutation invariance]
+    reviewed_hash: sha256:fdfc0f64e47fab7b9d8f119e65cabe8534ff94eed9c623e56aefcbfd22bfc67e
+  order-sensitivity:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 154. Order sensitivity]
+    reviewed_hash: sha256:f06419296af57981aafbd8ba7145165d5d3d502a87d67ec9b544d3e6c9c88cb6
+  encoder-independence:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 169. Deterministic encoder independence]
+    reviewed_hash: sha256:b4a0ee0771a21b57007015d3c8824f024e57db6ce51efa71248715a82918416e
+  no-raw-memory:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVII — Implementation guidance and prohibitions, 172. No raw memory serialization]
+    reviewed_hash: sha256:9c5d6dfa901081b4efa3f36faefd69808144c7810533af28d28bdf33aad9db15
+  api-digest-scopes:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part III — Identity, bindings, and metadata
+      - 19. Revision, fingerprint, digests, and runtime policy
+      - 19.3 Digest scopes
+    reviewed_hash: sha256:f56be71ec988d819173cbfb5e15669e87065d500a0b5ab5b64641431edd9d9a9
+  api-snapshots:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part XII — Scheduling, forecasting, persistence, and replay
+      - 69. Snapshots
+    reviewed_hash: sha256:0b4d6282edb6359131194bce230df3d8636b41dcfd1b872ca762209342097e31
+  concrete-identities:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part X — Validation and compilation artifacts
+      - 45. Revision and fingerprints
+    reviewed_hash: sha256:fd391aa0e34c98a7d34b45710151f0884bd7cce47a8e8682b526f1c6c8f8b13a
+  concrete-snapshot:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part XXIV — Snapshots and restoration
+      - 89. Machine snapshots
+    reviewed_hash: sha256:61a7cd3309606f87084142c9c54e7340a2afa33de1c3803cd8f3868e141f7c11
+  concrete-access:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part XXIV — Snapshots and restoration
+      - 90. Snapshot access
+    reviewed_hash: sha256:528744ec276b4469e87653d4bf09800762069bd0116a48c4e40e98a9d598a26c
+  runtime-contents:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path:
+      - Part XIII — Persistence, replay, and identity
+      - 83. Snapshot contents
+    reviewed_hash: sha256:255211bec58ce8d4253884702fc5ad620658b13d3af989db84589e3267f18144
+  runtime-snapshot-digest:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path:
+      - Part XIII — Persistence, replay, and identity
+      - 87. Digest scopes
+      - 87.3 Snapshot digest
+    reviewed_hash: sha256:1d34268e544d71c4ec73f8e795ca10035d455a8af9c4f3042a3edf013d106b2f
+  catalogue-snapshot-state:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path:
+      - Part XI — Persistence and replay
+      - 72. Snapshot state
+    reviewed_hash: sha256:c10ec74d1b021c66e4afd073d4cde91fd88ddfde5c05f94c9256f4b2dd783896
+  module-qualified-identity:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path:
+      - Part II — Structural correspondence and identity
+      - 12. Module-qualified internal identity
+    reviewed_hash: sha256:49262636c2e74ccf2cf41f2ba5c50cf3e8e878aa24b1122ecdf075059271e206
+  nested-modules:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path:
+      - Part VII — Module replacement and hierarchy
+      - 61. Nested modules
+    reviewed_hash: sha256:c36f4af5eff0cc3f1afb22ff0a1120c4d5b51ef8ed716b80052561118f51207e
+  digest-scope-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 89. Digest-scope verification
+    reviewed_hash: sha256:21a439831900326e7a8e96230588e78be44bc5b9ca104fd229e0db7db4bb1485
+  canonical-vectors:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 90. Canonical encoding vectors
+    reviewed_hash: sha256:0facb5756d00d5b3d163a453cec7d1ea7d6b11d0d8a5c332eebd93e0388cbaab
