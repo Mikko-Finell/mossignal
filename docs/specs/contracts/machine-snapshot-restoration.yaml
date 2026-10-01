@@ -1,0 +1,711 @@
+schema_version: "0.1"
+id: mossignal.persistence.machine_snapshot_restoration
+title: Machine snapshot validation and restoration
+kind: lifecycle
+status: reviewed
+
+source_baseline:
+  commit: c4e7625a8a86d8d0491d81728d6f2ed5a247d6eb
+  working_tree: clean
+
+summary: >-
+  Strict validation of one machine_snapshot artifact and all-or-nothing
+  construction of one equivalent machine. Decoding bytes is not acceptance.
+  Ordinary restoration does not migrate, repair, or replay history.
+
+scope:
+  includes:
+    - syntactic decode of untrusted machine_snapshot bytes, canonicality, limits, and integrity
+    - version, time-domain, identity, lifecycle, subject, state, event, episode, provenance, settled-state, and digest checks
+    - standard-declaration and expansion checks against the supplied compiled topology
+    - private candidate construction and atomic publication of one complete machine
+    - structured rejection, artifact re-encode, semantic round trip, and future-transaction sufficiency
+  excludes:
+    - machine_snapshot field spelling and SnapshotDigest construction except as checks against that artifact
+    - execution-state and observable-state projection rules except recomputation and comparison
+    - replay frames and logs, checkpoint bundles, and definition, policy, patch, and transaction artifacts
+    - schema upgraders, semantic migrators, topology replacement, and policy rebinding
+    - remote storage, compression, encryption, signatures, file I/O, and partial recovery
+
+known_uncovered:
+  - Bounded header inspection that does not decode the payload
+  - ForecastState::snapshot and a separately named policy-rebinding restore
+  - A representation-only upgrader and any historical version corpus beyond the single emitted vector
+  - Replay-log artifacts and sufficiency histories that include topology replacement
+  - Recovery tools that emit a new artifact, and decode of any artifact kind other than machine_snapshot
+  - Long coverage-guided fuzzing, which remains scheduled verification
+
+aliases:
+  - CompiledNetwork::restore
+  - decode_snapshot
+  - DecodeFailure
+  - RestoreFailure
+  - DecodePolicy
+
+requirements:
+  - id: decode-is-not-acceptance
+    kind: semantic
+    statement: >-
+      Decoding bytes is not acceptance. Syntactic decode, schema compatibility,
+      semantic compatibility, and restoration compatibility are strictly
+      stronger in that order. A machine_snapshot must pass the structural,
+      semantic, compatibility, and integrity checks for its kind. Parsing,
+      similar names, Rust layout, or best-effort deserialization do not
+      establish compatibility. Integrity detects corruption and is not
+      authenticity.
+    sources: [axioms, compatibility-levels, syntactic-decoding, schema-compatibility, semantic-compatibility, authenticity]
+
+  - id: hostile-and-bounded-decode
+    kind: prohibition
+    statement: >-
+      Malformed or hostile machine_snapshot bytes produce a structured failure.
+      The decoder must not panic, use unchecked arithmetic, recurse without a
+      bound, allocate from an unvalidated length, publish a partial machine,
+      invoke a host callback, or mutate caller-owned bytes, topology, or policy.
+      DecodePolicy carries explicit limits for total bytes, nesting, text,
+      byte strings, collections, nodes, ports, connections, module instances,
+      pending events, provenance records, provenance edges, diagnostic records,
+      replay frames, and optional-history bytes. It must not offer switches
+      that ignore a digest mismatch, accept noncanonical bytes, fill missing
+      levels with Low, skip unknown events, or reset incompatible state.
+      Exceeding a limit fails as persistence.decode_limit_exceeded, names that
+      limit, and does not claim the artifact would fail RuntimePolicy. Decode
+      budgets are not runtime policy.
+    sources: [hostile-input, decode-policy, decode-limits, resource-exhaustion, caller-data, malformed-fuzz]
+
+  - id: canonical-framing
+    kind: persistence
+    statement: >-
+      The decoder rejects a bad prefix, truncation, trailing bytes, a second
+      envelope, non-shortest integers or lengths, forbidden CBOR types,
+      indefinite lengths, duplicate or unsorted record fields, unsorted
+      semantic collections, invalid UTF-8, wrong fixed lengths, and unknown
+      required fields or variants outside a declared extension. It rejects a
+      value whose re-encoding differs from the received canonical body, and it
+      must not sort, deduplicate, or otherwise normalize that input into
+      acceptance. The body is uncompressed; this decoder does not accept a
+      compressed wrapper. For one supported value and version vector there is
+      one canonical byte sequence. An accepted canonical byte sequence
+      re-encodes to those same bytes.
+    sources: [axioms, canonical-decoding, unknown-fields, compression, partial-files, canonical-uniqueness, exact-round-trip, no-heuristics, no-silent-repair, malformed-corpus]
+
+  - id: integrity-and-version-gate
+    kind: compatibility
+    statement: >-
+      Syntactic acceptance requires the envelope integrity digest to match
+      before semantic acceptance. For machine_snapshot that digest is
+      SnapshotDigest. The decoder reports a bad prefix as
+      persistence.invalid_prefix, truncation as persistence.truncated_artifact,
+      trailing bytes as persistence.trailing_bytes, a malformed envelope as
+      persistence.malformed_envelope, an unrecognized kind as
+      persistence.unknown_artifact_kind, and an integrity mismatch as
+      persistence.integrity_digest_mismatch. The reader accepts a version
+      vector only through an explicit support rule. Numeric adjacency is not
+      compatibility. An unsupported component fails as
+      persistence.unsupported_version and identifies artifact kind, stage,
+      component, encountered version, the required version, and that no
+      upgrader exists. This restoration must not upgrade, downgrade, or
+      semantically migrate. A snapshot whose state or pending payload has no
+      exact current meaning is rejected.
+    sources: [syntactic-decoding, envelope-integrity, snapshot-compatibility, support-table, no-downgrade, semantic-migrations, compatibility-failure, decode-codes, integrity-classes]
+
+  - id: one-semantic-version-vector
+    kind: compatibility
+    statement: >-
+      The payload semantic version components and the corresponding envelope
+      components are one version vector. They must be equal, and each must be
+      an accepted version. A disagreement is not a second numbering.
+    sources: [version-vector, snapshot-common, support-table]
+    basis: derived
+
+  - id: identity-and-policy
+    kind: compatibility
+    statement: >-
+      Decode into D requires the artifact TimeDomainId to equal the
+      PersistenceContext time domain. Restore additionally requires that same
+      identity to equal the compiled network's bound TimeDomainId, and requires
+      payload network_key and network_fingerprint to equal that compiled
+      network. Labels are not time-domain evidence. Ordinary
+      CompiledNetwork::restore requires policy.id() to equal the snapshot
+      runtime_policy_id. Mismatches are persistence.wrong_time_domain,
+      persistence.network_identity_mismatch, persistence.fingerprint_mismatch,
+      and persistence.runtime_policy_mismatch. The snapshot does not embed a
+      definition or policy body; those are the caller-supplied compiled
+      network and policy. D has no persistence trait.
+    sources: [persistence-context, time-domain-compatibility, restoration-compatibility, policy-restoration, api-restoration, no-migration]
+
+  - id: no-migration-or-repair
+    kind: prohibition
+    statement: >-
+      Ordinary restoration must not apply a topology patch, reassociate keys,
+      reset incompatible state, cancel or drop pending events, change a
+      deadline or pulse multiplicity, translate state across semantic kinds,
+      reinterpret a node law or standard declaration, rewrite provenance, or
+      discard an active episode. It must not trust a persisted dense index,
+      heap position, arena slot, private CauseRef, storage order, or
+      unrevalidated module expansion. It must not infer a missing level as
+      Low, recompute a mismatched baseline and continue, or prune required
+      provenance to hide a cycle. It installs the snapshot topology revision
+      unchanged. An internally incompatible revision context is
+      persistence.topology_revision_mismatch. These outcomes are rejection,
+      not repair.
+    sources: [api-restoration, processor-restoration, no-migration, semantic-migrations, no-silent-repair, prohibited-outcomes, no-heuristics, appendix-c]
+
+  - id: lifecycle-subjects-and-state
+    kind: semantic
+    statement: >-
+      Lifecycle shape is validated, not trusted. An uninitialized snapshot has
+      declared node and temporal state and the next pending-event serial, and
+      it has no current time, external valuation, settled level facts, output
+      baselines, pending calendar, runtime provenance roots, active episodes,
+      or derived schedule. A ready snapshot has current time, a complete
+      authoritative external level valuation, settled level facts for the
+      required level endpoints, an established baseline for every external
+      level output, a pending calendar whose deadlines are strictly later than
+      snapshot time, required provenance roots, and the explanation checkpoint
+      state carried by the ready lifecycle. That state does not by itself
+      require a provenance checkpoint record. Each state owner, event,
+      episode, and provenance subject must exist once, at the compiled stable
+      identity, with a compatible signal kind and state or event schema.
+      Module-owned facts use the machine_snapshot stable owner: the
+      module-internal key qualified by the full outermost-to-innermost
+      instance path, not a flat key or dense index.
+      Node kind and schema are redundant with the topology and are verified
+      before private slots are installed. Unknown subjects, unknown variants,
+      duplicate or missing required facts, and signal-kind contradictions fail
+      closed. Pulse counts are not current port state.
+    sources: [validation-phases, uninitialized-snapshot, ready-snapshot, state-tables, api-restoration, processor-restoration, catalogue-snapshot-state, rejection-classes]
+
+  - id: uninitialized-state-is-declared
+    kind: semantic
+    statement: >-
+      Uninitialized node and temporal state is the compiled topology's
+      declared initial state. A value that merely has the right schema, but
+      is not that declared state, is not a valid uninitialized snapshot.
+    sources: [uninitialized-snapshot, state-tables]
+    basis: derived
+
+  - id: events-episodes-and-provenance
+    kind: semantic
+    statement: >-
+      Each pending record's event kind agrees with its owner, its payload
+      matches the machine_snapshot spelling for that kind, and its public
+      PendingEventKey is a retained serial strictly below
+      next_pending_event_serial. A pulse_delay_group carries its retained
+      pulse count. Grouped contribution records are not required when that
+      canonical payload does not contain them; retained supporters stay
+      provenance predecessors. That cursor is preserved, and later allocation
+      must not reuse a public serial. A singular temporal candidate or next
+      boundary refers to a pending event that refers back to the same owner.
+      Canceled events are absent. Private calendar placement may differ and
+      must not change public keys, deadline order, equal-deadline batch
+      semantics, inspection, or semantic digests. Active episode identity is
+      recomputed from its stable rule and must match the persisted identity,
+      code, owner, discriminator, times, and current evidence. The diagnostic
+      code must be registered. Severity and responsibility are checked
+      against the code registry when the artifact persists them; the episode
+      record does not require a severity field that the machine_snapshot
+      spelling omits. A disagreement is persistence.diagnostic_schema_invalid.
+      Completed episodes are not active state. The provenance section is the
+      complete acyclic backward closure of the required state, event,
+      baseline, and episode roots. Each record's canonical bytes must
+      reproduce its CauseDigest, with no missing predecessor, invalid subject
+      or role, conflicting record for one digest, or false checkpoint. An
+      ordinary snapshot leaves no unresolved external provenance record.
+      Absence of a checkpoint record is valid when the artifact claims no
+      checkpoint authority. A checkpoint that claims authority or completeness
+      it does not establish is persistence.provenance_false_checkpoint.
+    sources: [validation-phases, private-event-storage, episode-persistence, episode-record, required-provenance, provenance-order, provenance-corruption, diagnostic-form, event-continuity]
+
+  - id: settled-state-and-digests
+    kind: semantic
+    statement: >-
+      For a ready snapshot, restoration checks persisted settled values
+      against the compiled topology, external levels, stored node state,
+      temporal state, and obligations that are not yet due. The check uses the
+      full reference evaluator or an equivalent complete consistency check. It
+      performs no new reaction, emits no events, and changes no state. A
+      mismatch is persistence.settled_state_inconsistent, not an instruction
+      to repair the snapshot. Restoration recomputes ExecutionStateDigest,
+      ObservableStateDigest, and SnapshotDigest. Each persisted claim must
+      match, and the failure identifies the scope:
+      persistence.execution_digest_mismatch,
+      persistence.observable_digest_mismatch, or
+      persistence.snapshot_digest_mismatch. Digest equality does not replace
+      the semantic checks. Optional history and presentation metadata must not
+      affect the restored machine or either state digest. Their absence is
+      acceptable. The evaluator must not consult optional history.
+    sources: [recomputed-settled, digest-validation, settled-consistency, unknown-fields, optional-history, appendix-c, digest-equality]
+
+  - id: standard-expansion-check
+    kind: semantic
+    statement: >-
+      Before a machine is created, every standard declaration retained by the
+      supplied compiled topology is resolved as that exact descriptor,
+      regenerated, and checked for declaration schema, public interface,
+      expansion fingerprint, and complete canonical expansion. An unavailable
+      descriptor version, interface mismatch, or expansion mismatch is
+      rejected with the catalogue standard-module code. A declaration must not
+      be reinterpreted with a newer descriptor for the same identifier.
+      Equivalent current public outputs are not acceptance when internal state
+      differs. User-module structure is the compiled definition already
+      identified by the network fingerprint; the snapshot does not carry a
+      second definition to validate.
+    sources: [catalogue-restoration, catalogue-snapshot-state, standard-codes, snapshot-access]
+
+  - id: atomic-publication
+    kind: lifecycle
+    statement: >-
+      Restoration performs, in order, canonical envelope and integrity
+      validation, version and time-domain checks, network identity and
+      fingerprint checks, lifecycle-shape validation, stable-subject and
+      state-schema validation, pending-event and allocator validation,
+      diagnostic-episode validation, provenance validation, settled-value and
+      baseline checks, digest recomputation, private candidate construction,
+      complete invariant validation, and only then publication. No public
+      machine exists before every phase succeeds.
+      CompiledNetwork::restore borrows the compiled network and takes the
+      snapshot and runtime policy by value, returning one complete Machine<D>
+      or a structured RestoreFailure<D>. It must not return a partial machine,
+      with or without warnings. Any failure discards the candidate, does not
+      mutate the borrowed compiled network or the caller's artifact bytes, and
+      publishes no machine.
+    sources: [validation-phases, restoration-report, concrete-restore, concrete-compiled-restore, api-restoration, prohibited-outcomes, fault-injection]
+
+  - id: structured-failures
+    kind: public_surface
+    statement: >-
+      DecodeFailure and RestoreFailure carry catalogue persistence conditions,
+      plus standard_module conditions for expansion checks. They must not
+      collapse incompatibility into one invalid-data fallback or an
+      unregistered string variant. The decoder distinguishes truncation,
+      malformed canonical encoding, integrity mismatch, schema or version
+      mismatch, semantic incompatibility, and restoration invariant failure.
+      Compatibility evidence identifies artifact kind, stage, version
+      component, encountered and required versions, whether an upgrader
+      exists, and the applicable time-domain, network, revision, or policy
+      context.
+    sources: [integrity-classes, compatibility-failure, decode-codes, restore-codes, provenance-codes, failure-mapping, no-fallback]
+
+  - id: round-trip-and-sufficiency
+    kind: verification
+    statement: >-
+      For every supported canonical machine_snapshot byte sequence,
+      re-encoding the decoded artifact yields those bytes. For every valid
+      machine, including an uninitialized machine, restoring the decoded
+      snapshot under the same compiled topology, time domain, and runtime
+      policy yields a semantically equivalent machine. Comparison uses
+      semantic state, not private layout or private cause-reference integers.
+      For that restored machine and every compatible future transaction
+      sequence applied through the ordinary transition, outputs, state,
+      pending work, episodes, provenance roots, schedules, and both state
+      digests match the original machine. Tests must reject tampered settled
+      values, the named provenance corruption cases, and the restoration
+      rejection classes, and must preserve pending-event keys, the allocation
+      cursor, and future key allocation without reuse. No rejected decode or
+      restore publishes a machine. A long coverage-guided fuzz campaign is not
+      this obligation.
+    sources: [canonical-uniqueness, exact-round-trip, snapshot-round-trip, testing-round-trip, snapshot-sufficiency, processor-sufficiency, testing-sufficiency, settled-consistency, event-continuity, provenance-corruption, rejection-classes, malformed-corpus]
+
+recommendations:
+  - id: representative-decoder
+    statement: >-
+      Decoding should be artifact-specific, broadly
+      decode_snapshot(context, bytes, policy) -> Result<MachineSnapshot<D>, DecodeFailure>,
+      and should live in the persistence module that does not own file-system
+      access.
+    sources: [decoding-apis, persistence-module]
+
+  - id: nonexhaustive-failures
+    statement: >-
+      DecodeFailure and RestoreFailure should remain non_exhaustive while the
+      diagnostic schema is experimental, without emitting an unregistered variant.
+    sources: [nonexhaustive]
+
+  - id: bounded-fault-injection
+    statement: >-
+      Fault injection should cover failure during envelope decode, provenance
+      reconstruction, candidate construction, digest recomputation, and private
+      store construction. No such failure may publish a partial machine. A
+      long-running campaign stays scheduled verification.
+    sources: [fault-injection, scheduled-fuzz]
+
+implementation_freedom:
+  - The support table for this revision accepts only the complete version vector the current machine_snapshot encoder emits, including the integers locked by its goldens. Every other component is persistence.unsupported_version with no upgrader. Do not implement a schema upgrader or semantic migrator, and do not treat that single-vector table as a named compatibility freeze.
+  - Reject a canonical envelope whose recognized artifact_kind is not machine_snapshot as persistence.malformed_envelope. Use persistence.unknown_artifact_kind only for a kind string the schema does not recognize. Do not invent a diagnostic code. Test both cases and record the choice.
+  - Reject persistence.topology_revision_mismatch when a persisted state, event, or episode revision context is greater than the snapshot topology revision. Do not require those originating revisions to be equal, and do not compare the revision with another machine. Test that choice and record it in the close-out.
+  - Map a duplicate or missing state-table owner to persistence.state_schema_mismatch, and map a lifecycle variant that contradicts required presence or absence to persistence.lifecycle_shape_invalid. Do not invent a diagnostic code.
+  - Success is Result<Machine<D>, RestoreFailure<D>> with no warning report. Do not add a second channel for accepted metadata.
+  - Keep validated canonical bytes, optional history, and persistence metadata on the decoded artifact so re-encoding is byte-identical. Do not install optional history or presentation metadata into the machine. A later snapshot of the restored machine may therefore have a different SnapshotDigest.
+  - Rebuild private provenance references from the canonical records. Preserved identity is the CauseDigest, not the pre-restore CauseRef integer. Do not add a public CauseDigest type.
+  - Reuse the existing CBOR codec, domain-separated digest functions, reference evaluator, standard catalogue, and diagnostic registry. Restore rechecks framing and integrity even when decode already did, through one shared checker. Do not add a second evaluator.
+  - DecodePolicy has every listed limit as a caller-supplied value and has no hidden unbounded default. Snapshot decoding enforces the limits that machine_snapshot structure can exceed, including total bytes, nesting, text, byte strings, collections, nodes, pending events, provenance records and edges, diagnostic records, and optional-history bytes. It does not decode definitions or replay frames.
+  - Private pending events may use the existing calendar representation. Unspecified helper names and evidence-struct layout may follow the current ProblemEvidence style.
+
+open_questions: []
+
+sources:
+  axioms:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part I — Persistence model and boundaries, 3. Persistence axioms]
+    reviewed_hash: sha256:95127c429a8b6d7d51377397793356171a4d4e902a406f0aa7e8d9d11df22c6e
+  persistence-context:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part II — Persistent time-domain identity, 11. Persistence context]
+    reviewed_hash: sha256:514daf62d0d627e2ae8bc428f6140681fc3c2d38e3b275f991d5e7d975e83220
+  time-domain-compatibility:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part II — Persistent time-domain identity, 12. Time-domain compatibility]
+    reviewed_hash: sha256:5b261f163ee9a59e2ee4dfb856dcf3f574b2ee68e370ffa512c99027dafca9c0
+  compatibility-levels:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 17. Compatibility levels]
+    reviewed_hash: sha256:e661a85198c2ae6ba348e38cbb34709458661bd21f76d57bb175efbbaebc29ec
+  syntactic-decoding:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 18. Syntactic decoding]
+    reviewed_hash: sha256:23a39f823b6f450854a97d32c82847638b6aa1f7ff3648de808ca8a996bdb3a3
+  schema-compatibility:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 19. Schema compatibility]
+    reviewed_hash: sha256:1d80a1044756e2aa5377fc2d6f655b9b5dfe73678c378d359c9070c706b1d78c
+  semantic-compatibility:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 20. Semantic compatibility]
+    reviewed_hash: sha256:5f8e71f321d34c7bab56723c3330a3cbe9ce1de0aff3ef756a113b1a723e2070
+  restoration-compatibility:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 21. Restoration compatibility]
+    reviewed_hash: sha256:31f3bd6bb439673dc86f349fb0c707eefaf6714757f82e95a937dc9d9dc90231
+  exact-round-trip:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 23. Exact artifact round trip]
+    reviewed_hash: sha256:c4a2c6df07c6d004e712dcb0058de3ddf17932739a274234f108905d992e74ad
+  semantic-migrations:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 25. Semantic migrations]
+    reviewed_hash: sha256:f25fe68b98855359147f6e20459c04cf920f0d38c0d51d195bec25be1b505476
+  no-downgrade:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 26. No implicit downgrade]
+    reviewed_hash: sha256:46889f02f1804dbdc579ca3174ef9cca94271fb675da96a917b6fdbe3b27c965
+  support-table:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 27. Compatibility support table]
+    reviewed_hash: sha256:0a64d5739387d1b5e6e729f57452d4b7035c6909629d9bedf678615c3f08f4bd
+  version-vector:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 14. Version vector]
+    reviewed_hash: sha256:e0996ed92474bc243643e2016f0db3e8eb8224542f5067186f42b084ace7bd32
+  provenance-order:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VII — Canonical provenance persistence, 63. Canonical provenance record order]
+    reviewed_hash: sha256:0a002b048edf09c31ab0a5b3088cb2e2a4920e2fb48061d4a00fe8bb462502c7
+  snapshot-common:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 85. Snapshot common fields]
+    reviewed_hash: sha256:656e18179427f941c40c0f3e417de6bc88f581119a25fdcbd9261e15f11cce9c
+  unknown-fields:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 42. Unknown fields and extensions]
+    reviewed_hash: sha256:4c47e45e01e89c5528f663391cd346f380b5d5dbcf45a5a07b4fedce1750a963
+  canonical-decoding:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 43. Canonical decoding]
+    reviewed_hash: sha256:42bc2412d09a4f4bcbab4b5b9a8c2185ae2dd600e90b4c003d7c5ebf1be32fca
+  envelope-integrity:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 46. Envelope integrity digest]
+    reviewed_hash: sha256:b78a2cde8f71445d88f5363e8a5cd4a1cb33dd758a7788d6b24c4c0676c2b219
+  authenticity:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 50. Encryption and signatures]
+    reviewed_hash: sha256:3c972f471e0be55b486890e69d695ed16413b6521de34c80589c9363df133eed
+  compression:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 49. Compression and wrappers]
+    reviewed_hash: sha256:305dfd354227f351378f3dd59598a5f6211b3d21e9abf96b4bfbc99982e2aceb
+  uninitialized-snapshot:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 86. Uninitialized snapshot]
+    reviewed_hash: sha256:7abb034905f2987801e35f284dfcdcc5ef2a2a9fcaa65a38be9cef59927d1123
+  ready-snapshot:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 87. Ready snapshot]
+    reviewed_hash: sha256:413d0357b7bfe5f06d98a84e27b74e82d9c48a9d3ee28c0e3a74be1eb0f6bc3a
+  state-tables:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 88. Stable-keyed state tables]
+    reviewed_hash: sha256:b4410d6b7337fa9693297254145653e4131cb2556de20dc54b5b8337e0152545
+  private-event-storage:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 94. Private event storage reconstruction]
+    reviewed_hash: sha256:01b3458b11ada58b1bd1d334c0ebef2fc54e58f59d54d9692c91797b225c99a9
+  episode-record:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 96. Active diagnostic episodes]
+    reviewed_hash: sha256:54f0e74350e4537f219ed4dddafaccb90ea6caf9a8c2b39b8dee33f09dc2f8e5
+  required-provenance:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 97. Required provenance section]
+    reviewed_hash: sha256:962c85fd921d5c05531f5c2b61f2c99c3c6ad3701899bc5c20ca168580be361f
+  optional-history:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 98. Optional history section]
+    reviewed_hash: sha256:551af6edf7566bbfd902dcf1804e01e99af231ade90e55d4944b731b731b5586
+  validation-phases:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 101. Snapshot validation phases]
+    reviewed_hash: sha256:08ece7daaeacc36e174032a162663cefe816d7a32fccd2af6f7b88c15307b2bb
+  recomputed-settled:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 102. Recomputed settled state]
+    reviewed_hash: sha256:800af25e4a2bf2b14242b6401af8df5379adea1a4d85b8ac7c913ae53fbfde18
+  digest-validation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 103. Snapshot digest validation]
+    reviewed_hash: sha256:5f3e4fe722cc1794ec6b8ffe460cb100946ca1a69bff41c3d22a2e6e544049bc
+  policy-restoration:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 104. Runtime policy restoration]
+    reviewed_hash: sha256:a5be61bce4c69a72d61883a4f179a4383fcc3ff68ec51698e21b7d377fb7967b
+  no-migration:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 105. No implicit topology migration]
+    reviewed_hash: sha256:9d85250fed5802ee6321f34722a3bfb459eb967e2c14b207ab13c08af7692c01
+  snapshot-compatibility:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIII — Compatibility rules by artifact family, 123. Snapshot compatibility]
+    reviewed_hash: sha256:eb84f3627a2174ede96cb1691c747944c7dbc8aeebe07dad046f0841cf459d80
+  compatibility-failure:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIII — Compatibility rules by artifact family, 130. Compatibility failure structure]
+    reviewed_hash: sha256:f79bee4f80dbd21a784dd343b51c2c871dd5ce507393b7e47a3896f907c4bcaf
+  persistence-module:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIV — Public persistence API responsibilities, 131. Persistence module]
+    reviewed_hash: sha256:a475a0644e928eda47a44fb5f80539d62d7b8a2632dc1a2e4c3b595f23c9590f
+  decoding-apis:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIV — Public persistence API responsibilities, 135. Decoding APIs]
+    reviewed_hash: sha256:9b99af64a77aa03ba4062a13c19d5701777c9e37db3dc34871d77fe394e0a821
+  decode-policy:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIV — Public persistence API responsibilities, 136. Decode policy]
+    reviewed_hash: sha256:b386cbd0cd980bb2c7ec26c76b8ca653804e129c877421f1be31e4223a411e23
+  decode-limits:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIV — Public persistence API responsibilities, 137. Decode limits]
+    reviewed_hash: sha256:c530c0a0544aa9655ab5ac3ab32cc100184e2da7f4e79492971c233ed3351ed2
+  restoration-report:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIV — Public persistence API responsibilities, 138. Restoration report]
+    reviewed_hash: sha256:a68bc4cd18a374b488b09544e29a8fa4c80b443330f33520b95324a9894c0f85
+  hostile-input:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: ["Part XV — Robustness, security, and storage integration", "143. Hostile input handling"]
+    reviewed_hash: sha256:45f8dfd6fb23d4369c0c4b9f1b3390c983d8c3ab692559f9656b4d648cf1524e
+  resource-exhaustion:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: ["Part XV — Robustness, security, and storage integration", "144. Resource exhaustion"]
+    reviewed_hash: sha256:1ef15a27dc6bf4ded9a5ff245a132c3f8ee739f37101dee33119381c63e17a1f
+  integrity-classes:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: ["Part XV — Robustness, security, and storage integration", "145. Integrity and truncation"]
+    reviewed_hash: sha256:7183ee69c0d5a4aca4b6f1949e62b3c455fff978c4a406d0a60ca5164c40dd83
+  partial-files:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: ["Part XV — Robustness, security, and storage integration", "149. Partial or appended files"]
+    reviewed_hash: sha256:cf8abbc261bac700c1c7a3e33906f6914d8e7ce91e9d381881f0e1b0adc1068e
+  canonical-uniqueness:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 151. Canonical uniqueness]
+    reviewed_hash: sha256:cd26be5526e1e36783f764e8971ab2d363067c57e97ced4896f0a6923a1eb022
+  snapshot-round-trip:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 155. Snapshot round trip]
+    reviewed_hash: sha256:a98c972c3e4bef862eb2339a46d2c65d172335b150145e254c11512a35c1b5e9
+  snapshot-sufficiency:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 156. Snapshot sufficiency]
+    reviewed_hash: sha256:7af16957e1f9a51f9289bb78ba269fb0ba66104c0f74e108be5eec28b2dddf65
+  settled-consistency:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 157. Settled-state consistency]
+    reviewed_hash: sha256:b9b1db1684da0361f411f039dc63f5a3e362cd3764399f301e61a8e1a0682a55
+  event-continuity:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 158. Event identity continuity]
+    reviewed_hash: sha256:67ce5cba377232c018be8d39b5a9dcb6a443d82d957b52be5e5dda4b80d053d0
+  provenance-corruption:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 160. Provenance corruption]
+    reviewed_hash: sha256:ff6c507a5f3f88c4902dc420ee2d44e47e43e239f43bc66a418ca7a75415a9ff
+  malformed-corpus:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 167. Malformed encoding corpus]
+    reviewed_hash: sha256:951e4dc76c7ba3678a126f2d984c1865a45e5492d15baaedb4c301ab3d94dc76
+  fault-injection:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 168. Decode fault injection]
+    reviewed_hash: sha256:9a8871130430a8656e13c363782a2c39591a15565ec70eaa3c2b3027560b1a8e
+  no-heuristics:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVII — Implementation guidance and prohibitions, 174. No hidden compatibility heuristics]
+    reviewed_hash: sha256:f2378d131c0132758796476547a9f1a2ca54827abc337807a9b5f552771bbaee
+  no-silent-repair:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVII — Implementation guidance and prohibitions, 175. No silent repair]
+    reviewed_hash: sha256:04002f2bde884795fb2505be8db1dacb1b2799becbf54e4b6d8383c840b462a8
+  prohibited-outcomes:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVIII — Required guarantees, 179. Prohibited outcomes]
+    reviewed_hash: sha256:e34f14d657eecf099bf778730f9e69055128ed462ad56ea3fddceb253231b92b
+  appendix-c:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Appendix C — Restoration compatibility matrix]
+    reviewed_hash: sha256:5adc9eb4c0c891446b1e0dfa8ce169b3d2b6288f28557d0de6fb234cc52c89fa
+  api-restoration:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part XII — Scheduling, forecasting, persistence, and replay
+      - 70. Restoration
+    reviewed_hash: sha256:2637bf19688212b09ec3ee085eee59f22e0b2986873e9635db4e09cbe6be450f
+  processor-sufficiency:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path:
+      - Part XIII — Persistence, replay, and identity
+      - 82. Snapshot sufficiency
+    reviewed_hash: sha256:e6015348ee1506cf8a2520f24bc4f06df369ba1eb06855f57baeb9a782bafaa9
+  processor-restoration:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path:
+      - Part XIII — Persistence, replay, and identity
+      - 84. Restoration
+    reviewed_hash: sha256:120782ab6ccc951b4112f77f89e05b0f68766598710e274bf1dbf069451b93eb
+  caller-data:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path:
+      - Part XV — Errors and containment
+      - 92. Invalid caller-controlled data
+    reviewed_hash: sha256:de4479e8728084131d6e082abbc13c77b9db2d8806aa9609c7c330e645f78f5c
+  snapshot-access:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part XXIV — Snapshots and restoration
+      - 90. Snapshot access
+    reviewed_hash: sha256:528744ec276b4469e87653d4bf09800762069bd0116a48c4e40e98a9d598a26c
+  concrete-restore:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part XXIV — Snapshots and restoration
+      - 91. Restoration
+    reviewed_hash: sha256:42494576fad9d0d7adf5afd9688b2f2c47ae59ee0a3aac91bd39fe4bd2b079ee
+  concrete-compiled-restore:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part X — Validation and compilation artifacts
+      - "44. `CompiledNetwork<D>`"
+    reviewed_hash: sha256:06a6ae375426437ece5aafd386ca65e6c76c51591acc95d2f8a2d1ee56bca60f
+  catalogue-restoration:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path:
+      - Part XI — Persistence and replay
+      - 71. Restoration validation
+    reviewed_hash: sha256:6901d27ef10c45f57df32e1668c50c72dd3ab9f0eb0f16967cf3c3f2907cf4cd
+  catalogue-snapshot-state:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path:
+      - Part XI — Persistence and replay
+      - 72. Snapshot state
+    reviewed_hash: sha256:c10ec74d1b021c66e4afd073d4cde91fd88ddfde5c05f94c9256f4b2dd783896
+  standard-codes:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path:
+      - Part IX — Diagnostics
+      - 57. Blocking catalogue diagnostics
+    reviewed_hash: sha256:312c95bc828fffe9675b3a6a2ded0aaed68159f71bb4d1bf178f691f0b267c23
+  decode-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part V — Exhaustive initial catalogue
+      - 36. Persistence — canonical decoding and envelopes
+    reviewed_hash: sha256:971e920b3dd2ab9aa1ad9f9df522ee5b36ff34cc7a1277b2dff6c8f866bee82a
+  restore-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part V — Exhaustive initial catalogue
+      - 37. Persistence — restoration identity and semantic consistency
+    reviewed_hash: sha256:c20de74e58e481741eef5b891c1e5a4fc5570354319968394caae27911d98ebd
+  provenance-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part V — Exhaustive initial catalogue
+      - 38. Persistence — provenance validation
+    reviewed_hash: sha256:642ffe81352cafa8a885686e3faaa271c5f60745e086a9a175d9c7bb60e23d47
+  failure-mapping:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part VI — Rust API integration
+      - 46. Required mapping by API family
+    reviewed_hash: sha256:c1a274325868079eb7b79402bb95b07543ff5c4af1dec2dc4c3288de47078b01
+  no-fallback:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part VI — Rust API integration
+      - 47. No arbitrary fallback strings
+    reviewed_hash: sha256:08cfa4fe2a339c676374a279a44968de725fd7993b7d97aa67d5572985fb1e1e
+  nonexhaustive:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part VI — Rust API integration
+      - 48. Non-exhaustive enums
+    reviewed_hash: sha256:ac58c08fa641591a9edce2777a5721947480839de4b4ea03506718a313d9b475
+  diagnostic-form:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part VII — Persistence and compatibility
+      - 50. Canonical persisted form
+    reviewed_hash: sha256:106e6973666cf880567e4df2eb151c1b2e90a058ec1ecfa8b3b01d61e6efbcc5
+  episode-persistence:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part VII — Persistence and compatibility
+      - 52. Episode persistence
+    reviewed_hash: sha256:45440cbf0b4658ced6f8dc18650e5d0e9b64bf7334dfda695d3ff3740f61cb8a
+  testing-round-trip:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 83. Snapshot round trip
+    reviewed_hash: sha256:70e7444500b89f1476af62efb96f89e702df74062595ad48af149d76dfc097cf
+  testing-sufficiency:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 84. Snapshot sufficiency
+    reviewed_hash: sha256:2b35321f5e96eaa89362a4c8f9aa5573b6fbf90f32986c3d828b3ea66834b437
+  rejection-classes:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 85. Restoration rejection
+    reviewed_hash: sha256:df13505ea5ea8d25bad31bbf3d59c7e5073724da0a4079a9eddb164356a35d4e
+  malformed-fuzz:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XIX — Fuzzing
+      - 103. Malformed-input fuzzing obligations
+    reviewed_hash: sha256:34f17af72c2c68c75609a60a017ddadb681059cee25007eb1e66b0d34385ccc8
+  scheduled-fuzz:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XXI — CI and release policy
+      - 112. Scheduled verification
+    reviewed_hash: sha256:ed2d29b1649481b26001903194f5c24d32f4746ed0b9d09cd191a5725eade7fe
+  digest-equality:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path:
+      - Part XIII — Persistence, replay, and identity
+      - 88. Canonical encoding
+    reviewed_hash: sha256:b022df5c6107d95a44a7a337ebb7d8574b4928b2d8bcc350ad70f4ef83c18e79
