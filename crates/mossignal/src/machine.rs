@@ -2807,6 +2807,35 @@ impl<D> Machine<D> {
         &self.compiled
     }
 
+    /// Starts an owned patch bound to this machine's current revision.
+    ///
+    /// The builder does not borrow the machine after it is returned.
+    #[must_use]
+    pub fn patch(&self) -> crate::patch::NetworkPatchBuilder<D> {
+        self.compiled.patch(self.store.revision)
+    }
+
+    /// Prepares a patch when its base revision is this machine's current revision.
+    ///
+    /// The check reads the revision, then delegates to the compiled topology.
+    /// Preparation does not read or mutate runtime state.
+    pub fn prepare_patch(
+        &self,
+        patch: crate::patch::NetworkPatch<D>,
+    ) -> crate::diagnostics::Report<crate::patch::PreparedPatch<D>, D>
+    where
+        D: PartialEq,
+    {
+        if patch.base_revision() != self.revision() {
+            return crate::patch::revision_mismatch(
+                self.compiled.network_key(),
+                patch.base_revision(),
+                self.revision(),
+            );
+        }
+        self.compiled.prepare_patch(patch)
+    }
+
     /// Returns the exact validated runtime policy associated at spawning.
     #[must_use]
     pub fn runtime_policy(&self) -> &RuntimePolicy {

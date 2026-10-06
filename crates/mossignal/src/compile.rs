@@ -14,12 +14,13 @@ use crate::key::{
     ExternalInputKey, ExternalOutputKey, InPortKey, ModuleInstanceKey, NetworkKey, NodeKey,
     OutPortKey,
 };
-use crate::machine::Machine;
+use crate::machine::{Machine, NetworkRevision};
 use crate::module::{
     ModuleDef, NodeSubject, PulsePortSubject, QualifiedConnectionRef, QualifiedInPortRef,
     QualifiedModuleRef, QualifiedNodeRef,
 };
 use crate::node_schema::{SemanticNodeKind, StateFamily, TemporalFamily, schema_for_kind};
+use crate::patch::{NetworkPatch, NetworkPatchBuilder, PreparedPatch};
 use crate::policy::RuntimePolicy;
 use crate::signal::{Level, LogicLevel, Pulse, PulseCount, SignalKind};
 use crate::time::{NonZeroSpan, Time};
@@ -742,6 +743,34 @@ impl<D> CompiledNetwork<D> {
                     AnyExternalInputKey::Level(_) => None,
                 }),
         )
+    }
+
+    /// Starts an owned patch bound to this topology and an explicit base revision.
+    ///
+    /// The builder copies identity by value and does not borrow this network.
+    #[must_use]
+    pub fn patch(&self, base_revision: NetworkRevision) -> NetworkPatchBuilder<D> {
+        NetworkPatchBuilder::bound(
+            self.network_key(),
+            self.fingerprint(),
+            self.time_domain_id(),
+            base_revision,
+        )
+    }
+
+    /// Prepares one topology replacement from this compiled definition.
+    ///
+    /// Preparation rewrites, validates, and compiles the target through the
+    /// ordinary network path. It does not read runtime state.
+    pub fn prepare_patch(&self, patch: NetworkPatch<D>) -> Report<PreparedPatch<D>, D>
+    where
+        D: PartialEq,
+    {
+        crate::patch::prepare(self, patch)
+    }
+
+    pub(crate) fn definition(&self) -> &UncheckedNetwork<D> {
+        &self.inner.definition
     }
 
     /// Starts an input delta bound to this exact current topology.

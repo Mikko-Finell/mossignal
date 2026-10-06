@@ -14,6 +14,7 @@ mod machine;
 pub mod metadata;
 mod module;
 mod node_schema;
+mod patch;
 mod persistence;
 mod policy;
 mod replay;
@@ -75,6 +76,17 @@ pub use module::{
     DefinitionGraphView, ModuleDef, ModuleInputIter, ModuleOrigin, ModuleOutputIter, NodeSubject,
     PulsePortSubject, QualifiedConnectionRef, QualifiedInPortRef, QualifiedModuleRef,
     QualifiedNodeRef,
+};
+pub use patch::{
+    ArtifactInvalidation, ConditionalArm, Continuity, EndpointChange, EndpointRebinding,
+    EpisodeRule, EventRule, ExternalInputPlan, ExternalOutputPlan, HierarchicalSubjectRef,
+    InertialDelayMigration, InputValuationPlan, InternalSubjectPlan, LossClass, ModuleContinuity,
+    ModuleInternalReassociation, ModuleMigrationDirective, ModuleNodeMigrationDirective,
+    NetworkPatch, NetworkPatchBuilder, NodeMigrationDirective, OutputBaselinePlan,
+    OverdueMigrationPolicy, PatchBuildFailure, PatchOperation, PatchOperationIter, PendingArm,
+    PendingWorkRule, PeriodicMigration, PotentialSemanticLoss, PreparedPatch, ProvenanceRule,
+    PulseDelayMigration, RegionChange, RegionChangeKind, StateCompatibility, StaticMigrationPlan,
+    StructuralSubjectRef, SubjectPlan, SubjectReassociation, TransportDelayMigration,
 };
 pub use persistence::{
     ArtifactBytes, EncodeFailure, MachineSnapshot, PersistenceContext, encode_snapshot,

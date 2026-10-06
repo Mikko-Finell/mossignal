@@ -250,6 +250,9 @@ pub enum EvidenceSchema {
     PendingEvent,
     DiagnosticEpisode,
     Replay,
+    PatchEdit,
+    Migration,
+    SemanticLoss,
 }
 
 /// The opening catalogue's structured identifiers.
@@ -377,6 +380,25 @@ pub enum DiagnosticCode {
     ReplayFrameMissing,
     ReplayFrameReordered,
     ReplayFrameDuplicated,
+    ReconfigurationForeignArtifact,
+    ReconfigurationDuplicateOperation,
+    ReconfigurationConflictingEdit,
+    ReconfigurationInvalidReplacementKey,
+    ReconfigurationContradictoryHierarchy,
+    ReconfigurationInvalidReassociation,
+    ReconfigurationBaseFingerprintMismatch,
+    ReconfigurationBaseRevisionMismatch,
+    ReconfigurationUnknownBaseSubject,
+    ReconfigurationNonInjectiveReassociation,
+    ReconfigurationIncompatibleMigrationDirective,
+    ReconfigurationIncompleteTemporalMigrationPolicy,
+    ReconfigurationUnsupportedCrossKindMigration,
+    ReconfigurationAmbiguousEventMigration,
+    ReconfigurationInvalidTargetInputSchema,
+    ReconfigurationConditionalSemanticLoss,
+    ReconfigurationUnavoidableSemanticLoss,
+    ReconfigurationEmptyPatch,
+    StandardModuleNoncanonicalInternalEdit,
 }
 
 #[derive(Clone, Copy)]
@@ -1463,6 +1485,73 @@ pub enum ProblemEvidence<D> {
         evidence: ReplayEvidence,
         marker: PhantomData<fn() -> D>,
     },
+    ReconfigurationForeignArtifact {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationDuplicateOperation {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationConflictingEdit {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationInvalidReplacementKey {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationInvalidReassociation {
+        source: SubjectRef,
+        target: SubjectRef,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationContradictoryHierarchy {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationBaseFingerprintMismatch {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationBaseRevisionMismatch {
+        expected: NetworkRevision,
+        actual: NetworkRevision,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationUnknownBaseSubject {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationNonInjectiveReassociation {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationIncompatibleMigrationDirective {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationIncompleteTemporalMigrationPolicy {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationUnsupportedCrossKindMigration {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationAmbiguousEventMigration {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationInvalidTargetInputSchema {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationConditionalSemanticLoss {
+        fact: &'static str,
+        rule: &'static str,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationUnavoidableSemanticLoss {
+        fact: &'static str,
+        rule: &'static str,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationEmptyPatch {
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleNoncanonicalInternalEdit {
+        instance: ModuleInstanceKey,
+        subject: SubjectRef,
+        marker: PhantomData<fn() -> D>,
+    },
 }
 
 impl<D> ProblemEvidence<D> {
@@ -2093,6 +2182,25 @@ opening_diagnostic_registry! {
     ReplayFrameMissing, Self::ReplayFrameMissing { .. }, "replay.frame_missing", Error, CorruptData, Replay, false, true, false;
     ReplayFrameReordered, Self::ReplayFrameReordered { .. }, "replay.frame_reordered", Error, CorruptData, Replay, false, true, false;
     ReplayFrameDuplicated, Self::ReplayFrameDuplicated { .. }, "replay.frame_duplicated", Error, CorruptData, Replay, false, true, false;
+    ReconfigurationForeignArtifact, Self::ReconfigurationForeignArtifact { .. }, "reconfiguration.foreign_artifact", Error, CallerInput, ForeignArtifact, false, true, false;
+    ReconfigurationDuplicateOperation, Self::ReconfigurationDuplicateOperation { .. }, "reconfiguration.duplicate_operation", Error, CallerInput, PatchEdit, false, true, false;
+    ReconfigurationConflictingEdit, Self::ReconfigurationConflictingEdit { .. }, "reconfiguration.conflicting_edit", Error, CallerInput, PatchEdit, false, true, false;
+    ReconfigurationInvalidReplacementKey, Self::ReconfigurationInvalidReplacementKey { .. }, "reconfiguration.invalid_replacement_key", Error, CallerInput, PatchEdit, false, true, false;
+    ReconfigurationContradictoryHierarchy, Self::ReconfigurationContradictoryHierarchy { .. }, "reconfiguration.contradictory_hierarchy", Error, CallerInput, PatchEdit, false, true, false;
+    ReconfigurationInvalidReassociation, Self::ReconfigurationInvalidReassociation { .. }, "reconfiguration.invalid_reassociation", Error, CallerInput, PatchEdit, true, true, false;
+    ReconfigurationBaseFingerprintMismatch, Self::ReconfigurationBaseFingerprintMismatch { .. }, "reconfiguration.base_fingerprint_mismatch", Error, Compatibility, ArtifactIdentity, true, true, false;
+    ReconfigurationBaseRevisionMismatch, Self::ReconfigurationBaseRevisionMismatch { .. }, "reconfiguration.base_revision_mismatch", Error, Compatibility, RevisionMismatch, true, true, false;
+    ReconfigurationUnknownBaseSubject, Self::ReconfigurationUnknownBaseSubject { .. }, "reconfiguration.unknown_base_subject", Error, CallerInput, MissingReference, true, false, false;
+    ReconfigurationNonInjectiveReassociation, Self::ReconfigurationNonInjectiveReassociation { .. }, "reconfiguration.non_injective_reassociation", Error, CallerInput, PatchEdit, true, false, false;
+    ReconfigurationIncompatibleMigrationDirective, Self::ReconfigurationIncompatibleMigrationDirective { .. }, "reconfiguration.incompatible_migration_directive", Error, CallerInput, Migration, true, false, false;
+    ReconfigurationIncompleteTemporalMigrationPolicy, Self::ReconfigurationIncompleteTemporalMigrationPolicy { .. }, "reconfiguration.incomplete_temporal_migration_policy", Error, CallerInput, Migration, true, false, false;
+    ReconfigurationUnsupportedCrossKindMigration, Self::ReconfigurationUnsupportedCrossKindMigration { .. }, "reconfiguration.unsupported_cross_kind_migration", Error, UnsupportedFeature, Migration, true, false, false;
+    ReconfigurationAmbiguousEventMigration, Self::ReconfigurationAmbiguousEventMigration { .. }, "reconfiguration.ambiguous_event_migration", Error, CallerInput, PendingEvent, true, true, false;
+    ReconfigurationInvalidTargetInputSchema, Self::ReconfigurationInvalidTargetInputSchema { .. }, "reconfiguration.invalid_target_input_schema", Error, CallerInput, InputSchema, true, false, false;
+    ReconfigurationConditionalSemanticLoss, Self::ReconfigurationConditionalSemanticLoss { .. }, "reconfiguration.conditional_semantic_loss", Warning, Advisory, SemanticLoss, true, false, false;
+    ReconfigurationUnavoidableSemanticLoss, Self::ReconfigurationUnavoidableSemanticLoss { .. }, "reconfiguration.unavoidable_semantic_loss", Warning, Advisory, SemanticLoss, true, false, false;
+    ReconfigurationEmptyPatch, Self::ReconfigurationEmptyPatch { .. }, "reconfiguration.empty_patch", Error, CallerInput, PatchEdit, true, false, false;
+    StandardModuleNoncanonicalInternalEdit, Self::StandardModuleNoncanonicalInternalEdit { .. }, "standard_module.noncanonical_internal_edit", Error, CallerInput, StandardModule, true, false, false;
 }
 
 /// One structured, catalogue-valid problem record.
@@ -2723,6 +2831,38 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         ProblemEvidence::StandardModuleExpansionMismatch {
             module_ref, detail, ..
         } => ConditionDiscriminator::StandardDetail(module_ref.clone(), detail.clone()),
+        ProblemEvidence::ReconfigurationConditionalSemanticLoss { fact, rule, .. }
+        | ProblemEvidence::ReconfigurationUnavoidableSemanticLoss { fact, rule, .. } => {
+            ConditionDiscriminator::Text(fact, (*rule).to_owned())
+        }
+        ProblemEvidence::ReconfigurationInvalidReassociation { source, target, .. } => {
+            ConditionDiscriminator::Subjects(source.clone(), target.clone())
+        }
+        ProblemEvidence::StandardModuleNoncanonicalInternalEdit { subject, .. } => {
+            ConditionDiscriminator::Subject(subject.clone())
+        }
+        ProblemEvidence::ReconfigurationBaseRevisionMismatch {
+            expected, actual, ..
+        } => ConditionDiscriminator::Text(
+            "revision",
+            format!("{:016x}:{:016x}", expected.value(), actual.value()),
+        ),
+        ProblemEvidence::ReconfigurationForeignArtifact { .. }
+        | ProblemEvidence::ReconfigurationDuplicateOperation { .. }
+        | ProblemEvidence::ReconfigurationConflictingEdit { .. }
+        | ProblemEvidence::ReconfigurationInvalidReplacementKey { .. }
+        | ProblemEvidence::ReconfigurationContradictoryHierarchy { .. }
+        | ProblemEvidence::ReconfigurationBaseFingerprintMismatch { .. }
+        | ProblemEvidence::ReconfigurationUnknownBaseSubject { .. }
+        | ProblemEvidence::ReconfigurationNonInjectiveReassociation { .. }
+        | ProblemEvidence::ReconfigurationIncompatibleMigrationDirective { .. }
+        | ProblemEvidence::ReconfigurationIncompleteTemporalMigrationPolicy { .. }
+        | ProblemEvidence::ReconfigurationUnsupportedCrossKindMigration { .. }
+        | ProblemEvidence::ReconfigurationAmbiguousEventMigration { .. }
+        | ProblemEvidence::ReconfigurationInvalidTargetInputSchema { .. }
+        | ProblemEvidence::ReconfigurationEmptyPatch { .. } => {
+            ConditionDiscriminator::Operation(evidence.code())
+        }
     }
 }
 
@@ -3082,7 +3222,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 162);
+        assert_eq!(leaves.len(), 168);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {
