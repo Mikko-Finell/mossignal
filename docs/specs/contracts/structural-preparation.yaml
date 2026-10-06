@@ -1,0 +1,787 @@
+schema_version: "0.1"
+id: mossignal.reconfiguration.structural_preparation
+title: Structural topology-patch preparation
+kind: lifecycle
+status: reviewed
+
+source_baseline:
+  commit: 28f03a775a2fdd92b2debaf0bf8a278c1b5bd1f5
+  working_tree: clean
+
+summary: >-
+  Structural preparation rewrites one base topology by one explicit patch into
+  a validated target and a state-independent migration program. It does not
+  read or mutate a running machine and does not commit the replacement.
+
+scope:
+  includes:
+    - one owned patch and its normalized all-at-once rewrite of one base topology
+    - state-independent preparation of one prepared patch and static migration plan
+    - stable structural, module-instance, and internal-role correspondence
+    - target input-schema, binding, output, diagnostic, and potential state-loss classification
+  excludes:
+    - transaction-time finalization, patch commitment, and actual migration
+    - choosing or enforcing a live state-loss policy
+    - partial installation, incremental compilation, merge, rebase, and patch persistence
+
+known_uncovered:
+  - Patch commitment, transaction attachment, and installation of the target topology
+  - Actual migration of state, pending events, valuations, baselines, episodes, and provenance at the effective time
+  - A hidden or caller-omitted migration policy, and applying either reconfiguration policy to a finalized loss set
+  - Partial topology installation and optimized incremental compilation
+  - Collaborative editing, automatic rebasing, patch merging, and inverse patches
+  - Forecasting a patch-bearing transaction
+  - Replaying patch frames
+  - Persisting a prepared patch, or re-preparing one from a patch wire artifact
+  - Standard modules the catalogue names but this runtime does not construct, including temporal standard-module candidates
+  - A future lossless migration between different temporal kinds; the initial core defines none
+
+aliases:
+  - NetworkPatch<D>
+  - NetworkPatchBuilder<D>
+  - PreparedPatch<D>
+  - StaticMigrationPlan<D>
+  - CompiledNetwork::prepare_patch
+  - Machine::prepare_patch
+
+requirements:
+  - id: declarative-owned-patch
+    kind: public_surface
+    statement: >-
+      A topology patch is an owned opaque declarative rewrite from one complete
+      base definition to one target definition, not an ordered mutation script.
+      It is bound to the network key, base network fingerprint, base topology
+      revision, time domain, and signal-semantics version, and not to an
+      execution-state digest. The closed operation language covers nodes,
+      connections, external endpoints, module instances, parent assignment,
+      diagnostic metadata, and explicit reassociation. Operations are data, not
+      callbacks. Replacement definitions keep the operation subject's key and
+      signal kind; a key change is removal, addition, and explicit
+      reassociation. Finish is infallible and yields one deterministically
+      normalized operation set. Equivalent operation orders produce the same
+      target definition, fingerprint, current-reaction dependency graph,
+      correspondence, static plan, loss classification, invalidation, and
+      diagnostics, up to representation-only ordering. The patch is not
+      rebased, merged, or composed across revisions.
+    sources: [patch-model, order-independence, base-binding, no-rebase, operation-language, concrete-operations, patch-construction, normalization, concrete-construction]
+
+  - id: malformed-until-ordinary-validation
+    kind: semantic
+    statement: >-
+      The rewrite is applied all at once. No intermediate graph is semantically
+      relevant, and locally incomplete structure is not repaired to make the
+      patch valid. The core must not infer correspondence, cascade removals,
+      reconnect dangling incidence, choose a driver, reparent orphans, reset
+      state, cancel pending work, establish a new external level as Low, or
+      synthesize a pulse for a topology change. Target-invalid structure that
+      requires the whole graph is left for preparation, which validates the
+      complete target through the ordinary network path. A target
+      that would not validate and compile independently produces no prepared
+      artifact. An empty effective patch, including one with no structural,
+      semantic, hierarchical, endpoint, or metadata change, may exist as an
+      owned patch but preparation rejects it and returns no artifact.
+    sources: [order-independence, builder-checks, target-construction, dangling, structural-validation, normalization, forbidden-edits, concrete-operations]
+    basis: derived
+
+  - id: no-machine-mutation
+    kind: prohibition
+    statement: >-
+      Canonical preparation is CompiledNetwork::prepare_patch. It depends only
+      on the base topology and the normalized patch. Machine::prepare_patch
+      checks that the patch base revision is the machine's current revision,
+      then delegates. Machine::patch supplies an owned builder at the current
+      revision and does not borrow the machine afterward. Preparation must not
+      read logical time, external levels, node or temporal state, pending
+      events, output baselines, diagnostic episodes, provenance roots, or an
+      execution-state digest, and must not mutate the machine, its revision, or
+      the compiled topology. State-dependent conditions are predicates in the
+      static plan. Preparation is not a forecast and must not claim exact
+      future state, pending-event outcomes, output events, or final migration
+      records.
+    sources: [processor-preparation, preparation-api, state-independent, freshness, concrete-placement, exact-forecast, no-host-callbacks]
+
+  - id: prepared-identity
+    kind: public_surface
+    statement: >-
+      Success returns one immutable PreparedPatch bound to the base network
+      key, fingerprint, and revision. It exposes that base identity, the
+      proposed revision a later commit would install by advancing the base
+      revision exactly once, the target fingerprint, the target compiled
+      topology, the normalized operations, the target input schema, and the
+      static plan. A metadata-only effective patch still has a distinct
+      proposed revision when its fingerprint is unchanged. Preparation does not
+      install that revision. The artifact must not contain exact runtime
+      migration outcomes. A foreign network, fingerprint, signal-semantics
+      version, or time domain is rejected. The machine convenience also rejects
+      a different base revision. State-only transactions do not invalidate the
+      artifact; preparation does not retarget or rebase it.
+    sources: [revision-fingerprint, prepared-patch, freshness, target-schema, concrete-plan, concrete-placement, preparation-api, api-freshness]
+
+  - id: stable-correspondence
+    kind: semantic
+    statement: >-
+      Correspondence is the partial injection formed only by equal stable keys
+      of the same category and compatible signal kind, plus explicit same-kind,
+      same-direction reassociation. A subject maps to at most one successor and
+      from at most one predecessor, cannot be both preserved and reassociated,
+      and cannot form a chain or cycle. The source exists only in the base
+      result and the target only in the target result. Fixed-port semantic
+      roles must remain compatible. Variadic ports keep their own stable
+      identity; display order is not semantic. Names, descriptions, diagnostic
+      paths, position, neighborhood, insertion order, dense indices, and module
+      display order do not establish correspondence. One-to-many and
+      many-to-one identity are outside the initial core.
+    sources: [preservation, reassociation, correspondence-constraints, port-correspondence, no-matching, concrete-operations]
+
+  - id: module-and-internal-correspondence
+    kind: semantic
+    statement: >-
+      Module-internal continuity is the instance key plus the module-internal
+      stable key, applied recursively through nested instances. Flattened or
+      dense compiler positions do not decide it. Preparation expands base and
+      target modules and classifies each internal subject with the ordinary
+      node, port, connection, and state rules. While a standard declaration is
+      retained, an edit of one internal canonical subject is rejected; the
+      whole instance may be replaced, rebound, reparented, or given
+      presentation metadata, or replaced by a user module. Catalogue version 1
+      supplies exact-version self-compatibility only. A different module id has
+      no catalogue correspondence. A changed instance key requires explicit
+      module reassociation. Equal permanent role keys and qualifying public
+      variadic keys correspond when category, kind, direction, and ordinary
+      node compatibility allow. For the runtime catalogue, Exactly, AtMost, and
+      AllEqual threshold or arity changes are stateless reevaluation: surviving
+      public keys and remaining internal roles preserve identity, and absent
+      roles are added or removed without state loss. Same-descriptor
+      PulseResettableToggle preserves toggle and reset-baseline levels;
+      LevelResettableToggle also preserves its reset-edge observation;
+      LevelResettableSampleHold preserves held state and reset-edge observation.
+      Changing initial preserves those values and affects only fresh state or an
+      explicit module Reset. LevelResettableSampleHold reset_to is conditional:
+      settled reset Low preserves held state for later captures; settled reset
+      High migrates held state to the new reset_to and preserves the edge
+      observation. Preparation records that `reset_to` predicate and does not
+      read the settled reset level. An explicit module Reset selects Reset for
+      every internal state owner, installs the target declared initial state
+      only at later finalization, and classifies every discarded cell as loss.
+      The static plan keeps module-level grouping and the complete internal
+      correspondence.
+    sources: [qualified-identity, module-expansion, module-interface, nested-modules, encapsulation, replacement-boundary, compatibility-dimensions, internal-correspondence, parameter-matrix, exactly-reconfig, at-most-reconfig, all-equal-reconfig, pulse-toggle-reconfig, level-toggle-reconfig, sample-hold-reconfig, concrete-directives]
+
+  - id: static-migration-classes
+    kind: semantic
+    statement: >-
+      The static plan classifies every relevant base and target subject once,
+      with one primary continuity outcome of preserved, replaced in place,
+      reassociated, removed, or added, plus orthogonal metadata or hierarchy
+      change when present, and no contradictory primary outcome. A stateless
+      subject has no state outcome. Every surviving stateful or temporal node
+      has exactly one compatibility rule. Where topology alone decides the
+      outcome, that rule is one of Preserve, Migrate, Reset, or Reject. Where
+      the outcome depends on runtime state, the rule is a predicate whose later
+      outcomes stay inside that set. Standard selects only the built-in
+      rule: same or different stateless kinds have no state; the same
+      edge-detector kind preserves its remembered observation and a different
+      edge-detector kind migrates it; changing edge initialization does not
+      alter preserved observation; the same boolean-state kind preserves its
+      stored level, including across an initial-parameter or latch-conflict
+      change; different boolean-state kinds reject unless TransferStoredLevel
+      or Reset is explicit, and TransferStoredLevel is never inferred; the same
+      temporal kind without a migration-relevant parameter change preserves
+      temporal state and its standard pending rule; a different temporal kind
+      has no lossless rule and rejects unless Reset reports the source state
+      and pending work as loss; stateful or temporal to stateless reports
+      source loss; stateless to stateful or temporal initializes the target and
+      is not source loss; unrelated stateful families reject unless Reset is
+      explicit. A preserved initial parameter is not reapplied unless the
+      outcome is Reset. New nodes take declared initial state and no inherited
+      pending work, which is not loss. Removed stateless nodes lose no internal
+      state. Connection, region, and hierarchy changes do not by themselves
+      reset compatible state or cancel compatible pending work. An incompatible
+      directive produces no artifact.
+    sources: [compatibility-outcomes, directives, compatibility-matrix, combinational, edge-detectors, boolean-state, cross-kind-temporal, new-nodes, removed-nodes, subject-outcomes, preservation-rules, shared-reconfig, family-obligations, node-initial, toggle-initial, pulse-latch-policy, level-latch-policy, sample-hold-initial, concrete-directives]
+
+  - id: total-temporal-rules
+    kind: semantic
+    statement: >-
+      Every temporal owner has one total pending-work rule even when no event
+      exists. The rule's outcomes are PreserveDeadline, RecomputeDeadline,
+      TransformPayload, Cancel, and Reject. PulseDelay and TransportDelay
+      Standard on a delay change preserve existing deadlines and apply the
+      target delay only to later input. Transport also preserves remembered
+      input and output unless Reset, and a connectivity change does not cancel
+      compatible queued transitions. InertialDelay and Periodic Standard rules
+      that depend on unread runtime facts are conditional predicates, evaluated
+      only at later finalization. An inertial delay change under Standard
+      preserves the empty candidate and applies the target delay to later
+      candidates when no candidate exists, and is insufficient when a candidate
+      exists. A periodic parameter change under Standard preserves state when
+      period, first-emission, and re-enable policy are unchanged; when any of
+      those change, a fresh anchorless node takes the target parameters, and an
+      existing anchor or schedule makes Standard insufficient. Preparation
+      records those predicates and does not read candidate, anchor, or schedule
+      existence, and it does not reject the artifact merely because the outcome
+      is conditional. RejectIfCandidate and RejectIfAnchored remain
+      caller-selected directives, distinct from that Standard conditional rule.
+      The closed explicit policies are the PulseDelay, TransportDelay,
+      InertialDelay, and Periodic directives. A directive that assigns no
+      outcome, including no conditional outcome, to every possible pending
+      obligation is an incomplete temporal policy and produces no artifact.
+      Removed temporal work is Cancel rather than a transfer by name or
+      similarity. The plan defines the rule and does not classify actual events.
+    sources: [static-plan, pending-rules, state-dependent-finalization, pulse-delay-standard, pulse-delay-node, transport-migration, transport-standard, transport-reconfig, inertial-migration, inertial-node, inertial-standard, periodic-migration, periodic-standard, periodic-reconfig, cross-kind-temporal, catalogue-preparation, concrete-placement]
+    basis: derived
+
+  - id: schema-output-and-diagnostic-consequences
+    kind: semantic
+    statement: >-
+      Preparation derives the target input schema. The static plan classifies
+      the following consequences and does not apply them. A preserved level input
+      keeps its valuation unless a later transaction sets it; a reassociated
+      level input inherits the source valuation; a new level input is an
+      establishment obligation and is not defaulted; a removed level input
+      leaves the schema and loses its valuation unless reassociated; pulse
+      absence means zero. The prepared patch exposes target-bound snapshot and
+      delta builders. An initialization snapshot must be able to name every
+      target level input, and a ready delta must be able to establish every new
+      level input. Caller-owned binding sets are not mutated. Invalidation
+      lists stale categories, including resolved handles, compiled inspection
+      plans, old-revision prepared patches, old-schema binding projectors, and
+      old-schema input artifacts; invalidation is not state loss, and surviving
+      keys remain resolvable against the target. A preserved level output keeps
+      its baseline for later comparison. A reassociated level output carries
+      the source baseline as evidence, but the new key has no published
+      baseline. A new level output has no baseline. A removed level output
+      baseline is potential loss and a topology consequence, not a fabricated
+      signal transition. Pulse outputs have no baseline. Exact level or pulse
+      events are not claimed. Diagnostic-episode rules are Preserve, Transform,
+      Resolve, Terminate, or Reject, and preservation requires a surviving
+      owner, the same diagnostic code and condition identity, and unambiguous
+      evidence. Dense identity never transfers an episode. Provenance rules
+      record checkpoint, reset, retiming, or loss without reading current
+      roots. Regions are weak components of the undirected structural graph;
+      merges and splits are derived consequences and do not themselves change
+      compatibility or become loss.
+    sources: [target-schema, external-inputs, external-outputs, invalidated-artifacts, region-analysis, regions, output-establishment, episode-migration, provenance-migration, episode-family, forbidden-edits, concrete-placement, no-hidden-defaults]
+
+  - id: explicit-loss-evidence
+    kind: semantic
+    statement: >-
+      Preparation classifies every possible semantic loss and does not evaluate
+      it. Loss is destruction, reset, truncation, or disappearance of
+      information that can affect later execution or required observation,
+      including removed or reset stored state, canceled pending work, lost
+      deadline, origin, payload, inertial qualification, or periodic phase,
+      removed level valuation, removed level-output baseline, and terminated
+      episode or required provenance ancestry. A loss incurred for every
+      machine over the base topology is unavoidable. A loss that depends on a
+      named runtime fact is conditional. Each entry is identified by category,
+      source subject, source state or event identity when statically known, and
+      the migration rule or removal, and entries are not deduplicated by prose.
+      Revision advance, dense reassignment, stale handles, region changes,
+      metadata changes, information-preserving retiming, ordinary reevaluation,
+      and new initial state with no source are not loss. Preparation does not
+      select RejectStateLoss or AllowReportedStateLoss and does not invent a
+      directive where the caller did not supply a total one.
+    sources: [loss-definition, not-loss, loss-identity, loss-policy, catalogue-preparation, no-hidden-defaults, forbidden-edits]
+
+  - id: preparation-report
+    kind: public_surface
+    statement: >-
+      Compiled and machine preparation return Report of PreparedPatch.
+      Locally decidable construction failures use the catalogue construction
+      codes and PatchBuildFailure, not a prepared artifact. Preparation
+      conditions use the catalogue preparation codes at their recorded
+      severity, responsibility, delivery, and evidence. Those report conditions
+      include base fingerprint or machine-revision mismatch, unknown base
+      subject, invalid reassociation, non-injective reassociation, incompatible
+      directive, incomplete temporal policy, unsupported cross-kind migration,
+      ambiguous event migration, invalid target schema, empty patch, and
+      conditional or unavoidable semantic loss. Invalid target graphs use
+      ordinary validation codes. A standard internal edit uses
+      standard_module.noncanonical_internal_edit. Blocking errors suppress the
+      artifact. The conditional and unavoidable semantic-loss warnings may
+      accompany a successful artifact. Finalization codes are not preparation
+      results. Static-plan records have a deterministic order. That order is
+      not causal. Preparation warnings are not machine diagnostic episodes and
+      do not modify episode state.
+    sources: [preparation-report, preparation-diagnostics, accumulation, episode-behavior, catalogue-preparation, catalogue-mapping, report-order, concrete-construction]
+
+  - id: preparation-verification
+    kind: verification
+    statement: >-
+      Tests must show that preparation depends only on the base topology and
+      patch, that machines with different runtime state and the same revision
+      produce equivalent prepared artifacts, and that operation-order variants
+      agree on the normalized patch, target fingerprint, preparation
+      diagnostics, and static plan. Correspondence must be derived independently
+      of dense layout. Tests must not treat finalization, committed migration,
+      or a patch-bearing forecast as preparation.
+    sources: [order-test, state-independence-test, two-stage-test]
+
+recommendations:
+  - id: reject-local-contradictions
+    statement: >-
+      The builder should reject contradictions visible from the operation
+      itself, including duplicate or conflicting edits, a replacement whose key
+      differs from its subject, contradictory parents, a locally non-injective
+      or kind-incompatible reassociation, and a detectable foreign artifact.
+    sources: [builder-checks, concrete-construction, build-failures]
+
+  - id: accumulate-independent-findings
+    statement: >-
+      Preparation should collect independent structural diagnostics where safe
+      and should identify the missing companion edits that would remove
+      dangling incidence.
+    sources: [dangling, accumulation, preparation-report]
+
+  - id: cheap-clone-and-rebinding-notice
+    statement: >-
+      PreparedPatch should be cheaply cloneable through immutable shared
+      ownership. Preparation should report endpoint additions, removals, and
+      reassociations that a caller would need in order to rebind, without
+      mutating binding sets.
+    sources: [prepared-patch, invalidated-artifacts, concrete-plan]
+
+  - id: preservation-provenance-and-event-identity
+    statement: >-
+      Preserved state across a revision should be planned as a migration
+      checkpoint rather than silent reuse of a revision-incompatible root. A
+      one-to-one preserve, recompute, or transform rule should retain the
+      source pending-event key. Where one event could match several outcomes,
+      the recommended precedence is Reject, then Cancel, then TransformPayload,
+      then RecomputeDeadline, then PreserveDeadline.
+    sources: [provenance-migration, pending-identity, pending-rules]
+
+implementation_freedom:
+  - Private patch and prepared-patch storage, copied or rebuilt target definitions, allocation, and dense layout are free when the rewrite, correspondence, classifications, and deterministic order stay semantically equivalent.
+  - Full target recompilation is sufficient. A second incremental compiler is not required.
+  - The integer encoding of the one-step proposed revision is free when every effective patch exposes exactly one uninstalled successor of its base revision.
+  - Exact base-fingerprint equality is a sufficient signal-semantics-version check, because that fingerprint already includes the version. A second public version field is not required.
+  - Optional authoring conveniences are not required. Any convenience that is added must expand deterministically into the canonical operations before finish.
+  - Region identifiers and the private layout of static-plan records are free when the required classifications and weak-component consequences remain observable.
+  - Static-plan record order may follow the migration-report keys: category, source identity, target identity, state or event component, and a canonical tie-breaker.
+  - The private encoding of a conditional Standard inertial or periodic rule is free when both specified arms remain observable and preparation does not read the deciding runtime fact.
+
+open_questions: []
+
+sources:
+  patch-model:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part I — Patch semantic model, 3. Patch as a declarative graph rewrite]
+    reviewed_hash: sha256:0bdee0dc2a84c322d78f8c9b88687c18bc5f3c4a4099bcd6fe2b0094a5e9e9ad
+  order-independence:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part I — Patch semantic model, 4. Declarative order independence]
+    reviewed_hash: sha256:eb72b9480045b08a7539f36499814294506d2b3184f5d0adecf4ed8a48f2ceff
+  base-binding:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part I — Patch semantic model, 5. Base binding]
+    reviewed_hash: sha256:696943c3e24f429f117e1ebf792993b6deb19437934adff9297d69e9609b5227
+  revision-fingerprint:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part I — Patch semantic model, 6. Topology revision and fingerprint]
+    reviewed_hash: sha256:0cf777ecb00651332fbe5429ad646bf704c97d715e9bc5a70c9925ad61ea5d0d
+  no-rebase:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part I — Patch semantic model, 7. No implicit rebasing or merging]
+    reviewed_hash: sha256:26c8f21e87ece7ba1c5b93968d27f074baf16a3faf575cbeb37da97fc54c6b12
+  preservation:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part II — Structural correspondence and identity, 8. Ordinary stable-key preservation]
+    reviewed_hash: sha256:e265ba5f808dab8737d714c8905011b9adda503b7032e9c086b682a170377154
+  reassociation:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part II — Structural correspondence and identity, 9. Explicit reassociation]
+    reviewed_hash: sha256:46c6945466c5c099b5b4b9be5d3bc253434932bca0ba2fa2246f40fc96d9d1fe
+  correspondence-constraints:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part II — Structural correspondence and identity, 10. Correspondence constraints]
+    reviewed_hash: sha256:e2272799a782f5e8f2175048e1d5fcfa907998157e16c1dcf05cd701df51e6b1
+  port-correspondence:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part II — Structural correspondence and identity, 11. Port correspondence]
+    reviewed_hash: sha256:be690d1e28a9031f1d6ef554f99f3af627782c60974310e6cf659a308dc5360e
+  qualified-identity:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part II — Structural correspondence and identity, 12. Module-qualified internal identity]
+    reviewed_hash: sha256:49262636c2e74ccf2cf41f2ba5c50cf3e8e878aa24b1122ecdf075059271e206
+  operation-language:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part III — Canonical patch-operation language, 13. Required operation enum]
+    reviewed_hash: sha256:2941b54ad25d9dc8e1dd2ce4785ba12776c388cdeb2628ae67f03402b77194e2
+  patch-construction:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 23. Patch construction]
+    reviewed_hash: sha256:cf6440cc4cfc795c13771f3e2705ac2cf8c1977862c53e3cd3c332c78ecdf6aa
+  builder-checks:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 24. Immediate builder checks]
+    reviewed_hash: sha256:988d6ba0ba370644228be89dcbb48b3a7eebf13325f23ab65fcd060ca9b1d098
+  normalization:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 25. Normalization]
+    reviewed_hash: sha256:4aee3b201a7de12081b7134dc5eaa1edddfadc691d20c5d65c7955817ea5a48f
+  target-construction:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 26. Target construction]
+    reviewed_hash: sha256:8afca642a77e14803b4721026602fc4b5d4dc9537bf704bdeda9cde3785fed21
+  dangling:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 27. Dangling and incidence condition]
+    reviewed_hash: sha256:43e9c36c9fa0cd55e1b954455344fe1ceb16ce7b00535b02d17aaf68db1af8d2
+  structural-validation:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 28. Structural validation]
+    reviewed_hash: sha256:739709efa6f44243b456d6dcb2eb5a86ebd5de83a578784121d458e13c42fcc7
+  prepared-patch:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 29. `PreparedPatch<D>`]
+    reviewed_hash: sha256:780e5c5f4f7282a4970d9e2ef68161735a9f8c4227c33889eb3d642ebe4fccbf
+  static-plan:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 30. Static migration plan]
+    reviewed_hash: sha256:82f1cb3623b80184a46baf1b8edfb20ba2992cb24bdd4b3b5da54cc943081497
+  state-independent:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 31. Preparation is state-independent]
+    reviewed_hash: sha256:3692d75c7eb19aa96986a7402d10af9da5a81f7dbea04e4a843a85eea0c6c110
+  freshness:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 32. Prepared-patch freshness]
+    reviewed_hash: sha256:2896d493bf6e290e2c1a2c1a2316a97c190d017e2b4b6e6e793dbf025b90954f
+  target-schema:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 33. Target-bound input schema]
+    reviewed_hash: sha256:1bb0c0dbffa7c0bfb6ee0a3b590ed7c15d44197956be502903c138b6453e7ae4
+  invalidated-artifacts:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 34. Invalidated artifacts]
+    reviewed_hash: sha256:9abc3803e409ba9b2e502e0da466b733384c85eb6ca10d7f7eebfb73453454d6
+  region-analysis:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 35. Region analysis]
+    reviewed_hash: sha256:277d52c1f2709f3839bbe6961cc9eeb90c37e4b64f27866c0ac75a5a71bb6a80
+  compatibility-outcomes:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 36. Compatibility outcomes]
+    reviewed_hash: sha256:14fe7341c2a74e743df86e49aacfcbc2c5e74a25d8f8ab8ffa2417996938cf72
+  directives:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 37. Migration directives]
+    reviewed_hash: sha256:3d6960aeb4a44d9f43c74c14cecdf2273430b79d446d85da618a2700c6b3755a
+  new-nodes:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 38. New nodes]
+    reviewed_hash: sha256:3eacbbd9cb7c6b3ed3155bf7690700ac282da1201be82af4472cc956a75a1f82
+  removed-nodes:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 39. Removed nodes]
+    reviewed_hash: sha256:5a7491499a8c8f43bdbee394ff77202d61ebdbddb92deb6ffa40871a0afe2d0a
+  subject-outcomes:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IX — Semantic loss and migration reporting, 78. Subject outcomes]
+    reviewed_hash: sha256:57c4e6c14665bff3cc2be4601d0ccb087d9eb06329ecc06f4bc3dcefafd856be
+  state-dependent-finalization:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VIII — Transaction-time finalization and commitment, 65. State-dependent finalization]
+    reviewed_hash: sha256:6ab97548584e863753b59046811593ecbdeff7bf590ffb07c9ad51bf1a2c3436
+  transport-migration:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 49. `TransportDelay` migration]
+    reviewed_hash: sha256:788f5106582b415918c26ba15ee95aef9455f5c61d378eeef98bf08c11b98b22
+  inertial-migration:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 50. `InertialDelay` migration]
+    reviewed_hash: sha256:ffefb450874ff4db9030a4d788e25024a792d3d421e055c3c53b962bdfd48aa6
+  periodic-migration:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 51. `Periodic` migration]
+    reviewed_hash: sha256:bb55292863a2d91f95fc602cc566258ea4c475c66f7bc0e8e6156c963de713f7
+  compatibility-matrix:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 42. Standard built-in compatibility matrix]
+    reviewed_hash: sha256:13a1cc5c2b896a8055c30b0ba0f899316385695a4c48d9207a42ab7706794393
+  combinational:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 43. Combinational nodes]
+    reviewed_hash: sha256:07d6de8b4eacef79bc9bcbc04e68ff05b4d1bbf5ed44bb1471792a1ddbbde8ad
+  edge-detectors:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 44. Edge detectors]
+    reviewed_hash: sha256:931e9b793fa3d242771d3b117184d05392fe8c2872c4a8e02e141119b898976e
+  boolean-state:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 45. Boolean-state nodes]
+    reviewed_hash: sha256:ef5171c3ea987b3b04669e862b35e7645d08431b980fa3f3d6ab331ba313e42c
+  pending-rules:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 46. Temporal-state common rules]
+    reviewed_hash: sha256:6a5acf77b88d627d4adc6c32e428772509e22e966a6ddee4dce6ffa90e23e315
+  pending-identity:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 46. Temporal-state common rules, 46.1 Pending-event identity]
+    reviewed_hash: sha256:dd683ee48fa7749d17cc21d77893c3a0c671a8800f4168be3730f0dc9e77718f
+  pulse-delay-standard:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 48. `PulseDelay` migration, 48.1 Standard rule]
+    reviewed_hash: sha256:1e9a1cc6ddc6efaeeae74f66072cab973bc74925ee72a9dc04edea63b005bfb8
+  transport-standard:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 49. `TransportDelay` migration, 49.1 Standard rule]
+    reviewed_hash: sha256:6c7acb23c3214e6ce486a214abe9f07705e71df53cccce9fcf0eb2983bd886c3
+  inertial-standard:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 50. `InertialDelay` migration, 50.1 Standard rule]
+    reviewed_hash: sha256:f87596530959fdc922ea4c70508dcc4bb1ad7d0dcc2005d66780f7c9d48ea2df
+  periodic-standard:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 51. `Periodic` migration, 51.1 Standard rule]
+    reviewed_hash: sha256:1676e2a64924aa48a67db31920e559d06c59f45a2ee47b48c46653a880b4ae86
+  cross-kind-temporal:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 52. Cross-kind temporal migration]
+    reviewed_hash: sha256:1f5a50f7c9b16bb0d49071825760fff18513d28cdfded380bc45f23c9f196a07
+  external-inputs:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VI — Other semantic state, 53. External input valuation migration]
+    reviewed_hash: sha256:0bb4abcc4afc08f595ca0d8ab001b25657de2c564d3685868b1248bab4bbbabf
+  external-outputs:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VI — Other semantic state, 54. External output baseline migration]
+    reviewed_hash: sha256:72b2b48de7603f0e9f01d131e33de41c752458756c443c22e9ea3399ff8cba15
+  episode-migration:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VI — Other semantic state, 55. Diagnostic episode migration]
+    reviewed_hash: sha256:a54402df8ec8cc4c68c19cd283f1228b25ebc3ff416b8006e22ead35309197e1
+  provenance-migration:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VI — Other semantic state, 56. Provenance migration]
+    reviewed_hash: sha256:29303c619f120768317850583361ad6b8316f024e83b026d3cbb6a1f90791ea3
+  module-expansion:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VII — Module replacement and hierarchy, 58. Module expansion model]
+    reviewed_hash: sha256:2426d10f9a75191ea36534b43801692cba9d29a6e0afa7d4421a073887095a2f
+  module-interface:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VII — Module replacement and hierarchy, 60. Module interface changes]
+    reviewed_hash: sha256:9a5ceaf046a3c11c616b270b4daa983815264015ebd7f633491f469bcaf1c77c
+  nested-modules:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VII — Module replacement and hierarchy, 61. Nested modules]
+    reviewed_hash: sha256:c36f4af5eff0cc3f1afb22ff0a1120c4d5b51ef8ed716b80052561118f51207e
+  loss-definition:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IX — Semantic loss and migration reporting, 73. Semantic-loss definition]
+    reviewed_hash: sha256:a36944fb2640bdae2b9e9d565ffc66b957a0bfeb3df63fe388b054c09348897e
+  not-loss:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IX — Semantic loss and migration reporting, 74. Changes that are not semantic loss]
+    reviewed_hash: sha256:1bc7132903ab0bd0aae20131a8ef9eec059d1efdc11fb5a28095dff03063ea62
+  loss-identity:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IX — Semantic loss and migration reporting, 75. Loss identity]
+    reviewed_hash: sha256:8ddda4bef210c225ee5edd8e46cba2e65b3c357738d52ca4dd15d319b37d9e20
+  loss-policy:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IX — Semantic loss and migration reporting, 76. Reconfiguration policy]
+    reviewed_hash: sha256:4daa65225d84398cd1ccbdc4b25723cc2f17644c0b214d62a2696715ec817173
+  preparation-report:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part X — Public API responsibilities, 83. Preparation report]
+    reviewed_hash: sha256:d4eacda5f5cb5a94c262d234c4a0a09c9b4701551950fd516656e8fb9d37902b
+  exact-forecast:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part X — Public API responsibilities, 85. Exact forecast]
+    reviewed_hash: sha256:5f61a7059f40f1002deb4776488c4e74d49012a4f53bc5f73413c8fce241e452
+  build-failures:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XI — Diagnostics and failures, 87. Patch-build failures]
+    reviewed_hash: sha256:2cd80893b797c538374b89acecbceca7b53d852700f7800a7b4af605df76dfa4
+  preparation-diagnostics:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XI — Diagnostics and failures, 88. Preparation diagnostics]
+    reviewed_hash: sha256:1150766cd3ac3e1d5817077300e879e06011125c710a0b112fc46e238e2550e6
+  accumulation:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XI — Diagnostics and failures, 90. Diagnostic accumulation]
+    reviewed_hash: sha256:b208c8f3b2de3412ee9fe1b29a43a8765260a314a5028ceb2a8840ea2af4ccbb
+  episode-behavior:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XI — Diagnostics and failures, 91. Diagnostic episode behavior]
+    reviewed_hash: sha256:aca18002b8e2ad24c586402fb3ee76486d2976fe782855a03013891788ca7072
+  order-test:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XII — Verification obligations, 93. Operation-order invariance]
+    reviewed_hash: sha256:6dd50490069b74239ad1cdd8efb24e045b9906efebb91a0aa2de8f042d8029a1
+  state-independence-test:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XII — Verification obligations, 94. Preparation state independence]
+    reviewed_hash: sha256:49300d508dfcaab12d87b9e3748fb030b29a1c7f6b9279fd5ade6eb84df9af3a
+  forbidden-edits:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part III — Canonical patch-operation language, 22. Forbidden implicit edits]
+    reviewed_hash: sha256:e94c4d615396125011654a725a0d7ab297a6c007f897d2ae89bca58edd5f2378
+  no-matching:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XIII — Deliberately unspecified and excluded behavior, 107. No automatic structural matching]
+    reviewed_hash: sha256:a86b5e9b597aa4bbde98286214cc39d88bcaef870ea2671dd7ea6307469e2fd3
+  report-order:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IX — Semantic loss and migration reporting, 79. Deterministic report order]
+    reviewed_hash: sha256:2ea366b9fec974729fada2cf9eb274b7723cea98d04e1aee970f55769f556a69
+  preservation-rules:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part X — Reconfiguration, 60. Preservation rules]
+    reviewed_hash: sha256:657076ae32b035c04722f5e22603b01b9ab6ccdaf126da8180b97ed3f7bcd6ed
+  preparation-api:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part X — Reconfiguration, 57. Structural patch preparation]
+    reviewed_hash: sha256:e84a78d8d4c86b406680f927f69304bad7b53ddcbe705ff121deb3dba311941d
+  api-freshness:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part X — Reconfiguration, 58. Prepared-patch freshness and exact preview]
+    reviewed_hash: sha256:daa45974c31df55f0fc69c4ce43399ea034632b925f8858edb3c31c804ad5aff
+  processor-preparation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IX — Reconfiguration, 55. Two-stage patch handling, 55.1 Structural preparation]
+    reviewed_hash: sha256:2b41299342fee3755892081d6e27d9bafb0e4e83ff7d0267d6de2acbe4226ab7
+  regions:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 20. Regions]
+    reviewed_hash: sha256:c8e2dea1682147ca03f2bacd412d1223cf156c95c28d954a455e47124104cba1
+  no-host-callbacks:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXX — Public API coherence requirements, 111. No semantic callbacks]
+    reviewed_hash: sha256:0dd6dd068c484b785ac68f0d79e41e444bd74e6bf370d833f2e126a9abcd219d
+  no-hidden-defaults:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXX — Public API coherence requirements, 112. No hidden defaults]
+    reviewed_hash: sha256:31d7739e566096cde6bb9236bdf7e526a33dc3cc5393b36d1bf1876b28a4b341
+  concrete-operations:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXIII — Reconfiguration, 84. Patch values and canonical operations]
+    reviewed_hash: sha256:ff1e4e234cb294c862188d6fce4bdec0e6822bd6a21149f72772744461f3eb7e
+  concrete-construction:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXIII — Reconfiguration, "85. Patch construction, normalization, and access"]
+    reviewed_hash: sha256:4f5dee92a1660e8ac2cce4d8be2922d082316944c230f682768692d1757cc14e
+  concrete-plan:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXIII — Reconfiguration, 86. Structural preparation and static migration plan]
+    reviewed_hash: sha256:b0ba69d82877fefb5dadf0d1bdec4a9476f3e3d6ba4092ad2da2fc860cdd3ef8
+  concrete-placement:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXIII — Reconfiguration, "87. Preparation placement, freshness, and target input"]
+    reviewed_hash: sha256:110d50a6fe47c641f6a6b08e1d798721ce17d9a583b27301a3b603db1f106952
+  concrete-directives:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXIII — Reconfiguration, "88. Migration directives, commitment, and reporting"]
+    reviewed_hash: sha256:76983957ccd97c838de90af15fcb05f832766933bfefd98815df0f5a7b6da9a7
+  shared-reconfig:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 20. Shared reconfiguration rules]
+    reviewed_hash: sha256:db731c034f15bb8dcf9210037a73aaee363de2d3e3cfced6ab46f35f984e7822
+  node-initial:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 14. Initial state declarations]
+    reviewed_hash: sha256:de2c49d608a99a24cefd1adc8e4b222e3fb449fc300d2fc68747aa80ef833ef4
+  toggle-initial:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 42. `Toggle`]
+    reviewed_hash: sha256:537229ed2f019956533b64078194533679252e5ea68c7229c7ca04b57fea41fa
+  pulse-latch-policy:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 43. `PulseSetResetLatch`]
+    reviewed_hash: sha256:fee927885b78a6c1dd70fe624908d09d1b9d0d0aad2b4ab12b48ab18b87b35e7
+  level-latch-policy:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 44. `LevelSetResetLatch`]
+    reviewed_hash: sha256:00da9ec9d5d87a6d925d8fb399bc98a0225a6f8919ea28b4bb298df49bd17344
+  sample-hold-initial:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part V — Transition-sensitive and stateful nodes, 45. `SampleHold`]
+    reviewed_hash: sha256:ec91dad08319e933024a9315055bd504bedb1dfbc16f2aecabef3c060575c026
+  pulse-delay-node:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 51. `PulseDelay`]
+    reviewed_hash: sha256:4ad3540caca916178ca22e9b3f7a65ec21afadf1d917ed6e472f074106095243
+  transport-reconfig:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 52. `TransportDelay`, 52.2 Reconfiguration]
+    reviewed_hash: sha256:31070ce9bd4b728787020052b9b28c69534798a34464c55cf63ad0f8bc407d6b
+  inertial-node:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 53. `InertialDelay`]
+    reviewed_hash: sha256:c89dd8ff8c697281a3a992167ef37cca5b6f67f14afd98b89ce0688da9f92144
+  periodic-reconfig:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 54. `Periodic`, 54.7 Reconfiguration]
+    reviewed_hash: sha256:15718df8bc08fcb72e9cbcef3579c4df0ce8b6e9ed1e7faea0f7a8f5cd4ca414
+  family-obligations:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 63. Reconfiguration obligations by family]
+    reviewed_hash: sha256:16f47e55f99b6941b7a7ebfde09e05a437d8a24a5e1a2ff295314d9b7146aab4
+  output-establishment:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VII — Boundaries and utilities, 57. Output establishment]
+    reviewed_hash: sha256:abed7beae1d37db81547baabca2b42e8f5b9e95885dfc0a8d85c69338363b4c2
+  episode-family:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 63. Reconfiguration obligations by family, 63.5 Diagnostic episodes]
+    reviewed_hash: sha256:ef6c66628dac0763060226ca7e1397d7bc357761b8fe98d4cc63f07c875400c4
+  catalogue-preparation:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 34. Reconfiguration — patch construction and preparation]
+    reviewed_hash: sha256:69def19c746a50bfd19db65989f3f4709794ef141353963c0f9098a209c75af6
+  catalogue-mapping:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VI — Rust API integration, 46. Required mapping by API family, 46.6 Reconfiguration]
+    reviewed_hash: sha256:4193646a9bfd16f0068881abb0e0b571130d02583e40b9edaea3661234f2b451
+  encapsulation:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part II — Catalogue identity and canonical descriptors, 20. Standard-module encapsulation]
+    reviewed_hash: sha256:77ba7ef976af4db4bf348d541923de7cb7a4fb2471fbe79351a33adb7fefe5da
+  exactly-reconfig:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 36. `Exactly`, 36.9 Reconfiguration]
+    reviewed_hash: sha256:eb24f830c5e68fd187366c2104d8242e483136e5ad2188f82a90d907e8f4203c
+  at-most-reconfig:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 37. `AtMost`, 37.9 Reconfiguration]
+    reviewed_hash: sha256:af5129a6d9a74b43a316d426774e38d9a45f831b561cb800f389f6cfbe70a222
+  all-equal-reconfig:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part V — Combinational standard modules, 38. `AllEqual`, 38.9 Reconfiguration]
+    reviewed_hash: sha256:35deb90861ff7f03866d0e6ff526b449337d64fc7fb0c3333b218e1e2a522723
+  pulse-toggle-reconfig:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VI — Stateful standard modules, 40. `PulseResettableToggle`, 40.10 Reconfiguration]
+    reviewed_hash: sha256:e08e73ad27e68652fd284cbff089aae1809caba1d22882f0465ec7a500b12ebe
+  level-toggle-reconfig:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VI — Stateful standard modules, 41. `LevelResettableToggle`, 41.10 Reconfiguration]
+    reviewed_hash: sha256:bdbde015e539dd7c7f7e1bdc861c5d463ca56c0e88998275ebe9f7959fc68faf
+  sample-hold-reconfig:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part VI — Stateful standard modules, 42. `LevelResettableSampleHold`, 42.11 Reconfiguration]
+    reviewed_hash: sha256:f9cbe02901b4a441806b4ab8ec9d3e77ebcccec31ff51613ac38014abd91c264
+  replacement-boundary:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part X — Reconfiguration and migration, 61. Module replacement boundary]
+    reviewed_hash: sha256:8145794d373af9ab1774689d43b298bbc67cdfcc8810bb4919182398f9e6452a
+  compatibility-dimensions:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part X — Reconfiguration and migration, 62. Public compatibility dimensions]
+    reviewed_hash: sha256:e2ef37ee35fc466bca73ab50474806243465a1557989f79ce8b7a989152de75c
+  internal-correspondence:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part X — Reconfiguration and migration, 64. Internal correspondence]
+    reviewed_hash: sha256:159ed810af074c2fc1a2d2293043e838a9ddfeb5e74550796c16d2fbc99d624b
+  parameter-matrix:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part X — Reconfiguration and migration, 65. Parameter migration matrix]
+    reviewed_hash: sha256:f2a8ac1470ef7aa784d20beac367b76d7cff7bd176a2eab7dd30f6e6747d9a63
+  two-stage-test:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XI — Reconfiguration verification, 58. Two-stage patch semantics]
+    reviewed_hash: sha256:696783e236fcc404ac8cc169cdedf8fce7b849e15763f82ba3e44c2c9c3df9be
