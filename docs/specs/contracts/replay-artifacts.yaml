@@ -1,0 +1,673 @@
+schema_version: "0.1"
+id: mossignal.persistence.replay_artifacts
+title: Deterministic replay artifacts
+kind: artifact
+status: reviewed
+
+source_baseline:
+  commit: 1b8d87b81555ee6285f9f0313c0c099346e2ca2a
+  working_tree: clean
+
+summary: >-
+  Replay is the ordered fold of the ordinary machine transition from an exact
+  starting machine or restored snapshot. Persisted replay_frame and replay_log
+  artifacts checkpoint that fold. They do not add a second evaluator.
+
+scope:
+  includes:
+    - owned frames, a recording path through Machine::apply, and ordered replay on one machine
+    - replay_frame and replay_log artifacts, plus the transaction_record and input_snapshot or input_delta artifacts they embed
+    - starting identity, per-frame digest and revision checkpoints, and mismatch localization
+    - concatenation, corruption, unsupported-version rejection, and exact canonical bytes
+    - direct-jump versus stepwise temporal equivalence and module-aware equivalence for the current patch-free transaction model
+  excludes:
+    - topology-patch preparation, commitment, and patch-bearing execution
+    - forecast-marked frames, checkpoint bundles, chunk storage, streaming decode, and log compaction
+    - standalone transaction_result, migration_report, definition, runtime_policy, and network_patch artifacts
+    - schema upgraders, historical version corpora, and any replay-format or snapshot-format freeze
+    - machine_snapshot field spelling, SnapshotDigest construction, and execution or observable digest projections
+    - distributed consensus, live replication, event-sourcing frameworks, and host callbacks
+
+known_uncovered:
+  - Patch-bearing replay steps, including target-fingerprint verification, standard-module replacement, and concatenation boundaries at topology patches
+  - Forecast-marked frames and a frame whose hypothetical status must stay visible
+  - Chunk sequence and link validation, streaming decode, and checkpoint-bundle assembly
+  - An optional transaction_result child and replay.recorded_result_mismatch
+  - SubjectRef variants ReplayLog, ReplayFrame, and ReplayChunk beyond ReplayEvidence
+  - Scheduled coverage-guided fuzz of replay bytes
+  - A retention policy that changes optional history during replay
+
+aliases:
+  - ReplayFrame<D>
+  - ReplayLog<D>
+  - replay_frame
+  - replay_log
+  - transaction_record
+  - ReplayFailure<D>
+
+requirements:
+  - id: ordinary-fold
+    kind: semantic
+    statement: >-
+      Replay is Replay(M, T) = foldl(δ, M, T), where δ is the ordinary
+      deterministic transition used by Machine::apply and not a second
+      evaluator, forecast implementation, or host callback. Each frame carries
+      the transaction, the expected previous execution digest, the expected
+      topology revision, the runtime policy id, and the resulting execution
+      digest. A persisted v1 frame also carries frame_index and
+      resulting_observable_digest. The same compatible starting machine,
+      semantic versions, runtime policy, and frame sequence must reproduce
+      output events, state changes, topology revisions, diagnostic events and
+      active episodes, provenance roots and checkpoints, schedules, and the
+      final execution and observable digests. Recording execution must use that
+      same transition: the caller either clones the transaction before apply
+      or uses a helper equivalent to apply_recorded that returns the committed
+      result and the frame. The helper must not implement a second apply.
+      Ordinary logs record committed transactions only.
+    sources: [processor-replay, processor-transition, api-replay, api-replayability, concrete-frames, concrete-creation, concrete-no-callbacks, frame-payload, frame-construction]
+
+  - id: starting-identity
+    kind: persistence
+    statement: >-
+      A replay log records starting network key and fingerprint, starting
+      topology revision, starting execution and observable digests, runtime
+      policy id, the semantic version vector, and ordered frames. Optional
+      final digests and presentation metadata may be present. Frame order is
+      semantic and must not be sorted or otherwise rewritten by content.
+      Exact replay identity is the time domain, network fingerprint, semantic
+      version vector, starting execution digest, starting observable digest,
+      runtime policy id, and the ordered transaction sequence. Replay may
+      start from a live machine or from a machine restored by the ordinary
+      snapshot path. Before the first frame, that machine matches the
+      checkpoint and the log on time domain, network fingerprint, execution
+      digest, observable digest, topology revision, and runtime policy id.
+      The first frame expects that machine through its expected previous
+      execution digest, expected revision, and runtime policy id. Observable
+      digest and network fingerprint are log and machine identities, not
+      additional frame fields.
+    sources: [log-payload, replay-identity-appendix, field-summary, checkpoint-resume, processor-policy, api-replay, replay-compatibility-level, family-compatibility]
+
+  - id: chain-and-localization
+    kind: semantic
+    statement: >-
+      Before applying frame i, the current execution digest, topology
+      revision, and runtime policy id must equal that frame. After a
+      successful apply, the resulting execution and observable digests must
+      equal the frame. Replay stops at the first failed or divergent frame
+      and reports the frame index, logical time where available, expected and
+      actual identities, and the structured underlying failure. Unless the
+      operation promises whole-sequence atomicity, the caller-visible machine
+      retains the state reached by all prior successfully applied frames. A
+      failed apply leaves the machine as ordinary transaction atomicity left
+      it. An ordinary
+      runtime failure keeps its underlying catalogue code and adds replay
+      frame context. It does not become a generic replay.frame_failed code.
+      Digest equality remains a consistency check, not acceptance of a wrong
+      canonical record.
+    sources: [chain-validation, execution-failure, concrete-execution, failure-enums, replay-mapping, processor-transition, digest-equality]
+
+  - id: concatenation
+    kind: semantic
+    statement: >-
+      Where every transaction is valid at its application point,
+      Replay(M, A ++ B) equals Replay(Replay(M, A), B). Two logs concatenate
+      only when the first final execution digest, observable digest, and
+      revision equal the second start, and the network fingerprint, time
+      domain, runtime policy id, and semantic version vectors are
+      replay-compatible. Otherwise concatenation fails as
+      replay.logs_not_concatenable. Concatenation preserves frame order.
+      It must not cross a semantic version change silently.
+    sources: [concatenation-law, processor-concatenation, family-compatibility, semantic-migrations, prohibited-outcomes]
+
+  - id: temporal-and-module-equivalence
+    kind: semantic
+    statement: >-
+      Direct advancement to a later time and the stepwise sequence through
+      the same strictly earlier deadlines are observationally equivalent.
+      Caller transactions still use strictly increasing times, and
+      equal-deadline events are one unordered batch. Replay uses that same
+      transition, so the two advancement styles remain equivalent when
+      replayed. Replay of a module or standard-module network uses the
+      ordinary flattened transition and reproduces that transition's events
+      and both digests. It requires the same standard module references and
+      expansion meanings, and it must not silently cross a standard semantic
+      version, expansion version, internal key derivation, parameter meaning,
+      or migration-rule change.
+    sources: [api-jumps, processor-jumps, api-replay, processor-replay, standard-replay]
+    basis: derived
+
+  - id: canonical-artifacts
+    kind: persistence
+    statement: >-
+      replay_frame, replay_log, transaction_record, input_snapshot, and
+      input_delta are canonical artifact kinds. Each standalone artifact is
+      the eight-byte MSIG prefix plus one uncompressed canonical CBOR
+      envelope of kind mossignal_artifact. Each envelope carries the complete
+      version vector. Semantic version components stored in a payload agree
+      with the corresponding envelope components. Integrity uses
+      mossignal/artifact_integrity/v1 over the envelope with the digest field
+      omitted, and it is not a SnapshotDigest and not authenticity. For one
+      supported value and version vector there is one canonical byte sequence.
+      Decode rejects a noncanonical alternate rather than normalizing it.
+      A child artifact is embedded as a byte string of that child's complete
+      standalone bytes, including its prefix, and is validated before
+      cross-artifact checks. A frame embeds one transaction_record. That
+      record embeds one input_snapshot or input_delta. A log embeds its
+      frames in semantic order. A support table that accepts only the vector
+      this implementation emits is not a replay-format freeze. The encoder
+      must not upgrade, downgrade, or migrate, and must not claim continuity
+      across an unacknowledged version change.
+    sources: [artifact-classes, artifact-kinds, encoding-foundation, artifact-prefix, envelope-shape, envelope-integrity, content-identity, domain-separation, version-vector, exact-round-trip, no-downgrade, semantic-migrations, prohibited-outcomes, axioms]
+
+  - id: embedded-transaction
+    kind: persistence
+    statement: >-
+      A transaction record carries the requested logical time, expected
+      topology revision, network and input-schema binding, and either one
+      complete input snapshot or one input delta. The snapshot contains one
+      level for every required external level input; pulse counts appear only
+      when positive. The delta contains explicit level observations and
+      positive pulse counts and does not itself prove lifecycle compatibility.
+      Observations are stable typed endpoints, not collection positions, and
+      are ordered by signal kind and stable key. Transaction metadata, when
+      present, is exact and must not affect evaluator behavior or the
+      execution digest. A metadata difference may change the observable or
+      snapshot digest when it changes required provenance content. A decoded
+      record becomes a Transaction only by
+      materialization against the machine: time domain, network, revision,
+      input-schema binding, and lifecycle shape must match. Patch-free
+      materialization must not compile a new topology. Private dense indexes
+      are not identity. Replaying a private PreparedPatch byte image is
+      forbidden.
+    sources: [input-binding, input-snapshot-artifact, input-delta-artifact, transaction-record, transaction-materialization, transaction-metadata, persisted-forms, not-serialized, stable-keys, scalar-domains, canonical-ordering, prohibited-outcomes, patch-frames]
+
+  - id: hostile-and-version-gate
+    kind: prohibition
+    statement: >-
+      Malformed replay bytes fail structurally, without panic, unchecked
+      arithmetic, unbounded recursion, allocation from an unvalidated length,
+      a host callback, mutation of caller bytes, or publication of a partial
+      machine. Syntactic success is not replay compatibility. Replay
+      compatibility additionally requires a compatible start, exact
+      transaction semantics, the same runtime policy id, a valid digest
+      chain, and a valid frame sequence. DecodePolicy limits apply, including
+      maximum replay frames, and a limit failure is
+      persistence.decode_limit_exceeded rather than a runtime-policy failure.
+      The decoder distinguishes persistence.invalid_prefix,
+      persistence.truncated_artifact, persistence.noncanonical_encoding,
+      persistence.integrity_digest_mismatch, and
+      persistence.unsupported_version. An unsupported version component
+      identifies artifact kind, stage, component, encountered version, the
+      required version, and that no upgrader exists. Unknown fields and
+      variants inside a known schema are persistence.unknown_schema_field
+      and persistence.unknown_schema_variant. Human-readable projections are
+      not replay evidence.
+    sources: [hostile-input, resource-limits, integrity-classes, decode-policy, decode-limits, syntactic-decoding, replay-compatibility-level, family-compatibility, compatibility-failure, support-table, unknown-fields, no-silent-repair, human-readable, malformed-fuzz, decode-codes]
+
+  - id: catalogue-failures
+    kind: public_surface
+    statement: >-
+      ReplayEvidence carries log and frame identity, frame index and logical
+      time where available, expected and actual revision, fingerprint,
+      policy, and digests, and the underlying operation code where
+      applicable. In this patch-free unchunked model the replay conditions
+      are replay.starting_execution_digest_mismatch and
+      replay.starting_observable_digest_mismatch at the log-to-machine
+      boundary, replay.expected_revision_mismatch whenever the machine
+      revision differs from that frame's expected revision,
+      replay.runtime_policy_mismatch when the machine policy differs from
+      the log or a frame, replay.time_domain_mismatch,
+      replay.network_fingerprint_mismatch,
+      replay.resulting_execution_digest_mismatch and
+      replay.resulting_observable_digest_mismatch after apply,
+      replay.frame_missing when a declared sequence omits a required frame,
+      replay.frame_reordered when order contradicts sequence, digest, or
+      prior-state linkage, replay.frame_duplicated when one frame is
+      repeated where it cannot validly occur twice, and
+      replay.logs_not_concatenable. An expected previous execution digest
+      that disagrees with the current machine after the log boundary is
+      prior-state linkage failure and uses replay.frame_reordered. A log
+      starting execution digest or starting revision that disagrees with the
+      first frame's expectation is the same linkage failure. Severity,
+      responsibility, and delivery stay as the catalogue fixes them. The
+      catalogue also names target-fingerprint, patch-preparation,
+      recorded-result, and chunk conditions; this record does not execute
+      those paths. Semantic-version, schema, and framing failures keep their
+      persistence codes. Compatibility failures must not collapse into
+      InvalidData. A wrapper may add the frame index only as non-semantic
+      location context.
+    sources: [replay-codes, replay-evidence, failure-enums, replay-mapping, api-replay, compatibility-failure, decode-codes]
+
+  - id: optional-history
+    kind: semantic
+    statement: >-
+      Replay reproduces execution and required observable state. It does not
+      have to reproduce optional history unless the log explicitly records
+      and applies the same retention policy. Two final snapshots may
+      therefore share both state digests and differ in SnapshotDigest.
+    sources: [optional-history]
+
+  - id: history-and-verification
+    kind: verification
+    statement: >-
+      Tests cover a valid chain and the patch-free failures for a wrong
+      starting execution digest, a wrong starting observable digest, a wrong
+      revision, a wrong runtime policy, a wrong time domain, a corrupted
+      frame, a missing frame, reordered frames, and a duplicated frame. They
+      keep golden canonical bytes for representative frames and logs, prove
+      that a supported frame or log round-trips to the same bytes, prove that
+      frame order changes bytes, and prove that non-semantic input insertion
+      order does not. They compare direct advancement with the stepwise
+      deadline sequence, including a concatenation boundary immediately
+      before and after a temporal deadline, and replay a module or
+      standard-module network through the ordinary transition. The reference
+      path is the ordinary sequential fold with digest checks. A long
+      coverage-guided fuzz campaign is not this obligation.
+    sources: [chain-tests, golden-vectors, order-sensitivity, permutation-invariance, canonical-uniqueness, reference-fold, direct-jump-tests, concatenation-tests, replay-equivalence]
+
+recommendations:
+  - id: success-constructor
+    statement: >-
+      A successful result should support ReplayFrame::from_success from the
+      retained transaction and that result, returning a structured frame
+      failure rather than an unstructured string.
+    sources: [concrete-creation]
+
+  - id: materialize-shape
+    statement: >-
+      Transaction materialization should be an owned method equivalent to
+      TransactionRecord::materialize against the machine, and replay should
+      reuse it rather than a private second binding check.
+    sources: [materialization-api]
+
+  - id: log-content-digest
+    statement: >-
+      A replay log may expose ReplayLogContentDigest under
+      mossignal/replay_log_content/v1 over the starting identities, the
+      ordered canonical frame content digests, any final expected identities,
+      and the semantic version vector. Presentation metadata stays out of
+      that digest.
+    sources: [log-digest]
+
+  - id: nonexhaustive-failure
+    statement: >-
+      ReplayFailure should remain non_exhaustive while the diagnostic schema
+      is experimental, without an unregistered fallback variant.
+    sources: [nonexhaustive-enums]
+
+implementation_freedom:
+  - Use one owned frame type that includes resulting_observable_digest and frame_index in addition to the concrete API fields, so persisted and in-memory replay share one checkpoint. Do not keep a second frame type that drops the observable digest.
+  - Apply each frame in place with Machine::apply. On digest mismatch after Ok, leave that published machine and return the mismatch. Treat the successful apply as retained partial progress and the digest failure as the stop condition. Do not add per-frame rollback or ordinary Machine::Clone. Omit the optional whole-sequence atomic helper.
+  - Give Transaction and InputSnapshot Clone only if the recording helper must retain the transaction. The helper calls the existing apply path.
+  - Choose snake_case payload keys for the log and for fields whose specification text is conceptual rather than a literal key. Required spellings that the persistence text already writes in snake_case stay as written, including frame_index, expected_previous_execution_digest, expected_revision, runtime_policy_id, resulting_execution_digest, and resulting_observable_digest. Sort record fields by the canonical profile. Test the round trip and record the chosen keys. Those keys are not a format freeze.
+  - Number frame_index from zero by position in that log and treat it as the non-semantic display index. Concatenation may renumber it and does not keep a second audit index. Renumbering changes embedded frame bytes and their integrity digests. Exact replay identity remains the ordered transaction sequence.
+  - Detect replay.frame_missing and replay.frame_duplicated from the declared frame_index sequence: a gap is missing and a repeat is duplicated. Emit one replay code for each log or frame checkpoint. Do not also emit the restoration persistence code of the same general name for that same checkpoint.
+  - Compute ReplayLogContentDigest under mossignal/replay_log_content/v1 over starting identities, each embedded frame's artifact integrity digest in order, any final identities, and the semantic version vector. The digest suite defines no separate frame-content domain, so the frame's artifact integrity digest is the frame content digest. Exclude presentation metadata from that content digest and include it in the envelope integrity digest when present. Omit presentation metadata from the encoder unless a test needs it. Do not invent a new domain label.
+  - Omit the optional recorded transaction result and any patch attachment from the encoder. A decoded frame that contains either child fails closed before apply and without mutation. Map a transaction_result child to persistence.unsupported_version of that child's artifact schema version, with kind transaction_result and no upgrader. Map a patch attachment to replay.patch_preparation_diverged. Do not implement result comparison or patch preparation in order to produce those failures. Test the mapping and record it. It is not a promise that a later implementation must keep the rejection.
+  - Accept only the version vector the current machine_snapshot encoder emits for the shared version components. Every other component is persistence.unsupported_version and has no upgrader. Do not treat that table as a maintainer freeze.
+  - Replay failures use the existing Operation subject for persistence together with ReplayEvidence. Do not add ReplayLog, ReplayFrame, or ReplayChunk subject variants.
+  - Reuse PersistenceContext, ArtifactBytes, DecodePolicy, the CBOR profile, and the diagnostic registry. A recognized artifact kind other than the kind being decoded is persistence.malformed_envelope. An unrecognized kind string is persistence.unknown_artifact_kind.
+
+open_questions: []
+
+sources:
+  axioms:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part I — Persistence model and boundaries, 3. Persistence axioms]
+    reviewed_hash: sha256:95127c429a8b6d7d51377397793356171a4d4e902a406f0aa7e8d9d11df22c6e
+  artifact-classes:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part I — Persistence model and boundaries, 4. Artifact classes]
+    reviewed_hash: sha256:47362001f444f9851e3162ae08e881eceaaff2e1de731cb14d7f4e09d0e60578
+  persisted-forms:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part I — Persistence model and boundaries, 5. Canonical persisted forms versus in-memory types]
+    reviewed_hash: sha256:86952ab78c33a97b44b6c97bb8f69460c914bfc774936500dbb6666f48afd1bf
+  not-serialized:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part I — Persistence model and boundaries, 6. Values not serialized directly]
+    reviewed_hash: sha256:c0052b90a87956ef5fa2dcdbee7c9e38635769a78dfee376b5ca90cae4b7e9d4
+  version-vector:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 14. Version vector]
+    reviewed_hash: sha256:e0996ed92474bc243643e2016f0db3e8eb8224542f5067186f42b084ace7bd32
+  replay-compatibility-level:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 22. Replay compatibility]
+    reviewed_hash: sha256:f7b957b5d08a2523be4dedf55436e77c105c0f76c6e5af798655c501b8f30a38
+  exact-round-trip:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 23. Exact artifact round trip]
+    reviewed_hash: sha256:c4a2c6df07c6d004e712dcb0058de3ddf17932739a274234f108905d992e74ad
+  semantic-migrations:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 25. Semantic migrations]
+    reviewed_hash: sha256:f25fe68b98855359147f6e20459c04cf920f0d38c0d51d195bec25be1b505476
+  no-downgrade:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 26. No implicit downgrade]
+    reviewed_hash: sha256:46889f02f1804dbdc579ca3174ef9cca94271fb675da96a917b6fdbe3b27c965
+  support-table:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 27. Compatibility support table]
+    reviewed_hash: sha256:0a64d5739387d1b5e6e729f57452d4b7035c6909629d9bedf678615c3f08f4bd
+  syntactic-decoding:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part III — Version and compatibility model, 18. Syntactic decoding]
+    reviewed_hash: sha256:23a39f823b6f450854a97d32c82847638b6aa1f7ff3648de808ca8a996bdb3a3
+  encoding-foundation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 28. Encoding foundation]
+    reviewed_hash: sha256:a3b6650e775dec473b552ada3505752e4219ebe98382178506c23388bb9f337b
+  artifact-prefix:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 29. Artifact prefix]
+    reviewed_hash: sha256:e1faf185f6232da93daec79e177b22369e29dc8070ec7afd01034329c17c0994
+  canonical-ordering:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 36. Canonical ordering]
+    reviewed_hash: sha256:5f6570e0c89a0135fe906534620d35ac9d378d28b9866a9e287cd2eeb96fdea1
+  stable-keys:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 38. Stable keys]
+    reviewed_hash: sha256:4e6537e4a342c6d537d306c9bbc11418ddc6c4cdb8dfd28b46477efd85841636
+  scalar-domains:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IV — Canonical binary encoding
+      - 39. Time, span, pulse count, and revision
+    reviewed_hash: sha256:131745cd834f2c7249744cafc5088d13230e85a154750ac1d2638d9331aaad81
+  unknown-fields:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part IV — Canonical binary encoding, 42. Unknown fields and extensions]
+    reviewed_hash: sha256:4c47e45e01e89c5528f663391cd346f380b5d5dbcf45a5a07b4fedce1750a963
+  envelope-shape:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 44. Envelope shape]
+    reviewed_hash: sha256:63e923ff1a03ec3f9afe9769824a33d246d7b2dbd4f62cf7b6f55cbea8473b60
+  artifact-kinds:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 45. Artifact kinds]
+    reviewed_hash: sha256:9674c34b6ba46bafd8c9ed8d1c6db72fbf92ba8dde3f7affbe3206d4193d7bb2
+  envelope-integrity:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 46. Envelope integrity digest]
+    reviewed_hash: sha256:b78a2cde8f71445d88f5363e8a5cd4a1cb33dd758a7788d6b24c4c0676c2b219
+  content-identity:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part V — Artifact envelope and integrity, 48. Content identity of other artifacts]
+    reviewed_hash: sha256:f4425bdba8a827f98cbdc6d38de2c92c4b6c36661ec462a030e4691dbf5521f3
+  domain-separation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part VI — Digest and fingerprint suite, 52. Domain separation]
+    reviewed_hash: sha256:493e3715f1e5f7b4d7b29e0722a638caf6ec000d698320f6c8db93d9cd3a578d
+  input-binding:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 75. Input schema binding
+    reviewed_hash: sha256:eb95f049f168441a248456ba4f8e24135c9ce7e046f7e102af14b5732e6dd987
+  input-snapshot-artifact:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 76. Input snapshot artifact
+    reviewed_hash: sha256:402a2543ef3de66df6f468967c8d9905037e4a2807a502891ac074eb42ecb4a6
+  input-delta-artifact:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 77. Input delta artifact
+    reviewed_hash: sha256:63cb0ae183923c0ae125bdcfb8b3c185354873becff18d269288c743fbfedd3f
+  transaction-record:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 81. Transaction record artifact
+    reviewed_hash: sha256:f865d0a4e9fbd98260289e55cd40f5c31bdd7a08237b1205f405f3ab59420730
+  transaction-materialization:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 82. Transaction materialization
+    reviewed_hash: sha256:cfa82aca6756498d84cbb0d3a1e2bdca4fd6edf44cca4c1fe43d1ebd7f993aee
+  transaction-metadata:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part IX — Runtime policy, input, transaction, and patch artifacts
+      - 83. Transaction metadata
+    reviewed_hash: sha256:d894ccf68e8849124df0a8a3a6c91d51da3f75f806587dbdf2bb0b4596af6ff4
+  frame-payload:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XI — Replay persistence, 107. Replay frame payload]
+    reviewed_hash: sha256:3c988a49e029fd08cb1782c98e094ee077c1e9e6f941799832b004cc705256e9
+  frame-construction:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XI — Replay persistence, 108. Replay frame construction]
+    reviewed_hash: sha256:1eb8abadccce00ddfa401cfe128e192e3fdc5ae2246c305a58ef7f7b9b6c5789
+  patch-frames:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XI — Replay persistence, 109. Patch-bearing replay frames]
+    reviewed_hash: sha256:24110ca267c47e21c0da325d3e2c0c20d5a76da151caf56d7acc32d4638c31db
+  log-payload:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XI — Replay persistence, 110. Replay log payload]
+    reviewed_hash: sha256:8f8a8e1f9fdfe3f1a4f67e6f588a87bb0a1c71a3bee172fcf8cfefa2152c68f3
+  log-digest:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XI — Replay persistence, 112. Replay log content digest]
+    reviewed_hash: sha256:2c460097b725f15195ed3aea166577d3454331b8f17e34bf855425e77c28c926
+  chain-validation:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XI — Replay persistence, 111. Replay chain validation]
+    reviewed_hash: sha256:08106c1c047963c38b1672780e6715b2b45707838636d6de54b416ea11d9b758
+  concatenation-law:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XI — Replay persistence, 113. Replay concatenation]
+    reviewed_hash: sha256:587f23be3fea74d1e9721d9fd10b256887e7adde7780deb1d5820728b761df4a
+  execution-failure:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XI — Replay persistence, 115. Replay execution failure]
+    reviewed_hash: sha256:4d51f8ca5a665bc3cc4ca5a1058da79aa2931b97e25883c3920eead437b01943
+  optional-history:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XI — Replay persistence, 116. Replay and optional history]
+    reviewed_hash: sha256:159dd7e9e8a158990f51a5be8b5b0d9550e1b88eb9bfd2fb2b86f3f168770770
+  checkpoint-resume:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XI — Replay persistence, 117. Checkpoint and resume]
+    reviewed_hash: sha256:ef161741022f0619e047e2a437f51e12172687a7019dcf19d7c9204005a23141
+  family-compatibility:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIII — Compatibility rules by artifact family, 124. Replay compatibility]
+    reviewed_hash: sha256:49c945bb14cc1cebb8147cebc0abdadbf880ec0c1aafd4b4e711238256e4133e
+  compatibility-failure:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIII — Compatibility rules by artifact family, 130. Compatibility failure structure]
+    reviewed_hash: sha256:f79bee4f80dbd21a784dd343b51c2c871dd5ce507393b7e47a3896f907c4bcaf
+  decode-policy:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIV — Public persistence API responsibilities, 136. Decode policy]
+    reviewed_hash: sha256:b386cbd0cd980bb2c7ec26c76b8ca653804e129c877421f1be31e4223a411e23
+  decode-limits:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIV — Public persistence API responsibilities, 137. Decode limits]
+    reviewed_hash: sha256:c530c0a0544aa9655ab5ac3ab32cc100184e2da7f4e79492971c233ed3351ed2
+  materialization-api:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIV — Public persistence API responsibilities, 139. Transaction record materialization API]
+    reviewed_hash: sha256:d4fc9d29e3ae42a3f378e3f9705857855735a1def1333394f35f7a97216f3aab
+  human-readable:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XIV — Public persistence API responsibilities, 142. Human-readable projections]
+    reviewed_hash: sha256:0d684951d680ece2f9aaef2bb635317bb5c8f08882c27f85d3b443fe11b6b343
+  hostile-input:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part XV — Robustness, security, and storage integration
+      - 143. Hostile input handling
+    reviewed_hash: sha256:45f8dfd6fb23d4369c0c4b9f1b3390c983d8c3ab692559f9656b4d648cf1524e
+  resource-limits:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part XV — Robustness, security, and storage integration
+      - 144. Resource exhaustion
+    reviewed_hash: sha256:1ef15a27dc6bf4ded9a5ff245a132c3f8ee739f37101dee33119381c63e17a1f
+  integrity-classes:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part XV — Robustness, security, and storage integration
+      - 145. Integrity and truncation
+    reviewed_hash: sha256:7183ee69c0d5a4aca4b6f1949e62b3c455fff978c4a406d0a60ca5164c40dd83
+  no-silent-repair:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVII — Implementation guidance and prohibitions, 175. No silent repair]
+    reviewed_hash: sha256:04002f2bde884795fb2505be8db1dacb1b2799becbf54e4b6d8383c840b462a8
+  canonical-uniqueness:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 151. Canonical uniqueness]
+    reviewed_hash: sha256:cd26be5526e1e36783f764e8971ab2d363067c57e97ced4896f0a6923a1eb022
+  golden-vectors:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 152. Golden vectors]
+    reviewed_hash: sha256:6656ae3d8bc69c908a5677546b5b1efb488d8aff886afd1ebae57cf5df23bb7a
+  permutation-invariance:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 153. Permutation invariance]
+    reviewed_hash: sha256:fdfc0f64e47fab7b9d8f119e65cabe8534ff94eed9c623e56aefcbfd22bfc67e
+  order-sensitivity:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 154. Order sensitivity]
+    reviewed_hash: sha256:f06419296af57981aafbd8ba7145165d5d3d502a87d67ec9b544d3e6c9c88cb6
+  chain-tests:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVI — Verification obligations, 164. Replay chain verification]
+    reviewed_hash: sha256:c28e401a2443b32472f682c33c73a1de0bb3af360e82d851be04679d0fe5682a
+  prohibited-outcomes:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XVIII — Required guarantees, 179. Prohibited outcomes]
+    reviewed_hash: sha256:e34f14d657eecf099bf778730f9e69055128ed462ad56ea3fddceb253231b92b
+  field-summary:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Appendix A — Canonical artifact field summary, A.3 Runtime checkpoint and replay artifacts]
+    reviewed_hash: sha256:7a6d2f5416e4e043e6e28e353b5ee9bdde68aa13548c7370bd5e1a46a2e5c781
+  replay-identity-appendix:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Appendix D — Replay identity]
+    reviewed_hash: sha256:5a2804f4d37c076dc9973e6c2a2e874f0d5782edb3102300f50ff8a10216700e
+  digest-equality:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path:
+      - Part XIII — Persistence, replay, and identity
+      - 88. Canonical encoding
+    reviewed_hash: sha256:b022df5c6107d95a44a7a337ebb7d8574b4928b2d8bcc350ad70f4ef83c18e79
+  processor-replay:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path:
+      - Part XIII — Persistence, replay, and identity
+      - 85. Replay
+    reviewed_hash: sha256:e088ddc08ada7563454924ef7f0b0c530b6d29400f9b77fc16030862423de20d
+  processor-concatenation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path:
+      - Part XIII — Persistence, replay, and identity
+      - 86. Replay concatenation
+    reviewed_hash: sha256:bdfd2dc2f7e56cd4cfdec8c15b8fcee578cd5634d384230b751bf508c891cbbb
+  processor-jumps:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 42. Large-time-jump equivalence]
+    reviewed_hash: sha256:af5b05c8286794fc47ca7318ca477aae3208739ee6a00967151c4982e1413370
+  processor-transition:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 47. State-transition model]
+    reviewed_hash: sha256:fcccb31e85f023ec9af8b0fcf6033427bb165f9b34130192dd7d1b00f281abd0
+  processor-policy:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XIV — Runtime policy and replay, 90. Runtime policy identity]
+    reviewed_hash: sha256:a27ded70120020eed412ca040ff1384eae93429fbf3f06cb4c13875b9adef899
+  api-replay:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part XII — Scheduling, forecasting, persistence, and replay
+      - 71. Replay
+    reviewed_hash: sha256:37690277b634ee284a78806ba2da5065ca045b3fdab8f5906e3697c1bf9a0c6c
+  api-replayability:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part XV — Required quality properties, 85. Replayability]
+    reviewed_hash: sha256:e5863b7afc13f5628564f0f8eaac7ea660e92c8f38981ac32ac9275c7376be70
+  api-jumps:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VII — Stateful and temporal semantics, 40. Large time jumps]
+    reviewed_hash: sha256:414a5a3d3a96e9b61f98fe17b8a71b8d302a0957edecac13a5b4c23189164a34
+  concrete-frames:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXV — Replay, 92. Replay frames]
+    reviewed_hash: sha256:67e5c0acc07c541a8e2047e770d094f5b9c293e9f5f35c83232267165fd147e7
+  concrete-creation:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXV — Replay, 93. Frame creation]
+    reviewed_hash: sha256:bdbcd8a967c04ca6b073e80ad99e0b88986415598dd2b253e1f673d262c65135
+  concrete-execution:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXV — Replay, 94. Replay execution]
+    reviewed_hash: sha256:dfe1791de017f09187043efeb7abae55bb3d992777e2d9ce2a61e16713ab9e69
+  concrete-no-callbacks:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXX — Public API coherence requirements, 111. No semantic callbacks]
+    reviewed_hash: sha256:0dd6dd068c484b785ac68f0d79e41e444bd74e6bf370d833f2e126a9abcd219d
+  decode-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part V — Exhaustive initial catalogue
+      - 36. Persistence — canonical decoding and envelopes
+    reviewed_hash: sha256:971e920b3dd2ab9aa1ad9f9df522ee5b36ff34cc7a1277b2dff6c8f866bee82a
+  replay-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 39. Replay]
+    reviewed_hash: sha256:e20718667662ffc9a96f9f2e43180113872584b3a3615a14bc74728fddf74949
+  replay-evidence:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part II — Common structured representation, 14. Evidence families, "14.35 `ReplayEvidence`"]
+    reviewed_hash: sha256:aec54eed6175c36f8d656b259d9167903bd85a5c97fcbbb3747ff223a474a5de
+  failure-enums:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path:
+      - Part III — Reports, failures, ordering, and identity
+      - 17. Failure enums
+    reviewed_hash: sha256:a7f71424e2de5c35738eb397f0df0254ad70da4ff121feeeeb968c59df3340e2
+  replay-mapping:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VI — Rust API integration, 46. Required mapping by API family, 46.7 Persistence and replay]
+    reviewed_hash: sha256:34caead0ab551acab6f557c42bc85a147593cdeb1272d824cd0cc85a25afde19
+  nonexhaustive-enums:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VI — Rust API integration, 48. Non-exhaustive enums]
+    reviewed_hash: sha256:ac58c08fa641591a9edce2777a5721947480839de4b4ea03506718a313d9b475
+  standard-replay:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part XI — Persistence and replay, 73. Replay]
+    reviewed_hash: sha256:6ae40895c1c0805e8d16509ba00e54c6ea66b6039c3b2445ee8445c4c674f32d
+  reference-fold:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part III — Reference implementations, 9. Required reference paths, 9.8 Straightforward replay fold]
+    reviewed_hash: sha256:cf46e7f2c7162011204fbcf662408cde1973898f26b0f57fe8e28d017f0e39ab
+  direct-jump-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part IX — Temporal verification, 44. Direct-jump equivalence]
+    reviewed_hash: sha256:9b7524d7e25090b847af11c47ba86e311e4dc91f2af6fdb4de927c3f34c17954
+  replay-equivalence:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 87. Replay equivalence
+    reviewed_hash: sha256:c309057c2c7f800f8a7341faaf8606707634b141df31ef39da82cf629c3c257a
+  concatenation-tests:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 88. Replay concatenation
+    reviewed_hash: sha256:776ab720e32941353c4deb674d03da52081d467754c414d8d5b4a8753739f35e
+  malformed-fuzz:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIX — Fuzzing, 103. Malformed-input fuzzing obligations]
+    reviewed_hash: sha256:34f17af72c2c68c75609a60a017ddadb681059cee25007eb1e66b0d34385ccc8

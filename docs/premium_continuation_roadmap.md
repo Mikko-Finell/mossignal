@@ -849,7 +849,7 @@ Explicitly exclude:
 
 ---
 
-## 55. Deterministic replay artifacts
+## 55. [IN PROGRESS] Deterministic replay artifacts
 
 Add replay records and verification over the accepted snapshot and transaction
 model:
