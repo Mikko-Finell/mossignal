@@ -1,0 +1,254 @@
+schema_version: "0.1"
+id: mossignal.runtime.transaction_forecast
+title: Transaction forecasting
+kind: lifecycle
+status: reviewed
+
+source_baseline:
+  commit: b10d2259acf725efb759c6512cce5e9dca574a38
+  working_tree: clean
+
+summary: >-
+  Forecasting one transaction runs the ordinary machine transition on
+  unpublished candidate state and returns an owned hypothetical result. It
+  does not publish that candidate or add a second evaluator.
+
+scope:
+  includes:
+    - one proposed transaction forecast through the same transition as apply
+    - owned ForecastResult, read-only ForecastState, and ForecastBasis
+    - non-mutation of the source machine and equivalence with cloned apply
+    - structured failure identical to application failure
+  excludes:
+    - topology-patch preparation, multi-step speculation, and background execution
+    - forecast replay marking, forecast snapshot persistence, and a second evaluator
+
+known_uncovered:
+  - Topology-patch preparation, correspondence, and attaching a prepared patch. Finalization stays inside the shared transition once a transaction carries one
+  - Speculative multi-transaction branches, background execution, and caching a forecast as machine state
+  - Forecast-marked replay frames whose hypothetical status stays visible
+  - Persisting or restoring a forecast snapshot, and any separate forecast artifact format
+  - A public machine fork, a bound-machine forecast façade, and generated long-history forecast campaigns
+
+aliases:
+  - Machine::forecast
+  - ForecastResult<D>
+  - ForecastState<D>
+  - ForecastBasis<D>
+  - Forecast(M, τ)
+
+requirements:
+  - id: shared-transition
+    kind: semantic
+    statement: >-
+      Forecast(M, τ) = Apply(Clone(M), τ). Machine::forecast runs that same
+      deterministic transition on unpublished candidate state. The transition
+      includes validation, initialization rules, deadline processing, patch
+      finalization, migration, reaction settlement, budget accounting,
+      provenance, diagnostic episodes, and output and result construction. Forecasting must not copy those steps into a second
+      evaluator. Patch preparation remains a separate structural artifact;
+      an exact patch preview is this forecast of a patch-bearing transaction,
+      not preparation itself.
+    sources: [processor-forecast, api-forecast, api-machine, concrete-forecast, processor-patch-preview, reconfig-exact-forecast]
+
+  - id: source-unchanged
+    kind: prohibition
+    statement: >-
+      Forecast borrows the original machine and consumes the transaction on
+      both success and failure. It does not mutate that machine. The unchanged
+      semantic state includes topology, revision, logical time, external
+      levels, node and temporal state, the pending-event calendar and its
+      public event-identity cursor, output baselines, provenance roots,
+      active diagnostic episodes, and the execution-state digest. Schedule is
+      the public projection of that calendar, not a separate stored cursor.
+      Observer delivery cursors live outside the semantic machine.
+    sources: [concrete-forecast, api-forecast, testing-forecast, processor-transition, persistence-event-cursor, api-scheduling, processor-observer, processor-cursors]
+
+  - id: owned-forecast-result
+    kind: public_surface
+    statement: >-
+      Success returns an owned ForecastResult<D>, distinct from Machine<D>
+      and from TransactionResult<D>. ForecastResult exposes result, state,
+      basis, and into_parts. result is the transaction result the shared
+      transition produced. state is the unpublished candidate. basis carries
+      the base topology revision, the base execution-state digest of the
+      machine before the forecast, the transaction's requested time, and that
+      machine's runtime policy id. That digest is the forecast freshness
+      identity, not the successor digest. The basis retains the base revision
+      and the forecast's topology binding where that binding is needed.
+    sources: [concrete-result, concrete-owned, concrete-revision, api-forecast, testing-forecast, processor-forecast, processor-execution-digest, reconfig-exact-forecast]
+
+  - id: hypothetical-only
+    kind: prohibition
+    statement: >-
+      A forecast is explicitly hypothetical. It is not a reservation, a
+      commit token, or a later automatic commit, and it does not become
+      committable by itself. ForecastState must not provide apply, mutation,
+      or implicit commit. Equivalent commitment requires a new explicit
+      transaction whose preconditions still hold, including the then-current
+      revision and, where desired, the expected execution-state digest.
+      Persisting or restoring a forecast snapshot is a separate explicit
+      operation, not conversion of the forecast into the live machine.
+    sources: [api-forecast, concrete-result, reconfig-no-commit, reconfig-exact-forecast, processor-forecast]
+
+  - id: agreement-and-failure
+    kind: semantic
+    statement: >-
+      A successful forecast agrees with Apply(Clone(M), τ) and with a later
+      apply of that same semantic transaction to the original machine while
+      that machine is still unchanged. The agreement covers the transaction
+      result and the resulting semantic state. A structured failure returns
+      the same RuntimeFailure<D> that apply would return for that transaction,
+      returns no ForecastResult, and does not publish the failed candidate.
+      Divergence from applying the same transaction to an unpublished clone is
+      the library defect internal.forecast_divergence, not an ordinary caller
+      RuntimeFailure.
+    sources: [testing-forecast, testing-refinement, api-forecast, concrete-forecast, catalogue-divergence, catalogue-defects, catalogue-runtime, catalogue-internal-defects]
+
+  - id: forecast-verification
+    kind: verification
+    statement: >-
+      Tests must show that a forecast agrees with apply of the same transaction
+      on an unpublished clone, that the original machine is unchanged on both
+      success and structured failure, and that the basis is that original's
+      revision, execution-state digest, requested time, and runtime policy id.
+    sources: [testing-forecast, testing-refinement]
+
+recommendations:
+  - id: read-only-projections
+    statement: >-
+      ForecastState should support the same read-only inspection, explanation,
+      schedule, digest, and snapshot projections as a committed machine.
+      Equivalent direct inspection and explanation should exist on that state.
+    sources: [concrete-result, concrete-inspection, concrete-explanation, concrete-snapshot]
+
+  - id: private-clone-only
+    statement: >-
+      Machine should not implement Clone as an ordinary convenience unless the
+      cost and semantic meaning are explicit. Internal forecast may use a
+      private clone path. A public fork, if independent machine duplication
+      becomes a supported use case, is not a forecast and not a commit.
+    sources: [concrete-cloning]
+
+implementation_freedom:
+  - Private construction of the unpublished clone, and whether ForecastState owns a private machine or another candidate representation, are free when the result remains the ordinary transition, the original machine is untouched, Machine gains no ordinary Clone, and ForecastState does not expose apply, mutation, or implicit commit.
+  - Basis field visibility is free when the four basis identities stay readable and the ForecastResult accessors remain available. Which recommended read-only projections are forwarded is a recorded choice under that recommendation.
+
+open_questions: []
+
+sources:
+  processor-forecast:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 53. Forecast]
+    reviewed_hash: sha256:81415f7aa4fe5f6aa7ce8cdf6020488951259da4ca786bde541fca97c57c209e
+  processor-transition:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VIII — Transactions and atomicity, 47. State-transition model]
+    reviewed_hash: sha256:fcccb31e85f023ec9af8b0fcf6033427bb165f9b34130192dd7d1b00f281abd0
+  processor-patch-preview:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IX — Reconfiguration, 62. Exact patch preview]
+    reviewed_hash: sha256:486fdee2221281744757142ae0b59474583022e35fd81f6c3c40aa066d01ebb6
+  processor-cursors:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XII — Inspection and observer state, 81. Cursors and resynchronization]
+    reviewed_hash: sha256:86256ab78325c1551d8a327347d7d003ec0071b982d08e425dbedf54155a8eba
+  processor-observer:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XII — Inspection and observer state, 77. Observer-layer boundary]
+    reviewed_hash: sha256:0611c518b565ece2995d06a7e340eb0edf41ff295bb4533d9b19184753ea1fde
+  processor-execution-digest:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path:
+      - Part XIII — Persistence, replay, and identity
+      - 87. Digest scopes
+      - 87.1 Execution-state digest
+    reviewed_hash: sha256:6bbe434eb2640f03710d5898b50291e1a2bafb69bdc7624a8a2b3ced9dd76aaf
+  api-scheduling:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part XII — Scheduling, forecasting, persistence, and replay
+      - 67. Scheduling
+    reviewed_hash: sha256:bcdb596c957f0741895d7bc3d04a08e11ca88d8430f61dfe132be620c5a0dc9d
+  api-forecast:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path:
+      - Part XII — Scheduling, forecasting, persistence, and replay
+      - 68. Forecasting
+    reviewed_hash: sha256:8cd435e7fe56962827e452f5fd01c20b6de40ea0812e07491bac08b2c422ef12
+  api-machine:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 27. Canonical machine API]
+    reviewed_hash: sha256:bc59f7d2115ba4bfce0da8f2c721b4b0b3d82398723c47e477411ac8fc7e2a9e
+  concrete-forecast:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVI — Apply and forecast, 62. Forecasting]
+    reviewed_hash: sha256:d1c34fb910ababb6525b3ed3c3e4fb0f2b32cfa993dda5942cf8b4fdb647a2df
+  concrete-result:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XVI — Apply and forecast, 63. Forecast result and hypothetical state]
+    reviewed_hash: sha256:62991721e49af55578be7f992658dfc8a718c8a967e9959ccec8b934ac831f8d
+  concrete-owned:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part I — API design principles, 5. Owned semantic artifacts]
+    reviewed_hash: sha256:9300f5bae3e626bc32ffc8fc067405d2307fddc8768ed526e88162944825e82b
+  concrete-revision:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXX — Public API coherence requirements, 109. Shared revision model]
+    reviewed_hash: sha256:855fdeaadc7914ca002f4a7c3f20a8ae0b7cd7f54f33d2b5d3ebfc0aa52e6e2a
+  concrete-inspection:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIX — Inspection, 71. Direct inspection]
+    reviewed_hash: sha256:587055fde66a96491804ff86b526e395f5ceb4959ae1752ef98ba0911a6f72e3
+  concrete-explanation:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XX — Explanation and provenance, 77. Explanation requests]
+    reviewed_hash: sha256:1b76da5aad65354ae96bc65c09bced9f69e8d2aa0b15f602212c6a234c6fe7e4
+  concrete-snapshot:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXIV — Snapshots and restoration, 89. Machine snapshots]
+    reviewed_hash: sha256:61a7cd3309606f87084142c9c54e7340a2afa33de1c3803cd8f3868e141f7c11
+  concrete-cloning:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path:
+      - Part XXVII — Ownership, cloning, and thread boundaries
+      - 98. Expensive semantic clones
+    reviewed_hash: sha256:d2a7c6917ff5b057ccbf6e499e5807fa9278428fb4703aaf5d741b335995eaed
+  reconfig-exact-forecast:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part X — Public API responsibilities, 85. Exact forecast]
+    reviewed_hash: sha256:5f61a7059f40f1002deb4776488c4e74d49012a4f53bc5f73413c8fce241e452
+  reconfig-no-commit:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part X — Public API responsibilities, 86. No implicit commit of forecast]
+    reviewed_hash: sha256:0acf9707f916ea6da07d194567aa344b6ca8f9d9251a6338b1c779f9ff821a54
+  testing-forecast:
+    document: docs/testing_and_verification_policy.md
+    heading_path:
+      - Part XV — Persistence, forecast, replay, and digest verification
+      - 86. Forecast equivalence
+    reviewed_hash: sha256:43b2775e2e033f2ef133278e9e0bec549cd17348f9026f133e45a8fe0b0c273c
+  testing-refinement:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part I — Verification model, 6. Refinement obligations]
+    reviewed_hash: sha256:c54ff7cdad4f949836d7e93a652560816ca5335e8ff08e666fce68a5c9d68057
+  catalogue-divergence:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 45. Internal defects — reference-path divergence]
+    reviewed_hash: sha256:7ee41633be396aa1bf325ca2f533033b9b63d20ed3f66b8bd992df2701e4ae4c
+  catalogue-defects:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part I — Unified problem model, 4. Internal defects]
+    reviewed_hash: sha256:737eb3c85532d5b2c1e6eb094ad62952030419935d6b0aa064aacbbcf19273ee
+  catalogue-runtime:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VI — Rust API integration, 46. Required mapping by API family, 46.4 Runtime application]
+    reviewed_hash: sha256:f1028616f4d6aae37c1e5a456f6322538876ba80dcf5123c10d47999604e48a0
+  catalogue-internal-defects:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part VI — Rust API integration, 46. Required mapping by API family, 46.8 Internal defects]
+    reviewed_hash: sha256:a66a4189a64b1eb0c8659eb1e56199bebc6b601dcb8e0330a9112830be024639
+  persistence-event-cursor:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 93. Public pending-event identity]
+    reviewed_hash: sha256:5a58fb2c0a11c9af98011cc3753ff44e9633f7d9046a10683281e5549aa87d67
