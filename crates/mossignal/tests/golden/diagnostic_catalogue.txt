@@ -106,3 +106,16 @@ persistence.provenance_incomplete_root_closure|Error|CorruptData|Provenance|fals
 persistence.provenance_conflicting_record|Error|CorruptData|Provenance|false|true|false|false|false
 persistence.provenance_false_checkpoint|Error|CorruptData|Provenance|false|true|false|false|false
 standard_module.expansion_mismatch|Error|CorruptData|StandardModule|true|true|false|false|false
+replay.starting_execution_digest_mismatch|Error|Compatibility|Replay|false|true|false|false|false
+replay.starting_observable_digest_mismatch|Error|Compatibility|Replay|false|true|false|false|false
+replay.expected_revision_mismatch|Error|Compatibility|Replay|false|true|false|false|false
+replay.runtime_policy_mismatch|Error|Compatibility|Replay|false|true|false|false|false
+replay.time_domain_mismatch|Error|Compatibility|Replay|false|true|false|false|false
+replay.network_fingerprint_mismatch|Error|Compatibility|Replay|false|true|false|false|false
+replay.logs_not_concatenable|Error|Compatibility|Replay|false|true|false|false|false
+replay.patch_preparation_diverged|Error|Compatibility|Replay|false|true|false|false|false
+replay.resulting_execution_digest_mismatch|Error|CorruptData|Replay|false|true|false|false|false
+replay.resulting_observable_digest_mismatch|Error|CorruptData|Replay|false|true|false|false|false
+replay.frame_missing|Error|CorruptData|Replay|false|true|false|false|false
+replay.frame_reordered|Error|CorruptData|Replay|false|true|false|false|false
+replay.frame_duplicated|Error|CorruptData|Replay|false|true|false|false|false

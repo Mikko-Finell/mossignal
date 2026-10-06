@@ -77,6 +77,10 @@ impl ArtifactBytes {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    pub(crate) fn from_canonical(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
 }
 
 impl AsRef<[u8]> for ArtifactBytes {

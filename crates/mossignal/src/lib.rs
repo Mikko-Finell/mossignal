@@ -16,6 +16,7 @@ mod module;
 mod node_schema;
 mod persistence;
 mod policy;
+mod replay;
 pub mod signal;
 mod snapshot_restore;
 pub mod standard;
@@ -79,6 +80,11 @@ pub use persistence::{
 };
 pub use policy::{
     PolicyFailure, RuntimePolicy, RuntimePolicyBuilder, RuntimePolicyId, RuntimePolicyLimit,
+};
+pub use replay::{
+    RecordedTransaction, ReplayFailure, ReplayFrame, ReplayLog, ReplayLogContentDigest,
+    decode_replay_frame, decode_replay_log, encode_replay_frame, encode_replay_log,
+    record_replay_log,
 };
 pub use snapshot_restore::{DecodeFailure, DecodePolicy, RestoreFailure, decode_snapshot};
 pub use standard::{

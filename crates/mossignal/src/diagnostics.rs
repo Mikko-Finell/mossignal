@@ -249,6 +249,7 @@ pub enum EvidenceSchema {
     StateSchema,
     PendingEvent,
     DiagnosticEpisode,
+    Replay,
 }
 
 /// The opening catalogue's structured identifiers.
@@ -363,6 +364,19 @@ pub enum DiagnosticCode {
     PersistenceProvenanceConflictingRecord,
     PersistenceProvenanceFalseCheckpoint,
     StandardModuleExpansionMismatch,
+    ReplayStartingExecutionDigestMismatch,
+    ReplayStartingObservableDigestMismatch,
+    ReplayExpectedRevisionMismatch,
+    ReplayRuntimePolicyMismatch,
+    ReplayTimeDomainMismatch,
+    ReplayNetworkFingerprintMismatch,
+    ReplayLogsNotConcatenable,
+    ReplayPatchPreparationDiverged,
+    ReplayResultingExecutionDigestMismatch,
+    ReplayResultingObservableDigestMismatch,
+    ReplayFrameMissing,
+    ReplayFrameReordered,
+    ReplayFrameDuplicated,
 }
 
 #[derive(Clone, Copy)]
@@ -855,6 +869,72 @@ pub struct SettledStateEvidence {
     pub detail: String,
 }
 
+/// Localization for one replay checkpoint or frame failure.
+///
+/// Absent facts are empty strings or `None`. The frame index is location
+/// context and is not a separate catalogue subject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayEvidence {
+    /// Log identity when the failure names one.
+    pub log_id: String,
+    /// Frame identity when the failure names one.
+    pub frame_id: String,
+    /// Zero-based frame position when the failure is inside a sequence.
+    pub frame_index: Option<u64>,
+    /// Requested logical time when the frame names one.
+    pub logical_time: Option<u64>,
+    /// Revision expected by the log or frame.
+    pub expected_revision: Option<u64>,
+    /// Revision found on the machine.
+    pub actual_revision: Option<u64>,
+    /// Expected network fingerprint, when the failure compares one.
+    pub expected_fingerprint: String,
+    /// Fingerprint found on the machine or artifact.
+    pub actual_fingerprint: String,
+    /// Expected runtime-policy identity, when the failure compares one.
+    pub expected_policy: String,
+    /// Policy identity found on the machine or artifact.
+    pub actual_policy: String,
+    /// Expected execution-state digest.
+    pub expected_execution_digest: String,
+    /// Execution-state digest found on the machine.
+    pub actual_execution_digest: String,
+    /// Expected observable-state digest.
+    pub expected_observable_digest: String,
+    /// Observable-state digest found on the machine.
+    pub actual_observable_digest: String,
+    /// Expected time-domain identity, when the failure compares one.
+    pub expected_time_domain: String,
+    /// Time-domain identity found on the machine or artifact.
+    pub actual_time_domain: String,
+    /// Catalogue code of a nested failure when one is being located.
+    pub underlying_code: String,
+}
+
+impl ReplayEvidence {
+    pub(crate) fn new() -> Self {
+        Self {
+            log_id: String::new(),
+            frame_id: String::new(),
+            frame_index: None,
+            logical_time: None,
+            expected_revision: None,
+            actual_revision: None,
+            expected_fingerprint: String::new(),
+            actual_fingerprint: String::new(),
+            expected_policy: String::new(),
+            actual_policy: String::new(),
+            expected_execution_digest: String::new(),
+            actual_execution_digest: String::new(),
+            expected_observable_digest: String::new(),
+            actual_observable_digest: String::new(),
+            expected_time_domain: String::new(),
+            actual_time_domain: String::new(),
+            underlying_code: String::new(),
+        }
+    }
+}
+
 /// Structured evidence for one exact opening catalogue code.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1329,6 +1409,58 @@ pub enum ProblemEvidence<D> {
     StandardModuleExpansionMismatch {
         module_ref: StandardModuleRef,
         detail: String,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayStartingExecutionDigestMismatch {
+        evidence: ReplayEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayStartingObservableDigestMismatch {
+        evidence: ReplayEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayExpectedRevisionMismatch {
+        evidence: ReplayEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayRuntimePolicyMismatch {
+        evidence: ReplayEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayTimeDomainMismatch {
+        evidence: ReplayEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayNetworkFingerprintMismatch {
+        evidence: ReplayEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayLogsNotConcatenable {
+        evidence: ReplayEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayPatchPreparationDiverged {
+        evidence: ReplayEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayResultingExecutionDigestMismatch {
+        evidence: ReplayEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayResultingObservableDigestMismatch {
+        evidence: ReplayEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayFrameMissing {
+        evidence: ReplayEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayFrameReordered {
+        evidence: ReplayEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReplayFrameDuplicated {
+        evidence: ReplayEvidence,
         marker: PhantomData<fn() -> D>,
     },
 }
@@ -1948,6 +2080,19 @@ opening_diagnostic_registry! {
     PersistenceProvenanceConflictingRecord, Self::PersistenceProvenanceConflictingRecord { .. }, "persistence.provenance_conflicting_record", Error, CorruptData, Provenance, false, true, false;
     PersistenceProvenanceFalseCheckpoint, Self::PersistenceProvenanceFalseCheckpoint { .. }, "persistence.provenance_false_checkpoint", Error, CorruptData, Provenance, false, true, false;
     StandardModuleExpansionMismatch, Self::StandardModuleExpansionMismatch { .. }, "standard_module.expansion_mismatch", Error, CorruptData, StandardModule, true, true, false;
+    ReplayStartingExecutionDigestMismatch, Self::ReplayStartingExecutionDigestMismatch { .. }, "replay.starting_execution_digest_mismatch", Error, Compatibility, Replay, false, true, false;
+    ReplayStartingObservableDigestMismatch, Self::ReplayStartingObservableDigestMismatch { .. }, "replay.starting_observable_digest_mismatch", Error, Compatibility, Replay, false, true, false;
+    ReplayExpectedRevisionMismatch, Self::ReplayExpectedRevisionMismatch { .. }, "replay.expected_revision_mismatch", Error, Compatibility, Replay, false, true, false;
+    ReplayRuntimePolicyMismatch, Self::ReplayRuntimePolicyMismatch { .. }, "replay.runtime_policy_mismatch", Error, Compatibility, Replay, false, true, false;
+    ReplayTimeDomainMismatch, Self::ReplayTimeDomainMismatch { .. }, "replay.time_domain_mismatch", Error, Compatibility, Replay, false, true, false;
+    ReplayNetworkFingerprintMismatch, Self::ReplayNetworkFingerprintMismatch { .. }, "replay.network_fingerprint_mismatch", Error, Compatibility, Replay, false, true, false;
+    ReplayLogsNotConcatenable, Self::ReplayLogsNotConcatenable { .. }, "replay.logs_not_concatenable", Error, Compatibility, Replay, false, true, false;
+    ReplayPatchPreparationDiverged, Self::ReplayPatchPreparationDiverged { .. }, "replay.patch_preparation_diverged", Error, Compatibility, Replay, false, true, false;
+    ReplayResultingExecutionDigestMismatch, Self::ReplayResultingExecutionDigestMismatch { .. }, "replay.resulting_execution_digest_mismatch", Error, CorruptData, Replay, false, true, false;
+    ReplayResultingObservableDigestMismatch, Self::ReplayResultingObservableDigestMismatch { .. }, "replay.resulting_observable_digest_mismatch", Error, CorruptData, Replay, false, true, false;
+    ReplayFrameMissing, Self::ReplayFrameMissing { .. }, "replay.frame_missing", Error, CorruptData, Replay, false, true, false;
+    ReplayFrameReordered, Self::ReplayFrameReordered { .. }, "replay.frame_reordered", Error, CorruptData, Replay, false, true, false;
+    ReplayFrameDuplicated, Self::ReplayFrameDuplicated { .. }, "replay.frame_duplicated", Error, CorruptData, Replay, false, true, false;
 }
 
 /// One structured, catalogue-valid problem record.
@@ -2560,6 +2705,21 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         | ProblemEvidence::PersistenceProvenanceFalseCheckpoint { .. } => {
             ConditionDiscriminator::Operation(evidence.code())
         }
+        ProblemEvidence::ReplayStartingExecutionDigestMismatch { .. }
+        | ProblemEvidence::ReplayStartingObservableDigestMismatch { .. }
+        | ProblemEvidence::ReplayExpectedRevisionMismatch { .. }
+        | ProblemEvidence::ReplayRuntimePolicyMismatch { .. }
+        | ProblemEvidence::ReplayTimeDomainMismatch { .. }
+        | ProblemEvidence::ReplayNetworkFingerprintMismatch { .. }
+        | ProblemEvidence::ReplayLogsNotConcatenable { .. }
+        | ProblemEvidence::ReplayPatchPreparationDiverged { .. }
+        | ProblemEvidence::ReplayResultingExecutionDigestMismatch { .. }
+        | ProblemEvidence::ReplayResultingObservableDigestMismatch { .. }
+        | ProblemEvidence::ReplayFrameMissing { .. }
+        | ProblemEvidence::ReplayFrameReordered { .. }
+        | ProblemEvidence::ReplayFrameDuplicated { .. } => {
+            ConditionDiscriminator::Operation(evidence.code())
+        }
         ProblemEvidence::StandardModuleExpansionMismatch {
             module_ref, detail, ..
         } => ConditionDiscriminator::StandardDetail(module_ref.clone(), detail.clone()),
@@ -2922,7 +3082,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 146);
+        assert_eq!(leaves.len(), 162);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {

@@ -12,7 +12,7 @@ use core::marker::PhantomData;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// An owned complete external-input batch for one compiled network.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct InputSnapshot<D> {
     network_key: NetworkKey,
     network_fingerprint: NetworkFingerprint,
@@ -48,6 +48,36 @@ impl<D> InputSnapshot<D> {
         BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     ) {
         (self.levels, self.pulses)
+    }
+
+    pub(crate) fn from_decoded(
+        network_key: NetworkKey,
+        network_fingerprint: NetworkFingerprint,
+        input_schema_fingerprint: InputSchemaFingerprint,
+        levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+        pulses: BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+    ) -> Self {
+        Self {
+            network_key,
+            network_fingerprint,
+            input_schema_fingerprint,
+            levels,
+            pulses,
+            domain: PhantomData,
+        }
+    }
+}
+
+impl<D> Clone for InputSnapshot<D> {
+    fn clone(&self) -> Self {
+        Self {
+            network_key: self.network_key,
+            network_fingerprint: self.network_fingerprint,
+            input_schema_fingerprint: self.input_schema_fingerprint,
+            levels: self.levels.clone(),
+            pulses: self.pulses.clone(),
+            domain: PhantomData,
+        }
     }
 }
 
@@ -256,6 +286,23 @@ impl<D> InputDelta<D> {
         BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     ) {
         (self.levels, self.pulses)
+    }
+
+    pub(crate) fn from_decoded(
+        network_key: NetworkKey,
+        network_fingerprint: NetworkFingerprint,
+        input_schema_fingerprint: InputSchemaFingerprint,
+        levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
+        pulses: BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
+    ) -> Self {
+        Self {
+            network_key,
+            network_fingerprint,
+            input_schema_fingerprint,
+            levels,
+            pulses,
+            domain: PhantomData,
+        }
     }
 
     #[cfg(test)]

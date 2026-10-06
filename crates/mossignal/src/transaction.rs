@@ -37,11 +37,30 @@ enum TransactionKind<D> {
     Advance(InputDelta<D>),
 }
 
+impl<D> Clone for TransactionKind<D> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Initialize(input) => Self::Initialize(input.clone()),
+            Self::Advance(input) => Self::Advance(input.clone()),
+        }
+    }
+}
+
 /// An owned explicit runtime transaction.
 pub struct Transaction<D> {
     at: Time<D>,
     expected_revision: NetworkRevision,
     kind: TransactionKind<D>,
+}
+
+impl<D> Clone for Transaction<D> {
+    fn clone(&self) -> Self {
+        Self {
+            at: self.at,
+            expected_revision: self.expected_revision,
+            kind: self.kind.clone(),
+        }
+    }
 }
 
 impl<D> Transaction<D> {
