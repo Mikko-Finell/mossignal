@@ -878,7 +878,7 @@ Explicitly exclude:
 
 # Part VI — Forecasting, reconfiguration, and observation
 
-## 56. [IN PROGRESS] Transaction forecasting
+## 56. [DONE] Transaction forecasting
 
 Implement non-publishing execution of one proposed transaction:
 

@@ -1616,6 +1616,275 @@ pub struct Machine<D> {
     pub(crate) store: MachineStore<D>,
 }
 
+/// Read-only unpublished candidate produced by [`Machine::forecast`](crate::Machine::forecast).
+///
+/// ```compile_fail
+/// use mossignal::{ForecastState, Transaction};
+/// fn commit<D>(state: &mut ForecastState<D>, transaction: Transaction<D>) {
+///     let _ = state.apply(transaction);
+/// }
+/// ```
+pub struct ForecastState<D> {
+    // SPEC: docs/specs/contracts/transaction-forecast.yaml "hypothetical-only"
+    // No apply, mutation, or conversion into the live machine.
+    machine: Machine<D>,
+}
+
+impl<D> ForecastState<D> {
+    pub(crate) fn from_candidate(machine: Machine<D>) -> Self {
+        Self { machine }
+    }
+
+    /// Returns the candidate lifecycle state.
+    #[must_use]
+    pub fn status(&self) -> MachineStatus<D> {
+        self.machine.status()
+    }
+
+    /// Returns whether the candidate has committed initialization.
+    #[must_use]
+    pub fn is_initialized(&self) -> bool {
+        self.machine.is_initialized()
+    }
+
+    /// Returns the candidate logical time, or `None` before initialization.
+    #[must_use]
+    pub fn now(&self) -> Option<Time<D>> {
+        self.machine.now()
+    }
+
+    /// Returns the candidate topology revision.
+    #[must_use]
+    pub fn revision(&self) -> NetworkRevision {
+        self.machine.revision()
+    }
+
+    /// Returns the semantic fingerprint of the candidate topology.
+    #[must_use]
+    pub fn fingerprint(&self) -> NetworkFingerprint {
+        self.machine.fingerprint()
+    }
+
+    /// Returns the candidate execution-state digest.
+    #[must_use]
+    pub fn execution_state_digest(&self) -> ExecutionStateDigest {
+        self.machine.execution_state_digest()
+    }
+
+    /// Returns the candidate observable-state digest.
+    #[must_use]
+    pub fn observable_state_digest(&self) -> ObservableStateDigest {
+        self.machine.observable_state_digest()
+    }
+
+    /// Returns an owned snapshot of the unpublished candidate.
+    ///
+    /// Encoding or restoring that snapshot is a separate explicit operation.
+    #[must_use]
+    pub fn snapshot(&self) -> crate::persistence::MachineSnapshot<D> {
+        self.machine.snapshot()
+    }
+
+    /// Returns the immutable compiled topology installed in the candidate.
+    #[must_use]
+    pub fn compiled(&self) -> &CompiledNetwork<D> {
+        self.machine.compiled()
+    }
+
+    /// Returns the runtime policy the candidate was forecast under.
+    #[must_use]
+    pub fn runtime_policy(&self) -> &RuntimePolicy {
+        self.machine.runtime_policy()
+    }
+
+    /// Returns the semantic identity of that runtime policy.
+    #[must_use]
+    pub fn runtime_policy_id(&self) -> RuntimePolicyId {
+        self.machine.runtime_policy_id()
+    }
+
+    /// Returns the least pending deadline without changing the candidate.
+    pub fn next_deadline(&self) -> Result<Option<Time<D>>, ScheduleFailure> {
+        self.machine.next_deadline()
+    }
+
+    /// Returns whether the candidate is dormant or must be called at a deadline.
+    pub fn schedule(&self) -> Result<Schedule<D>, ScheduleFailure> {
+        self.machine.schedule()
+    }
+
+    /// Projects the same PulseDelay definition as [`Machine::inspect_pulse_delay_definition`].
+    pub fn inspect_pulse_delay_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<PulseDelayDefinitionInspection<D>, PulseDelayInspectionFailure> {
+        self.machine.inspect_pulse_delay_definition(node)
+    }
+
+    /// Projects the same PulseDelay state as [`Machine::inspect_pulse_delay`].
+    pub fn inspect_pulse_delay(
+        &self,
+        node: NodeKey,
+    ) -> Result<PulseDelayInspection<D>, PulseDelayInspectionFailure> {
+        self.machine.inspect_pulse_delay(node)
+    }
+
+    /// Projects the same TransportDelay definition as [`Machine::inspect_transport_delay_definition`].
+    pub fn inspect_transport_delay_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<TransportDelayDefinitionInspection<D>, TransportDelayInspectionFailure> {
+        self.machine.inspect_transport_delay_definition(node)
+    }
+
+    /// Projects the same TransportDelay state as [`Machine::inspect_transport_delay`].
+    pub fn inspect_transport_delay(
+        &self,
+        node: NodeKey,
+    ) -> Result<TransportDelayInspection<D>, TransportDelayInspectionFailure> {
+        self.machine.inspect_transport_delay(node)
+    }
+
+    /// Projects the same InertialDelay definition as [`Machine::inspect_inertial_delay_definition`].
+    pub fn inspect_inertial_delay_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<InertialDelayDefinitionInspection<D>, InertialDelayInspectionFailure> {
+        self.machine.inspect_inertial_delay_definition(node)
+    }
+
+    /// Projects the same InertialDelay state as [`Machine::inspect_inertial_delay`].
+    pub fn inspect_inertial_delay(
+        &self,
+        node: NodeKey,
+    ) -> Result<InertialDelayInspection<D>, InertialDelayInspectionFailure> {
+        self.machine.inspect_inertial_delay(node)
+    }
+
+    /// Projects the same Periodic definition as [`Machine::inspect_periodic_definition`].
+    pub fn inspect_periodic_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<PeriodicDefinitionInspection<D>, PeriodicInspectionFailure> {
+        self.machine.inspect_periodic_definition(node)
+    }
+
+    /// Projects the same Periodic state as [`Machine::inspect_periodic`].
+    pub fn inspect_periodic(
+        &self,
+        node: NodeKey,
+    ) -> Result<PeriodicInspection<D>, PeriodicInspectionFailure> {
+        self.machine.inspect_periodic(node)
+    }
+
+    /// Projects the same module inspection as [`Machine::inspect_module`].
+    pub fn inspect_module(
+        &self,
+        instance: ModuleInstanceKey,
+    ) -> Result<ModuleInspection<D>, ModuleInspectionFailure> {
+        self.machine.inspect_module(instance)
+    }
+
+    /// Projects the same qualified-module inspection as [`Machine::inspect_qualified_module`].
+    pub fn inspect_qualified_module(
+        &self,
+        module: QualifiedModuleRef,
+    ) -> Result<ModuleInspection<D>, ModuleInspectionFailure> {
+        self.machine.inspect_qualified_module(module)
+    }
+
+    /// Projects the same edge-detector definition as [`Machine::inspect_edge_detector_definition`].
+    pub fn inspect_edge_detector_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<EdgeDetectorDefinitionInspection, EdgeDetectorInspectionFailure> {
+        self.machine.inspect_edge_detector_definition(node)
+    }
+
+    /// Projects the same edge-detector state as [`Machine::inspect_edge_detector`].
+    pub fn inspect_edge_detector(
+        &self,
+        node: NodeKey,
+    ) -> Result<EdgeDetectorInspection<D>, EdgeDetectorInspectionFailure> {
+        self.machine.inspect_edge_detector(node)
+    }
+
+    /// Projects the same Toggle definition as [`Machine::inspect_toggle_definition`].
+    pub fn inspect_toggle_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<ToggleDefinitionInspection, ToggleInspectionFailure> {
+        self.machine.inspect_toggle_definition(node)
+    }
+
+    /// Projects the same Toggle state as [`Machine::inspect_toggle`].
+    pub fn inspect_toggle(
+        &self,
+        node: NodeKey,
+    ) -> Result<ToggleInspection<D>, ToggleInspectionFailure> {
+        self.machine.inspect_toggle(node)
+    }
+
+    /// Projects the same pulse latch definition as [`Machine::inspect_pulse_set_reset_latch_definition`].
+    pub fn inspect_pulse_set_reset_latch_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<PulseSetResetLatchDefinitionInspection, PulseSetResetLatchInspectionFailure> {
+        self.machine.inspect_pulse_set_reset_latch_definition(node)
+    }
+
+    /// Projects the same pulse latch state as [`Machine::inspect_pulse_set_reset_latch`].
+    pub fn inspect_pulse_set_reset_latch(
+        &self,
+        node: NodeKey,
+    ) -> Result<PulseSetResetLatchInspection<D>, PulseSetResetLatchInspectionFailure> {
+        self.machine.inspect_pulse_set_reset_latch(node)
+    }
+
+    /// Projects the same level latch definition as [`Machine::inspect_level_set_reset_latch_definition`].
+    pub fn inspect_level_set_reset_latch_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<LevelSetResetLatchDefinitionInspection, LevelSetResetLatchInspectionFailure> {
+        self.machine.inspect_level_set_reset_latch_definition(node)
+    }
+
+    /// Projects the same level latch state as [`Machine::inspect_level_set_reset_latch`].
+    pub fn inspect_level_set_reset_latch(
+        &self,
+        node: NodeKey,
+    ) -> Result<LevelSetResetLatchInspection<D>, LevelSetResetLatchInspectionFailure> {
+        self.machine.inspect_level_set_reset_latch(node)
+    }
+
+    /// Projects the same SampleHold definition as [`Machine::inspect_sample_hold_definition`].
+    pub fn inspect_sample_hold_definition(
+        &self,
+        node: NodeKey,
+    ) -> Result<SampleHoldDefinitionInspection, SampleHoldInspectionFailure> {
+        self.machine.inspect_sample_hold_definition(node)
+    }
+
+    /// Projects the same SampleHold state as [`Machine::inspect_sample_hold`].
+    pub fn inspect_sample_hold(
+        &self,
+        node: NodeKey,
+    ) -> Result<SampleHoldInspection<D>, SampleHoldInspectionFailure> {
+        self.machine.inspect_sample_hold(node)
+    }
+}
+
+impl<D> fmt::Debug for ForecastState<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ForecastState")
+            .field("status", &self.status())
+            .field("revision", &self.revision())
+            .field("execution_state_digest", &self.execution_state_digest())
+            .finish()
+    }
+}
+
 /// Structural information available for one compiled edge detector in every lifecycle phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeDetectorDefinitionInspection {
@@ -2383,6 +2652,16 @@ impl<D> Machine<D> {
                 pending_events: BTreeMap::new(),
                 next_pending_event_serial: 0,
             },
+        }
+    }
+
+    pub(crate) fn duplicate_for_forecast(&self) -> Self {
+        // SPEC: docs/specs/contracts/transaction-forecast.yaml "shared-transition"
+        // Forecast calls ordinary apply on this private copy. Machine stays uncloneable.
+        Self {
+            compiled: self.compiled.clone(),
+            policy: self.policy.clone(),
+            store: self.store.clone(),
         }
     }
 

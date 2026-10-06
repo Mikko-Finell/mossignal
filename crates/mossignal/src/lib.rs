@@ -56,11 +56,12 @@ pub use input::{
 };
 pub use machine::{
     DiagnosticEpisodeInspectionFailure, EdgeDetectorDefinitionInspection, EdgeDetectorInspection,
-    EdgeDetectorInspectionFailure, InertialDelayDefinitionInspection, InertialDelayInspection,
-    InertialDelayInspectionFailure, LevelSetResetLatchDefinitionInspection,
-    LevelSetResetLatchInspection, LevelSetResetLatchInspectionFailure, Machine, MachineStatus,
-    ModuleInputInspection, ModuleInspection, ModuleInspectionFailure, ModuleNodeInspection,
-    ModuleOutputInspection, ModulePendingPulseDelayInspection, NetworkRevision, PendingEventKey,
+    EdgeDetectorInspectionFailure, ForecastState, InertialDelayDefinitionInspection,
+    InertialDelayInspection, InertialDelayInspectionFailure,
+    LevelSetResetLatchDefinitionInspection, LevelSetResetLatchInspection,
+    LevelSetResetLatchInspectionFailure, Machine, MachineStatus, ModuleInputInspection,
+    ModuleInspection, ModuleInspectionFailure, ModuleNodeInspection, ModuleOutputInspection,
+    ModulePendingPulseDelayInspection, NetworkRevision, PendingEventKey,
     PendingInertialDelayInspection, PendingPeriodicBoundaryInspection, PendingPulseDelayInspection,
     PendingTransportDelayInspection, PeriodicDefinitionInspection, PeriodicInspection,
     PeriodicInspectionFailure, PulseDelayDefinitionInspection, PulseDelayInspection,
@@ -101,7 +102,8 @@ pub use standard::{
     all_equal_result_key, at_most_result_key, exactly_result_key,
 };
 pub use transaction::{
-    CauseInspection, CauseLookupFailure, CauseRef, OutputEvent, ProvenanceSubject, ProvenanceView,
-    PulseContribution, RuntimeFailure, RuntimeFailureEvidence, Transaction, TransactionResult,
+    CauseInspection, CauseLookupFailure, CauseRef, ForecastBasis, ForecastResult, OutputEvent,
+    ProvenanceSubject, ProvenanceView, PulseContribution, RuntimeFailure, RuntimeFailureEvidence,
+    Transaction, TransactionResult,
 };
 pub use validation::{NetworkDefinitionGraphView, ValidatedNetwork};

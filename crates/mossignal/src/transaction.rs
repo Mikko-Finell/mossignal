@@ -16,11 +16,12 @@ use crate::identity::{
 use crate::input::{InputDelta, InputSnapshot};
 use crate::key::{ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey};
 use crate::machine::{
-    Machine, MachineStatus, NetworkRevision, PendingEvent, PendingEventKey, PendingInertialDelay,
-    PendingPeriodicBoundary, PendingPulseDelay, PendingTransportDelay, Schedule,
+    ForecastState, Machine, MachineStatus, NetworkRevision, PendingEvent, PendingEventKey,
+    PendingInertialDelay, PendingPeriodicBoundary, PendingPulseDelay, PendingTransportDelay,
+    Schedule,
 };
 use crate::module::{NodeSubject, PulsePortSubject, QualifiedNodeRef};
-use crate::policy::{RuntimePolicy, RuntimePolicyLimit};
+use crate::policy::{RuntimePolicy, RuntimePolicyId, RuntimePolicyLimit};
 use crate::signal::{Level, LogicLevel, Pulse, PulseCount};
 use crate::time::{Span, Time};
 use core::fmt;
@@ -1455,6 +1456,78 @@ impl<D> fmt::Debug for TransactionResult<D> {
     }
 }
 
+/// Identities of the machine a forecast was evaluated against.
+///
+/// `execution_digest` is that machine's execution-state digest before the
+/// forecast. It is the forecast freshness identity, not the successor digest.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ForecastBasis<D> {
+    /// Topology revision of the borrowed machine.
+    pub revision: NetworkRevision,
+    /// Execution-state digest of the borrowed machine before the forecast.
+    pub execution_digest: ExecutionStateDigest,
+    /// Requested logical time of the consumed transaction.
+    pub requested_time: Time<D>,
+    /// Runtime policy identity of the borrowed machine.
+    pub runtime_policy_id: RuntimePolicyId,
+}
+
+impl<D> fmt::Debug for ForecastBasis<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ForecastBasis")
+            .field("revision", &self.revision)
+            .field("execution_digest", &self.execution_digest)
+            .field("requested_time", &self.requested_time)
+            .field("runtime_policy_id", &self.runtime_policy_id)
+            .finish()
+    }
+}
+
+/// Owned hypothetical result of one forecast.
+pub struct ForecastResult<D> {
+    result: TransactionResult<D>,
+    state: ForecastState<D>,
+    basis: ForecastBasis<D>,
+}
+
+impl<D> ForecastResult<D> {
+    /// Returns the transaction result the shared transition produced.
+    #[must_use]
+    pub const fn result(&self) -> &TransactionResult<D> {
+        &self.result
+    }
+
+    /// Returns the unpublished candidate.
+    #[must_use]
+    pub const fn state(&self) -> &ForecastState<D> {
+        &self.state
+    }
+
+    /// Returns the pre-forecast basis.
+    #[must_use]
+    pub const fn basis(&self) -> &ForecastBasis<D> {
+        &self.basis
+    }
+
+    /// Splits the forecast into its result, candidate, and basis.
+    #[must_use]
+    pub fn into_parts(self) -> (TransactionResult<D>, ForecastState<D>, ForecastBasis<D>) {
+        (self.result, self.state, self.basis)
+    }
+}
+
+impl<D> fmt::Debug for ForecastResult<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ForecastResult")
+            .field("result", &self.result)
+            .field("state", &self.state)
+            .field("basis", &self.basis)
+            .finish()
+    }
+}
+
 impl<D> Machine<D> {
     /// Applies an owned transaction atomically.
     pub fn apply(
@@ -1472,6 +1545,32 @@ impl<D> Machine<D> {
             }
             TransactionKind::Advance(input) => self.apply_advance(at, expected_revision, input),
         }
+    }
+
+    /// Forecasts one owned transaction without publishing it.
+    ///
+    /// The original machine stays unchanged on success and failure. A later
+    /// explicit `apply` of the same semantic transaction is what can publish
+    /// that result, and only while this machine's preconditions still hold.
+    pub fn forecast(
+        &self,
+        transaction: Transaction<D>,
+    ) -> Result<ForecastResult<D>, RuntimeFailure<D>> {
+        // SPEC: docs/specs/contracts/transaction-forecast.yaml "owned-forecast-result"
+        // The basis digest is taken before apply, so it cannot become the successor digest.
+        let basis = ForecastBasis {
+            revision: self.revision(),
+            execution_digest: self.execution_state_digest(),
+            requested_time: transaction.requested_time(),
+            runtime_policy_id: self.runtime_policy_id(),
+        };
+        let mut candidate = self.duplicate_for_forecast();
+        let result = candidate.apply(transaction)?;
+        Ok(ForecastResult {
+            result,
+            state: ForecastState::from_candidate(candidate),
+            basis,
+        })
     }
 
     fn apply_initialization(
