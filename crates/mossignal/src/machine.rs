@@ -1474,7 +1474,6 @@ impl NetworkRevision {
         Self::INITIAL
     }
 
-    #[cfg(test)]
     pub(crate) const fn from_value(value: u64) -> Self {
         Self(value)
     }

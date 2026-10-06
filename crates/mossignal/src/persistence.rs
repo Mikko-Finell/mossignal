@@ -1,7 +1,7 @@
 //! Canonical machine-snapshot artifacts.
 //!
-//! Encoding produces one prefixed CBOR envelope. It does not decode or restore
-//! that artifact.
+//! Encoding produces one prefixed CBOR envelope. Decoding and restoration use
+//! that same envelope and do not own filesystem access.
 
 use crate::compile::{SnapshotNode, SnapshotNodeFamily};
 use crate::identity::{
@@ -169,6 +169,35 @@ impl<D> MachineSnapshot<D> {
     #[must_use]
     pub const fn runtime_policy_id(&self) -> RuntimePolicyId {
         self.policy
+    }
+
+    pub(crate) fn artifact_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_decoded(
+        status: MachineStatus<D>,
+        revision: NetworkRevision,
+        fingerprint: NetworkFingerprint,
+        execution: ExecutionStateDigest,
+        observable: ObservableStateDigest,
+        snapshot: SnapshotDigest,
+        policy: RuntimePolicyId,
+        time_domain: TimeDomainId,
+        bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            status,
+            revision,
+            fingerprint,
+            execution,
+            observable,
+            snapshot,
+            policy,
+            time_domain,
+            bytes,
+        }
     }
 }
 
@@ -920,6 +949,11 @@ fn cause_digest<D>(
         panic!("required provenance root must retain its canonical record");
     }
     digest
+}
+
+pub(crate) fn snapshot_digest_bytes(time_domain: TimeDomainId, payload: &[u8]) -> [u8; 32] {
+    let bare = envelope(time_domain, payload, None);
+    *blake3::hash(&domain_separated(SNAPSHOT_DIGEST_DOMAIN, 1, &bare)).as_bytes()
 }
 
 fn envelope(time_domain: TimeDomainId, payload: &[u8], integrity: Option<[u8; 32]>) -> Vec<u8> {

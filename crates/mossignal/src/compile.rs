@@ -1369,6 +1369,99 @@ impl<D> CompiledNetwork<D> {
             .collect()
     }
 
+    pub(crate) fn external_level_inputs(&self) -> Vec<ExternalInputKey<Level>> {
+        self.inner
+            .external_inputs
+            .iter()
+            .filter_map(|input| match input.key {
+                AnyExternalInputKey::Level(key) => Some(key),
+                AnyExternalInputKey::Pulse(_) => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn contains_external_level_input(&self, key: ExternalInputKey<Level>) -> bool {
+        self.inner
+            .external_input_lookup
+            .contains_key(&AnyExternalInputKey::Level(key))
+    }
+
+    pub(crate) fn contains_external_pulse_input(&self, key: ExternalInputKey<Pulse>) -> bool {
+        self.inner
+            .external_input_lookup
+            .contains_key(&AnyExternalInputKey::Pulse(key))
+    }
+
+    pub(crate) fn contains_external_level_output(&self, key: ExternalOutputKey<Level>) -> bool {
+        self.inner
+            .external_output_lookup
+            .contains_key(&AnyExternalOutputKey::Level(key))
+    }
+
+    pub(crate) fn contains_external_pulse_output(&self, key: ExternalOutputKey<Pulse>) -> bool {
+        self.inner
+            .external_output_lookup
+            .contains_key(&AnyExternalOutputKey::Pulse(key))
+    }
+
+    pub(crate) fn resolve_stable_node(
+        &self,
+        instances: &[ModuleInstanceKey],
+        local: NodeKey,
+    ) -> Option<NodeKey> {
+        if instances.is_empty() {
+            if self.inner.qualified_node_reverse.contains_key(&local) {
+                return None;
+            }
+            self.contains_node(local).then_some(local)
+        } else {
+            self.inner
+                .qualified_node_lookup
+                .get(&QualifiedNodeRef::new(instances.to_vec(), local))
+                .copied()
+        }
+    }
+
+    pub(crate) fn resolve_pulse_port(
+        &self,
+        instances: &[ModuleInstanceKey],
+        local: u128,
+    ) -> Option<PulsePortSubject> {
+        let port = InPortKey::<Pulse>::from_u128(local);
+        if instances.is_empty() {
+            return self
+                .inner
+                .input_port_lookup
+                .contains_key(&AnyInPortKey::Pulse(port))
+                .then_some(PulsePortSubject::Port(port));
+        }
+        self.inner
+            .qualified_input_reverse
+            .iter()
+            .find_map(|(key, qualified)| {
+                let AnyInPortKey::Pulse(found) = key else {
+                    return None;
+                };
+                (qualified.instances() == instances && found.as_u128() == local)
+                    .then_some(PulsePortSubject::Qualified(qualified.clone()))
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_standard_expansion_for_test(&mut self) -> bool {
+        let Some(inner) = Arc::get_mut(&mut self.inner) else {
+            return false;
+        };
+        let mut changed = false;
+        for module in inner.modules.values_mut() {
+            if module.standard_declaration().is_some() {
+                module.tamper_standard_expansion_for_test();
+                changed = true;
+            }
+        }
+        changed
+    }
+
     #[cfg(test)]
     pub(crate) fn module_flat_keys(&self) -> (Vec<u128>, Vec<u128>, Vec<u128>) {
         let nodes = self

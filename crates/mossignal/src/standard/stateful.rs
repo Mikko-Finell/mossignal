@@ -80,7 +80,7 @@ impl Kind {
             ],
         }
     }
-    fn parameter_names(self) -> &'static [&'static str] {
+    pub(super) fn parameter_names(self) -> &'static [&'static str] {
         if self == Self::SampleHold {
             &["initial", "reset_to"]
         } else {
@@ -461,7 +461,7 @@ impl<D> FixedExpansion<D> {
     }
 }
 
-fn expand<D>(
+pub(super) fn expand<D>(
     kind: Kind,
     initial: LogicLevel,
     reset_to: Option<LogicLevel>,

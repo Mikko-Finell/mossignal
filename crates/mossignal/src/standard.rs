@@ -552,6 +552,11 @@ impl<D> StandardModuleDeclaration<D> {
     pub const fn expansion_fingerprint(&self) -> StandardModuleExpansionFingerprint {
         self.expansion_fingerprint
     }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_expansion_fingerprint_for_test(&mut self) {
+        self.expansion_fingerprint = StandardModuleExpansionFingerprint::from_bytes([0x5a; 32]);
+    }
     #[must_use]
     pub fn internal_roles(&self) -> impl ExactSizeIterator<Item = &StandardInternalRole> {
         self.internal_roles.iter()
@@ -1660,6 +1665,137 @@ fn expansion_fingerprint<D>(
     push_internal_roles(&mut bytes, roles);
     bytes.extend_from_slice(&crate::identity::module_canonical_bytes(module));
     StandardModuleExpansionFingerprint::from_bytes(*blake3::hash(&bytes).as_bytes())
+}
+
+pub(crate) enum RetainedExpansionError {
+    Unsupported(StandardModuleRef),
+    Interface(StandardModuleRef),
+    Mismatch(StandardModuleRef, String),
+}
+
+pub(crate) fn retained_expansion_agrees<D>(
+    module: &ModuleDef<D>,
+) -> Result<(), RetainedExpansionError> {
+    let Some(declaration) = module.standard_declaration() else {
+        return Ok(());
+    };
+    let module_ref = declaration.module_ref().clone();
+    let catalogue = StandardCatalogue::<D>::current();
+    if catalogue.descriptor(&module_ref).is_err() {
+        let same_id = catalogue
+            .descriptors()
+            .any(|descriptor| descriptor.module_ref().id() == module_ref.id());
+        return Err(if same_id {
+            RetainedExpansionError::Unsupported(module_ref)
+        } else {
+            RetainedExpansionError::Mismatch(
+                module_ref,
+                "descriptor is not in the current catalogue".to_owned(),
+            )
+        });
+    }
+    let (expanded, roles, threshold, inputs) = regenerate(declaration)?;
+    let fingerprint = expansion_fingerprint(&expanded, &module_ref, threshold, &inputs, &roles);
+    if fingerprint != declaration.expansion_fingerprint() {
+        return Err(RetainedExpansionError::Mismatch(
+            module_ref,
+            "expansion fingerprint disagrees with the current descriptor".to_owned(),
+        ));
+    }
+    if declaration.internal_roles().ne(roles.iter()) {
+        return Err(RetainedExpansionError::Mismatch(
+            module_ref,
+            "internal roles disagree with the current descriptor".to_owned(),
+        ));
+    }
+    if crate::identity::module_canonical_bytes(&expanded)
+        != crate::identity::module_canonical_bytes(module.definition())
+    {
+        return Err(RetainedExpansionError::Mismatch(
+            module_ref,
+            "canonical expansion disagrees with the retained module".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+type RegeneratedExpansion<D> = (
+    crate::authored::UncheckedModule<D>,
+    Vec<StandardInternalRole>,
+    Option<u64>,
+    Vec<ModuleInputKey<Level>>,
+);
+
+fn regenerate<D>(
+    declaration: &StandardModuleDeclaration<D>,
+) -> Result<RegeneratedExpansion<D>, RetainedExpansionError> {
+    let module_ref = declaration.module_ref().clone();
+    if let Some(kind) = stateful::Kind::from_ref(&module_ref) {
+        if declaration.variadic_inputs().next().is_some() {
+            return Err(RetainedExpansionError::Interface(module_ref));
+        }
+        let mut initial = None;
+        let mut reset_to = None;
+        for assignment in declaration.parameters() {
+            let name = assignment.key().as_str();
+            if !kind.parameter_names().contains(&name) {
+                return Err(RetainedExpansionError::Interface(module_ref));
+            }
+            let StandardParameterValue::LogicLevel(level) = assignment.value() else {
+                return Err(RetainedExpansionError::Interface(module_ref));
+            };
+            let slot = if name == "initial" {
+                &mut initial
+            } else {
+                &mut reset_to
+            };
+            if slot.replace(*level).is_some() {
+                return Err(RetainedExpansionError::Interface(module_ref));
+            }
+        }
+        if initial.is_none() || (kind.parameter_names().contains(&"reset_to") && reset_to.is_none())
+        {
+            return Err(RetainedExpansionError::Interface(module_ref));
+        }
+        let (expanded, roles) =
+            stateful::expand(kind, initial.unwrap_or(LogicLevel::Low), reset_to);
+        return Ok((expanded, roles, None, Vec::new()));
+    }
+    let Some(kind) = StatelessStandardKind::from_ref(&module_ref) else {
+        return Err(RetainedExpansionError::Mismatch(
+            module_ref,
+            "retained declaration has no catalogue construction".to_owned(),
+        ));
+    };
+    let mut threshold = None;
+    for assignment in declaration.parameters() {
+        if !kind.requires_threshold() || assignment.key().as_str() != "threshold" {
+            return Err(RetainedExpansionError::Interface(module_ref.clone()));
+        }
+        let StandardParameterValue::U64(value) = assignment.value() else {
+            return Err(RetainedExpansionError::Interface(module_ref));
+        };
+        if threshold.replace(*value).is_some() {
+            return Err(RetainedExpansionError::Interface(module_ref));
+        }
+    }
+    if kind.requires_threshold() && threshold.is_none() {
+        return Err(RetainedExpansionError::Interface(module_ref));
+    }
+    let mut inputs = Vec::new();
+    for input in declaration.variadic_inputs() {
+        inputs.push(input);
+    }
+    let (expanded, roles) = match kind {
+        StatelessStandardKind::Exactly => {
+            exactly_expansion(&module_ref, threshold.unwrap_or_default(), &inputs)
+        }
+        StatelessStandardKind::AtMost => {
+            at_most_expansion(&module_ref, threshold.unwrap_or_default(), &inputs)
+        }
+        StatelessStandardKind::AllEqual => all_equal_expansion(&module_ref, &inputs),
+    };
+    Ok((expanded, roles, threshold, inputs))
 }
 
 fn push_internal_roles(bytes: &mut Vec<u8>, roles: &[StandardInternalRole]) {

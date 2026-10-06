@@ -821,7 +821,7 @@ Explicitly exclude:
 
 ---
 
-## 54. Snapshot validation and restoration
+## 54. [DONE] Snapshot validation and restoration
 
 Implement strict restoration of supported snapshots:
 

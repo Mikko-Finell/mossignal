@@ -514,6 +514,10 @@ impl fmt::Debug for CauseRef {
 }
 
 impl CauseRef {
+    pub(crate) const fn from_parts(scope: ProvenanceScope, ordinal: u32) -> Self {
+        Self { scope, ordinal }
+    }
+
     #[cfg(test)]
     pub(crate) const fn ordinal(self) -> u32 {
         self.ordinal
@@ -572,6 +576,14 @@ impl PulseContribution {
     #[must_use]
     pub const fn cause(&self) -> CauseRef {
         self.cause
+    }
+
+    pub(crate) const fn restored(
+        port: PulsePortSubject,
+        count: PulseCount,
+        cause: CauseRef,
+    ) -> Self {
+        Self { port, count, cause }
     }
 }
 
@@ -1065,6 +1077,26 @@ impl<D> ProvenanceView<D> {
 
     pub(crate) fn records(&self) -> &[ProvenanceRecord<D>] {
         &self.records
+    }
+
+    pub(crate) const fn scope(&self) -> ProvenanceScope {
+        self.scope
+    }
+
+    pub(crate) fn restored(
+        network_key: crate::key::NetworkKey,
+        fingerprint: crate::NetworkFingerprint,
+        records: Vec<ProvenanceRecord<D>>,
+    ) -> Self {
+        let scope = provenance_view_scope(network_key, fingerprint, &records);
+        let records = records
+            .iter()
+            .map(|record| remap_record(record, scope))
+            .collect();
+        Self {
+            scope,
+            records: Arc::new(records),
+        }
     }
 
     pub(crate) fn resolve_ordinal(&self, cause: CauseRef) -> usize {

@@ -3,6 +3,7 @@
 pub mod authored;
 pub mod binding;
 pub mod builder;
+mod cbor_decode;
 mod compile;
 pub mod diagnostics;
 mod episode;
@@ -16,6 +17,7 @@ mod node_schema;
 mod persistence;
 mod policy;
 pub mod signal;
+mod snapshot_restore;
 pub mod standard;
 mod state_digest;
 pub mod time;
@@ -78,6 +80,7 @@ pub use persistence::{
 pub use policy::{
     PolicyFailure, RuntimePolicy, RuntimePolicyBuilder, RuntimePolicyId, RuntimePolicyLimit,
 };
+pub use snapshot_restore::{DecodeFailure, DecodePolicy, RestoreFailure, decode_snapshot};
 pub use standard::{
     AllEqualDependency, AllEqualExplanation, AllEqualInspection, AtMostDependency,
     AtMostExplanation, AtMostInspection, CaptureKind, CatalogueFailure, ExactlyDependency,

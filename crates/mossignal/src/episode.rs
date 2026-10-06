@@ -31,6 +31,14 @@ impl DiagnosticConditionKey {
     pub(crate) const fn discriminator(&self) -> u8 {
         self.discriminator
     }
+
+    pub(crate) fn restored(owner: NodeSubject, code: DiagnosticCode, discriminator: u8) -> Self {
+        Self {
+            owner,
+            code,
+            discriminator,
+        }
+    }
     /// Returns the stable primitive owner, including its full instance path.
     #[must_use]
     pub const fn owner(&self) -> &NodeSubject {
@@ -88,7 +96,11 @@ impl DiagnosticEpisodeId {
         self.0
     }
 
-    fn derive(network: NetworkKey, condition: &DiagnosticConditionKey) -> Self {
+    pub(crate) const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub(crate) fn derive(network: NetworkKey, condition: &DiagnosticConditionKey) -> Self {
         // SPEC: docs/specs/contracts/persistent-diagnostic-episodes.yaml "stable-episode-identity"
         // Network identity plus the full semantic owner excludes flattened slots and cause IDs.
         let mut hash = blake3::Hasher::new();
@@ -188,6 +200,26 @@ impl<D> ActiveDiagnosticEpisode<D> {
     #[must_use]
     pub const fn provenance(&self) -> &ProvenanceView<D> {
         &self.provenance
+    }
+
+    pub(crate) fn restored(
+        identity: DiagnosticEpisodeId,
+        condition: DiagnosticConditionKey,
+        current: Problem<D>,
+        began_at: Time<D>,
+        last_material_change: Time<D>,
+        cause: CauseRef,
+        provenance: ProvenanceView<D>,
+    ) -> Self {
+        Self {
+            identity,
+            condition,
+            current: Arc::new(current),
+            began_at,
+            last_material_change,
+            cause,
+            provenance,
+        }
     }
 }
 

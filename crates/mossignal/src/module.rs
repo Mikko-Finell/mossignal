@@ -75,6 +75,17 @@ struct ModuleData<D> {
     definition: UncheckedModule<D>,
 }
 
+#[cfg(test)]
+impl<D> Clone for ModuleData<D> {
+    fn clone(&self) -> Self {
+        Self {
+            origin: self.origin.clone(),
+            fingerprint: self.fingerprint,
+            definition: self.definition.clone(),
+        }
+    }
+}
+
 /// An immutable validated reusable user-module definition.
 pub struct ModuleDef<D> {
     data: Arc<ModuleData<D>>,
@@ -118,6 +129,14 @@ impl<D> ModuleDef<D> {
         match &self.data.origin {
             ModuleOrigin::Standard(declaration) => Some(declaration),
             ModuleOrigin::User | ModuleOrigin::__Domain(_, _) => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tamper_standard_expansion_for_test(&mut self) {
+        let data = Arc::make_mut(&mut self.data);
+        if let ModuleOrigin::Standard(declaration) = &mut data.origin {
+            declaration.tamper_expansion_fingerprint_for_test();
         }
     }
 

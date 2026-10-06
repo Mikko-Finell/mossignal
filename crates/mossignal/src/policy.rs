@@ -176,7 +176,7 @@ impl RuntimePolicyId {
         self.0
     }
 
-    const fn from_digest(bytes: [u8; 32]) -> Self {
+    pub(crate) const fn from_digest(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 }

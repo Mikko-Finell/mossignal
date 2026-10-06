@@ -77,6 +77,7 @@ pub enum OperationSubjectRef {
     MachineTransaction,
     ProvenanceView,
     StandardModuleIdentifier,
+    Persistence,
 }
 
 /// Stable identity for one non-structural application binding slot.
@@ -240,6 +241,14 @@ pub enum EvidenceSchema {
     Provenance,
     Conflict,
     InternalInvariant,
+    CanonicalEncoding,
+    VersionCompatibility,
+    DigestMismatch,
+    DigestCollision,
+    ArtifactIdentity,
+    StateSchema,
+    PendingEvent,
+    DiagnosticEpisode,
 }
 
 /// The opening catalogue's structured identifiers.
@@ -317,6 +326,43 @@ pub enum DiagnosticCode {
     ExplanationForeignCause,
     ExplanationInvalidCause,
     InternalDiagnosticEvidenceConflict,
+    PersistenceInvalidPrefix,
+    PersistenceTruncatedArtifact,
+    PersistenceTrailingBytes,
+    PersistenceNoncanonicalEncoding,
+    PersistenceMalformedEnvelope,
+    PersistenceUnknownArtifactKind,
+    PersistenceUnknownSchemaField,
+    PersistenceUnknownSchemaVariant,
+    PersistenceIntegrityDigestMismatch,
+    PersistenceDecodeLimitExceeded,
+    PersistenceUnsupportedVersion,
+    PersistenceWrongTimeDomain,
+    PersistenceNetworkIdentityMismatch,
+    PersistenceFingerprintMismatch,
+    PersistenceTopologyRevisionMismatch,
+    PersistenceRuntimePolicyMismatch,
+    PersistenceLifecycleShapeInvalid,
+    PersistenceStateSchemaMismatch,
+    PersistenceUnknownSubject,
+    PersistencePendingEventInvalid,
+    PersistenceEventIdentityStateInvalid,
+    PersistenceDiagnosticEpisodeInvalid,
+    PersistenceDiagnosticSchemaInvalid,
+    PersistenceSettledStateInconsistent,
+    PersistenceExecutionDigestMismatch,
+    PersistenceObservableDigestMismatch,
+    PersistenceSnapshotDigestMismatch,
+    PersistenceDigestCollision,
+    PersistenceProvenanceMissingPredecessor,
+    PersistenceProvenanceDigestMismatch,
+    PersistenceProvenanceCycle,
+    PersistenceProvenanceInvalidSubject,
+    PersistenceProvenanceInvalidRole,
+    PersistenceProvenanceIncompleteRootClosure,
+    PersistenceProvenanceConflictingRecord,
+    PersistenceProvenanceFalseCheckpoint,
+    StandardModuleExpansionMismatch,
 }
 
 #[derive(Clone, Copy)]
@@ -658,6 +704,157 @@ pub struct ConflictEvidence {
     pub revision: NetworkRevision,
 }
 
+/// Canonical-encoding failure for one persistence artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalEncodingEvidence {
+    /// Artifact kind when the envelope identified one.
+    pub artifact_kind: Option<String>,
+    /// Byte offset or structural path, when one is known.
+    pub path: String,
+    /// Catalogue canonical-violation kind.
+    pub violation: &'static str,
+    /// Encountered token, field, length, or ordering fact.
+    pub encountered: String,
+}
+
+/// Version-vector incompatibility for one persistence artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionCompatibilityEvidence {
+    /// Artifact kind being decoded or restored.
+    pub artifact_kind: String,
+    /// Compatibility stage that rejected the component.
+    pub stage: &'static str,
+    /// Version-vector component name.
+    pub component: String,
+    /// Version found in the artifact.
+    pub encountered: String,
+    /// Version required by the current support rule.
+    pub required: String,
+    /// Whether a representation upgrader exists for this component.
+    pub upgrader_exists: bool,
+}
+
+/// Identity mismatch between an artifact and the caller-supplied context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactIdentityEvidence {
+    /// Artifact kind being checked.
+    pub artifact_kind: String,
+    /// Compatibility stage that rejected the identity.
+    pub stage: &'static str,
+    /// Expected time domain, network, fingerprint, revision, or policy.
+    pub expected: String,
+    /// Identity found in the artifact.
+    pub actual: String,
+}
+
+/// Recomputed digest disagreement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DigestMismatchEvidence {
+    /// Digest family that disagreed.
+    pub kind: &'static str,
+    /// Digest claimed by the artifact.
+    pub expected: String,
+    /// Digest recomputed from canonical content.
+    pub actual: String,
+    /// Artifact or machine context of the comparison.
+    pub context: String,
+}
+
+/// Two different canonical records sharing one typed digest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DigestCollisionEvidence {
+    /// Digest family.
+    pub kind: &'static str,
+    /// Domain separation label.
+    pub domain: &'static str,
+    /// Shared digest value.
+    pub digest: String,
+    /// First canonical record.
+    pub first: String,
+    /// Second conflicting canonical record.
+    pub second: String,
+    /// Artifact context.
+    pub context: String,
+}
+
+/// Persisted state that does not match the compiled state schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateSchemaEvidence {
+    /// Stable state owner, when one was named.
+    pub owner: String,
+    /// Schema required by the compiled topology.
+    pub expected: String,
+    /// Schema or value found in the artifact.
+    pub encountered: String,
+}
+
+/// A persisted subject that the compiled topology does not contain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingSubjectEvidence {
+    /// Stable subject text from the artifact.
+    pub subject: String,
+}
+
+/// Pending-event identity, payload, or allocator failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingEventEvidence {
+    /// Public pending-event serial, when one was present.
+    pub event: Option<u64>,
+    /// Stable owner text.
+    pub owner: String,
+    /// Originating logical time, when present.
+    pub origin: Option<u64>,
+    /// Deadline, when present.
+    pub deadline: Option<u64>,
+    /// Expected invariant that failed.
+    pub detail: String,
+}
+
+/// Persisted diagnostic-episode identity or schema failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticEpisodeEvidence {
+    /// Episode identity text.
+    pub identity: String,
+    /// Catalogue code text from the artifact.
+    pub code: String,
+    /// Stable owner text.
+    pub owner: String,
+    /// Condition discriminator, when present.
+    pub discriminator: Option<u64>,
+    /// Beginning logical time, when present.
+    pub began_at: Option<u64>,
+    /// Last material-change logical time, when present.
+    pub last_material_change: Option<u64>,
+}
+
+/// Provenance-graph corruption found while restoring a snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistenceProvenanceEvidence {
+    /// Cause digest or checkpoint text.
+    pub digest: String,
+    /// Record kind, when known.
+    pub record_kind: String,
+    /// Semantic subject text.
+    pub subject: String,
+    /// Predecessor digest, when the failure names one.
+    pub predecessor: String,
+    /// Predecessor role, when the failure names one.
+    pub role: String,
+    /// Required root that failed to close.
+    pub root: String,
+    /// Checkpoint boundary claimed by the artifact.
+    pub checkpoint: String,
+    /// Conflicting canonical bytes, when two records collide.
+    pub conflict: String,
+}
+
+/// Settled values that disagree with the reference evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettledStateEvidence {
+    /// Stable subject or fact that disagreed.
+    pub detail: String,
+}
+
 /// Structured evidence for one exact opening catalogue code.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -983,6 +1180,155 @@ pub enum ProblemEvidence<D> {
     InternalDiagnosticEvidenceConflict {
         conflicting_code: DiagnosticCode,
         conflicting_primary: SubjectRef,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceInvalidPrefix {
+        evidence: CanonicalEncodingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceTruncatedArtifact {
+        evidence: CanonicalEncodingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceTrailingBytes {
+        evidence: CanonicalEncodingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceNoncanonicalEncoding {
+        evidence: CanonicalEncodingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceMalformedEnvelope {
+        evidence: CanonicalEncodingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceUnknownArtifactKind {
+        evidence: VersionCompatibilityEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceUnknownSchemaField {
+        evidence: VersionCompatibilityEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceUnknownSchemaVariant {
+        evidence: VersionCompatibilityEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceIntegrityDigestMismatch {
+        evidence: DigestMismatchEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceDecodeLimitExceeded {
+        evidence: BudgetEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceUnsupportedVersion {
+        evidence: VersionCompatibilityEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceWrongTimeDomain {
+        evidence: ArtifactIdentityEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceNetworkIdentityMismatch {
+        evidence: ArtifactIdentityEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceFingerprintMismatch {
+        evidence: ArtifactIdentityEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceTopologyRevisionMismatch {
+        evidence: ArtifactIdentityEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceRuntimePolicyMismatch {
+        evidence: ArtifactIdentityEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceLifecycleShapeInvalid {
+        evidence: ParameterEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceStateSchemaMismatch {
+        evidence: StateSchemaEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceUnknownSubject {
+        evidence: MissingSubjectEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistencePendingEventInvalid {
+        evidence: PendingEventEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceEventIdentityStateInvalid {
+        evidence: PendingEventEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceDiagnosticEpisodeInvalid {
+        evidence: DiagnosticEpisodeEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceDiagnosticSchemaInvalid {
+        evidence: DiagnosticEpisodeEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceSettledStateInconsistent {
+        evidence: SettledStateEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceExecutionDigestMismatch {
+        evidence: DigestMismatchEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceObservableDigestMismatch {
+        evidence: DigestMismatchEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceSnapshotDigestMismatch {
+        evidence: DigestMismatchEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceDigestCollision {
+        evidence: DigestCollisionEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceProvenanceMissingPredecessor {
+        evidence: PersistenceProvenanceEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceProvenanceDigestMismatch {
+        evidence: PersistenceProvenanceEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceProvenanceCycle {
+        evidence: PersistenceProvenanceEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceProvenanceInvalidSubject {
+        evidence: PersistenceProvenanceEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceProvenanceInvalidRole {
+        evidence: PersistenceProvenanceEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceProvenanceIncompleteRootClosure {
+        evidence: PersistenceProvenanceEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceProvenanceConflictingRecord {
+        evidence: PersistenceProvenanceEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    PersistenceProvenanceFalseCheckpoint {
+        evidence: PersistenceProvenanceEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    StandardModuleExpansionMismatch {
+        module_ref: StandardModuleRef,
+        detail: String,
         marker: PhantomData<fn() -> D>,
     },
 }
@@ -1565,6 +1911,43 @@ opening_diagnostic_registry! {
     ExplanationForeignCause, Self::ExplanationForeignCause { .. }, "explanation.foreign_cause", Error, Compatibility, Provenance, false, true, false;
     ExplanationInvalidCause, Self::ExplanationInvalidCause { .. }, "explanation.invalid_cause", Error, CallerInput, Provenance, false, true, false;
     InternalDiagnosticEvidenceConflict, Self::InternalDiagnosticEvidenceConflict { .. }, "internal.diagnostic_evidence_conflict", Error, LibraryDefect, InternalInvariant, false, false, true;
+    PersistenceInvalidPrefix, Self::PersistenceInvalidPrefix { .. }, "persistence.invalid_prefix", Error, CorruptData, CanonicalEncoding, false, true, false;
+    PersistenceTruncatedArtifact, Self::PersistenceTruncatedArtifact { .. }, "persistence.truncated_artifact", Error, CorruptData, CanonicalEncoding, false, true, false;
+    PersistenceTrailingBytes, Self::PersistenceTrailingBytes { .. }, "persistence.trailing_bytes", Error, CorruptData, CanonicalEncoding, false, true, false;
+    PersistenceNoncanonicalEncoding, Self::PersistenceNoncanonicalEncoding { .. }, "persistence.noncanonical_encoding", Error, CorruptData, CanonicalEncoding, false, true, false;
+    PersistenceMalformedEnvelope, Self::PersistenceMalformedEnvelope { .. }, "persistence.malformed_envelope", Error, CorruptData, CanonicalEncoding, false, true, false;
+    PersistenceUnknownArtifactKind, Self::PersistenceUnknownArtifactKind { .. }, "persistence.unknown_artifact_kind", Error, UnsupportedFeature, VersionCompatibility, false, true, false;
+    PersistenceUnknownSchemaField, Self::PersistenceUnknownSchemaField { .. }, "persistence.unknown_schema_field", Error, Compatibility, VersionCompatibility, false, true, false;
+    PersistenceUnknownSchemaVariant, Self::PersistenceUnknownSchemaVariant { .. }, "persistence.unknown_schema_variant", Error, Compatibility, VersionCompatibility, false, true, false;
+    PersistenceIntegrityDigestMismatch, Self::PersistenceIntegrityDigestMismatch { .. }, "persistence.integrity_digest_mismatch", Error, CorruptData, DigestMismatch, false, true, false;
+    PersistenceDecodeLimitExceeded, Self::PersistenceDecodeLimitExceeded { .. }, "persistence.decode_limit_exceeded", Error, ResourceLimit, Budget, false, true, false;
+    PersistenceUnsupportedVersion, Self::PersistenceUnsupportedVersion { .. }, "persistence.unsupported_version", Error, Compatibility, VersionCompatibility, false, true, false;
+    PersistenceWrongTimeDomain, Self::PersistenceWrongTimeDomain { .. }, "persistence.wrong_time_domain", Error, Compatibility, ArtifactIdentity, false, true, false;
+    PersistenceNetworkIdentityMismatch, Self::PersistenceNetworkIdentityMismatch { .. }, "persistence.network_identity_mismatch", Error, Compatibility, ArtifactIdentity, false, true, false;
+    PersistenceFingerprintMismatch, Self::PersistenceFingerprintMismatch { .. }, "persistence.fingerprint_mismatch", Error, Compatibility, ArtifactIdentity, false, true, false;
+    PersistenceTopologyRevisionMismatch, Self::PersistenceTopologyRevisionMismatch { .. }, "persistence.topology_revision_mismatch", Error, Compatibility, ArtifactIdentity, false, true, false;
+    PersistenceRuntimePolicyMismatch, Self::PersistenceRuntimePolicyMismatch { .. }, "persistence.runtime_policy_mismatch", Error, Compatibility, ArtifactIdentity, false, true, false;
+    PersistenceLifecycleShapeInvalid, Self::PersistenceLifecycleShapeInvalid { .. }, "persistence.lifecycle_shape_invalid", Error, CorruptData, Parameter, false, true, false;
+    PersistenceStateSchemaMismatch, Self::PersistenceStateSchemaMismatch { .. }, "persistence.state_schema_mismatch", Error, Compatibility, StateSchema, false, true, false;
+    PersistenceUnknownSubject, Self::PersistenceUnknownSubject { .. }, "persistence.unknown_subject", Error, CorruptData, MissingReference, false, true, false;
+    PersistencePendingEventInvalid, Self::PersistencePendingEventInvalid { .. }, "persistence.pending_event_invalid", Error, CorruptData, PendingEvent, false, true, false;
+    PersistenceEventIdentityStateInvalid, Self::PersistenceEventIdentityStateInvalid { .. }, "persistence.event_identity_state_invalid", Error, CorruptData, PendingEvent, false, true, false;
+    PersistenceDiagnosticEpisodeInvalid, Self::PersistenceDiagnosticEpisodeInvalid { .. }, "persistence.diagnostic_episode_invalid", Error, CorruptData, DiagnosticEpisode, false, true, false;
+    PersistenceDiagnosticSchemaInvalid, Self::PersistenceDiagnosticSchemaInvalid { .. }, "persistence.diagnostic_schema_invalid", Error, CorruptData, DiagnosticEpisode, false, true, false;
+    PersistenceSettledStateInconsistent, Self::PersistenceSettledStateInconsistent { .. }, "persistence.settled_state_inconsistent", Error, CorruptData, InternalInvariant, false, true, false;
+    PersistenceExecutionDigestMismatch, Self::PersistenceExecutionDigestMismatch { .. }, "persistence.execution_digest_mismatch", Error, CorruptData, DigestMismatch, false, true, false;
+    PersistenceObservableDigestMismatch, Self::PersistenceObservableDigestMismatch { .. }, "persistence.observable_digest_mismatch", Error, CorruptData, DigestMismatch, false, true, false;
+    PersistenceSnapshotDigestMismatch, Self::PersistenceSnapshotDigestMismatch { .. }, "persistence.snapshot_digest_mismatch", Error, CorruptData, DigestMismatch, false, true, false;
+    PersistenceDigestCollision, Self::PersistenceDigestCollision { .. }, "persistence.digest_collision", Error, CorruptData, DigestCollision, false, true, true;
+    PersistenceProvenanceMissingPredecessor, Self::PersistenceProvenanceMissingPredecessor { .. }, "persistence.provenance_missing_predecessor", Error, CorruptData, Provenance, false, true, false;
+    PersistenceProvenanceDigestMismatch, Self::PersistenceProvenanceDigestMismatch { .. }, "persistence.provenance_digest_mismatch", Error, CorruptData, Provenance, false, true, false;
+    PersistenceProvenanceCycle, Self::PersistenceProvenanceCycle { .. }, "persistence.provenance_cycle", Error, CorruptData, Provenance, false, true, false;
+    PersistenceProvenanceInvalidSubject, Self::PersistenceProvenanceInvalidSubject { .. }, "persistence.provenance_invalid_subject", Error, CorruptData, Provenance, false, true, false;
+    PersistenceProvenanceInvalidRole, Self::PersistenceProvenanceInvalidRole { .. }, "persistence.provenance_invalid_role", Error, CorruptData, Provenance, false, true, false;
+    PersistenceProvenanceIncompleteRootClosure, Self::PersistenceProvenanceIncompleteRootClosure { .. }, "persistence.provenance_incomplete_root_closure", Error, CorruptData, Provenance, false, true, false;
+    PersistenceProvenanceConflictingRecord, Self::PersistenceProvenanceConflictingRecord { .. }, "persistence.provenance_conflicting_record", Error, CorruptData, Provenance, false, true, false;
+    PersistenceProvenanceFalseCheckpoint, Self::PersistenceProvenanceFalseCheckpoint { .. }, "persistence.provenance_false_checkpoint", Error, CorruptData, Provenance, false, true, false;
+    StandardModuleExpansionMismatch, Self::StandardModuleExpansionMismatch { .. }, "standard_module.expansion_mismatch", Error, CorruptData, StandardModule, true, true, false;
 }
 
 /// One structured, catalogue-valid problem record.
@@ -2139,6 +2522,47 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
             conflicting_primary,
             ..
         } => ConditionDiscriminator::Internal(*conflicting_code, conflicting_primary.clone()),
+        ProblemEvidence::PersistenceInvalidPrefix { .. }
+        | ProblemEvidence::PersistenceTruncatedArtifact { .. }
+        | ProblemEvidence::PersistenceTrailingBytes { .. }
+        | ProblemEvidence::PersistenceNoncanonicalEncoding { .. }
+        | ProblemEvidence::PersistenceMalformedEnvelope { .. }
+        | ProblemEvidence::PersistenceUnknownArtifactKind { .. }
+        | ProblemEvidence::PersistenceUnknownSchemaField { .. }
+        | ProblemEvidence::PersistenceUnknownSchemaVariant { .. }
+        | ProblemEvidence::PersistenceIntegrityDigestMismatch { .. }
+        | ProblemEvidence::PersistenceDecodeLimitExceeded { .. }
+        | ProblemEvidence::PersistenceUnsupportedVersion { .. }
+        | ProblemEvidence::PersistenceWrongTimeDomain { .. }
+        | ProblemEvidence::PersistenceNetworkIdentityMismatch { .. }
+        | ProblemEvidence::PersistenceFingerprintMismatch { .. }
+        | ProblemEvidence::PersistenceTopologyRevisionMismatch { .. }
+        | ProblemEvidence::PersistenceRuntimePolicyMismatch { .. }
+        | ProblemEvidence::PersistenceLifecycleShapeInvalid { .. }
+        | ProblemEvidence::PersistenceStateSchemaMismatch { .. }
+        | ProblemEvidence::PersistenceUnknownSubject { .. }
+        | ProblemEvidence::PersistencePendingEventInvalid { .. }
+        | ProblemEvidence::PersistenceEventIdentityStateInvalid { .. }
+        | ProblemEvidence::PersistenceDiagnosticEpisodeInvalid { .. }
+        | ProblemEvidence::PersistenceDiagnosticSchemaInvalid { .. }
+        | ProblemEvidence::PersistenceSettledStateInconsistent { .. }
+        | ProblemEvidence::PersistenceExecutionDigestMismatch { .. }
+        | ProblemEvidence::PersistenceObservableDigestMismatch { .. }
+        | ProblemEvidence::PersistenceSnapshotDigestMismatch { .. }
+        | ProblemEvidence::PersistenceDigestCollision { .. }
+        | ProblemEvidence::PersistenceProvenanceMissingPredecessor { .. }
+        | ProblemEvidence::PersistenceProvenanceDigestMismatch { .. }
+        | ProblemEvidence::PersistenceProvenanceCycle { .. }
+        | ProblemEvidence::PersistenceProvenanceInvalidSubject { .. }
+        | ProblemEvidence::PersistenceProvenanceInvalidRole { .. }
+        | ProblemEvidence::PersistenceProvenanceIncompleteRootClosure { .. }
+        | ProblemEvidence::PersistenceProvenanceConflictingRecord { .. }
+        | ProblemEvidence::PersistenceProvenanceFalseCheckpoint { .. } => {
+            ConditionDiscriminator::Operation(evidence.code())
+        }
+        ProblemEvidence::StandardModuleExpansionMismatch {
+            module_ref, detail, ..
+        } => ConditionDiscriminator::StandardDetail(module_ref.clone(), detail.clone()),
     }
 }
 
@@ -2498,7 +2922,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 105);
+        assert_eq!(leaves.len(), 146);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {
