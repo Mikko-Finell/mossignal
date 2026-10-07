@@ -1,0 +1,616 @@
+schema_version: "0.1"
+id: mossignal.reconfiguration.atomic_replacement
+title: Atomic topology replacement
+kind: lifecycle
+status: reviewed
+
+source_baseline:
+  commit: 07f960e70b12e5c2e38c8a9b27fb77896360b65c
+  working_tree: clean
+
+summary: >-
+  A prepared patch commits only through one ordinary transaction. At the
+  effective time the machine finalizes migration against the state actually
+  reached, enforces an explicit loss policy, installs the target topology, and
+  publishes one atomic result.
+
+scope:
+  includes:
+    - attaching one prepared patch and one explicit reconfiguration policy to an initialization or advancement transaction
+    - effective-time finalization, target installation, and one target reaction
+    - the committed migration report, revision advance, provenance, and diagnostic publication
+    - failure atomicity and snapshot sufficiency of the committed machine
+  excludes:
+    - structural preparation and the static migration plan
+    - persisted patch, migration-report, and patch-bearing replay artifacts
+    - collaborative editing, merge, rebase, inverse patches, and incremental compilation
+
+known_uncovered:
+  - A persisted network_patch artifact, migration_report artifact, or patch-bearing replay frame, including re-preparation of a decoded patch and concatenation of a log that contains the patch step
+  - Caller transaction metadata through Transaction::with_meta
+  - Collaborative graph editing, automatic rebasing, patch merging, and inverse patches
+  - Optimized incremental patch compilation
+  - Caller-defined migration functions
+  - One-to-many identity and name-based or similarity-based migration
+  - A hidden or caller-omitted reconfiguration policy
+  - Standard modules named by the catalogue but not constructed by this runtime
+  - A future lossless migration between different temporal kinds
+
+aliases:
+  - Transaction::with_patch
+  - ReconfigurationPolicy
+  - MigrationReport<D>
+  - ReconfigurationFailure<D>
+
+requirements:
+  - id: patch-bearing-transaction
+    kind: public_surface
+    statement: >-
+      A prepared patch commits only through Transaction::with_patch on an
+      ordinary initialization or advancement transaction, together with an
+      explicit ReconfigurationPolicy of RejectStateLoss or
+      AllowReportedStateLoss. with_patch returns
+      Result<Self, TransactionBuildFailure<D>> and rejects, before
+      application, every base-revision, network, target-schema, lifecycle, and
+      time-domain mismatch determinable from the transaction and the prepared
+      patch. The prepared base revision must equal the transaction's expected
+      revision. The input must be bound to the prepared target schema, and a
+      determinable schema mismatch is rejected before application. An
+      initialization patch transaction carries a target-bound InputSnapshot. A
+      ready patch transaction carries a target-bound InputDelta. Those input
+      kinds are fixed by the transaction constructors. Applying an
+      initialization transaction to a ready machine fails with
+      lifecycle.already_initialized. Applying an advancement transaction to an
+      uninitialized machine fails with lifecycle.delta_before_initialization.
+      Before any candidate work, the prepared patch matches the machine only
+      when the machine network key, machine revision, machine fingerprint,
+      prepared base revision, prepared base fingerprint, signal-semantics
+      version, and runtime time domain are equal. Inequality is
+      reconfiguration.stale_prepared_patch. A transaction expected revision
+      that differs from the machine is runtime.stale_revision. An optional
+      expected execution-state digest is checked before any candidate work and
+      rejects with runtime.stale_execution_state when it differs. No
+      state-loss policy is implied for a transaction that does not carry a
+      patch. Commitment accepts no migration callback.
+    sources: [transaction-attachment, transaction-options, commitment-reporting, transactions, no-hidden-defaults, no-callbacks, no-migration-code, catalogue-runtime, catalogue-lifecycle, catalogue-finalization, prepared-freshness]
+    basis: derived
+
+  - id: effective-time-order
+    kind: semantic
+    statement: >-
+      For a ready machine, one outer transaction first applies the
+      patch-bearing checks. A requested time that is not strictly later than
+      the machine's current logical time fails with
+      runtime.time_not_strictly_increasing before candidate work. The
+      transaction then processes every deadline strictly earlier than the
+      effective time under the old topology; finalizes migration against the
+      candidate state immediately before that time; enforces the loss policy;
+      installs the target only in candidate state; forms one unordered
+      patch-time batch from migrated obligations due then, migration-created
+      obligations due then that policy explicitly allows, target external
+      input, and topology-induced source invalidations and initialization
+      facts; settles the target reaction; and publishes atomically. Events
+      before the effective time never run under the target. An event due
+      exactly then is migrated before it can fire and does not fire under the
+      old topology. Preparation-time state is not substituted. Same-time
+      caller input is a target-reaction fact, not source migration state.
+    sources: [effective-time, state-dependent, same-time-input, due-at-patch, installation, ready-transaction, processor-finalization, settlement, catalogue-runtime]
+
+  - id: initialization-patch
+    kind: semantic
+    statement: >-
+      An initialization patch validates one complete target-bound input
+      snapshot, finalizes from the base declared initial state, enforces the
+      loss policy, installs the target in candidate state, and evaluates one
+      ordinary initialization reaction. Preservation carries base declared
+      state forward. A changed initial parameter does not overwrite preserved
+      declared state. Reset installs the target declared initial state. There
+      are no prior valuations, baselines, pending events, runtime episodes, or
+      runtime provenance roots. Initialization and the revision commit together.
+    sources: [init-order, uninitialized-state, first-transaction, commitment-reporting]
+
+  - id: finalize-prepared-plan
+    kind: semantic
+    statement: >-
+      Finalization applies the prepared static plan to the exact pre-patch
+      state and does not invent a directive, infer correspondence, or repair
+      the target. Every surviving state owner, source pending event, external
+      level valuation, level-output baseline, active episode, and required
+      provenance root receives one outcome. Conditional predicates are decided
+      only by that pre-patch state. A total rule that selects Reject rejects
+      the transaction through the catalogue finalization code for that subject.
+      RequirePreserve fails when the decided outcome is not lossless
+      preservation. Module instances keep the prepared internal correspondence,
+      and one rejected internal subject rejects the whole transaction. Region
+      merge or split alone does not reset compatible state, pending work,
+      provenance, or episodes. After installation, every potentially affected
+      target operation is reevaluated. The observable target reaction matches
+      complete evaluation of the target reaction graph.
+    sources: [state-dependent, installation, reevaluation, commitment-reporting, classification-test, region-test, induced-test, processor-finalization]
+    basis: derived
+
+  - id: input-output-and-cause
+    kind: semantic
+    statement: >-
+      A preserved level input keeps its pre-patch valuation until the same-time
+      target set replaces it. A reassociated level input inherits the source
+      valuation the same way. A new level input is established only by explicit
+      target input. A removed level input leaves the schema. Pulse absence
+      means zero. A preserved level output compares the settled target value
+      with its prior baseline and emits LevelChanged only when they differ. A
+      new or reassociated level output emits LevelEstablished. A removed output
+      is a topology consequence. A pulse output is emitted only for a genuine
+      nonzero target-reaction count. The patch is a causal fact and is not
+      encoded as a synthetic Level or Pulse.
+    sources: [external-inputs, external-outputs, same-time-input, output-publication, topology-cause, processor-output, processor-cause, schema-test, induced-test]
+
+  - id: explicit-loss-policy
+    kind: semantic
+    statement: >-
+      RejectStateLoss rejects the whole transaction when the finalized
+      semantic-loss set is nonempty, and a conditional loss that the pre-patch
+      state does not realize does not reject. AllowReportedStateLoss commits
+      only when every possible loss category was classified during preparation
+      and every actual loss appears in the committed report. No unclassified
+      loss is accepted.
+      Removed or reset stored state, canceled pending work, lost deadline,
+      origin, payload, inertial qualification, or periodic phase, a removed
+      level valuation, a removed level baseline, and terminated episode or
+      required provenance ancestry are loss when they actually occur.
+      Revision advance, dense reassignment, stale handles, region changes,
+      metadata changes, information-preserving retiming, ordinary reevaluation,
+      and initialization where no source state existed are not loss.
+    sources: [loss-policy, api-policy, processor-policy, commitment-reporting, policy-test, loss-policy-test]
+
+  - id: migration-report
+    kind: public_surface
+    statement: >-
+      A successful patch transaction returns one complete MigrationReport on
+      the transaction result. A transaction without a patch has no migration
+      report. The report identifies base and target revisions and fingerprints
+      and accounts for every subject, state, pending-event, input, output,
+      episode, provenance, loss, invalidation, and region outcome required to
+      check total classification without private machine internals. Module
+      replacement retains module grouping and the complete internal outcomes.
+      Records are ordered by category, source identity, target identity, state
+      or event identity, and one canonical tie-breaker. That order is not
+      causal.
+    sources: [migration-report, subject-outcomes, report-order, api-result, result-shape, commitment-reporting, totality-test]
+    basis: derived
+
+  - id: revision-provenance-and-episodes
+    kind: system_effect
+    statement: >-
+      Success installs the prepared proposed revision exactly once. A
+      state-only transaction still leaves the revision unchanged. Migrated
+      state records the source fact, the patch, and the migration rule. Reset
+      state records an explicit reset or target-initialization cause. Preserved
+      pending events keep their scheduling ancestry and gain the migration
+      fact. Recomputed or restarted events keep their originating causes and
+      record the rule that changed timing. Required ancestry may be replaced
+      only by an authoritative checkpoint that preserves later explanation.
+      Active episodes follow the prepared Preserve, Transform, Resolve,
+      Terminate, or Reject rule, and the target reaction may then begin,
+      change, or resolve episodes. Dense identity never moves an episode or a
+      provenance root to another subject. The patch transaction's output,
+      state, topology, episode, and provenance changes are published in the
+      ordinary result.
+    sources: [revision, installation, provenance-migration, episode-migration, episode-behavior, processor-provenance, processor-episode, api-commitment, identity-test]
+
+  - id: atomic-failure
+    kind: prohibition
+    statement: >-
+      Any failure of freshness, earlier-deadline execution, migration,
+      checked time arithmetic, loss enforcement, installation, target
+      evaluation, provenance, diagnostics, result construction, digest
+      calculation, or a runtime budget rejects the entire outer transaction.
+      The published machine stays unchanged, including topology, revision,
+      logical time, external levels, node and temporal state, pending events,
+      baselines, provenance roots, episodes, and both digests. Earlier
+      deadlines from that same transaction are not published. Finalization
+      delivers reconfiguration.stale_prepared_patch,
+      reconfiguration.target_input_schema_mismatch,
+      reconfiguration.state_migration_rejected,
+      reconfiguration.pending_event_migration_rejected,
+      reconfiguration.require_preserve_failed,
+      reconfiguration.episode_migration_rejected,
+      reconfiguration.provenance_migration_rejected, and
+      reconfiguration.state_loss_rejected through the closed reconfiguration
+      failure family. That family also carries
+      reconfiguration.ambiguous_event_migration and
+      reconfiguration.conflicting_migrated_transitions when finalization
+      discovers those conditions. Checked time and budget failures use
+      runtime.time_overflow and runtime.budget_exceeded with reconfiguration
+      phase evidence, including when the family's time and budget variants
+      carry those problems. An inconsistent migration plan is an internal
+      defect, not a caller-facing reconfiguration failure. Rejected
+      transactions do not modify active episodes.
+    sources: [atomic-failure, finalization-failures, episode-behavior, settlement, catalogue-finalization, catalogue-preparation, api-commitment, atomicity-test]
+
+  - id: committed-snapshot-and-later-replay
+    kind: persistence
+    statement: >-
+      The machine published by a successful patch transaction is an ordinary
+      committed machine. Its snapshot, restored against the target compiled
+      network and the same runtime policy, reproduces lifecycle, time,
+      revision, fingerprint, external levels, migrated state, the pending
+      calendar, baselines, active episodes, required provenance, and both
+      digests. Restoration does not apply the patch, reassociate keys, or
+      translate state. A later patch-free replay log started from that
+      committed or restored machine reproduces the same subsequent results and
+      digests. A recording helper must not store a patch-bearing transaction
+      as a patch-free frame.
+    sources: [snapshot-sufficiency, snapshot-contents, restoration, no-implicit-migration, processor-replay, frame-construction]
+    basis: derived
+
+  - id: forecast-shares-the-transition
+    kind: semantic
+    statement: >-
+      Forecasting a patch-bearing transaction is the ordinary forecast of that
+      transaction. It runs the same finalization, migration, settlement, and
+      publication steps on unpublished candidate state and returns the
+      hypothetical result, including the migration report. It does not mutate
+      the source machine, reserve the revision, or act as a commit token.
+      Later commitment is a new transaction against the then-current revision
+      and, when requested, the expected execution digest. Structural
+      preparation still does not claim the exact outcomes.
+    sources: [exact-forecast, no-forecast-commit, processor-preview]
+
+  - id: finalization-verification
+    kind: verification
+    statement: >-
+      Tests must separate preparation from finalization and show that migration
+      uses the state reached after earlier deadlines, not the state at
+      preparation. They must cover both loss policies, unrealized conditional
+      loss, the temporal boundaries strictly before, at, and after the
+      effective time, target input establishment and removal, preserved,
+      established, and removed outputs, a topology-caused edge pulse, module
+      internal preservation and a loss that rejects the whole patch, dense-slot
+      non-transfer, and atomic rejection after earlier deadline work. The
+      committed machine must match complete target evaluation. A forecast of
+      the same transaction must match cloned apply and leave the source
+      unchanged. A post-commit snapshot must restore an equivalent machine, and
+      a later patch-free replay from that machine must match continued
+      execution. Replay boundaries immediately before and after the commit are
+      checked with those snapshot checkpoints and patch-free logs.
+    sources: [two-stage-test, reached-state-test, effective-time-test, policy-test, temporal-boundary-test, schema-test, reaction-test, module-test, atomicity-test, differential-test, forecast-equivalence, freshness-test, snapshot-round-trip, snapshot-sufficiency-test, replay-equivalence, replay-boundary]
+
+recommendations:
+  - id: retain-rejecting-evidence
+    statement: >-
+      Finalization may stop once the transaction must reject, and it should
+      still retain the state predicate or event that caused the rejection.
+    sources: [accumulation]
+
+  - id: checkpoint-preserved-state
+    statement: >-
+      Preserved state across a revision should receive a migration checkpoint
+      rather than silent reuse of a revision-incompatible provenance root.
+    sources: [provenance-migration, processor-provenance]
+
+implementation_freedom:
+  - Private candidate storage, event-arena layout, and the dense state-migration algorithm are free when the observable migration, reaction, and atomic publication stay equivalent.
+  - Complete evaluation of the target reaction graph is sufficient. A second incremental compiler is not required.
+  - MigrationReport and its records may use private fields and accessors. The representative public-field listings are not a storage mandate.
+  - The commit installs the prepared proposed revision. It does not choose a different successor encoding.
+  - The current patch-free replay codec stays in force. Rejecting a patch-bearing recording, without writing a frame and without mutating the machine, is the sufficient behavior until a patch-bearing frame exists.
+
+open_questions: []
+
+sources:
+  effective-time:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VIII — Transaction-time finalization and commitment, 63. Effective-time ordering]
+    reviewed_hash: sha256:996a1f72d961a1a6d3f9822380b37e967d99c5055665b19694723415a919375c
+  init-order:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VIII — Transaction-time finalization and commitment, 64. Initialization patch ordering]
+    reviewed_hash: sha256:f51333ec8d23b8390d624ddc3fa6d2b61f291dc407bfbb214614774f0eb4eeb6
+  state-dependent:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VIII — Transaction-time finalization and commitment, 65. State-dependent finalization]
+    reviewed_hash: sha256:6ab97548584e863753b59046811593ecbdeff7bf590ffb07c9ad51bf1a2c3436
+  same-time-input:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VIII — Transaction-time finalization and commitment, 66. Same-time external input boundary]
+    reviewed_hash: sha256:9314b8cc2b16f17c66ce400807934483df63e1a99e86972d1ee7a68b614cc657
+  due-at-patch:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VIII — Transaction-time finalization and commitment, 67. Events due exactly at patch time]
+    reviewed_hash: sha256:6c87822270a4f9127d017711ecdf4cedd0ee3ee4258f30b417d49b57d343bed5
+  installation:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VIII — Transaction-time finalization and commitment, 68. Target topology installation]
+    reviewed_hash: sha256:b98890215c8d4ad9e5cabf08a942ba744b5db1724dc7ef445c239c205922f733
+  reevaluation:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VIII — Transaction-time finalization and commitment, 69. Topology-induced reevaluation]
+    reviewed_hash: sha256:dfd009bc80b78ee72c3295538d463eaf2a953ff2cd31c1cc2cfe505f6fef3b18
+  topology-cause:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VIII — Transaction-time finalization and commitment, 70. Topology as cause]
+    reviewed_hash: sha256:10af178acf3723579c77360bfa1128610d9a490140225877a1f2d6af36e05aac
+  output-publication:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VIII — Transaction-time finalization and commitment, 71. Output publication]
+    reviewed_hash: sha256:46bd3656a803b77b0fb06703fb1124a5ac576a68428522585171c87d949f792f
+  atomic-failure:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VIII — Transaction-time finalization and commitment, 72. Atomic failure]
+    reviewed_hash: sha256:a60c1e754d6eec73433ba16a57311a691f5f5ab2d895483d9d51bda49996a003
+  uninitialized-state:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 40. Uninitialized-machine state]
+    reviewed_hash: sha256:e339901c0c868db5f4405613b21872bad7e7238d05ae0824471fbd14fa19be76
+  external-inputs:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VI — Other semantic state, 53. External input valuation migration]
+    reviewed_hash: sha256:0bb4abcc4afc08f595ca0d8ab001b25657de2c564d3685868b1248bab4bbbabf
+  external-outputs:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VI — Other semantic state, 54. External output baseline migration]
+    reviewed_hash: sha256:72b2b48de7603f0e9f01d131e33de41c752458756c443c22e9ea3399ff8cba15
+  episode-migration:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VI — Other semantic state, 55. Diagnostic episode migration]
+    reviewed_hash: sha256:a54402df8ec8cc4c68c19cd283f1228b25ebc3ff416b8006e22ead35309197e1
+  provenance-migration:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VI — Other semantic state, 56. Provenance migration]
+    reviewed_hash: sha256:29303c619f120768317850583361ad6b8316f024e83b026d3cbb6a1f90791ea3
+  loss-policy:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IX — Semantic loss and migration reporting, 76. Reconfiguration policy]
+    reviewed_hash: sha256:4daa65225d84398cd1ccbdc4b25723cc2f17644c0b214d62a2696715ec817173
+  migration-report:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IX — Semantic loss and migration reporting, 77. Migration report]
+    reviewed_hash: sha256:f5d8ed94e75d4f212bd2a13c0a64676ff3dc97a7e28104a12fe624313f61698e
+  subject-outcomes:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IX — Semantic loss and migration reporting, 78. Subject outcomes]
+    reviewed_hash: sha256:57c4e6c14665bff3cc2be4601d0ccb087d9eb06329ecc06f4bc3dcefafd856be
+  report-order:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IX — Semantic loss and migration reporting, 79. Deterministic report order]
+    reviewed_hash: sha256:2ea366b9fec974729fada2cf9eb274b7723cea98d04e1aee970f55769f556a69
+  transaction-attachment:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part X — Public API responsibilities, 84. Transaction attachment]
+    reviewed_hash: sha256:69a8d86ab7dd4d0a50ac95a202ea8b0ac6f14f708bfd49177131d32422578d84
+  exact-forecast:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part X — Public API responsibilities, 85. Exact forecast]
+    reviewed_hash: sha256:5f61a7059f40f1002deb4776488c4e74d49012a4f53bc5f73413c8fce241e452
+  no-forecast-commit:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part X — Public API responsibilities, 86. No implicit commit of forecast]
+    reviewed_hash: sha256:0acf9707f916ea6da07d194567aa344b6ca8f9d9251a6338b1c779f9ff821a54
+  finalization-failures:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XI — Diagnostics and failures, 89. Finalization failures]
+    reviewed_hash: sha256:08570cdae8abeba5938dfbfa6b6294a9e8a534caf716292579a8e4cd4bb11511
+  accumulation:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XI — Diagnostics and failures, 90. Diagnostic accumulation]
+    reviewed_hash: sha256:b208c8f3b2de3412ee9fe1b29a43a8765260a314a5028ceb2a8840ea2af4ccbb
+  episode-behavior:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XI — Diagnostics and failures, 91. Diagnostic episode behavior]
+    reviewed_hash: sha256:aca18002b8e2ad24c586402fb3ee76486d2976fe782855a03013891788ca7072
+  no-migration-code:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XIII — Deliberately unspecified and excluded behavior, 106. No arbitrary migration code]
+    reviewed_hash: sha256:f6de45d716c90351dad17a2ce37557ee1b8adf0aa509efcd27206611abbca7d0
+  effective-time-test:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XII — Verification obligations, 95. Effective-time state correctness]
+    reviewed_hash: sha256:b3571d8deeccecd5bc0a474b7b50acd5f5837e062f57a80efe4875cd59ac9034
+  temporal-boundary-test:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XII — Verification obligations, 98. Temporal boundary tests]
+    reviewed_hash: sha256:6f8d6d9ff9388bffa2b5ed89fb6fce286eb7468f04217d0c6ca2ebfd88679adf
+  schema-test:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XII — Verification obligations, 99. Target input-schema tests]
+    reviewed_hash: sha256:c790ac526ce9b73f69de0d6f7b9bbd8bc16516b9d9f2daa7a2c97ddc46507948
+  reaction-test:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XII — Verification obligations, 100. Topology-induced reaction equivalence]
+    reviewed_hash: sha256:09360fefe5f1eb90b9a43b453f33a12269d0942d098ecc6f88044dbece384793
+  module-test:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XII — Verification obligations, 101. Module migration tests]
+    reviewed_hash: sha256:5e5b77d5a013aa7b65bfe673f12d20fe79bcfc92bd8305f7eaef6f224b11ef60
+  atomicity-test:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XII — Verification obligations, 102. Failure atomicity]
+    reviewed_hash: sha256:3435435f7acb2fcef15ca8c09572d71aa1eb2c78de1a68ef5df2a8ced49b5b94
+  revision:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: ["Part III — Identity, bindings, and metadata", "19. Revision, fingerprint, digests, and runtime policy", 19.1 Topology revision]
+    reviewed_hash: sha256:f5bc9a25453285db32ad2fadf01c9cc3176d5399f3cbb347ea6641de69c90bd3
+  transactions:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 23. Explicit transaction values]
+    reviewed_hash: sha256:0c99fb78a8bf6a0e4c253c47536e4b4a108c1b4da1b36dbf7dfdf6e6ecdc48ca
+  first-transaction:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 24. Transaction ordering, 24.1 First transaction]
+    reviewed_hash: sha256:58ff436c7845528a88fada70a559c8f56ecf881f8b4b98007b086f463540f001
+  ready-transaction:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 24. Transaction ordering, 24.2 Ready-machine transaction]
+    reviewed_hash: sha256:cb4a0f7d6e21f6ac09877096aedc3516c516b714865f34e3ce5279d50f4ec78b
+  settlement:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part V — Transactions and execution, 26. Settlement]
+    reviewed_hash: sha256:875bead35fccd63f762bf9fc87fbe484c579f99908d5e175bc8b135351296e23
+  api-policy:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part X — Reconfiguration, 62. State-loss policy]
+    reviewed_hash: sha256:ee984da4def4ff0974b9086d6e3e3d23396db0b33ad2613f4ef3ef1b7a7e5437
+  api-commitment:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part X — Reconfiguration, 63. Atomic commitment]
+    reviewed_hash: sha256:16cf670ec30a9dff78a0b038780519f211b50a4914f252401cea8b80b365f8cf
+  api-result:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: ["Part VI — Inputs and outputs", "31. `TransactionResult<D>` and semantic change sets"]
+    reviewed_hash: sha256:0d3c33b0638857da3b4a5b504098f3ccb809fc9e684057ab704088b2a80dad31
+  processor-finalization:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IX — Reconfiguration, 55. Two-stage patch handling, 55.2 Transaction-time finalization]
+    reviewed_hash: sha256:c6a0f55630ef27bff1a3bae4a584a00dff76f7bc730b142a2635040ff2fe4d65
+  processor-policy:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IX — Reconfiguration, 59. State-loss policy]
+    reviewed_hash: sha256:85b30541ce787832491ee34968a7c4e5a67d1ad4a107558b70ab649c9e51ee15
+  processor-cause:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IX — Reconfiguration, 60. Topology changes as reaction causes]
+    reviewed_hash: sha256:844967b3c7331c8e61916f144371a4242bdcd6d1e8fe1d4744a55c9ac7432a8e
+  processor-output:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IX — Reconfiguration, 61. Output consequences]
+    reviewed_hash: sha256:eeadf7d2ed0fe9ea33aa6f829b4128dfe079b658425abb055525c099ea2a4dca
+  processor-preview:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part IX — Reconfiguration, 62. Exact patch preview]
+    reviewed_hash: sha256:486fdee2221281744757142ae0b59474583022e35fd81f6c3c40aa066d01ebb6
+  processor-provenance:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 70. Migration provenance]
+    reviewed_hash: sha256:e090b5b9b751307adc8bf8984b771885479c6ee96b7f4338f13560ad3efb714b
+  processor-episode:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XI — Persistent diagnostics, 74. Reconfiguration]
+    reviewed_hash: sha256:f8e1631bf6393af3cac57a620ba787c5b74d18cf1da8cacd9a78e89385c3dcf6
+  snapshot-sufficiency:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: ["Part XIII — Persistence, replay, and identity", 82. Snapshot sufficiency]
+    reviewed_hash: sha256:e6015348ee1506cf8a2520f24bc4f06df369ba1eb06855f57baeb9a782bafaa9
+  snapshot-contents:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: ["Part XIII — Persistence, replay, and identity", 83. Snapshot contents]
+    reviewed_hash: sha256:255211bec58ce8d4253884702fc5ad620658b13d3af989db84589e3267f18144
+  restoration:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: ["Part XIII — Persistence, replay, and identity", 84. Restoration]
+    reviewed_hash: sha256:120782ab6ccc951b4112f77f89e05b0f68766598710e274bf1dbf069451b93eb
+  processor-replay:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: ["Part XIII — Persistence, replay, and identity", 85. Replay]
+    reviewed_hash: sha256:e088ddc08ada7563454924ef7f0b0c530b6d29400f9b77fc16030862423de20d
+  transaction-options:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XV — Transactions, 59. Transaction options]
+    reviewed_hash: sha256:74c55e7716fc081b343b2f290183ab5d750a75cf8c9512e8e224872371529efd
+  commitment-reporting:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: ["Part XXIII — Reconfiguration", "88. Migration directives, commitment, and reporting"]
+    reviewed_hash: sha256:76983957ccd97c838de90af15fcb05f832766933bfefd98815df0f5a7b6da9a7
+  result-shape:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: ["Part XVII — Transaction results and changes", "64. `TransactionResult<D>`"]
+    reviewed_hash: sha256:20fb868dbf44f94e61a1e06e7f9f5ac08b5b7dbd7db5584777630bae19f6f295
+  no-hidden-defaults:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXX — Public API coherence requirements, 112. No hidden defaults]
+    reviewed_hash: sha256:31d7739e566096cde6bb9236bdf7e526a33dc3cc5393b36d1bf1876b28a4b341
+  no-callbacks:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXX — Public API coherence requirements, 111. No semantic callbacks]
+    reviewed_hash: sha256:0dd6dd068c484b785ac68f0d79e41e444bd74e6bf370d833f2e126a9abcd219d
+  catalogue-finalization:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 35. Reconfiguration — finalization]
+    reviewed_hash: sha256:afabb2514305c796964b11cc313d6c880f64f8bb353c73885f309f140697638d
+  catalogue-preparation:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 34. Reconfiguration — patch construction and preparation]
+    reviewed_hash: sha256:69def19c746a50bfd19db65989f3f4709794ef141353963c0f9098a209c75af6
+  catalogue-lifecycle:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 28. Lifecycle]
+    reviewed_hash: sha256:e26c76bc0b2d925d95f497c33d4e0f78989ac6987bedf97250df10dd92c6be3d
+  prepared-freshness:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 32. Prepared-patch freshness]
+    reviewed_hash: sha256:2896d493bf6e290e2c1a2c1a2316a97c190d017e2b4b6e6e793dbf025b90954f
+  catalogue-runtime:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: ["Part V — Exhaustive initial catalogue", "29. Runtime values, time, policy, and semantic rejection"]
+    reviewed_hash: sha256:c9f66339774d5f873cdf36804834c8e71d0ea3025aef36badde12a1ca570e825
+  no-implicit-migration:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 105. No implicit topology migration]
+    reviewed_hash: sha256:9d85250fed5802ee6321f34722a3bfb459eb967e2c14b207ab13c08af7692c01
+  frame-construction:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XI — Replay persistence, 108. Replay frame construction]
+    reviewed_hash: sha256:1eb8abadccce00ddfa401cfe128e192e3fdc5ae2246c305a58ef7f7b9b6c5789
+  two-stage-test:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XI — Reconfiguration verification, 58. Two-stage patch semantics]
+    reviewed_hash: sha256:696783e236fcc404ac8cc169cdedf8fce7b849e15763f82ba3e44c2c9c3df9be
+  freshness-test:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XI — Reconfiguration verification, 59. Prepared-patch freshness]
+    reviewed_hash: sha256:5ffe3cc661eb14dbe0cb7b5cdfd42903e9ba17a459b2dd1bd4f640c83a0dd6c6
+  reached-state-test:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XI — Reconfiguration verification, 60. State reached at effective time]
+    reviewed_hash: sha256:37fcb8e69997b2733bbefadc6ea8a77184e1717f918f32f64c098f7ec38fe061
+  classification-test:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XI — Reconfiguration verification, 61. Complete migration classification]
+    reviewed_hash: sha256:aadf7f4a97a9f51538f992bcb2334379d1aa335fe7c3596bbcf8ebf483273eae
+  loss-policy-test:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XI — Reconfiguration verification, 62. State-loss policy]
+    reviewed_hash: sha256:3b9a3b9bbf027b972c68bc76e6784ac24b89da472fa721cddb488d0e1987ab9b
+  region-test:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XI — Reconfiguration verification, 63. Region merge and split]
+    reviewed_hash: sha256:3c2eab3043d40961cb8557b6b456d3583ae2f4072b77f4ddb4fbd93eae14500d
+  induced-test:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XI — Reconfiguration verification, 64. Topology-induced reaction]
+    reviewed_hash: sha256:9f0892379813fc8154379d97ed0eadb0031e07d89377de3cdc1d3cb93e909a7f
+  identity-test:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XI — Reconfiguration verification, 65. Stable and resolved identity]
+    reviewed_hash: sha256:e8cd6f645e8ca85f0084f57e16ac50e2644de6ee150dd822bacf24e747339e52
+  differential-test:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XI — Reconfiguration verification, 66. Patch differential testing]
+    reviewed_hash: sha256:dfe979a4a0c641b1001ae77f45571e2b3cbf34909b94519557e3b8aefcc939fe
+  policy-test:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XII — Verification obligations, 97. State-loss policy tests]
+    reviewed_hash: sha256:8eb48fd263008cd6ed59d4a082781713485a4923634993810386e08c56603800
+  totality-test:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part XII — Verification obligations, 96. Classification totality]
+    reviewed_hash: sha256:59b8203b824d86208624409832a770aa53d6d5fe77d10d1201d5ca5eff673591
+  snapshot-round-trip:
+    document: docs/testing_and_verification_policy.md
+    heading_path: ["Part XV — Persistence, forecast, replay, and digest verification", 83. Snapshot round trip]
+    reviewed_hash: sha256:70e7444500b89f1476af62efb96f89e702df74062595ad48af149d76dfc097cf
+  snapshot-sufficiency-test:
+    document: docs/testing_and_verification_policy.md
+    heading_path: ["Part XV — Persistence, forecast, replay, and digest verification", 84. Snapshot sufficiency]
+    reviewed_hash: sha256:2b35321f5e96eaa89362a4c8f9aa5573b6fbf90f32986c3d828b3ea66834b437
+  forecast-equivalence:
+    document: docs/testing_and_verification_policy.md
+    heading_path: ["Part XV — Persistence, forecast, replay, and digest verification", 86. Forecast equivalence]
+    reviewed_hash: sha256:43b2775e2e033f2ef133278e9e0bec549cd17348f9026f133e45a8fe0b0c273c
+  replay-equivalence:
+    document: docs/testing_and_verification_policy.md
+    heading_path: ["Part XV — Persistence, forecast, replay, and digest verification", 87. Replay equivalence]
+    reviewed_hash: sha256:c309057c2c7f800f8a7341faaf8606707634b141df31ef39da82cf629c3c257a
+  replay-boundary:
+    document: docs/testing_and_verification_policy.md
+    heading_path: ["Part XV — Persistence, forecast, replay, and digest verification", 88. Replay concatenation]
+    reviewed_hash: sha256:776ab720e32941353c4deb674d03da52081d467754c414d8d5b4a8753739f35e
