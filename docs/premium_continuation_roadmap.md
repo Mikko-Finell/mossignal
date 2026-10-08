@@ -1,7 +1,22 @@
 # `mossignal` Premium Continuation Implementation Roadmap
 
-**Status:** Official high-level continuation roadmap, approved for detailed task preparation
-**Purpose:** Extend the completed premium foundation into a reusable module-based authoring toolkit, then stabilize semantic identity, add durable execution artifacts, and mature operational capabilities without replacing the established architecture.
+**Status:** Retired on 2026-10-08 after accepted item 60 and documentation close-out (`ms-s04`)
+**Purpose:** Historical record of the continuation from the premium foundation through modules, durable execution, forecasting, reconfiguration, and practical inspection.
+
+The maintainer retired this roadmap after reassessing the remaining work.
+Items 32–60 are complete. Items 61–64 are deferred ideas, and 65–67 retain the
+original planning guidance as history. This document is no longer an active
+implementation queue; its original sequencing and imperative wording below
+should be read in that context.
+
+The close-out refreshes the README and adds a tested lifecycle walkthrough over
+existing public APIs. It does not implement the speculative scope of item 64.
+No concrete performance target or observed performance problem justified the
+proposed optimization campaign. Future work needs a concrete application need,
+measured bottleneck, or demonstrated defect and separately approved bounded
+preparation. Retirement does not change authoritative specifications, claim
+that every specified future facility exists, declare release readiness, or
+freeze provisional APIs and artifact formats.
 
 ---
 
@@ -1053,7 +1068,13 @@ Explicitly exclude from this item:
 
 # Part VII — Performance and further product evolution
 
-## 61. Benchmark and reference-oracle foundation
+## 61. [DEFERRED] Benchmark and reference-oracle foundation
+
+Reconsider when a representative application workload gives a concrete capacity
+or latency question to answer. The existing full evaluator, complete candidate
+transaction path, and ordered calendar remain the simple reference paths;
+retirement does not remove them. The broader measurement programme below is
+deferred.
 
 Before changing execution algorithms, establish reproducible measurement and
 semantic comparison:
@@ -1070,7 +1091,11 @@ Explicitly exclude production optimization from this item.
 
 ---
 
-## 62. Incremental reaction evaluation
+## 62. [DEFERRED] Incremental reaction evaluation
+
+Reconsider when measurements show that full reaction evaluation is a material
+cost and that affected portions of real networks are small enough to justify
+the extra implementation and verification complexity.
 
 Introduce dirty propagation or another incremental strategy only against the
 accepted reference evaluator:
@@ -1097,7 +1122,10 @@ Explicitly exclude:
 
 ---
 
-## 63. Temporal calendar optimization if justified
+## 63. [DEFERRED] Temporal calendar optimization if justified
+
+Reconsider only after profiling demonstrates a material calendar bottleneck in
+a representative temporal workload.
 
 Replace or supplement the ordered reference map only if measurements show a
 material temporal bottleneck.
@@ -1119,7 +1147,12 @@ arenas are conventional.
 
 ---
 
-## 64. Further authoring and application ergonomics
+## 64. [DEFERRED] Further authoring and application ergonomics
+
+Reconsider an individual addition when real application use reveals a specific
+repeated difficulty. The separate documentation close-out (`ms-s04`) explains
+and demonstrates existing facilities; the speculative additions below remain
+deferred.
 
 After modules, the catalogue, bindings, durability, and operational inspection
 are concrete, reassess remaining user friction.
@@ -1145,7 +1178,10 @@ kinds, validation, module boundaries, and deterministic reconstruction.
 
 # Part VIII — Planning cadence and reassessment gates
 
-## 65. Recommended planning clusters
+The following sections preserve the original planning guidance. They do not
+authorize further implementation or require completion of Cluster H.
+
+## 65. [HISTORICAL] Recommended planning clusters
 
 Prepare and implement the continuation in small clusters.
 
@@ -1192,7 +1228,7 @@ After each cluster:
 
 ---
 
-## 66. Delegation progression
+## 66. [HISTORICAL] Delegation progression
 
 Premium agents should retain responsibility for new architectural boundaries,
 including:
@@ -1221,7 +1257,7 @@ semantic or architectural acceptance.
 
 ---
 
-## 67. Governing principles
+## 67. [HISTORICAL] Governing principles
 
 The continuation may tolerate:
 

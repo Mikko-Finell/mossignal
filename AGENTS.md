@@ -1,12 +1,15 @@
 # AGENTS.md
 
-The active roadmap document is:
-`docs/premium_continuation_roadmap.md`
+There is currently no active feature roadmap. The continuation roadmap at
+`docs/premium_continuation_roadmap.md` is retired after accepted item 60 and its
+documentation close-out. Items 61–64 are deferred ideas; 65–67 are historical
+planning guidance, not an active implementation queue.
 
-Use that text when the user asks for something to be done with regards to
-roadmap items or planning. If you have just implemented a bead that referenced
-a roadmap item, mark that items heading as `## <number>. [DONE] <title>` in the
-roadmap document.
+Use that document when the user refers to historical roadmap items. Prepare
+future work as separately approved bounded beads for concrete needs or defects.
+If a later user-approved bead implements a numbered roadmap item, mark its
+heading as `## <number>. [DONE] <title>` only after implementing that scope;
+retirement or deferral alone is not completion.
 
 ## Authority
 

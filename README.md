@@ -1,13 +1,13 @@
 # Mossignal
 
 Mossignal is a deterministic, host-agnostic Rust library for authoring,
-validating, compiling, executing, inspecting, explaining, and eventually
-persisting discrete signal networks.
+validating, compiling, executing, inspecting, explaining, and persisting
+discrete signal networks.
 
 This README is an orientation document for agents and maintainers. It describes
 the architecture that exists in the repository today, where to find it, the
-semantic boundaries that must be preserved, and the parts that are specified
-but not implemented yet. It is deliberately project-specific; repository-wide
+semantic boundaries that must be preserved, and the boundaries of the current
+implementation. It is deliberately project-specific; repository-wide
 workflow and agent policy live in [`AGENTS.md`](AGENTS.md).
 
 ## The shortest useful summary
@@ -58,8 +58,25 @@ mutable Machine
 
 The most important implementation rule is that authored stable identities and
 compiled dense positions are different things. Stable keys are used for public
-identity, diagnostics, bindings, fingerprints, and future persistence. Dense
+identity, diagnostics, bindings, fingerprints, and persistence. Dense
 indices are private, revision-local execution machinery.
+
+## Runnable walkthroughs
+
+The [lifecycle example](crates/mossignal/examples/lifecycle.rs) authors a button
+pulse that toggles a lamp after five logical ticks. It initializes the machine,
+advances to tick 2, inspects pending work, encodes and restores a saved machine,
+forecasts tick 5, then explicitly commits and compares resumed execution with
+uninterrupted execution. The caller supplies time and owns artifact storage;
+the example keeps the saved bytes in memory.
+
+```bash
+cargo run -p mossignal --example lifecycle
+```
+
+The [diagnostic example](crates/mossignal/examples/diagnostics.rs) reads
+occurrences and follows persistent conditions through resolution and removal.
+Both walkthroughs have executable assertions exercised by the normal test gate.
 
 ## Repository map
 
@@ -86,10 +103,20 @@ workspace.
 | [`src/policy.rs`](crates/mossignal/src/policy.rs) | Required runtime budgets and canonical `RuntimePolicyId`. |
 | [`src/machine.rs`](crates/mossignal/src/machine.rs) | Mutable machine lifecycle, semantic store, scheduling, output/state/module inspections, and inspection failures. |
 | [`src/transaction.rs`](crates/mossignal/src/transaction.rs) | Initialization and advancement transactions, temporal execution, output events, provenance, budget enforcement, runtime failures, and publication. |
-| [`src/episode.rs`](crates/mossignal/src/episode.rs) | Persistent diagnostic episode identity and begin/change/resolve transitions for retained level-latch conflicts. |
+| [`src/episode.rs`](crates/mossignal/src/episode.rs) | Persistent diagnostic episode identity and lifecycle for retained level-latch conflicts. |
+| [`src/diagnostic_inspection.rs`](crates/mossignal/src/diagnostic_inspection.rs) | Pure node/module selections of committed occurrences, episode changes, and active conditions. |
 | [`src/diagnostics.rs`](crates/mossignal/src/diagnostics.rs) | The catalogue-backed diagnostic kernel: codes, severity, responsibility, evidence schemas, problems, reports, occurrences, and deterministic collections. |
 | [`src/standard.rs`](crates/mossignal/src/standard.rs) | The current standard-module catalogue, canonical primitive expansions, descriptor identities, standard inspections, and explanations. |
 | [`src/binding.rs`](crates/mossignal/src/binding.rs) | Application-facing identifier bindings, input projection, output projection, and the delegating `BoundMachine` façade. |
+| [`src/graph.rs`](crates/mossignal/src/graph.rs) | Stable hierarchy-aware structural subjects, connected regions, and directional graph slices. |
+| [`src/inspection.rs`](crates/mossignal/src/inspection.rs) | Owned node, output, and pending-event observations; structured recorded causal explanations and retention limits. |
+| [`src/state_digest.rs`](crates/mossignal/src/state_digest.rs) | Canonical execution-state and observable-state projections and digests. |
+| [`src/persistence.rs`](crates/mossignal/src/persistence.rs) | Owned committed machine snapshots and canonical artifact encoding. |
+| [`src/cbor_decode.rs`](crates/mossignal/src/cbor_decode.rs) | Private bounded canonical CBOR parsing used by persisted artifacts. |
+| [`src/snapshot_restore.rs`](crates/mossignal/src/snapshot_restore.rs) | Snapshot decoding, compatibility and integrity validation, and atomic restoration. |
+| [`src/replay.rs`](crates/mossignal/src/replay.rs) | Recorded transactions, canonical replay frames/logs, and deterministic replay through ordinary machine execution. |
+| [`src/patch.rs`](crates/mossignal/src/patch.rs) | Stable topology editing, structural correspondence, and prepared migration plans. |
+| [`src/migration.rs`](crates/mossignal/src/migration.rs) | Effective-time state and pending-work migration with explicit preservation/loss outcomes. |
 
 ### Specifications and planning
 
@@ -103,11 +130,11 @@ verification, and planned work.
 | [`docs/specs/built_in_node_semantics.md`](docs/specs/built_in_node_semantics.md) | Laws and causal semantics of built-in primitives. |
 | [`docs/specs/processor_and_runtime_architecture.md`](docs/specs/processor_and_runtime_architecture.md) | Internal architecture: compiled program versus mutable store, reaction evaluation, temporal execution, atomicity, provenance, diagnostics, persistence, and future optimization boundaries. |
 | [`docs/specs/concrete_rust_api_surface.md`](docs/specs/concrete_rust_api_surface.md) | Intended Rust API shapes and public type responsibilities. Some later sections describe future APIs not present in the current source. |
-| [`docs/specs/persistence_canonical_encoding_and_compatibility_spec.md`](docs/specs/persistence_canonical_encoding_and_compatibility_spec.md) | Canonical encoding, digest, snapshot, and compatibility requirements for future persistence work. |
-| [`docs/specs/reconfiguration_and_topology_patch_spec.md`](docs/specs/reconfiguration_and_topology_patch_spec.md) | Future topology-patch, correspondence, migration, and atomic replacement semantics. |
+| [`docs/specs/persistence_canonical_encoding_and_compatibility_spec.md`](docs/specs/persistence_canonical_encoding_and_compatibility_spec.md) | Canonical encoding, digest, snapshot, replay, and compatibility requirements, including broader specified artifact boundaries. |
+| [`docs/specs/reconfiguration_and_topology_patch_spec.md`](docs/specs/reconfiguration_and_topology_patch_spec.md) | Topology-patch preparation, correspondence, migration, and atomic replacement semantics. |
 | [`docs/specs/standard_module_catalogue_spec.md`](docs/specs/standard_module_catalogue_spec.md) | Standard catalogue boundaries, identity, expansion, inspection, migration, and future catalogue requirements. |
 | [`docs/specs/contracts/`](docs/specs/contracts) | Compact reviewed contract records for reusable specification-backed rules. |
-| [`docs/premium_continuation_roadmap.md`](docs/premium_continuation_roadmap.md) | Active implementation roadmap and links to earlier roadmap context. |
+| [`docs/premium_continuation_roadmap.md`](docs/premium_continuation_roadmap.md) | Retired continuation roadmap: completed items 32–60 and deferred future ideas. |
 | [`.beads/`](.beads/) | Tracked implementation tasks, dependencies, and completion records; inspect with `br`. |
 | [`docs/testing_and_verification_policy.md`](docs/testing_and_verification_policy.md) | Required verification depth, reference semantics, differential testing, atomicity, invariant, and regression obligations. |
 
@@ -118,6 +145,7 @@ verification, and planned work.
 | [`crates/mossignal/tests/`](crates/mossignal/tests) | Public-API integration tests grouped by semantic family. |
 | [`crates/mossignal/tests/support/`](crates/mossignal/tests/support) | Shared compiled-circuit fixtures, policy construction, behavior traces, and equivalence helpers. |
 | [`crates/mossignal/tests/golden/`](crates/mossignal/tests/golden) | Diagnostic catalogue, public failure inventory, and canonical projection fixtures. |
+| [`crates/mossignal/examples/`](crates/mossignal/examples) | Runnable lifecycle and diagnostic walkthroughs, also exercised as tests. |
 | [`scripts/check_static_guardrails.py`](scripts/check_static_guardrails.py) | Static guardrail checks used by final verification. |
 | [`scripts/contracts.py`](scripts/contracts.py) | Contract tooling and coverage checks. |
 | [`scripts/check_acceptance_record.py`](scripts/check_acceptance_record.py) | Acceptance-record consistency checks. |
@@ -143,7 +171,7 @@ The builders support:
 - pulse merge, coalesce, zip, gate, select, and route;
 - rising, falling, and any-edge detectors;
 - toggle, pulse/level set-reset latches, and sample-hold;
-- pulse delay and transport delay;
+- pulse delay, transport delay, inertial delay, and periodic pulse generation;
 - reusable module construction and nested module instantiation;
 - standard catalogue construction and ordinary convenience aliases.
 
@@ -265,10 +293,11 @@ For an advancement to target time `T`:
 5. New delay obligations are scheduled from the actual reaction time that
    created them.
 
-The current implementation includes `PulseDelay` and `TransportDelay`. The
-public schedule exposes only the earliest pending wakeup, not operating-system
-timers. Mossignal never sleeps, polls, owns a wall clock, or invokes host
-callbacks.
+The current implementation includes `PulseDelay`, `TransportDelay`,
+`InertialDelay`, and `Periodic`, with node-specific maturity, cancellation, and
+phase rules. The public schedule exposes the earliest pending wakeup. The caller
+uses it to decide when to supply the next logical-time transaction; Mossignal
+does not own operating-system timers or invoke host callbacks.
 
 ### Atomicity and budgets
 
@@ -326,19 +355,57 @@ The following identities have distinct meanings:
 | `ModuleFingerprint` | Canonical semantic identity of a reusable module. |
 | `StandardModuleExpansionFingerprint` | Identity of a standard declaration's canonical primitive expansion. |
 | `RuntimePolicyId` | Identity of the execution limits that can affect success. |
-| `NetworkRevision` | Machine-local installed-topology revision; not currently a persistence-format promise. |
-| `PendingEventKey` and `CauseRef` | Runtime/result-scoped references, not durable structural identity. |
+| `NetworkRevision` | Machine-local installed-topology revision, advanced by committed topology replacement and retained by snapshots. |
+| `PendingEventKey` | Machine-local pending-event serial, preserved through supported restoration and migration. |
+| `CauseRef` | Scoped causal reference resolved through its owning retained provenance view. |
+| `ExecutionStateDigest`, `ObservableStateDigest` | Distinct canonical identities of future-determining state and its required observable projection. |
+| `SnapshotDigest` | Integrity identity of the encoded snapshot artifact, including its envelope. |
 
 Fingerprints use domain-separated, versioned canonical encodings and BLAKE3.
 Semantic collections are sorted by stable identity. Metadata, diagnostics,
 allocation order, hash iteration order, and dense compiled positions are not
 semantic inputs to the current fingerprint projections.
 
-There is currently no machine-state snapshot/restore, replay-log, digest-suite,
-forecasting, or general persistence/serialization API in the Rust
-implementation. `InputSnapshot` is an implemented input artifact for
-initialization; it is not a persisted machine snapshot. The persistence
-specifications describe the future boundary.
+The library is pre-alpha. Public APIs, versions, fingerprints, catalogues, and
+artifact formats remain provisional across repository revisions under
+`AGENTS.md`. Within one supported artifact lifecycle, identity and compatibility
+checks still apply; a version label is not a release-readiness declaration or a
+compatibility freeze.
+
+## Persistence, replay, forecasting, and topology replacement
+
+`InputSnapshot` supplies the complete initial input valuation. A
+`MachineSnapshot` instead preserves one committed machine, including logical
+time, topology revision, stored state, pending work, output baselines, required
+provenance, active diagnostic episodes, and runtime policy identity.
+
+`Machine::snapshot` creates an owned artifact; `encode_snapshot` produces
+canonical bytes. The host chooses where to store them. `decode_snapshot` checks
+framing, canonicality, integrity, versions, time domain, and explicit
+`DecodePolicy` limits. `CompiledNetwork::restore` then validates the snapshot
+against the supplied compiled topology and runtime policy before returning one
+complete machine. Restoration preserves supported future behaviour and does
+not silently repair incompatible state. The host retains or reconstructs the
+matching compiled topology; snapshot bytes do not replace network authoring.
+
+`Machine::apply_recorded` and `record_replay_log` record successful transactions
+and digest checkpoints. Replay frames and logs can be encoded, decoded, and
+re-executed through the ordinary `apply` path. Current recording covers
+initialization and ordinary advancement. After a topology patch, a committed
+snapshot can establish the starting point for subsequent patch-free replay.
+
+`Machine::forecast` previews one transaction through the same transition as
+`apply`. It returns an owned hypothetical result and read-only `ForecastState`,
+leaving the source machine unchanged. Commitment is a later explicit `apply`
+whose preconditions still hold.
+
+Topology replacement has two stages: `Machine::prepare_patch` validates the
+proposed topology and derives stable correspondence without changing the
+machine; a transaction carrying that prepared patch finalizes migration at its
+effective time under an explicit `ReconfigurationPolicy`. Successful commitment
+publishes migrated state, pending work, outputs, diagnostics, provenance, and a
+new topology revision together. Required preservation or reported state loss
+is enforced before that publication.
 
 ## Diagnostics, provenance, and inspection
 
@@ -355,16 +422,26 @@ The main delivery forms are:
   retained conditions;
 - internal-defect records when diagnostic evidence itself conflicts.
 
-Provenance is a transaction-result-owned immutable causal graph. `CauseRef`
-values are scoped to their owning `ProvenanceView`; using one against another
-view is rejected. Provenance retains stable subjects, input observations,
-stateful transitions, selected pulse contributions, scheduled temporal causes,
-pending-event causes, output causes, and episode causes.
+Provenance is exposed through owned immutable causal views retained by
+transaction results and inspection artifacts. `CauseRef` values are meaningful
+within their owning retained `ProvenanceView`. Provenance retains stable
+subjects, input observations, stateful transitions, selected pulse
+contributions, scheduled temporal causes, pending-event causes, output causes,
+and episode causes.
 
 Inspection is a projection of semantic machine state. It exposes definition
 facts and committed runtime facts separately, including qualified module nodes,
 edge observations, stored levels, latch controls, sample-hold state, pending
 delay work, schedules, outputs, and active diagnostic episodes.
+
+`CompiledNetwork` provides connected regions and upstream, downstream, and
+source-to-destination slices over stable subjects and retained module hierarchy.
+These structural paths describe possible dependencies, including delayed paths.
+`Machine::explain` follows recorded causal support for current nodes, modules,
+outputs, and pending work; a transaction result can explain a specific committed
+output event. Current support and a historical transition cause remain distinct,
+and explanations expose checkpoint retention limits. Owned observations retain
+the provenance needed to resolve their causes after later transactions.
 
 Use `DiagnosticScope` to select a direct or qualified node, or all primitive
 owners within a module hierarchy. `TransactionResult::occurrences_for` and
@@ -379,11 +456,17 @@ removal termination. Run it with `cargo run -p mossignal --example diagnostics`.
 
 ## Current implemented catalogue
 
-The standard catalogue currently contains three canonical stateless modules:
+The standard catalogue contains three stateless modules:
 
 - `Exactly`;
 - `AtMost`;
 - `AllEqual`.
+
+It also contains three stateful modules:
+
+- `PulseResettableToggle`;
+- `LevelResettableToggle`;
+- `LevelResettableSampleHold`.
 
 Catalogue construction validates exact descriptor identity, parameters, signal
 kinds, public input keys, canonical expansion roles, and generated-key
@@ -414,31 +497,39 @@ Tests are deliberately layered.
   state, pending work, provenance, occurrences, and episodes.
 - Golden fixtures cover the implemented diagnostic registry, public failure
   inventory, and selected canonical projections.
+- Snapshot tests check strict rejection, restoration, and continued behaviour;
+  replay, forecasting, and topology replacement have public integration suites.
+- Runnable examples are registered as test targets so their assertions remain
+  part of the ordinary gate.
 
 The repository verification policy treats optimized execution as a refinement
-of a simpler reference semantics. Future incremental, optimized, persistence,
-forecasting, and reconfiguration paths must preserve that relationship.
+of simpler reference semantics. The current implementation retains full
+topological evaluation, complete candidate staging, and an ordered event
+calendar. Future optimizations must preserve that relationship.
 
 The executable gate definitions are in [`Makefile`](Makefile); required
 workflow and tooling rules are in [`AGENTS.md`](AGENTS.md).
 
 ## Roadmaps and task status
 
-Use the active [continuation roadmap](docs/premium_continuation_roadmap.md)
-and its linked earlier roadmap for implementation planning and progress.
-Use the [beads records](.beads/) for task scope, dependencies, and completion
-details. Inspect approved claimable work with `br ready --json` and individual
-tasks with `br show <id> --json`.
+The [continuation roadmap](docs/premium_continuation_roadmap.md) is retired after
+accepted item 60 and a documentation close-out. Items 61–64 remain deferred
+ideas, and 65–67 are historical planning guidance. There is no active feature
+roadmap. Further work should address a concrete application need or demonstrated
+defect through separately approved bounded beads.
 
-Consult those records and the source for current implementation status when
-starting a task. This README does not track the latest completed roadmap item.
+Use the retired roadmap for historical numbered-item context and the
+[beads records](.beads/) for task scope, dependencies, and acceptance details.
+Inspect approved claimable work with `br ready --json` and individual tasks with
+`br show <id> --json`. Consult those records and the source for the current
+implementation baseline.
 
 ## Agent navigation recipes
 
 Useful searches:
 
 ```bash
-# Inspect roadmap headings and approved claimable tasks.
+# Inspect historical roadmap headings and currently approved claimable tasks.
 rg -n '^## ' docs/premium_continuation_roadmap.md
 br ready --json
 
