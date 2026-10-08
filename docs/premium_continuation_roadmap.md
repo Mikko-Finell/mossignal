@@ -960,64 +960,94 @@ Explicitly exclude:
 
 ---
 
-## 59. Rich graph, inspection, and explanation queries
+## 59. Practical graph inspection and causal explanations
 
-Build the specified read-only observation capabilities over stable subjects and
-retained hierarchy:
+Finish a small read-only API for navigating the supported circuit, inspecting
+its current condition, and tracing recorded causes. Extend the existing graph
+views, typed node inspections, module inspection, and provenance access.
 
-* immutable graph views;
-* module-aware region and dependency queries;
-* slices affecting or affected by stable endpoints;
-* compiled inspection plans where required;
-* current node, state, temporal, and module inspection;
-* structured explanation and why-not results;
-* module-level summaries with primitive drill-down;
-* exact attribution to result-owned or retained provenance;
-* deterministic query and rendering-independent evidence.
+Keep the scope to:
 
-Queries must observe semantic possibility or committed state as specified. They
-must not mutate execution, fabricate dynamic causality from static reachability,
-or expose dense implementation positions as stable identity.
+* graph navigation over stable subjects and retained module hierarchy, connected
+  region membership, and upstream, downstream, and source-to-destination slices;
+* direct inspection of current levels, stored state, pending events and their
+  deadlines, and existing active diagnostic conditions;
+* module public ports, parameters, and state, with access to the existing
+  qualified internal inspection records;
+* structured explanations of current outputs, stored state, pending work, and
+  specific committed output events by following their applicable node laws and
+  recorded causal support;
+* owned, deterministic results identifying stable subjects, observed revision
+  and logical time, and retaining the provenance needed to resolve their causes.
 
-Explicitly exclude:
+Structural queries report conservative dependency paths. Current support and
+the historical cause establishing stored state or a transition remain distinct.
+Inspection distinguishes persistent levels, stored state, pending work, and
+explicitly retained pulse history. Explanations expose retention limits and
+never infer an actual cause from reachability alone. Reads observe committed
+state without changing execution; definition inspection is available before
+initialization. Reuse existing node and standard-module descriptions while
+preserving public module boundaries and access to internal primitives.
 
-* editor UI;
-* localization and prose styling beyond separately specified rendering;
-* subscriber delivery;
-* arbitrary query languages;
-* execution optimization based on query plans.
+Explicitly exclude from this item:
+
+* generic inspection-query builders, compiled inspection plans, and observer or
+  subscription infrastructure;
+* general desired-state or why-not solvers, counterfactual search, and proofs
+  about all future executions;
+* missing-pulse queries over arbitrary historical intervals, new history
+  retention facilities, and historical search;
+* a separate probe or named-observation subsystem; use existing stable endpoints
+  and diagnostic metadata for direct reads;
+* editor UI, prose generation, localization, and rendering frameworks;
+* arbitrary query languages and execution optimization based on query plans.
+
+Excluded facilities need a concrete use case and separately bounded preparation
+before being added. Authoritative requirements for supported inspection and
+explanation behaviour still apply.
 
 ---
 
-## 60. Probes, assertions, and expanded diagnostic operation
+## 60. Diagnostic inspection and integration completion
 
-Broaden operational observation and checking only after graph, provenance, and
-the latch-founded diagnostic ownership model are mature:
+Finish practical access to the existing occurrence and persistent episode
+families from item 44 and their later integrations.
 
-* probes and named observation points where specified;
-* assertion and fault semantics;
-* additional runtime-occurrence and persistent-episode condition families;
-* broader episode inspection, lifecycle, and operational controls;
-* transaction-atomic publication;
-* integration of accepted episode state with snapshots, restoration, replay,
-  modules, and topology patches;
-* deterministic conformance and failure tests.
+Keep the scope to:
 
-This item does not introduce runtime occurrences or persistent episodes for the
-first time. Those foundations begin with the two set/reset latch tasks in item
-44; this item expands their condition breadth and operational integration.
+* direct access to committed occurrences and active episodes for a node or
+  module, with owning subjects, structured evidence, relevant times, and
+  available causal support; preserve primitive ownership without duplicate
+  module-level warnings;
+* exposing existing episode begin, material-change, resolution, and termination
+  records through ordinary committed transaction results;
+* correcting concrete remaining integration or verification gaps in atomic
+  publication, rollback, module ownership, snapshots, restoration, replay, and
+  topology migration for these existing diagnostic families;
+* concise usage examples showing how a caller reads an occurrence, follows an
+  active condition, and handles its subsequent resolution or termination.
 
-These facilities must remain semantic observations and diagnostics. They must
-not invoke arbitrary callbacks, perform host effects during propagation, or
-change circuit behavior unless an explicit specified primitive does so.
+Reuse accepted implementations and reviewed contracts. Correct and verify only
+concrete remaining gaps. If the existing APIs and checks already satisfy this
+scope, complete the checkpoint with documentation; no new feature is required
+merely to fill the item.
 
-Explicitly exclude:
+Diagnostic reads do not alter execution or episode lifecycle. Runtime conditions
+begin, change, resolve, or terminate through the existing semantic rules. Host
+effects remain the caller's responsibility after successful commit.
 
-* application actions;
-* logging backends;
-* notification delivery protocols;
-* unrestricted user code in the evaluator;
-* hidden test-only node kinds.
+Explicitly exclude from this item:
+
+* new occurrence or episode condition families without a separately prepared
+  concrete requirement;
+* assertion languages, verification or contract engines, generic fault-signal
+  mechanisms, and new assertion or fault node kinds;
+* a probe registry, named-observation subsystem, and retained completed-episode
+  or diagnostic-history service;
+* manual acknowledgement, suppression, clearing, or other new diagnostic
+  lifecycle controls;
+* subscriptions, notification delivery, logging backends, and application actions;
+* arbitrary callbacks or user code in the evaluator and hidden test-only nodes.
 
 ---
 
