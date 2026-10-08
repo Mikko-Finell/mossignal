@@ -96,6 +96,7 @@ BoundApplyFailure::Binding|delegate
 BoundOutputFailure::UnknownExternalKey|inspection.unknown_subject
 BoundOutputFailure::WrongSignalKind|inspection.wrong_subject_kind
 BoundOutputFailure::NotInitialized|lifecycle.not_initialized
+BoundOutputFailure::Binding|delegate
 TimeArithmeticError::Overflow|runtime.time_overflow
 TimeArithmeticError::InvalidSubtraction|runtime.invalid_time_subtraction
 ZeroSpanError|runtime.zero_span_not_allowed

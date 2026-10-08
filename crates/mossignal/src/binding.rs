@@ -814,7 +814,12 @@ impl<D, I: Eq + Clone, O: Eq + Clone> BoundMachine<D, I, O> {
     }
 
     /// Returns one ready external Level output by caller identifier.
+    /// Rejects bindings made stale by machine replacement or a topology patch.
     pub fn output_level(&self, external: &O) -> Result<LogicLevel, BoundOutputFailure> {
+        // SPEC: docs/specs/contracts/application-bindings.yaml "immutable-compiled-schema-adapter"
+        // Reads enforce the same topology binding as bound transactions.
+        validate_machine(&self.bindings.context, &self.machine)
+            .map_err(BoundOutputFailure::Binding)?;
         let Some(endpoint) = self.bindings.output_endpoint(external) else {
             return Err(BoundOutputFailure::UnknownExternalKey);
         };
@@ -827,30 +832,33 @@ impl<D, I: Eq + Clone, O: Eq + Clone> BoundMachine<D, I, O> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoundOutputFailure {
     UnknownExternalKey,
     WrongSignalKind,
     NotInitialized,
+    /// The binding set is incompatible with the machine's network, schema, or revision.
+    Binding(BindingFailure),
 }
 
 impl BoundOutputFailure {
     #[must_use]
-    pub fn code(self) -> DiagnosticCode {
+    pub fn code(&self) -> DiagnosticCode {
         self.problem::<()>().code()
     }
     #[must_use]
-    pub fn severity(self) -> Severity {
+    pub fn severity(&self) -> Severity {
         self.code().severity()
     }
     #[must_use]
-    pub fn responsibility(self) -> Responsibility {
+    pub fn responsibility(&self) -> Responsibility {
         self.code().responsibility()
     }
     #[must_use]
-    pub fn problem<D>(self) -> Problem<D> {
+    pub fn problem<D>(&self) -> Problem<D> {
         let requested = SubjectRef::Operation(OperationSubjectRef::OutputProjection);
         let evidence = match self {
+            Self::Binding(failure) => return failure.problem(),
             Self::UnknownExternalKey => ProblemEvidence::InspectionUnknownSubject {
                 evidence: InspectionEvidence {
                     requested: requested.clone(),

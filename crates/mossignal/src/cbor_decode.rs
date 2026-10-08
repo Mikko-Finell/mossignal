@@ -126,16 +126,16 @@ pub(crate) fn parse(input: &[u8], limits: Limits) -> Result<(Value, usize), Deco
                         consumed: argument,
                     });
                 }
+                // SPEC: docs/specs/contracts/machine-snapshot-restoration.yaml "hostile-and-bounded-decode"
+                // Each item needs at least one byte; a declared length cannot justify allocation.
+                if argument > (input.len() - position) as u64 {
+                    return Err(DecodeError::Truncated);
+                }
                 if argument == 0 {
                     done = Some(Value::Array(Vec::new()));
                 } else {
-                    let capacity =
-                        usize::try_from(argument).map_err(|_| DecodeError::Noncanonical {
-                            violation: "length_overflow",
-                            encountered: argument.to_string(),
-                        })?;
                     stack.push(Frame {
-                        items: Vec::with_capacity(capacity),
+                        items: Vec::new(),
                         remaining: argument,
                     });
                 }
@@ -357,5 +357,57 @@ fn write_major(bytes: &mut Vec<u8>, major: u8, value: u64) {
     } else {
         bytes.push(initial | 27);
         bytes.extend_from_slice(&value.to_be_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn limits(collection_items: u64) -> Limits {
+        Limits {
+            total_bytes: 100,
+            nesting: 16,
+            text_bytes: 100,
+            byte_string_bytes: 100,
+            collection_items,
+        }
+    }
+
+    #[test]
+    fn arrays_accept_complete_values_and_preserve_canonical_bytes() {
+        for bytes in [
+            vec![0x80],
+            vec![0x83, 0x00, 0xf4, 0xf6],
+            vec![0x82, 0x82, 0x00, 0x01, 0x80],
+            [vec![0x98, 24], vec![0x00; 24]].concat(),
+        ] {
+            let (value, consumed) = parse(&bytes, limits(24)).unwrap();
+            assert_eq!(consumed, bytes.len());
+            assert_eq!(encode(&value), bytes);
+        }
+    }
+
+    #[test]
+    fn truncated_arrays_fail_at_root_and_nested_lengths() {
+        for bytes in [vec![0x82, 0x00], vec![0x81, 0x83, 0x00, 0x01]] {
+            assert!(matches!(
+                parse(&bytes, limits(3)),
+                Err(DecodeError::Truncated)
+            ));
+        }
+    }
+
+    #[test]
+    fn collection_limit_precedes_truncation_and_accepts_exact_boundary() {
+        assert!(matches!(
+            parse(&[0x83], limits(2)),
+            Err(DecodeError::Limit {
+                budget: "collection_items",
+                limit: 2,
+                consumed: 3,
+            })
+        ));
+        assert!(parse(&[0x82, 0x00, 0x01], limits(2)).is_ok());
     }
 }

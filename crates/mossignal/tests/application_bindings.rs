@@ -810,6 +810,107 @@ fn bound_and_direct_budget_failures_are_equivalent_and_atomic() {
 }
 
 #[test]
+fn bound_current_output_rejects_a_replaced_network_or_schema() {
+    let original = fixture(1, false);
+    for (replacement, expected) in [
+        (fixture(2, false), DiagnosticCode::BindingWrongNetwork),
+        (fixture(1, true), DiagnosticCode::BindingStaleSchema),
+    ] {
+        let mut bound =
+            BoundMachine::spawn(&original.compiled, policy(), bindings(&original, false)).unwrap();
+        let mut machine = replacement.compiled.spawn(policy());
+        let mut input = replacement
+            .compiled
+            .input_snapshot()
+            .set(replacement.level_input, LogicLevel::High)
+            .unwrap();
+        if expected == DiagnosticCode::BindingStaleSchema {
+            input = input
+                .set(ExternalInputKey::from_u128(12), LogicLevel::Low)
+                .unwrap();
+        }
+        machine
+            .apply(Transaction::initialize(
+                Time::from_ticks(0),
+                machine.revision(),
+                input.finish().unwrap(),
+            ))
+            .unwrap();
+        *bound.machine_mut() = machine;
+        let before = bound.machine().snapshot();
+        let failure = bound.output_level(&OutputId::Level).unwrap_err();
+        assert_eq!(failure.code(), expected);
+        let BoundOutputFailure::Binding(binding) = &failure else {
+            panic!("compatibility must retain its binding failure");
+        };
+        assert_eq!(failure.problem::<Domain>(), binding.problem::<Domain>());
+        assert_eq!(failure.severity(), binding.severity());
+        assert_eq!(failure.responsibility(), binding.responsibility());
+        assert_eq!(binding.evidence().network, original.compiled.network_key());
+        assert_eq!(
+            binding.evidence().fingerprint,
+            original.compiled.fingerprint()
+        );
+        assert_eq!(bound.machine().snapshot(), before);
+    }
+}
+
+#[test]
+fn bound_current_output_rejects_a_stale_revision_with_unchanged_schema() {
+    let fixture = fixture(1, false);
+    let mut bound =
+        BoundMachine::spawn(&fixture.compiled, policy(), bindings(&fixture, false)).unwrap();
+    bound
+        .initialize(
+            Time::from_ticks(0),
+            [InputObservation::Level {
+                input: InputId::Level,
+                value: LogicLevel::High,
+            }],
+        )
+        .unwrap();
+    let fingerprint = bound.machine().fingerprint();
+    let machine = bound.machine_mut();
+    let prepared = machine
+        .prepare_patch(
+            machine
+                .patch()
+                .set_diagnostic_meta(
+                    mossignal::StructuralSubjectRef::Network(machine.compiled().network_key()),
+                    DiagnosticMeta {
+                        name: Some("changed presentation".to_owned()),
+                        ..DiagnosticMeta::default()
+                    },
+                )
+                .unwrap()
+                .finish(),
+        )
+        .require_artifact()
+        .unwrap();
+    machine
+        .apply(
+            Transaction::advance(
+                Time::from_ticks(1),
+                machine.revision(),
+                machine.compiled().input_delta().finish().unwrap(),
+            )
+            .with_patch(prepared, mossignal::ReconfigurationPolicy::RejectStateLoss)
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(bound.machine().fingerprint(), fingerprint);
+    let before = bound.machine().snapshot();
+    let failure = bound.output_level(&OutputId::Level).unwrap_err();
+    assert_eq!(failure.code(), DiagnosticCode::BindingStaleSchema);
+    let BoundOutputFailure::Binding(binding) = &failure else {
+        panic!("stale revision must retain its binding failure");
+    };
+    assert_eq!(failure.problem::<Domain>(), binding.problem::<Domain>());
+    assert_ne!(binding.evidence().revision, bound.machine().revision());
+    assert_eq!(bound.machine().snapshot(), before);
+}
+
+#[test]
 fn projection_and_bound_wrappers_preserve_the_underlying_problem() {
     let input = ExternalInputKey::<Level>::from_u128(99);
     let root = InputBuildFailure::UnknownInput { input };
