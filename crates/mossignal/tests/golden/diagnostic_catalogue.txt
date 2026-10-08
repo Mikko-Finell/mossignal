@@ -44,6 +44,7 @@ lifecycle.not_initialized|Error|CallerInput|Lifecycle|false|true|false|false|fal
 lifecycle.already_initialized|Error|CallerInput|Lifecycle|false|true|false|false|false
 lifecycle.delta_before_initialization|Error|CallerInput|Lifecycle|false|true|false|false|false
 runtime.stale_revision|Error|Compatibility|RevisionMismatch|false|true|false|false|false
+runtime.stale_execution_state|Error|Compatibility|DigestMismatch|false|true|false|false|false
 runtime.time_not_strictly_increasing|Error|CallerInput|Time|false|true|false|false|false
 runtime.time_overflow|Error|SemanticRejection|Time|false|true|false|false|false
 runtime.invalid_time_subtraction|Error|CallerInput|Time|false|true|false|false|false
@@ -133,8 +134,17 @@ reconfiguration.incompatible_migration_directive|Error|CallerInput|Migration|tru
 reconfiguration.incomplete_temporal_migration_policy|Error|CallerInput|Migration|true|false|false|false|false
 reconfiguration.unsupported_cross_kind_migration|Error|UnsupportedFeature|Migration|true|false|false|false|false
 reconfiguration.ambiguous_event_migration|Error|CallerInput|PendingEvent|true|true|false|false|false
+reconfiguration.conflicting_migrated_transitions|Error|SemanticRejection|PendingEvent|false|true|false|false|false
 reconfiguration.invalid_target_input_schema|Error|CallerInput|InputSchema|true|false|false|false|false
 reconfiguration.conditional_semantic_loss|Warning|Advisory|SemanticLoss|true|false|false|false|false
 reconfiguration.unavoidable_semantic_loss|Warning|Advisory|SemanticLoss|true|false|false|false|false
 reconfiguration.empty_patch|Error|CallerInput|PatchEdit|true|false|false|false|false
+reconfiguration.stale_prepared_patch|Error|Compatibility|StaleArtifact|false|true|false|false|false
+reconfiguration.target_input_schema_mismatch|Error|Compatibility|InputSchema|false|true|false|false|false
+reconfiguration.state_migration_rejected|Error|SemanticRejection|Migration|false|true|false|false|false
+reconfiguration.pending_event_migration_rejected|Error|SemanticRejection|Migration|false|true|false|false|false
+reconfiguration.require_preserve_failed|Error|SemanticRejection|Migration|false|true|false|false|false
+reconfiguration.episode_migration_rejected|Error|SemanticRejection|DiagnosticEpisode|false|true|false|false|false
+reconfiguration.provenance_migration_rejected|Error|SemanticRejection|Provenance|false|true|false|false|false
+reconfiguration.state_loss_rejected|Error|SemanticRejection|SemanticLoss|false|true|false|false|false
 standard_module.noncanonical_internal_edit|Error|CallerInput|StandardModule|true|false|false|false|false

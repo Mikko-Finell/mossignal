@@ -149,7 +149,7 @@ impl SubjectRef {
         }
     }
 
-    fn cmp_canonical(&self, other: &Self) -> Ordering {
+    pub(crate) fn cmp_canonical(&self, other: &Self) -> Ordering {
         self.ordering_key().cmp(&other.ordering_key())
     }
 }
@@ -253,6 +253,7 @@ pub enum EvidenceSchema {
     PatchEdit,
     Migration,
     SemanticLoss,
+    StaleArtifact,
 }
 
 /// The opening catalogue's structured identifiers.
@@ -305,6 +306,7 @@ pub enum DiagnosticCode {
     LifecycleAlreadyInitialized,
     LifecycleDeltaBeforeInitialization,
     RuntimeStaleRevision,
+    RuntimeStaleExecutionState,
     RuntimeTimeNotStrictlyIncreasing,
     RuntimeTimeOverflow,
     RuntimeInvalidTimeSubtraction,
@@ -394,10 +396,19 @@ pub enum DiagnosticCode {
     ReconfigurationIncompleteTemporalMigrationPolicy,
     ReconfigurationUnsupportedCrossKindMigration,
     ReconfigurationAmbiguousEventMigration,
+    ReconfigurationConflictingMigratedTransitions,
     ReconfigurationInvalidTargetInputSchema,
     ReconfigurationConditionalSemanticLoss,
     ReconfigurationUnavoidableSemanticLoss,
     ReconfigurationEmptyPatch,
+    ReconfigurationStalePreparedPatch,
+    ReconfigurationTargetInputSchemaMismatch,
+    ReconfigurationStateMigrationRejected,
+    ReconfigurationPendingEventMigrationRejected,
+    ReconfigurationRequirePreserveFailed,
+    ReconfigurationEpisodeMigrationRejected,
+    ReconfigurationProvenanceMigrationRejected,
+    ReconfigurationStateLossRejected,
     StandardModuleNoncanonicalInternalEdit,
 }
 
@@ -613,6 +624,8 @@ pub enum TimeOperation {
     TransportDelayDeadline,
     InertialDelayDeadline,
     PeriodicDeadline,
+    /// Checked arithmetic while finalizing a topology replacement.
+    Reconfiguration,
 }
 
 /// Exact operands and relation for a logical-time condition.
@@ -781,6 +794,51 @@ pub struct ArtifactIdentityEvidence {
     pub expected: String,
     /// Identity found in the artifact.
     pub actual: String,
+}
+
+/// A prepared topology replacement that no longer matches the live machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleArtifactEvidence {
+    /// Network key expected by the prepared patch.
+    pub expected_network: String,
+    /// Network key installed on the machine.
+    pub actual_network: String,
+    /// Prepared base revision.
+    pub expected_revision: u64,
+    /// Machine revision.
+    pub actual_revision: u64,
+    /// Prepared base fingerprint.
+    pub expected_fingerprint: String,
+    /// Machine fingerprint.
+    pub actual_fingerprint: String,
+    /// Prepared time domain.
+    pub expected_time_domain: String,
+    /// Machine time domain.
+    pub actual_time_domain: String,
+}
+
+/// One state, event, or preservation rejection during finalization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationEvidence {
+    /// Stable subject the rule rejected.
+    pub subject: SubjectRef,
+    /// State or event fact that selected the rejection.
+    pub fact: String,
+    /// Migration rule that selected the rejection.
+    pub rule: String,
+}
+
+/// One realized semantic loss forbidden by the caller policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticLossEvidence {
+    /// Stable subject that lost the fact.
+    pub subject: SubjectRef,
+    /// Lost fact.
+    pub fact: String,
+    /// Rule or removal that caused the loss.
+    pub rule: String,
+    /// Whether the loss was conditional on pre-patch state.
+    pub conditional: bool,
 }
 
 /// Recomputed digest disagreement.
@@ -1183,6 +1241,10 @@ pub enum ProblemEvidence<D> {
         evidence: RevisionMismatchEvidence,
         marker: PhantomData<fn() -> D>,
     },
+    RuntimeStaleExecutionState {
+        evidence: DigestMismatchEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
     RuntimeTimeNotStrictlyIncreasing {
         evidence: TimeEvidence,
         marker: PhantomData<fn() -> D>,
@@ -1531,6 +1593,10 @@ pub enum ProblemEvidence<D> {
     ReconfigurationAmbiguousEventMigration {
         marker: PhantomData<fn() -> D>,
     },
+    ReconfigurationConflictingMigratedTransitions {
+        evidence: PendingEventEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
     ReconfigurationInvalidTargetInputSchema {
         marker: PhantomData<fn() -> D>,
     },
@@ -1545,6 +1611,38 @@ pub enum ProblemEvidence<D> {
         marker: PhantomData<fn() -> D>,
     },
     ReconfigurationEmptyPatch {
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationStalePreparedPatch {
+        evidence: StaleArtifactEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationTargetInputSchemaMismatch {
+        evidence: InputSchemaEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationStateMigrationRejected {
+        evidence: MigrationEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationPendingEventMigrationRejected {
+        evidence: MigrationEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationRequirePreserveFailed {
+        evidence: MigrationEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationEpisodeMigrationRejected {
+        evidence: DiagnosticEpisodeEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationProvenanceMigrationRejected {
+        evidence: ProvenanceEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ReconfigurationStateLossRejected {
+        evidence: SemanticLossEvidence,
         marker: PhantomData<fn() -> D>,
     },
     StandardModuleNoncanonicalInternalEdit {
@@ -2107,6 +2205,7 @@ opening_diagnostic_registry! {
     LifecycleAlreadyInitialized, Self::LifecycleAlreadyInitialized { .. }, "lifecycle.already_initialized", Error, CallerInput, Lifecycle, false, true, false;
     LifecycleDeltaBeforeInitialization, Self::LifecycleDeltaBeforeInitialization { .. }, "lifecycle.delta_before_initialization", Error, CallerInput, Lifecycle, false, true, false;
     RuntimeStaleRevision, Self::RuntimeStaleRevision { .. }, "runtime.stale_revision", Error, Compatibility, RevisionMismatch, false, true, false;
+    RuntimeStaleExecutionState, Self::RuntimeStaleExecutionState { .. }, "runtime.stale_execution_state", Error, Compatibility, DigestMismatch, false, true, false;
     RuntimeTimeNotStrictlyIncreasing, Self::RuntimeTimeNotStrictlyIncreasing { .. }, "runtime.time_not_strictly_increasing", Error, CallerInput, Time, false, true, false;
     RuntimeTimeOverflow, Self::RuntimeTimeOverflow { .. }, "runtime.time_overflow", Error, SemanticRejection, Time, false, true, false;
     RuntimeInvalidTimeSubtraction, Self::RuntimeInvalidTimeSubtraction { .. }, "runtime.invalid_time_subtraction", Error, CallerInput, Time, false, true, false;
@@ -2196,10 +2295,19 @@ opening_diagnostic_registry! {
     ReconfigurationIncompleteTemporalMigrationPolicy, Self::ReconfigurationIncompleteTemporalMigrationPolicy { .. }, "reconfiguration.incomplete_temporal_migration_policy", Error, CallerInput, Migration, true, false, false;
     ReconfigurationUnsupportedCrossKindMigration, Self::ReconfigurationUnsupportedCrossKindMigration { .. }, "reconfiguration.unsupported_cross_kind_migration", Error, UnsupportedFeature, Migration, true, false, false;
     ReconfigurationAmbiguousEventMigration, Self::ReconfigurationAmbiguousEventMigration { .. }, "reconfiguration.ambiguous_event_migration", Error, CallerInput, PendingEvent, true, true, false;
+    ReconfigurationConflictingMigratedTransitions, Self::ReconfigurationConflictingMigratedTransitions { .. }, "reconfiguration.conflicting_migrated_transitions", Error, SemanticRejection, PendingEvent, false, true, false;
     ReconfigurationInvalidTargetInputSchema, Self::ReconfigurationInvalidTargetInputSchema { .. }, "reconfiguration.invalid_target_input_schema", Error, CallerInput, InputSchema, true, false, false;
     ReconfigurationConditionalSemanticLoss, Self::ReconfigurationConditionalSemanticLoss { .. }, "reconfiguration.conditional_semantic_loss", Warning, Advisory, SemanticLoss, true, false, false;
     ReconfigurationUnavoidableSemanticLoss, Self::ReconfigurationUnavoidableSemanticLoss { .. }, "reconfiguration.unavoidable_semantic_loss", Warning, Advisory, SemanticLoss, true, false, false;
     ReconfigurationEmptyPatch, Self::ReconfigurationEmptyPatch { .. }, "reconfiguration.empty_patch", Error, CallerInput, PatchEdit, true, false, false;
+    ReconfigurationStalePreparedPatch, Self::ReconfigurationStalePreparedPatch { .. }, "reconfiguration.stale_prepared_patch", Error, Compatibility, StaleArtifact, false, true, false;
+    ReconfigurationTargetInputSchemaMismatch, Self::ReconfigurationTargetInputSchemaMismatch { .. }, "reconfiguration.target_input_schema_mismatch", Error, Compatibility, InputSchema, false, true, false;
+    ReconfigurationStateMigrationRejected, Self::ReconfigurationStateMigrationRejected { .. }, "reconfiguration.state_migration_rejected", Error, SemanticRejection, Migration, false, true, false;
+    ReconfigurationPendingEventMigrationRejected, Self::ReconfigurationPendingEventMigrationRejected { .. }, "reconfiguration.pending_event_migration_rejected", Error, SemanticRejection, Migration, false, true, false;
+    ReconfigurationRequirePreserveFailed, Self::ReconfigurationRequirePreserveFailed { .. }, "reconfiguration.require_preserve_failed", Error, SemanticRejection, Migration, false, true, false;
+    ReconfigurationEpisodeMigrationRejected, Self::ReconfigurationEpisodeMigrationRejected { .. }, "reconfiguration.episode_migration_rejected", Error, SemanticRejection, DiagnosticEpisode, false, true, false;
+    ReconfigurationProvenanceMigrationRejected, Self::ReconfigurationProvenanceMigrationRejected { .. }, "reconfiguration.provenance_migration_rejected", Error, SemanticRejection, Provenance, false, true, false;
+    ReconfigurationStateLossRejected, Self::ReconfigurationStateLossRejected { .. }, "reconfiguration.state_loss_rejected", Error, SemanticRejection, SemanticLoss, false, true, false;
     StandardModuleNoncanonicalInternalEdit, Self::StandardModuleNoncanonicalInternalEdit { .. }, "standard_module.noncanonical_internal_edit", Error, CallerInput, StandardModule, true, false, false;
 }
 
@@ -2698,6 +2806,9 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         ProblemEvidence::RuntimeStaleRevision { .. } => {
             ConditionDiscriminator::Operation(DiagnosticCode::RuntimeStaleRevision)
         }
+        ProblemEvidence::RuntimeStaleExecutionState { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimeStaleExecutionState)
+        }
         ProblemEvidence::RuntimeTimeNotStrictlyIncreasing { .. } => {
             ConditionDiscriminator::Operation(DiagnosticCode::RuntimeTimeNotStrictlyIncreasing)
         }
@@ -2859,8 +2970,17 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         | ProblemEvidence::ReconfigurationIncompleteTemporalMigrationPolicy { .. }
         | ProblemEvidence::ReconfigurationUnsupportedCrossKindMigration { .. }
         | ProblemEvidence::ReconfigurationAmbiguousEventMigration { .. }
+        | ProblemEvidence::ReconfigurationConflictingMigratedTransitions { .. }
         | ProblemEvidence::ReconfigurationInvalidTargetInputSchema { .. }
-        | ProblemEvidence::ReconfigurationEmptyPatch { .. } => {
+        | ProblemEvidence::ReconfigurationEmptyPatch { .. }
+        | ProblemEvidence::ReconfigurationStalePreparedPatch { .. }
+        | ProblemEvidence::ReconfigurationTargetInputSchemaMismatch { .. }
+        | ProblemEvidence::ReconfigurationStateMigrationRejected { .. }
+        | ProblemEvidence::ReconfigurationPendingEventMigrationRejected { .. }
+        | ProblemEvidence::ReconfigurationRequirePreserveFailed { .. }
+        | ProblemEvidence::ReconfigurationEpisodeMigrationRejected { .. }
+        | ProblemEvidence::ReconfigurationProvenanceMigrationRejected { .. }
+        | ProblemEvidence::ReconfigurationStateLossRejected { .. } => {
             ConditionDiscriminator::Operation(evidence.code())
         }
     }
@@ -3222,7 +3342,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 168);
+        assert_eq!(leaves.len(), 184);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {

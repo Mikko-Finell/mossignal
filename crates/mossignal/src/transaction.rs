@@ -5,28 +5,35 @@ use crate::compile::{
     EvaluationCause, EvaluationFailure, FullEvaluation, LevelLatchConflict, PulseLatchConflict,
 };
 use crate::diagnostics::{
-    BudgetEvidence, ConflictControls, ConflictEvidence, DiagnosticCode, DiagnosticOccurrence,
-    InputSchemaEvidence, LifecycleEvidence, NodeEvidence, OperationSubjectRef, ParameterEvidence,
-    Problem, ProblemEvidence, ProvenanceEvidence, Responsibility, RevisionMismatchEvidence,
-    Severity, SubjectRef, TimeEvidence, TimeOperation,
+    BudgetEvidence, ConflictControls, ConflictEvidence, DiagnosticCode, DiagnosticEpisodeEvidence,
+    DiagnosticOccurrence, DigestMismatchEvidence, InputSchemaEvidence, LifecycleEvidence,
+    MigrationEvidence, NodeEvidence, OperationSubjectRef, ParameterEvidence, PendingEventEvidence,
+    Problem, ProblemEvidence, ProvenanceEvidence, ReplayEvidence, Responsibility,
+    RevisionMismatchEvidence, SemanticLossEvidence, Severity, StaleArtifactEvidence, SubjectRef,
+    TimeEvidence, TimeOperation,
 };
 use crate::identity::{
     ExecutionStateDigest, InputSchemaFingerprint, NetworkFingerprint, ObservableStateDigest,
 };
 use crate::input::{InputDelta, InputSnapshot};
-use crate::key::{ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey};
+use crate::key::{AnyExternalInputKey, ExternalInputKey, ExternalOutputKey, NetworkKey, NodeKey};
 use crate::machine::{
     ForecastState, Machine, MachineStatus, NetworkRevision, PendingEvent, PendingEventKey,
     PendingInertialDelay, PendingPeriodicBoundary, PendingPulseDelay, PendingTransportDelay,
     Schedule,
 };
+use crate::migration::{
+    FinalizedPatch, MigrationFault, MigrationReport, MigrationSource, ReconfigurationPolicy,
+    finalize, signal_semantics_version,
+};
 use crate::module::{NodeSubject, PulsePortSubject, QualifiedNodeRef};
+use crate::patch::{InputValuationPlan, OutputBaselinePlan, PreparedPatch};
 use crate::policy::{RuntimePolicy, RuntimePolicyId, RuntimePolicyLimit};
 use crate::signal::{Level, LogicLevel, Pulse, PulseCount};
 use crate::time::{Span, Time};
 use core::fmt;
 use core::marker::PhantomData;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 const PROVENANCE_VIEW_SCOPE_DOMAIN: &[u8] = b"mossignal/provenance_view_scope/v1";
@@ -52,6 +59,8 @@ pub struct Transaction<D> {
     at: Time<D>,
     expected_revision: NetworkRevision,
     kind: TransactionKind<D>,
+    patch: Option<(PreparedPatch<D>, ReconfigurationPolicy)>,
+    expected_execution: Option<ExecutionStateDigest>,
 }
 
 impl<D> Clone for Transaction<D> {
@@ -60,6 +69,8 @@ impl<D> Clone for Transaction<D> {
             at: self.at,
             expected_revision: self.expected_revision,
             kind: self.kind.clone(),
+            patch: self.patch.clone(),
+            expected_execution: self.expected_execution,
         }
     }
 }
@@ -76,6 +87,8 @@ impl<D> Transaction<D> {
             at,
             expected_revision,
             kind: TransactionKind::Initialize(input),
+            patch: None,
+            expected_execution: None,
         }
     }
 
@@ -90,7 +103,51 @@ impl<D> Transaction<D> {
             at,
             expected_revision,
             kind: TransactionKind::Advance(input),
+            patch: None,
+            expected_execution: None,
         }
+    }
+
+    /// Attaches one prepared replacement and the caller's loss policy.
+    ///
+    /// The input must already be bound to the prepared target schema. A base
+    /// revision that differs from this transaction's expected revision is
+    /// rejected before the transaction can be applied.
+    pub fn with_patch(
+        mut self,
+        prepared: PreparedPatch<D>,
+        policy: ReconfigurationPolicy,
+    ) -> Result<Self, TransactionBuildFailure<D>> {
+        if prepared.base_revision() != self.expected_revision {
+            return Err(TransactionBuildFailure::BaseRevisionMismatch {
+                network: prepared.network_key(),
+                expected: self.expected_revision,
+                actual: prepared.base_revision(),
+                marker: PhantomData,
+            });
+        }
+        if let Some(evidence) = target_binding_problem(&self.kind, &prepared) {
+            return Err(TransactionBuildFailure::TargetSchemaMismatch {
+                network: prepared.network_key(),
+                evidence: Box::new(evidence),
+                marker: PhantomData,
+            });
+        }
+        self.patch = Some((prepared, policy));
+        Ok(self)
+    }
+
+    /// Requires the machine's execution digest to match before any candidate work.
+    #[must_use]
+    pub fn expect_execution_state(mut self, digest: ExecutionStateDigest) -> Self {
+        self.expected_execution = Some(digest);
+        self
+    }
+
+    /// Returns whether this transaction carries a prepared topology replacement.
+    #[must_use]
+    pub const fn carries_patch(&self) -> bool {
+        self.patch.is_some()
     }
 
     /// Returns the requested logical time.
@@ -200,6 +257,56 @@ pub enum RuntimeFailureEvidence {
         reset_level: LogicLevel,
         at_ticks: u64,
         revision: NetworkRevision,
+    },
+    StaleExecutionState {
+        expected: String,
+        actual: String,
+    },
+    PatchBearingRecording,
+    StalePreparedPatch {
+        network: NetworkKey,
+        evidence: StaleArtifactEvidence,
+    },
+    TargetInputSchemaMismatch {
+        network: NetworkKey,
+        evidence: InputSchemaEvidence,
+    },
+    StateMigrationRejected {
+        evidence: MigrationEvidence,
+    },
+    PendingEventMigrationRejected {
+        evidence: MigrationEvidence,
+    },
+    RequirePreserveFailed {
+        evidence: MigrationEvidence,
+    },
+    EpisodeMigrationRejected {
+        subject: SubjectRef,
+        evidence: DiagnosticEpisodeEvidence,
+    },
+    ProvenanceMigrationRejected {
+        subject: SubjectRef,
+        evidence: ProvenanceEvidence,
+    },
+    AmbiguousEventMigration {
+        subject: SubjectRef,
+    },
+    ConflictingMigratedTransitions {
+        subject: SubjectRef,
+        evidence: PendingEventEvidence,
+    },
+    StateLossRejected {
+        evidence: SemanticLossEvidence,
+    },
+    ReconfigurationTimeOverflow {
+        node: NodeSubject,
+        origin_ticks: u64,
+        delay_ticks: u64,
+    },
+    ReconfigurationBudgetExceeded {
+        budget: RuntimePolicyLimit,
+        limit: u64,
+        consumed: u64,
     },
 }
 
@@ -430,9 +537,153 @@ impl RuntimeFailureEvidence {
                     },
                 );
             }
+            Self::StaleExecutionState { expected, actual } => {
+                ProblemEvidence::RuntimeStaleExecutionState {
+                    evidence: DigestMismatchEvidence {
+                        kind: "execution_state",
+                        expected: expected.clone(),
+                        actual: actual.clone(),
+                        context: "machine".to_owned(),
+                    },
+                    marker: PhantomData,
+                }
+            }
+            Self::PatchBearingRecording => {
+                let mut evidence = ReplayEvidence::new();
+                evidence.underlying_code = "patch".to_owned();
+                ProblemEvidence::ReplayPatchPreparationDiverged {
+                    evidence,
+                    marker: PhantomData,
+                }
+            }
+            Self::StalePreparedPatch { network, evidence } => {
+                return Problem::new(
+                    SubjectRef::Network(*network),
+                    Vec::new(),
+                    ProblemEvidence::ReconfigurationStalePreparedPatch {
+                        evidence: evidence.clone(),
+                        marker: PhantomData,
+                    },
+                );
+            }
+            Self::TargetInputSchemaMismatch { network, evidence } => {
+                return Problem::new(
+                    SubjectRef::Network(*network),
+                    Vec::new(),
+                    ProblemEvidence::ReconfigurationTargetInputSchemaMismatch {
+                        evidence: *evidence,
+                        marker: PhantomData,
+                    },
+                );
+            }
+            Self::StateMigrationRejected { evidence } => {
+                return migration_problem(
+                    evidence,
+                    ProblemEvidence::ReconfigurationStateMigrationRejected {
+                        evidence: evidence.clone(),
+                        marker: PhantomData,
+                    },
+                );
+            }
+            Self::PendingEventMigrationRejected { evidence } => {
+                return migration_problem(
+                    evidence,
+                    ProblemEvidence::ReconfigurationPendingEventMigrationRejected {
+                        evidence: evidence.clone(),
+                        marker: PhantomData,
+                    },
+                );
+            }
+            Self::RequirePreserveFailed { evidence } => {
+                return migration_problem(
+                    evidence,
+                    ProblemEvidence::ReconfigurationRequirePreserveFailed {
+                        evidence: evidence.clone(),
+                        marker: PhantomData,
+                    },
+                );
+            }
+            Self::EpisodeMigrationRejected { subject, evidence } => {
+                return Problem::new(
+                    subject.clone(),
+                    Vec::new(),
+                    ProblemEvidence::ReconfigurationEpisodeMigrationRejected {
+                        evidence: evidence.clone(),
+                        marker: PhantomData,
+                    },
+                );
+            }
+            Self::ProvenanceMigrationRejected { subject, evidence } => {
+                return Problem::new(
+                    subject.clone(),
+                    Vec::new(),
+                    ProblemEvidence::ReconfigurationProvenanceMigrationRejected {
+                        evidence: *evidence,
+                        marker: PhantomData,
+                    },
+                );
+            }
+            Self::AmbiguousEventMigration { subject } => {
+                return Problem::new(
+                    subject.clone(),
+                    Vec::new(),
+                    ProblemEvidence::ReconfigurationAmbiguousEventMigration {
+                        marker: PhantomData,
+                    },
+                );
+            }
+            Self::ConflictingMigratedTransitions { subject, evidence } => {
+                return Problem::new(
+                    subject.clone(),
+                    Vec::new(),
+                    ProblemEvidence::ReconfigurationConflictingMigratedTransitions {
+                        evidence: evidence.clone(),
+                        marker: PhantomData,
+                    },
+                );
+            }
+            Self::StateLossRejected { evidence } => {
+                return Problem::new(
+                    evidence.subject.clone(),
+                    Vec::new(),
+                    ProblemEvidence::ReconfigurationStateLossRejected {
+                        evidence: evidence.clone(),
+                        marker: PhantomData,
+                    },
+                );
+            }
+            Self::ReconfigurationTimeOverflow {
+                node,
+                origin_ticks,
+                delay_ticks,
+            } => ProblemEvidence::RuntimeTimeOverflow {
+                evidence: TimeEvidence {
+                    owner: Some(node_evidence(node)),
+                    operation: TimeOperation::Reconfiguration,
+                    left_ticks: *origin_ticks,
+                    right_ticks: *delay_ticks,
+                },
+                marker: PhantomData,
+            },
+            Self::ReconfigurationBudgetExceeded {
+                budget,
+                limit,
+                consumed,
+            } => ProblemEvidence::RuntimeBudgetExceeded {
+                evidence: BudgetEvidence {
+                    budget: budget.parameter_key(),
+                    limit: *limit,
+                    consumed: *consumed,
+                },
+                marker: PhantomData,
+            },
         };
         Problem::new(primary, Vec::new(), evidence)
     }
+}
+
+fn migration_problem<D>(evidence: &MigrationEvidence, problem: ProblemEvidence<D>) -> Problem<D> {
+    Problem::new(evidence.subject.clone(), Vec::new(), problem)
 }
 
 fn node_evidence(subject: &NodeSubject) -> NodeEvidence {
@@ -496,7 +747,215 @@ impl<D> RuntimeFailure<D> {
     pub const fn problem(&self) -> &Problem<D> {
         &self.problem
     }
+
+    /// Projects a finalization rejection into the closed reconfiguration family.
+    #[must_use]
+    pub fn reconfiguration(&self) -> Option<ReconfigurationFailure<D>> {
+        Some(match self.evidence.as_ref() {
+            RuntimeFailureEvidence::StalePreparedPatch { .. } => {
+                ReconfigurationFailure::StalePreparedPatch(self.evidence.problem())
+            }
+            RuntimeFailureEvidence::TargetInputSchemaMismatch { .. } => {
+                ReconfigurationFailure::TargetInputSchemaMismatch(self.evidence.problem())
+            }
+            RuntimeFailureEvidence::StateMigrationRejected { .. } => {
+                ReconfigurationFailure::StateMigrationRejected(self.evidence.problem())
+            }
+            RuntimeFailureEvidence::PendingEventMigrationRejected { .. } => {
+                ReconfigurationFailure::PendingEventMigrationRejected(self.evidence.problem())
+            }
+            RuntimeFailureEvidence::RequirePreserveFailed { .. } => {
+                ReconfigurationFailure::RequirePreserveFailed(self.evidence.problem())
+            }
+            RuntimeFailureEvidence::EpisodeMigrationRejected { .. } => {
+                ReconfigurationFailure::EpisodeMigrationRejected(self.evidence.problem())
+            }
+            RuntimeFailureEvidence::ProvenanceMigrationRejected { .. } => {
+                ReconfigurationFailure::ProvenanceMigrationRejected(self.evidence.problem())
+            }
+            RuntimeFailureEvidence::AmbiguousEventMigration { .. } => {
+                ReconfigurationFailure::AmbiguousEventMigration(self.evidence.problem())
+            }
+            RuntimeFailureEvidence::ConflictingMigratedTransitions { .. } => {
+                ReconfigurationFailure::ConflictingMigratedTransitions(self.evidence.problem())
+            }
+            RuntimeFailureEvidence::StateLossRejected { .. } => {
+                ReconfigurationFailure::StateLossRejected(self.evidence.problem())
+            }
+            RuntimeFailureEvidence::ReconfigurationTimeOverflow { .. } => {
+                ReconfigurationFailure::TimeArithmeticFailure(self.evidence.problem())
+            }
+            RuntimeFailureEvidence::ReconfigurationBudgetExceeded { .. } => {
+                ReconfigurationFailure::MigrationBudgetExceeded(self.evidence.problem())
+            }
+            _ => return None,
+        })
+    }
+
+    pub(crate) fn rejected_patch_recording() -> Self {
+        Self::new(RuntimeFailureEvidence::PatchBearingRecording)
+    }
 }
+
+/// A closed finalization rejection owned by one runtime failure.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ReconfigurationFailure<D> {
+    /// The prepared patch does not match the live machine.
+    StalePreparedPatch(Problem<D>),
+    /// Target-bound input does not match the prepared schema at application.
+    TargetInputSchemaMismatch(Problem<D>),
+    /// A state rule rejected its subject.
+    StateMigrationRejected(Problem<D>),
+    /// A pending-event rule rejected its subject.
+    PendingEventMigrationRejected(Problem<D>),
+    /// A require-preserve rule observed a lossy outcome.
+    RequirePreserveFailed(Problem<D>),
+    /// An episode rule rejected an active episode.
+    EpisodeMigrationRejected(Problem<D>),
+    /// A provenance rule could not be applied.
+    ProvenanceMigrationRejected(Problem<D>),
+    /// More than one event rule claimed one source owner.
+    AmbiguousEventMigration(Problem<D>),
+    /// Migrated transitions share one owner and deadline.
+    ConflictingMigratedTransitions(Problem<D>),
+    /// The caller policy rejected a realized semantic loss.
+    StateLossRejected(Problem<D>),
+    /// Checked time arithmetic failed during finalization.
+    TimeArithmeticFailure(Problem<D>),
+    /// A runtime budget failed during finalization.
+    MigrationBudgetExceeded(Problem<D>),
+}
+
+impl<D> ReconfigurationFailure<D> {
+    /// Returns the catalogue problem retained by this rejection.
+    #[must_use]
+    pub const fn problem(&self) -> &Problem<D> {
+        match self {
+            Self::StalePreparedPatch(problem)
+            | Self::TargetInputSchemaMismatch(problem)
+            | Self::StateMigrationRejected(problem)
+            | Self::PendingEventMigrationRejected(problem)
+            | Self::RequirePreserveFailed(problem)
+            | Self::EpisodeMigrationRejected(problem)
+            | Self::ProvenanceMigrationRejected(problem)
+            | Self::AmbiguousEventMigration(problem)
+            | Self::ConflictingMigratedTransitions(problem)
+            | Self::StateLossRejected(problem)
+            | Self::TimeArithmeticFailure(problem)
+            | Self::MigrationBudgetExceeded(problem) => problem,
+        }
+    }
+
+    /// Returns the catalogue code represented by this rejection.
+    #[must_use]
+    pub const fn code(&self) -> DiagnosticCode {
+        self.problem().code()
+    }
+}
+
+/// A rejection raised while attaching a patch, before application.
+#[non_exhaustive]
+pub enum TransactionBuildFailure<D> {
+    /// The prepared base revision differs from the transaction's expected revision.
+    BaseRevisionMismatch {
+        /// Network the patch names.
+        network: NetworkKey,
+        /// Revision this transaction expects.
+        expected: NetworkRevision,
+        /// Revision the patch was prepared against.
+        actual: NetworkRevision,
+        marker: PhantomData<fn() -> D>,
+    },
+    /// The transaction input is not bound to the prepared target schema.
+    TargetSchemaMismatch {
+        /// Network the patch names.
+        network: NetworkKey,
+        /// Compared schema identities.
+        evidence: Box<InputSchemaEvidence>,
+        marker: PhantomData<fn() -> D>,
+    },
+}
+
+impl<D> TransactionBuildFailure<D> {
+    /// Returns the catalogue problem for this build rejection.
+    #[must_use]
+    pub fn problem(&self) -> Problem<D> {
+        match self {
+            Self::BaseRevisionMismatch {
+                network,
+                expected,
+                actual,
+                marker: _,
+            } => Problem::new(
+                SubjectRef::Network(*network),
+                Vec::new(),
+                ProblemEvidence::ReconfigurationBaseRevisionMismatch {
+                    expected: *expected,
+                    actual: *actual,
+                    marker: PhantomData,
+                },
+            ),
+            Self::TargetSchemaMismatch {
+                network,
+                evidence,
+                marker: _,
+            } => Problem::new(
+                SubjectRef::Network(*network),
+                Vec::new(),
+                ProblemEvidence::ReconfigurationTargetInputSchemaMismatch {
+                    evidence: **evidence,
+                    marker: PhantomData,
+                },
+            ),
+        }
+    }
+
+    /// Returns the catalogue code represented by this rejection.
+    #[must_use]
+    pub fn code(&self) -> DiagnosticCode {
+        self.problem().code()
+    }
+}
+
+impl<D> fmt::Debug for TransactionBuildFailure<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BaseRevisionMismatch {
+                network,
+                expected,
+                actual,
+                marker: _,
+            } => formatter
+                .debug_struct("BaseRevisionMismatch")
+                .field("network", network)
+                .field("expected", expected)
+                .field("actual", actual)
+                .finish(),
+            Self::TargetSchemaMismatch {
+                network,
+                evidence,
+                marker: _,
+            } => formatter
+                .debug_struct("TargetSchemaMismatch")
+                .field("network", network)
+                .field("evidence", evidence)
+                .finish(),
+        }
+    }
+}
+
+impl<D> fmt::Display for TransactionBuildFailure<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "transaction build rejected with {}",
+            self.code().as_str()
+        )
+    }
+}
+
+impl<D> std::error::Error for TransactionBuildFailure<D> {}
 
 impl<D> fmt::Debug for RuntimeFailure<D> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -609,6 +1068,22 @@ impl PulseContribution {
 
 #[derive(Clone)]
 pub(crate) enum ProvenanceRecord<D> {
+    TopologyChange {
+        at: Time<D>,
+        revision: NetworkRevision,
+        base: NetworkFingerprint,
+        target: NetworkFingerprint,
+        supporters: Vec<CauseRef>,
+    },
+    Migration {
+        subject: ProvenanceSubject,
+        rule: String,
+        supporters: Vec<CauseRef>,
+    },
+    Checkpoint {
+        fact: Vec<u8>,
+        supporters: Vec<CauseRef>,
+    },
     InitializationTransaction {
         at: Time<D>,
         revision: NetworkRevision,
@@ -692,6 +1167,8 @@ impl<D> ProvenanceRecord<D> {
             | Self::Derived { supporters, .. }
             | Self::PulseDerived { supporters, .. }
             | Self::PulseControlledLevel { supporters, .. } => supporters,
+            Self::Migration { supporters, .. } | Self::Checkpoint { supporters, .. } => supporters,
+            Self::TopologyChange { supporters, .. } => supporters,
             Self::InitializationTransaction { .. }
             | Self::ReadyTransaction { .. }
             | Self::ExternalObservation { .. }
@@ -721,6 +1198,10 @@ impl<D> ProvenanceRecord<D> {
             | Self::Derived { supporters, .. }
             | Self::PulseDerived { supporters, .. }
             | Self::PulseControlledLevel { supporters, .. } => supporters.reverse(),
+            Self::Migration { supporters, .. } | Self::Checkpoint { supporters, .. } => {
+                supporters.reverse()
+            }
+            Self::TopologyChange { supporters, .. } => supporters.reverse(),
             Self::InitializationTransaction { .. }
             | Self::ReadyTransaction { .. }
             | Self::ExternalObservation { .. }
@@ -732,6 +1213,31 @@ impl<D> ProvenanceRecord<D> {
 /// A borrowed structured projection of one immutable causal record.
 #[non_exhaustive]
 pub enum CauseInspection<'a, D> {
+    /// The topology fact effective at this reaction; it is not a signal.
+    TopologyChange {
+        at: Time<D>,
+        revision: NetworkRevision,
+        base: NetworkFingerprint,
+        target: NetworkFingerprint,
+        supporters: &'a [CauseRef],
+    },
+    /// A target fact established by a named migration rule and its source ancestry.
+    Migration {
+        subject: ProvenanceSubject,
+        rule: &'a str,
+        supporters: &'a [CauseRef],
+    },
+    /// An authoritative historical fact, independent of the installed topology.
+    ///
+    /// `fact` is canonical CBOR containing the original provenance record's
+    /// stable subject, kind, time, revision, and content-addressed predecessor
+    /// relations. Temporal facts also retain their complete event identity.
+    /// `supporters` resolve the retained ancestry in this view.
+    /// Initialization patches instead retain the base's declared state cells.
+    Checkpoint {
+        fact: &'a [u8],
+        supporters: &'a [CauseRef],
+    },
     InitializationTransaction {
         at: Time<D>,
         revision: NetworkRevision,
@@ -921,6 +1427,7 @@ struct PreviousLevelOutputs<'a> {
 
 struct PreviousStateCauses<'a> {
     edge_observations: &'a BTreeMap<NodeKey, CauseRef>,
+    declared_edges: &'a BTreeSet<NodeKey>,
     toggle_inversions: &'a BTreeMap<NodeKey, CauseRef>,
     establishments: &'a BTreeMap<NodeKey, CauseRef>,
     transport_transitions: &'a BTreeMap<NodeKey, CauseRef>,
@@ -953,6 +1460,31 @@ impl<D> ProvenanceView<D> {
             });
         };
         Ok(match record {
+            ProvenanceRecord::TopologyChange {
+                at,
+                revision,
+                base,
+                target,
+                supporters,
+            } => CauseInspection::TopologyChange {
+                at: *at,
+                revision: *revision,
+                base: *base,
+                target: *target,
+                supporters,
+            },
+            ProvenanceRecord::Migration {
+                subject,
+                rule,
+                supporters,
+            } => CauseInspection::Migration {
+                subject: subject.clone(),
+                rule,
+                supporters,
+            },
+            ProvenanceRecord::Checkpoint { fact, supporters } => {
+                CauseInspection::Checkpoint { fact, supporters }
+            }
             ProvenanceRecord::InitializationTransaction { at, revision } => {
                 CauseInspection::InitializationTransaction {
                     at: *at,
@@ -1368,6 +1900,7 @@ pub struct TransactionResult<D> {
     diagnostic_episode_changes: Vec<crate::DiagnosticEpisodeChange<D>>,
     schedule: Schedule<D>,
     provenance: ProvenanceView<D>,
+    migration: Option<MigrationReport<D>>,
 }
 
 impl<D> TransactionResult<D> {
@@ -1436,6 +1969,12 @@ impl<D> TransactionResult<D> {
     pub const fn after_observable_digest(&self) -> ObservableStateDigest {
         self.after_observable_digest
     }
+
+    /// Returns the migration report when this transaction committed a patch.
+    #[must_use]
+    pub const fn migration(&self) -> Option<&MigrationReport<D>> {
+        self.migration.as_ref()
+    }
 }
 
 impl<D> fmt::Debug for TransactionResult<D> {
@@ -1452,6 +1991,13 @@ impl<D> fmt::Debug for TransactionResult<D> {
             .field("occurrence_count", &self.occurrences.len())
             .field("schedule", &self.schedule)
             .field("provenance_records", &self.provenance.len())
+            .field(
+                "migration",
+                &self
+                    .migration
+                    .as_ref()
+                    .map(|report| report.target_revision()),
+            )
             .finish()
     }
 }
@@ -1538,12 +2084,16 @@ impl<D> Machine<D> {
             at,
             expected_revision,
             kind,
+            patch,
+            expected_execution,
         } = transaction;
         match kind {
             TransactionKind::Initialize(input) => {
-                self.apply_initialization(at, expected_revision, input)
+                self.apply_initialization(at, expected_revision, input, patch, expected_execution)
             }
-            TransactionKind::Advance(input) => self.apply_advance(at, expected_revision, input),
+            TransactionKind::Advance(input) => {
+                self.apply_advance(at, expected_revision, input, patch, expected_execution)
+            }
         }
     }
 
@@ -1578,43 +2128,72 @@ impl<D> Machine<D> {
         at: Time<D>,
         expected_revision: NetworkRevision,
         input: InputSnapshot<D>,
+        patch: Option<(PreparedPatch<D>, ReconfigurationPolicy)>,
+        expected_execution: Option<ExecutionStateDigest>,
     ) -> Result<TransactionResult<D>, RuntimeFailure<D>> {
-        if self.is_initialized() {
-            return Err(RuntimeFailure::new(
-                RuntimeFailureEvidence::AlreadyInitialized,
-            ));
+        admit_initialization(
+            self,
+            expected_revision,
+            &input,
+            patch.as_ref(),
+            expected_execution,
+        )?;
+        let mut installed_network = None;
+        let mut migration_report = None;
+        let mut revision = self.store.revision;
+        let mut migrated_edges = None;
+        let mut migrated_stored = None;
+        if let Some((prepared, policy)) = patch {
+            let limits = self.policy.clone();
+            let source = store_source(self);
+            let finalized =
+                finalize(&prepared, policy, at, &source, &limits).map_err(migration_failure)?;
+            migrated_edges = Some(finalized.edge_observations);
+            migrated_stored = Some(finalized.stored_levels);
+            revision = finalized.revision;
+            migration_report = Some(finalized.report);
+            installed_network = Some(finalized.compiled);
         }
-        if expected_revision != self.store.revision {
-            return Err(RuntimeFailure::new(RuntimeFailureEvidence::StaleRevision {
-                expected: expected_revision,
-                actual: self.store.revision,
-            }));
-        }
-        validate_snapshot_binding::<D>(&self.compiled, &input)?;
+        let network = match installed_network.as_ref() {
+            Some(network) => network,
+            None => &self.compiled,
+        };
+        let edge_observations = match migrated_edges.as_deref() {
+            Some(edges) => edges,
+            None => self.store.edge_observations.as_slice(),
+        };
+        let stored_levels = match migrated_stored.as_deref() {
+            Some(stored) => stored,
+            None => self.store.stored_levels.as_slice(),
+        };
 
-        enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, 1)?;
-        let revision = self.store.revision;
+        let patched = installed_network.is_some();
+        enforce_outer_reaction_budgets::<D>(&self.policy, network, 1)
+            .map_err(|failure| reconfiguration_phase(failure, patched))?;
         let (levels, pulses) = input.into_parts();
         let evaluation = evaluate_reaction::<D>(
-            &self.compiled,
+            network,
             &levels,
             &pulses,
-            &self.store.edge_observations,
-            &self.store.stored_levels,
+            edge_observations,
+            stored_levels,
             at,
             revision,
             &BTreeMap::new(),
         )?;
-        let occurrences = pulse_latch_occurrences(&self.compiled, at, revision, &evaluation);
+        let occurrences = pulse_latch_occurrences(network, at, revision, &evaluation);
         let mut active_episodes = self.store.active_episodes.clone();
         let mut diagnostic_episode_changes = Vec::new();
         let mut built = build_initialization_provenance(
-            &self.compiled,
+            network,
             revision,
             at,
             &levels,
             &pulses,
             &evaluation,
+            migration_report
+                .as_ref()
+                .map(|report| (report, crate::state_digest::declared_state_checkpoint(self))),
         );
         let mut created_pending_events = 0_u64;
         let mut pending_events = BTreeMap::new();
@@ -1625,7 +2204,7 @@ impl<D> Machine<D> {
         let mut periodic_cancellation_causes = BTreeMap::new();
         schedule_pulse_delays(
             PulseDelayScheduling {
-                compiled: &self.compiled,
+                compiled: network,
                 pending: &mut pending_events,
                 next_serial: &mut next_pending_event_serial,
                 created_events: &mut created_pending_events,
@@ -1643,14 +2222,11 @@ impl<D> Machine<D> {
             &mut periodic_cancellation_causes,
             &mut built.provenance,
             &self.policy,
-        )?;
-        finalize_provenance_build(
-            &mut built,
-            self.compiled.network_key(),
-            self.compiled.fingerprint(),
-        );
+        )
+        .map_err(|failure| reconfiguration_phase(failure, patched))?;
+        finalize_provenance_build(&mut built, network.network_key(), network.fingerprint());
         let standard_history = crate::standard::stateful::observe_reaction(
-            &self.compiled,
+            network,
             &evaluation,
             &built.operation_causes,
             &BTreeMap::new(),
@@ -1661,7 +2237,7 @@ impl<D> Machine<D> {
         remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
         remap_pending_causes(&mut pending_events, built.provenance.scope);
         reconcile_level_episodes(
-            &self.compiled,
+            network,
             at,
             revision,
             &evaluation,
@@ -1673,7 +2249,8 @@ impl<D> Machine<D> {
             &self.policy,
             RuntimePolicyLimit::MaxRequiredProvenanceGrowth,
             count_as_u64(built.provenance.len()),
-        )?;
+        )
+        .map_err(|failure| reconfiguration_phase(failure, patched))?;
 
         let output_events = initialization_events(
             at,
@@ -1690,16 +2267,20 @@ impl<D> Machine<D> {
                 .len()
                 .saturating_add(occurrences.len())
                 .saturating_add(diagnostic_episode_changes.len()),
-        )?;
+        )
+        .map_err(|failure| reconfiguration_phase(failure, patched))?;
         let schedule = schedule_from_pending(&pending_events);
         let before_execution_digest = self.execution_state_digest();
+        let before_revision = self.store.revision;
         let provenance = built.provenance.clone();
         Ok(publish_success(
             self,
             PublicationReport {
                 before_execution_digest,
                 requested_time: at,
-                revision,
+                before_revision,
+                after_revision: revision,
+                migration: migration_report,
                 output_events,
                 occurrences,
                 diagnostic_episode_changes,
@@ -1726,6 +2307,8 @@ impl<D> Machine<D> {
                 active_episodes,
                 pending_events,
                 next_pending_event_serial,
+                installed_network,
+                revision,
             },
         ))
     }
@@ -1735,29 +2318,19 @@ impl<D> Machine<D> {
         at: Time<D>,
         expected_revision: NetworkRevision,
         input: InputDelta<D>,
+        patch: Option<(PreparedPatch<D>, ReconfigurationPolicy)>,
+        expected_execution: Option<ExecutionStateDigest>,
     ) -> Result<TransactionResult<D>, RuntimeFailure<D>> {
-        let MachineStatus::Ready { now } = self.store.status else {
-            return Err(RuntimeFailure::new(
-                RuntimeFailureEvidence::DeltaBeforeInitialization,
-            ));
-        };
-        if expected_revision != self.store.revision {
-            return Err(RuntimeFailure::new(RuntimeFailureEvidence::StaleRevision {
-                expected: expected_revision,
-                actual: self.store.revision,
-            }));
-        }
-        validate_delta_binding::<D>(&self.compiled, &input)?;
-        if at <= now {
-            return Err(RuntimeFailure::new(
-                RuntimeFailureEvidence::TimeNotStrictlyIncreasing {
-                    current_ticks: now.ticks(),
-                    requested_ticks: at.ticks(),
-                },
-            ));
-        }
+        admit_advance(
+            self,
+            at,
+            expected_revision,
+            &input,
+            patch.as_ref(),
+            expected_execution,
+        )?;
 
-        let revision = self.store.revision;
+        let mut revision = self.store.revision;
         let (explicit_levels, pulses) = input.into_parts();
         let mut standard_history = self.store.standard_history.clone();
         let mut levels = self.store.external_levels.clone();
@@ -1765,6 +2338,7 @@ impl<D> Machine<D> {
         let mut next_pending_event_serial = self.store.next_pending_event_serial;
         let mut edge_observations = self.store.edge_observations.clone();
         let mut stored_levels = self.store.stored_levels.clone();
+        let mut operation_levels = self.store.operation_levels.clone();
         let mut output_baselines = self.store.output_baselines.clone();
         let mut input_causes = self.store.input_causes.clone();
         let mut output_causes = self.store.output_causes.clone();
@@ -1790,6 +2364,8 @@ impl<D> Machine<D> {
         let empty_levels = BTreeMap::new();
         let empty_pulses = BTreeMap::new();
 
+        // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "effective-time-order"
+        // Deadlines strictly earlier than the requested time run on the installed topology.
         while pending_events
             .keys()
             .next()
@@ -1850,6 +2426,7 @@ impl<D> Machine<D> {
                 &due.transport_causes,
                 &due.inertial_causes,
                 &due.periodic_causes,
+                &BTreeSet::new(),
             );
             remap_pending_causes(&mut pending_events, built.provenance.scope);
             remap_output_event_causes(&mut output_events, built.provenance.scope);
@@ -1866,6 +2443,7 @@ impl<D> Machine<D> {
 
             edge_observations = internal.proposed_edge_observations.clone();
             stored_levels = internal.proposed_stored_levels.clone();
+            operation_levels = internal.operation_levels.clone();
             output_baselines = internal.external_outputs.clone();
             schedule_pulse_delays(
                 PulseDelayScheduling {
@@ -1937,16 +2515,121 @@ impl<D> Machine<D> {
             )?;
         }
 
+        let mut installed_network = None;
+        let mut migration_report = None;
+        let mut output_plans = BTreeMap::new();
+        let mut declared_edges = BTreeSet::new();
+        if let Some((prepared, policy)) = patch {
+            let source = MigrationSource {
+                compiled: &self.compiled,
+                edge_observations: &edge_observations,
+                stored_levels: &stored_levels,
+                operation_levels: &operation_levels,
+                external_levels: &levels,
+                output_baselines: &output_baselines,
+                pending_events: &pending_events,
+                next_serial: next_pending_event_serial,
+                periodic_anchors: &periodic_anchors,
+                episodes: &active_episodes,
+                input_causes: &input_causes,
+                output_causes: &output_causes,
+                edge_observation_causes: &edge_observation_causes,
+                toggle_inversion_causes: &toggle_inversion_causes,
+                establishment_causes: &establishment_causes,
+                transport_transition_causes: &transport_transition_causes,
+                inertial_cancellation_causes: &inertial_cancellation_causes,
+                periodic_anchor_causes: &periodic_anchor_causes,
+                periodic_cancellation_causes: &periodic_cancellation_causes,
+            };
+            let mut finalized = finalize(&prepared, policy, at, &source, &self.policy)
+                .map_err(migration_failure)?;
+            provenance = checkpoint_migration(&self.compiled, &provenance, at, &mut finalized);
+            let patch_cause =
+                provenance
+                    .records
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(index, record)| {
+                        matches!(record, ProvenanceRecord::TopologyChange { .. }).then_some(
+                            CauseRef {
+                                scope: provenance.scope,
+                                ordinal: index as u32,
+                            },
+                        )
+                    });
+            if let Some(patch_cause) = patch_cause {
+                for (condition, episode) in &active_episodes {
+                    let owner = node_subject_ref(condition.owner());
+                    let preserved = finalized.report.episodes().iter().any(|record| {
+                        record.subject() == &owner
+                            && matches!(
+                                record.outcome(),
+                                crate::EpisodeOutcome::Preserved
+                                    | crate::EpisodeOutcome::Transformed
+                            )
+                    });
+                    if !preserved && !finalized.episodes.contains_key(condition) {
+                        diagnostic_episode_changes.push(
+                            crate::episode::DiagnosticEpisodeChange::migration_end(
+                                episode,
+                                crate::DiagnosticEpisodeChangeKind::Terminated,
+                                at,
+                                patch_cause,
+                            ),
+                        );
+                    }
+                }
+            }
+            edge_observations = finalized.edge_observations;
+            stored_levels = finalized.stored_levels;
+            levels = finalized.external_levels;
+            output_baselines = finalized.output_baselines;
+            pending_events = finalized.pending_events;
+            created_pending_events = created_pending_events.saturating_add(
+                finalized
+                    .next_serial
+                    .saturating_sub(next_pending_event_serial),
+            );
+            next_pending_event_serial = finalized.next_serial;
+            periodic_anchors = finalized.periodic_anchors;
+            active_episodes = finalized.episodes;
+            input_causes = finalized.input_causes;
+            output_causes = finalized.output_causes;
+            edge_observation_causes = finalized.edge_observation_causes;
+            toggle_inversion_causes = finalized.toggle_inversion_causes;
+            establishment_causes = finalized.establishment_causes;
+            transport_transition_causes = finalized.transport_transition_causes;
+            inertial_cancellation_causes = finalized.inertial_cancellation_causes;
+            periodic_anchor_causes = finalized.periodic_anchor_causes;
+            periodic_cancellation_causes = finalized.periodic_cancellation_causes;
+            output_plans = finalized.output_plans;
+            declared_edges = finalized.declared_edges;
+            migration_report = Some(finalized.report);
+            revision = finalized.revision;
+            installed_network = Some(finalized.compiled);
+            standard_history.retain(|module, _| {
+                installed_network
+                    .as_ref()
+                    .is_some_and(|network| network.module(module).is_some())
+            });
+        }
+        let network = match installed_network.as_ref() {
+            Some(network) => network,
+            None => &self.compiled,
+        };
+        let patched = installed_network.is_some();
+
         // Target-time external levels become authoritative only after every
         // strictly earlier internal deadline has completed on candidate state.
         levels.extend(explicit_levels.iter().map(|(key, value)| (*key, *value)));
         let due = pending_events
             .remove(&at)
-            .map(|batch| aggregate_due::<D>(&self.compiled, batch))
-            .transpose()?
+            .map(|batch| aggregate_due::<D>(network, batch))
+            .transpose()
+            .map_err(|failure| reconfiguration_phase(failure, patched))?
             .unwrap_or_default();
-        let evaluation = self
-            .compiled
+        let evaluation = network
             .evaluate_temporal_reaction(
                 &levels,
                 &pulses,
@@ -1959,18 +2642,31 @@ impl<D> Machine<D> {
                 at,
                 &periodic_anchors,
             )
-            .map_err(|failure| evaluation_failure(&self.compiled, failure, at, revision))?;
-        occurrences.extend(pulse_latch_occurrences(
-            &self.compiled,
-            at,
-            revision,
-            &evaluation,
-        ));
+            .map_err(|failure| {
+                reconfiguration_phase(evaluation_failure(network, failure, at, revision), patched)
+            })?;
+        occurrences.extend(pulse_latch_occurrences(network, at, revision, &evaluation));
         reaction_count = reaction_count.saturating_add(1);
-        enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, reaction_count)?;
+        // Earlier reactions used the old graph; charge their actual operation count.
+        enforce_budget::<D>(
+            &self.policy,
+            RuntimePolicyLimit::MaxInternalReactions,
+            reaction_count,
+        )
+        .and_then(|()| {
+            enforce_budget::<D>(
+                &self.policy,
+                RuntimePolicyLimit::MaxEvaluatedOperations,
+                reaction_count
+                    .saturating_sub(1)
+                    .saturating_mul(count_as_u64(self.compiled.operation_count()))
+                    .saturating_add(count_as_u64(network.operation_count())),
+            )
+        })
+        .map_err(|failure| reconfiguration_phase(failure, patched))?;
 
         let mut built = build_ready_provenance(
-            &self.compiled,
+            network,
             revision,
             at,
             &explicit_levels,
@@ -1989,22 +2685,38 @@ impl<D> Machine<D> {
             &due.transport_causes,
             &due.inertial_causes,
             &due.periodic_causes,
+            &declared_edges,
         );
         remap_pending_causes(&mut pending_events, built.provenance.scope);
         remap_output_event_causes(&mut output_events, built.provenance.scope);
-        let mut final_events = changed_events(
-            at,
-            revision,
-            &output_baselines,
-            &evaluation.external_outputs,
-            &built.output_causes,
-            &evaluation.pulse_outputs,
-            &built.pulse_output_causes,
-        );
+        let mut final_events = if patched {
+            planned_level_events(
+                at,
+                revision,
+                &output_plans,
+                LevelOutputValues {
+                    previous: &output_baselines,
+                    settled: &evaluation.external_outputs,
+                },
+                &built.output_causes,
+                &evaluation.pulse_outputs,
+                &built.pulse_output_causes,
+            )
+        } else {
+            changed_events(
+                at,
+                revision,
+                &output_baselines,
+                &evaluation.external_outputs,
+                &built.output_causes,
+                &evaluation.pulse_outputs,
+                &built.pulse_output_causes,
+            )
+        };
         output_events.append(&mut final_events);
         schedule_pulse_delays(
             PulseDelayScheduling {
-                compiled: &self.compiled,
+                compiled: network,
                 pending: &mut pending_events,
                 next_serial: &mut next_pending_event_serial,
                 created_events: &mut created_pending_events,
@@ -2022,14 +2734,11 @@ impl<D> Machine<D> {
             &mut periodic_cancellation_causes,
             &mut built.provenance,
             &self.policy,
-        )?;
-        finalize_provenance_build(
-            &mut built,
-            self.compiled.network_key(),
-            self.compiled.fingerprint(),
-        );
+        )
+        .map_err(|failure| reconfiguration_phase(failure, patched))?;
+        finalize_provenance_build(&mut built, network.network_key(), network.fingerprint());
         standard_history = crate::standard::stateful::observe_reaction(
-            &self.compiled,
+            network,
             &evaluation,
             &built.operation_causes,
             &standard_history,
@@ -2041,7 +2750,7 @@ impl<D> Machine<D> {
         remap_pending_causes(&mut pending_events, built.provenance.scope);
         remap_output_event_causes(&mut output_events, built.provenance.scope);
         reconcile_level_episodes(
-            &self.compiled,
+            network,
             at,
             revision,
             &evaluation,
@@ -2057,21 +2766,26 @@ impl<D> Machine<D> {
                 .len()
                 .saturating_add(occurrences.len())
                 .saturating_add(diagnostic_episode_changes.len()),
-        )?;
+        )
+        .map_err(|failure| reconfiguration_phase(failure, patched))?;
         enforce_provenance_growth::<D>(
             &self.policy,
             built.provenance.len(),
             previous_provenance_len,
-        )?;
+        )
+        .map_err(|failure| reconfiguration_phase(failure, patched))?;
         let schedule = schedule_from_pending(&pending_events);
         let before_execution_digest = self.execution_state_digest();
+        let before_revision = self.store.revision;
         let provenance = built.provenance.clone();
         Ok(publish_success(
             self,
             PublicationReport {
                 before_execution_digest,
                 requested_time: at,
-                revision,
+                before_revision,
+                after_revision: revision,
+                migration: migration_report,
                 output_events,
                 occurrences,
                 diagnostic_episode_changes,
@@ -2098,9 +2812,404 @@ impl<D> Machine<D> {
                 active_episodes,
                 pending_events,
                 next_pending_event_serial,
+                installed_network,
+                revision,
             },
         ))
     }
+}
+
+fn admit_initialization<D>(
+    machine: &Machine<D>,
+    expected_revision: NetworkRevision,
+    input: &InputSnapshot<D>,
+    patch: Option<&(PreparedPatch<D>, ReconfigurationPolicy)>,
+    expected_execution: Option<ExecutionStateDigest>,
+) -> Result<(), RuntimeFailure<D>> {
+    if machine.is_initialized() {
+        return Err(RuntimeFailure::new(
+            RuntimeFailureEvidence::AlreadyInitialized,
+        ));
+    }
+    check_expected_execution(machine, expected_execution)?;
+    check_expected_revision(machine, expected_revision)?;
+    if let Some((prepared, _)) = patch {
+        check_patch_freshness(machine, prepared)?;
+        runtime_schema_mismatch(prepared, snapshot_binding_problem(input, prepared))?;
+    } else {
+        validate_snapshot_binding(machine.compiled(), input)?;
+    }
+    Ok(())
+}
+
+fn admit_advance<D>(
+    machine: &Machine<D>,
+    at: Time<D>,
+    expected_revision: NetworkRevision,
+    input: &InputDelta<D>,
+    patch: Option<&(PreparedPatch<D>, ReconfigurationPolicy)>,
+    expected_execution: Option<ExecutionStateDigest>,
+) -> Result<(), RuntimeFailure<D>> {
+    let MachineStatus::Ready { now } = machine.status() else {
+        return Err(RuntimeFailure::new(
+            RuntimeFailureEvidence::DeltaBeforeInitialization,
+        ));
+    };
+    check_expected_execution(machine, expected_execution)?;
+    check_expected_revision(machine, expected_revision)?;
+    if let Some((prepared, _)) = patch {
+        check_patch_freshness(machine, prepared)?;
+        runtime_schema_mismatch(prepared, delta_binding_problem(input, prepared))?;
+    } else {
+        validate_delta_binding(machine.compiled(), input)?;
+    }
+    if at <= now {
+        return Err(RuntimeFailure::new(
+            RuntimeFailureEvidence::TimeNotStrictlyIncreasing {
+                current_ticks: now.ticks(),
+                requested_ticks: at.ticks(),
+            },
+        ));
+    }
+    Ok(())
+}
+
+fn check_expected_execution<D>(
+    machine: &Machine<D>,
+    expected: Option<ExecutionStateDigest>,
+) -> Result<(), RuntimeFailure<D>> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let actual = machine.execution_state_digest();
+    if expected == actual {
+        return Ok(());
+    }
+    Err(RuntimeFailure::new(
+        RuntimeFailureEvidence::StaleExecutionState {
+            expected: expected.to_string(),
+            actual: actual.to_string(),
+        },
+    ))
+}
+
+fn check_expected_revision<D>(
+    machine: &Machine<D>,
+    expected: NetworkRevision,
+) -> Result<(), RuntimeFailure<D>> {
+    let actual = machine.revision();
+    if expected == actual {
+        return Ok(());
+    }
+    Err(RuntimeFailure::new(RuntimeFailureEvidence::StaleRevision {
+        expected,
+        actual,
+    }))
+}
+
+fn check_patch_freshness<D>(
+    machine: &Machine<D>,
+    prepared: &PreparedPatch<D>,
+) -> Result<(), RuntimeFailure<D>> {
+    let compiled = machine.compiled();
+    let target = prepared.resulting_compiled();
+    let fresh = compiled.network_key() == prepared.network_key()
+        && machine.revision() == prepared.base_revision()
+        && compiled.fingerprint() == prepared.base_fingerprint()
+        && signal_semantics_version(compiled) == signal_semantics_version(target)
+        && compiled.time_domain_id() == target.time_domain_id();
+    if fresh {
+        return Ok(());
+    }
+    Err(RuntimeFailure::new(
+        RuntimeFailureEvidence::StalePreparedPatch {
+            network: prepared.network_key(),
+            evidence: StaleArtifactEvidence {
+                expected_network: format!("{:032x}", prepared.network_key().as_u128()),
+                actual_network: format!("{:032x}", compiled.network_key().as_u128()),
+                expected_revision: prepared.base_revision().value(),
+                actual_revision: machine.revision().value(),
+                expected_fingerprint: prepared.base_fingerprint().to_string(),
+                actual_fingerprint: compiled.fingerprint().to_string(),
+                expected_time_domain: target.time_domain_id().to_string(),
+                actual_time_domain: compiled.time_domain_id().to_string(),
+            },
+        },
+    ))
+}
+
+fn target_binding_problem<D>(
+    kind: &TransactionKind<D>,
+    prepared: &PreparedPatch<D>,
+) -> Option<InputSchemaEvidence> {
+    match kind {
+        TransactionKind::Initialize(input) => snapshot_binding_problem(input, prepared),
+        TransactionKind::Advance(input) => delta_binding_problem(input, prepared),
+    }
+}
+
+fn snapshot_binding_problem<D>(
+    input: &InputSnapshot<D>,
+    prepared: &PreparedPatch<D>,
+) -> Option<InputSchemaEvidence> {
+    let target = prepared.resulting_compiled();
+    let missing = target
+        .external_level_inputs()
+        .iter()
+        .any(|key| !input.levels.contains_key(key));
+    if missing
+        || target_identity_differs(
+            target,
+            prepared.resulting_fingerprint(),
+            input.network_key(),
+            input.network_fingerprint(),
+            input.input_schema_fingerprint(),
+        )
+    {
+        Some(target_schema_evidence(
+            target,
+            prepared.resulting_fingerprint(),
+            input.network_key(),
+            input.network_fingerprint(),
+            input.input_schema_fingerprint(),
+        ))
+    } else {
+        None
+    }
+}
+
+fn delta_binding_problem<D>(
+    input: &InputDelta<D>,
+    prepared: &PreparedPatch<D>,
+) -> Option<InputSchemaEvidence> {
+    let target = prepared.resulting_compiled();
+    let missing = prepared.static_plan().external_inputs().iter().any(|plan| {
+        plan.valuation() == InputValuationPlan::Establish
+            && matches!(
+                plan.target(),
+                Some(AnyExternalInputKey::Level(key)) if !input.levels.contains_key(&key)
+            )
+    });
+    if missing
+        || target_identity_differs(
+            target,
+            prepared.resulting_fingerprint(),
+            input.network_key(),
+            input.network_fingerprint(),
+            input.input_schema_fingerprint(),
+        )
+    {
+        Some(target_schema_evidence(
+            target,
+            prepared.resulting_fingerprint(),
+            input.network_key(),
+            input.network_fingerprint(),
+            input.input_schema_fingerprint(),
+        ))
+    } else {
+        None
+    }
+}
+
+fn target_identity_differs<D>(
+    target: &crate::CompiledNetwork<D>,
+    resulting_fingerprint: NetworkFingerprint,
+    actual_network: NetworkKey,
+    actual_fingerprint: NetworkFingerprint,
+    actual_schema: InputSchemaFingerprint,
+) -> bool {
+    actual_network != target.network_key()
+        || actual_fingerprint != resulting_fingerprint
+        || actual_schema != target.input_schema_fingerprint()
+}
+
+fn target_schema_evidence<D>(
+    target: &crate::CompiledNetwork<D>,
+    resulting_fingerprint: NetworkFingerprint,
+    actual_network: NetworkKey,
+    actual_fingerprint: NetworkFingerprint,
+    actual_schema: InputSchemaFingerprint,
+) -> InputSchemaEvidence {
+    InputSchemaEvidence {
+        expected_network: Some(target.network_key()),
+        actual_network: Some(actual_network),
+        expected_fingerprint: Some(resulting_fingerprint),
+        actual_fingerprint: Some(actual_fingerprint),
+        expected_schema: Some(target.input_schema_fingerprint()),
+        actual_schema: Some(actual_schema),
+    }
+}
+
+fn runtime_schema_mismatch<D>(
+    prepared: &PreparedPatch<D>,
+    evidence: Option<InputSchemaEvidence>,
+) -> Result<(), RuntimeFailure<D>> {
+    match evidence {
+        Some(evidence) => Err(RuntimeFailure::new(
+            RuntimeFailureEvidence::TargetInputSchemaMismatch {
+                network: prepared.network_key(),
+                evidence,
+            },
+        )),
+        None => Ok(()),
+    }
+}
+
+fn store_source<D>(machine: &Machine<D>) -> MigrationSource<'_, D> {
+    let store = &machine.store;
+    MigrationSource {
+        compiled: machine.compiled(),
+        edge_observations: &store.edge_observations,
+        stored_levels: &store.stored_levels,
+        operation_levels: &store.operation_levels,
+        external_levels: &store.external_levels,
+        output_baselines: &store.output_baselines,
+        pending_events: &store.pending_events,
+        next_serial: store.next_pending_event_serial,
+        periodic_anchors: &store.periodic_anchors,
+        episodes: &store.active_episodes,
+        input_causes: &store.input_causes,
+        output_causes: &store.output_causes,
+        edge_observation_causes: &store.edge_observation_causes,
+        toggle_inversion_causes: &store.toggle_inversion_causes,
+        establishment_causes: &store.establishment_causes,
+        transport_transition_causes: &store.transport_transition_causes,
+        inertial_cancellation_causes: &store.inertial_cancellation_causes,
+        periodic_anchor_causes: &store.periodic_anchor_causes,
+        periodic_cancellation_causes: &store.periodic_cancellation_causes,
+    }
+}
+
+fn migration_failure<D>(fault: MigrationFault) -> RuntimeFailure<D> {
+    let evidence = match fault {
+        MigrationFault::State {
+            subject,
+            fact,
+            rule,
+        } => RuntimeFailureEvidence::StateMigrationRejected {
+            evidence: MigrationEvidence {
+                subject: *subject,
+                fact,
+                rule,
+            },
+        },
+        MigrationFault::Pending {
+            subject,
+            fact,
+            rule,
+        } => RuntimeFailureEvidence::PendingEventMigrationRejected {
+            evidence: MigrationEvidence {
+                subject: *subject,
+                fact,
+                rule,
+            },
+        },
+        MigrationFault::RequirePreserve {
+            subject,
+            fact,
+            rule,
+        } => RuntimeFailureEvidence::RequirePreserveFailed {
+            evidence: MigrationEvidence {
+                subject: *subject,
+                fact,
+                rule,
+            },
+        },
+        MigrationFault::Episode { subject, evidence } => {
+            RuntimeFailureEvidence::EpisodeMigrationRejected {
+                subject: *subject,
+                evidence: *evidence,
+            }
+        }
+        MigrationFault::Provenance { subject } => {
+            RuntimeFailureEvidence::ProvenanceMigrationRejected {
+                subject: *subject,
+                evidence: ProvenanceEvidence {
+                    expected_scope: [0; 32],
+                    actual_scope: [0; 32],
+                    ordinal: 0,
+                },
+            }
+        }
+        MigrationFault::Ambiguous { subject } => {
+            RuntimeFailureEvidence::AmbiguousEventMigration { subject: *subject }
+        }
+        MigrationFault::Conflict { subject, evidence } => {
+            RuntimeFailureEvidence::ConflictingMigratedTransitions {
+                subject: *subject,
+                evidence: *evidence,
+            }
+        }
+        MigrationFault::Loss { evidence } => RuntimeFailureEvidence::StateLossRejected {
+            evidence: *evidence,
+        },
+        MigrationFault::Time {
+            node,
+            origin_ticks,
+            delay_ticks,
+        } => RuntimeFailureEvidence::ReconfigurationTimeOverflow {
+            node,
+            origin_ticks,
+            delay_ticks,
+        },
+        MigrationFault::Budget {
+            budget,
+            limit,
+            consumed,
+        } => RuntimeFailureEvidence::ReconfigurationBudgetExceeded {
+            budget,
+            limit,
+            consumed,
+        },
+    };
+    RuntimeFailure::new(evidence)
+}
+
+fn reconfiguration_phase<D>(failure: RuntimeFailure<D>, patched: bool) -> RuntimeFailure<D> {
+    if !patched {
+        return failure;
+    }
+    let evidence = match failure.evidence() {
+        RuntimeFailureEvidence::TimeOverflow {
+            node,
+            origin_ticks,
+            delay_ticks,
+        }
+        | RuntimeFailureEvidence::TransportTimeOverflow {
+            node,
+            origin_ticks,
+            delay_ticks,
+        }
+        | RuntimeFailureEvidence::InertialTimeOverflow {
+            node,
+            origin_ticks,
+            delay_ticks,
+        } => RuntimeFailureEvidence::ReconfigurationTimeOverflow {
+            node: node.clone(),
+            origin_ticks: *origin_ticks,
+            delay_ticks: *delay_ticks,
+        },
+        RuntimeFailureEvidence::PeriodicTimeOverflow {
+            node,
+            origin_ticks,
+            period_ticks,
+        } => RuntimeFailureEvidence::ReconfigurationTimeOverflow {
+            node: node.clone(),
+            origin_ticks: *origin_ticks,
+            delay_ticks: *period_ticks,
+        },
+        RuntimeFailureEvidence::BudgetExceeded {
+            budget,
+            limit,
+            consumed,
+        } => RuntimeFailureEvidence::ReconfigurationBudgetExceeded {
+            budget: *budget,
+            limit: *limit,
+            consumed: *consumed,
+        },
+        _ => return failure,
+    };
+    RuntimeFailure::new(evidence)
 }
 
 fn validate_snapshot_binding<D>(
@@ -2764,6 +3873,9 @@ fn schedule_pulse_delays<D>(
                 };
                 let ordinal = if let Some(due) = proposal.due_ordinal {
                     due.checked_add(1)
+                } else if origin < anchor {
+                    // A preserved boundary may be the future reference of the target cadence.
+                    Some(0)
                 } else {
                     let elapsed = origin.ticks().checked_sub(anchor.ticks());
                     elapsed
@@ -3012,12 +4124,16 @@ struct PublishedCandidate<D> {
     active_episodes: crate::episode::ActiveEpisodes<D>,
     pending_events: BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
     next_pending_event_serial: u64,
+    installed_network: Option<crate::CompiledNetwork<D>>,
+    revision: NetworkRevision,
 }
 
 struct PublicationReport<D> {
     before_execution_digest: ExecutionStateDigest,
     requested_time: Time<D>,
-    revision: NetworkRevision,
+    before_revision: NetworkRevision,
+    after_revision: NetworkRevision,
+    migration: Option<MigrationReport<D>>,
     output_events: Vec<OutputEvent<D>>,
     occurrences: Vec<DiagnosticOccurrence<D>>,
     diagnostic_episode_changes: Vec<crate::DiagnosticEpisodeChange<D>>,
@@ -3033,8 +4149,8 @@ fn publish_success<D>(
     publish_candidate(machine, candidate);
     TransactionResult {
         requested_time: report.requested_time,
-        before_revision: report.revision,
-        after_revision: report.revision,
+        before_revision: report.before_revision,
+        after_revision: report.after_revision,
         before_execution_digest: report.before_execution_digest,
         after_execution_digest: machine.execution_state_digest(),
         after_observable_digest: machine.observable_state_digest(),
@@ -3043,6 +4159,7 @@ fn publish_success<D>(
         diagnostic_episode_changes: report.diagnostic_episode_changes,
         schedule: report.schedule,
         provenance: report.provenance,
+        migration: report.migration,
     }
 }
 
@@ -3067,10 +4184,16 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
         active_episodes,
         pending_events,
         next_pending_event_serial,
+        installed_network,
+        revision,
     } = published;
     // SPEC: docs/specs/processor_and_runtime_architecture.md §50 "Reference execution strategy"
     // Every fallible step precedes replacement of the complete private candidate.
+    if let Some(compiled) = installed_network {
+        machine.compiled = compiled;
+    }
     let mut candidate = machine.store.clone();
+    candidate.revision = revision;
     candidate.standard_history = standard_history;
     candidate.status = MachineStatus::Ready { now: at };
     candidate.external_levels = levels;
@@ -3210,6 +4333,37 @@ fn hash_pulse_port_subject(hasher: &mut blake3::Hasher, subject: &PulsePortSubje
 
 fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRecord<D>) {
     match record {
+        ProvenanceRecord::TopologyChange {
+            at,
+            revision,
+            base,
+            target,
+            supporters,
+        } => {
+            hasher.update(&[11]);
+            hasher.update(&at.ticks().to_be_bytes());
+            hasher.update(&revision.value().to_be_bytes());
+            hasher.update(&base.as_bytes());
+            hasher.update(&target.as_bytes());
+            hash_causes(hasher, supporters);
+        }
+        ProvenanceRecord::Migration {
+            subject,
+            rule,
+            supporters,
+        } => {
+            hasher.update(&[12]);
+            hash_provenance_subject(hasher, subject);
+            hasher.update(&count_as_u64(rule.len()).to_be_bytes());
+            hasher.update(rule.as_bytes());
+            hash_causes(hasher, supporters);
+        }
+        ProvenanceRecord::Checkpoint { fact, supporters } => {
+            hasher.update(&[13]);
+            hasher.update(&count_as_u64(fact.len()).to_be_bytes());
+            hasher.update(fact);
+            hash_causes(hasher, supporters);
+        }
         ProvenanceRecord::InitializationTransaction { at, revision } => {
             hasher.update(&[0]);
             hasher.update(&at.ticks().to_be_bytes());
@@ -3384,14 +4538,38 @@ fn build_initialization_provenance<D>(
     levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     evaluation: &FullEvaluation,
+    migration: Option<(&MigrationReport<D>, Vec<u8>)>,
 ) -> ProvenanceBuild<D> {
     let scope = UNFINALIZED_PROVENANCE_SCOPE;
     let mut records = Vec::new();
-    let transaction_cause = push_record(
+    let ordinary_transaction = push_record(
         scope,
         &mut records,
         ProvenanceRecord::InitializationTransaction { at, revision },
     );
+    let transaction_cause = if let Some((report, fact)) = migration {
+        let checkpoint = push_record(
+            scope,
+            &mut records,
+            ProvenanceRecord::Checkpoint {
+                fact,
+                supporters: vec![ordinary_transaction],
+            },
+        );
+        push_record(
+            scope,
+            &mut records,
+            ProvenanceRecord::TopologyChange {
+                at,
+                revision,
+                base: report.base_fingerprint(),
+                target: report.target_fingerprint(),
+                supporters: vec![checkpoint],
+            },
+        )
+    } else {
+        ordinary_transaction
+    };
     let input_causes = levels
         .iter()
         .map(|(input, value)| {
@@ -3458,6 +4636,182 @@ fn build_initialization_provenance<D>(
     }
 }
 
+fn checkpoint_migration<D>(
+    source: &crate::CompiledNetwork<D>,
+    previous: &ProvenanceView<D>,
+    at: Time<D>,
+    finalized: &mut FinalizedPatch<D>,
+) -> ProvenanceView<D> {
+    // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "revision-provenance-and-episodes"
+    // Historical facts use their source canonical encoding, so removed subjects and
+    // module slots cannot be interpreted against the target topology on restoration.
+    let scope = previous.scope;
+    let facts = crate::state_digest::checkpoint_facts(source, previous);
+    let mut records = previous
+        .records
+        .iter()
+        .zip(facts)
+        .map(|(record, fact)| match record {
+            ProvenanceRecord::Checkpoint { .. } => remap_record(record, scope),
+            _ => ProvenanceRecord::Checkpoint {
+                fact,
+                supporters: record.predecessor_causes(),
+            },
+        })
+        .collect::<Vec<_>>();
+    let supporters = (0..records.len())
+        .map(|ordinal| CauseRef {
+            scope,
+            ordinal: ordinal as u32,
+        })
+        .collect();
+    let patch = push_record(
+        scope,
+        &mut records,
+        ProvenanceRecord::TopologyChange {
+            at,
+            revision: finalized.revision,
+            base: source.fingerprint(),
+            target: finalized.compiled.fingerprint(),
+            supporters,
+        },
+    );
+    for (input, value) in &finalized.external_levels {
+        let cause = push_record(
+            scope,
+            &mut records,
+            ProvenanceRecord::ExternalObservation {
+                input: *input,
+                value: *value,
+            },
+        );
+        finalized.input_causes.insert(*input, cause);
+    }
+    for (output, cause) in &mut finalized.output_causes {
+        *cause = push_record(
+            scope,
+            &mut records,
+            ProvenanceRecord::Migration {
+                subject: ProvenanceSubject::ExternalOutput(*output),
+                rule: "output_baseline".to_owned(),
+                supporters: vec![*cause, patch],
+            },
+        );
+    }
+    for causes in [
+        &mut finalized.edge_observation_causes,
+        &mut finalized.toggle_inversion_causes,
+        &mut finalized.establishment_causes,
+        &mut finalized.transport_transition_causes,
+        &mut finalized.inertial_cancellation_causes,
+        &mut finalized.periodic_anchor_causes,
+        &mut finalized.periodic_cancellation_causes,
+    ] {
+        for (node, cause) in causes {
+            let subject = finalized.compiled.node_subject(*node);
+            let rule = finalized
+                .report
+                .states()
+                .iter()
+                .find(|state| match state.subject() {
+                    SubjectRef::Node(key) => subject == NodeSubject::Node(*key),
+                    SubjectRef::QualifiedNode(key) => {
+                        subject == NodeSubject::Qualified(key.clone())
+                    }
+                    _ => false,
+                })
+                .map(|state| state.fact())
+                .unwrap_or("preserve");
+            *cause = push_record(
+                scope,
+                &mut records,
+                ProvenanceRecord::Migration {
+                    subject: provenance_subject(&finalized.compiled, *node),
+                    rule: rule.to_owned(),
+                    supporters: vec![*cause, patch],
+                },
+            );
+        }
+    }
+    for event in finalized.pending_events.values_mut().flatten() {
+        let (key, node, origin, deadline, revision, previous_cause) = event.identity();
+        let owner = finalized.compiled.node_subject(node);
+        let rule = match finalized
+            .report
+            .events()
+            .iter()
+            .find(|record| record.event() == Some(key))
+        {
+            Some(record) => record.rule(),
+            None => panic!("every migrated pending obligation must have its report record"),
+        };
+        // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "revision-provenance-and-episodes"
+        // The scheduling fact retains its source ancestry and names the rule changing timing.
+        let migration = push_record(
+            scope,
+            &mut records,
+            ProvenanceRecord::Migration {
+                subject: provenance_subject(&finalized.compiled, node),
+                rule: rule.to_owned(),
+                supporters: vec![previous_cause, patch],
+            },
+        );
+        let supporters = vec![migration];
+        let record = match event {
+            PendingEvent::PulseDelay(event) => ProvenanceRecord::PendingPulseDelay {
+                event: key,
+                owner,
+                origin,
+                deadline,
+                count: event.count,
+                revision,
+                supporters,
+            },
+            PendingEvent::TransportDelay(event) => ProvenanceRecord::PendingTransportDelay {
+                event: key,
+                owner,
+                origin,
+                deadline,
+                target: event.target,
+                revision,
+                supporters,
+            },
+            PendingEvent::Inertial(event) => ProvenanceRecord::PendingInertialDelay {
+                event: key,
+                owner,
+                origin,
+                deadline,
+                target: event.target,
+                revision,
+                supporters,
+            },
+            PendingEvent::Periodic(event) => ProvenanceRecord::PendingPeriodicBoundary {
+                event: key,
+                owner,
+                origin,
+                deadline,
+                anchor: event.anchor,
+                ordinal: event.ordinal,
+                first_emission: event.first_emission,
+                reenable_phase: event.reenable_phase,
+                revision,
+                supporters,
+            },
+        };
+        let cause = push_record(scope, &mut records, record);
+        match event {
+            PendingEvent::PulseDelay(event) => event.cause = cause,
+            PendingEvent::TransportDelay(event) => event.cause = cause,
+            PendingEvent::Inertial(event) => event.cause = cause,
+            PendingEvent::Periodic(event) => event.cause = cause,
+        }
+    }
+    ProvenanceView {
+        scope,
+        records: Arc::new(records),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_ready_provenance<D>(
     compiled: &crate::CompiledNetwork<D>,
@@ -3479,6 +4833,7 @@ fn build_ready_provenance<D>(
     due_transport_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
     due_inertial_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
     due_periodic_boundaries: &BTreeMap<NodeKey, Vec<CauseRef>>,
+    declared_edges: &BTreeSet<NodeKey>,
 ) -> ProvenanceBuild<D> {
     let scope = UNFINALIZED_PROVENANCE_SCOPE;
     let mut records = previous
@@ -3486,11 +4841,27 @@ fn build_ready_provenance<D>(
         .iter()
         .map(|record| remap_record(record, scope))
         .collect::<Vec<_>>();
-    let transaction_cause = push_record(
+    let ordinary_transaction_cause = push_record(
         scope,
         &mut records,
         ProvenanceRecord::ReadyTransaction { at, revision },
     );
+    let transaction_cause = records
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, record)| match record {
+            ProvenanceRecord::TopologyChange {
+                at: patch_at,
+                revision: patch_revision,
+                ..
+            } if *patch_at == at && *patch_revision == revision => Some(CauseRef {
+                scope,
+                ordinal: index as u32,
+            }),
+            _ => None,
+        })
+        .unwrap_or(ordinary_transaction_cause);
     let mut input_causes = previous_input_causes
         .iter()
         .map(|(input, cause)| (*input, remap_cause(*cause, scope)))
@@ -3544,6 +4915,7 @@ fn build_ready_provenance<D>(
         }),
         Some(PreviousStateCauses {
             edge_observations: previous_edge_observation_causes,
+            declared_edges,
             toggle_inversions: previous_toggle_inversion_causes,
             establishments: previous_establishment_causes,
             transport_transitions: previous_transport_transition_causes,
@@ -3583,6 +4955,28 @@ struct EvaluationCauseMaps {
     transport_delay_schedules: BTreeMap<NodeKey, CauseRef>,
     inertial_delay_schedules: BTreeMap<NodeKey, CauseRef>,
     periodic_schedules: BTreeMap<NodeKey, CauseRef>,
+}
+
+fn retained_edge_cause(
+    previous_state: Option<&PreviousStateCauses<'_>>,
+    causes: &BTreeMap<NodeKey, CauseRef>,
+    node: &NodeKey,
+    previous: &EdgeObservation,
+) -> Option<CauseRef> {
+    if !matches!(previous, EdgeObservation::Established(_)) {
+        return None;
+    }
+    let state = previous_state?;
+    if let Some(cause) = causes.get(node).copied() {
+        return Some(cause);
+    }
+    if state.declared_edges.contains(node) {
+        // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml
+        // "revision-provenance-and-episodes"
+        // Declared initial or reset observation starts a new cause at this reaction.
+        return None;
+    }
+    panic!("ready edge detector must retain the cause of its previous observation");
 }
 
 fn append_evaluation_provenance<D>(
@@ -3767,12 +5161,12 @@ fn append_evaluation_provenance<D>(
                     transaction_cause,
                     operation_cause(&operation_causes, *input),
                 ];
-                if matches!(previous, EdgeObservation::Established(_)) && previous_state.is_some() {
-                    let Some(previous_cause) = edge_observation_causes.get(node).copied() else {
-                        panic!(
-                            "ready edge detector must retain the cause of its previous observation"
-                        );
-                    };
+                if let Some(previous_cause) = retained_edge_cause(
+                    previous_state.as_ref(),
+                    &edge_observation_causes,
+                    node,
+                    previous,
+                ) {
                     supporters.push(previous_cause);
                 }
                 supporters.sort();
@@ -4266,6 +5660,41 @@ fn finalize_provenance_build<D>(
 
 fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> ProvenanceRecord<D> {
     match record {
+        ProvenanceRecord::TopologyChange {
+            at,
+            revision,
+            base,
+            target,
+            supporters,
+        } => ProvenanceRecord::TopologyChange {
+            at: *at,
+            revision: *revision,
+            base: *base,
+            target: *target,
+            supporters: supporters
+                .iter()
+                .map(|cause| remap_cause(*cause, scope))
+                .collect(),
+        },
+        ProvenanceRecord::Migration {
+            subject,
+            rule,
+            supporters,
+        } => ProvenanceRecord::Migration {
+            subject: subject.clone(),
+            rule: rule.clone(),
+            supporters: supporters
+                .iter()
+                .map(|cause| remap_cause(*cause, scope))
+                .collect(),
+        },
+        ProvenanceRecord::Checkpoint { fact, supporters } => ProvenanceRecord::Checkpoint {
+            fact: fact.clone(),
+            supporters: supporters
+                .iter()
+                .map(|cause| remap_cause(*cause, scope))
+                .collect(),
+        },
         ProvenanceRecord::InitializationTransaction { at, revision } => {
             ProvenanceRecord::InitializationTransaction {
                 at: *at,
@@ -4472,6 +5901,67 @@ fn initialization_events<D>(
             }
         })
         .collect::<Vec<_>>();
+    events.extend(pulse_events(at, revision, pulse_values, pulse_causes));
+    sort_output_events(&mut events);
+    events
+}
+
+struct LevelOutputValues<'a> {
+    previous: &'a BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+    settled: &'a BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
+}
+
+fn planned_level_events<D>(
+    at: Time<D>,
+    revision: NetworkRevision,
+    plans: &BTreeMap<ExternalOutputKey<Level>, OutputBaselinePlan>,
+    values: LevelOutputValues<'_>,
+    causes: &BTreeMap<ExternalOutputKey<Level>, CauseRef>,
+    pulse_values: &BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
+    pulse_causes: &BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
+) -> Vec<OutputEvent<D>> {
+    let LevelOutputValues { previous, settled } = values;
+    let mut events = Vec::new();
+    for (output, to) in settled {
+        let plan = match plans.get(output).copied() {
+            Some(plan) => plan,
+            None => panic!("settled output must have a baseline plan"),
+        };
+        let cause = match causes.get(output).copied() {
+            Some(cause) => cause,
+            None => panic!("every evaluated external output must retain one committed cause"),
+        };
+        match plan {
+            OutputBaselinePlan::Establish | OutputBaselinePlan::CarryAsEvidence => {
+                events.push(OutputEvent::LevelEstablished {
+                    output: *output,
+                    value: *to,
+                    at,
+                    cause,
+                    revision,
+                });
+            }
+            OutputBaselinePlan::Preserve => {
+                let from = match previous.get(output).copied() {
+                    Some(from) => from,
+                    None => panic!("preserved output must retain its baseline"),
+                };
+                if from != *to {
+                    events.push(OutputEvent::LevelChanged {
+                        output: *output,
+                        from,
+                        to: *to,
+                        at,
+                        cause,
+                        revision,
+                    });
+                }
+            }
+            OutputBaselinePlan::Remove => {
+                panic!("removed output must not remain in the settled set");
+            }
+        }
+    }
     events.extend(pulse_events(at, revision, pulse_values, pulse_causes));
     sort_output_events(&mut events);
     events
@@ -5801,6 +7291,13 @@ mod tests {
                 | CauseInspection::ReadyTransaction { .. }
                 | CauseInspection::ExternalObservation { .. }
                 | CauseInspection::ExternalPulseObservation { .. } => {}
+                CauseInspection::TopologyChange { supporters, .. }
+                | CauseInspection::Migration { supporters, .. }
+                | CauseInspection::Checkpoint { supporters, .. } => {
+                    for supporter in supporters {
+                        visit(view, *supporter, visiting, visited);
+                    }
+                }
             }
             assert!(visiting.remove(&cause));
             visited.insert(cause);

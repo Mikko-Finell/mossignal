@@ -931,7 +931,7 @@ Explicitly exclude:
 
 ---
 
-## 58. [IN PROGRESS] Atomic topology replacement and migration
+## 58. [DONE] Atomic topology replacement and migration
 
 Commit prepared topology patches through the ordinary transaction boundary:
 

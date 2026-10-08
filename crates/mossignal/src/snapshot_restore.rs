@@ -1042,6 +1042,16 @@ struct ParsedRecord {
 }
 
 enum RecordKind {
+    TopologyChange {
+        base: [u8; 32],
+        target: [u8; 32],
+    },
+    Migration {
+        rule: String,
+    },
+    Checkpoint {
+        fact: Vec<u8>,
+    },
     Initialization,
     Ready,
     ExternalObservation {
@@ -2353,6 +2363,9 @@ fn parse_record<D>(
 fn record_fields_missing(kind: &RecordKind, revision: bool, subject: bool, time: bool) -> bool {
     match kind {
         RecordKind::Initialization | RecordKind::Ready => !revision || !time,
+        RecordKind::TopologyChange { .. } => !revision || !time,
+        RecordKind::Migration { .. } => !subject,
+        RecordKind::Checkpoint { .. } => false,
         RecordKind::ExternalObservation { .. }
         | RecordKind::ExternalPulse { .. }
         | RecordKind::Derived
@@ -2374,6 +2387,9 @@ fn record_fields_inapplicable(
 ) -> bool {
     match kind {
         RecordKind::Initialization | RecordKind::Ready => subject || predecessors,
+        RecordKind::TopologyChange { .. } => subject,
+        RecordKind::Migration { .. } => revision || time,
+        RecordKind::Checkpoint { .. } => revision || subject || time,
         RecordKind::ExternalObservation { .. } | RecordKind::ExternalPulse { .. } => {
             revision || time || predecessors
         }
@@ -2514,6 +2530,21 @@ fn parse_record_kind<D>(value: Value) -> Result<RecordKind, DecodeFailure<D>> {
     let path = "payload.provenance.records.kind";
     let (name, body) = expect_variant(value, path)?;
     match name.as_str() {
+        "topology_change" => {
+            let mut fields = into_fields(body, path)?;
+            reject_unknown_fields(&fields, &["base", "target"], path)?;
+            Ok(RecordKind::TopologyChange {
+                base: expect_digest(take_required(&mut fields, "base", path)?, path)?,
+                target: expect_digest(take_required(&mut fields, "target", path)?, path)?,
+            })
+        }
+        "migration" => Ok(RecordKind::Migration {
+            rule: expect_text(body, path)?,
+        }),
+        "checkpoint" => match body {
+            Value::Bytes(fact) => Ok(RecordKind::Checkpoint { fact }),
+            _ => Err(malformed(path, "checkpoint bytes")),
+        },
         "initialization_transaction" => {
             require_null(body, path)?;
             Ok(RecordKind::Initialization)
@@ -3706,6 +3737,7 @@ fn reject_unresolved_subjects<D>(
 fn subject_resolves<D>(compiled: &CompiledNetwork<D>, record: &ParsedRecord) -> bool {
     match &record.kind {
         RecordKind::Initialization | RecordKind::Ready => true,
+        RecordKind::TopologyChange { .. } | RecordKind::Checkpoint { .. } => true,
         RecordKind::ExternalObservation { .. } => record
             .subject
             .as_ref()
@@ -3724,7 +3756,8 @@ fn subject_resolves<D>(compiled: &CompiledNetwork<D>, record: &ParsedRecord) -> 
             .as_ref()
             .and_then(|subject| node_key(compiled, subject))
             .is_some(),
-        RecordKind::Derived
+        RecordKind::Migration { .. }
+        | RecordKind::Derived
         | RecordKind::PulseDerived { .. }
         | RecordKind::PulseControlled { .. } => match &record.subject {
             Some(ParsedSubject::Node(name)) => compiled
@@ -3982,6 +4015,22 @@ fn materialize_record<D>(
     let supporters = supporter_causes(record, ordinals)?;
     let contributions = contribution_causes(compiled, record, ordinals)?;
     match &record.kind {
+        RecordKind::TopologyChange { base, target } => Ok(ProvenanceRecord::TopologyChange {
+            at: Time::from_ticks(required_time(record)?),
+            revision: required_revision(record)?,
+            base: NetworkFingerprint::from_digest(*base),
+            target: NetworkFingerprint::from_digest(*target),
+            supporters,
+        }),
+        RecordKind::Migration { rule } => Ok(ProvenanceRecord::Migration {
+            subject: provenance_subject(compiled, record)?,
+            rule: rule.clone(),
+            supporters,
+        }),
+        RecordKind::Checkpoint { fact } => Ok(ProvenanceRecord::Checkpoint {
+            fact: fact.clone(),
+            supporters,
+        }),
         RecordKind::Initialization => Ok(ProvenanceRecord::InitializationTransaction {
             at: Time::from_ticks(required_time(record)?),
             revision: required_revision(record)?,
@@ -4848,7 +4897,10 @@ fn latest_transaction<D>(
         let Some(record) = records.get(digest) else {
             continue;
         };
-        if !matches!(record.kind, RecordKind::Initialization | RecordKind::Ready) {
+        if !matches!(
+            record.kind,
+            RecordKind::Initialization | RecordKind::Ready | RecordKind::TopologyChange { .. }
+        ) {
             continue;
         }
         let time = record.time.unwrap_or(0);
@@ -5102,6 +5154,9 @@ fn check_digests<D>(machine: &Machine<D>, artifact: &Artifact) -> Result<(), Res
 
 fn record_kind_name(kind: &RecordKind) -> &'static str {
     match kind {
+        RecordKind::TopologyChange { .. } => "topology_change",
+        RecordKind::Migration { .. } => "migration",
+        RecordKind::Checkpoint { .. } => "checkpoint",
         RecordKind::Initialization => "initialization_transaction",
         RecordKind::Ready => "ready_transaction",
         RecordKind::ExternalObservation { .. } => "external_observation",

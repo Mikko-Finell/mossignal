@@ -1467,8 +1467,8 @@ impl<D> CompiledNetwork<D> {
         self.inner
             .qualified_input_reverse
             .iter()
-            .find_map(|(key, qualified)| {
-                let AnyInPortKey::Pulse(found) = key else {
+            .find_map(|(_, qualified)| {
+                let AnyInPortKey::Pulse(found) = qualified.port() else {
                     return None;
                 };
                 (qualified.instances() == instances && found.as_u128() == local)

@@ -221,6 +221,49 @@ impl<D> ActiveDiagnosticEpisode<D> {
             provenance,
         }
     }
+
+    pub(crate) fn migrate_owner(&self, network: NetworkKey, owner: NodeSubject) -> Self {
+        if self.condition.owner == owner {
+            return self.clone();
+        }
+        // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "revision-provenance-and-episodes"
+        // Correspondence translates semantic ownership; dense slots never determine it.
+        let primary = match &owner {
+            NodeSubject::Node(node) => SubjectRef::Node(*node),
+            NodeSubject::Qualified(node) => SubjectRef::QualifiedNode(node.clone()),
+        };
+        let evidence = match self.current.evidence() {
+            ProblemEvidence::RuntimeLevelLatchConflictRetained { evidence, .. } => {
+                let mut evidence = evidence.clone();
+                evidence.node = match &owner {
+                    NodeSubject::Node(node) => NodeEvidence::Node(*node),
+                    NodeSubject::Qualified(node) => NodeEvidence::Qualified {
+                        instances: node.instances().to_vec(),
+                        node: node.node(),
+                    },
+                };
+                ProblemEvidence::RuntimeLevelLatchConflictRetained {
+                    evidence,
+                    marker: std::marker::PhantomData,
+                }
+            }
+            _ => panic!("active episode must retain catalogue-valid level-conflict evidence"),
+        };
+        let condition = DiagnosticConditionKey::restored(
+            owner,
+            self.condition.code,
+            self.condition.discriminator,
+        );
+        Self::restored(
+            DiagnosticEpisodeId::derive(network, &condition),
+            condition,
+            Problem::new(primary, self.current.related().to_vec(), evidence),
+            self.began_at,
+            self.last_material_change,
+            self.cause,
+            self.provenance.clone(),
+        )
+    }
 }
 
 /// The lifecycle transition of a persistent condition; these are not problem codes.
@@ -249,6 +292,21 @@ pub struct DiagnosticEpisodeChange<D> {
 }
 
 impl<D> DiagnosticEpisodeChange<D> {
+    pub(crate) fn migration_end(
+        previous: &ActiveDiagnosticEpisode<D>,
+        kind: DiagnosticEpisodeChangeKind,
+        at: Time<D>,
+        cause: CauseRef,
+    ) -> Self {
+        Self {
+            identity: previous.identity,
+            kind,
+            at,
+            before: Some(Arc::clone(&previous.current)),
+            after: None,
+            cause,
+        }
+    }
     /// Returns the affected episode identity.
     #[must_use]
     pub const fn identity(&self) -> DiagnosticEpisodeId {

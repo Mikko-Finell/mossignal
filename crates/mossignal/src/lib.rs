@@ -12,6 +12,7 @@ mod input;
 pub mod key;
 mod machine;
 pub mod metadata;
+mod migration;
 mod module;
 mod node_schema;
 mod patch;
@@ -72,6 +73,13 @@ pub use machine::{
     ScheduleFailure, ToggleDefinitionInspection, ToggleInspection, ToggleInspectionFailure,
     TransportDelayDefinitionInspection, TransportDelayInspection, TransportDelayInspectionFailure,
 };
+pub use migration::{
+    EpisodeMigrationRecord, EpisodeOutcome, EventMigrationRecord, EventOutcome,
+    InputMigrationRecord, InputOutcome, InternalMigrationRecord, MigrationReport,
+    ModuleMigrationRecord, OutputMigrationRecord, OutputOutcome, ProvenanceMigrationRecord,
+    ProvenanceOutcome, ReconfigurationPolicy, SemanticLossRecord, StateMigrationRecord,
+    StateOutcome, SubjectMigrationRecord,
+};
 pub use module::{
     DefinitionGraphView, ModuleDef, ModuleInputIter, ModuleOrigin, ModuleOutputIter, NodeSubject,
     PulsePortSubject, QualifiedConnectionRef, QualifiedInPortRef, QualifiedModuleRef,
@@ -115,7 +123,7 @@ pub use standard::{
 };
 pub use transaction::{
     CauseInspection, CauseLookupFailure, CauseRef, ForecastBasis, ForecastResult, OutputEvent,
-    ProvenanceSubject, ProvenanceView, PulseContribution, RuntimeFailure, RuntimeFailureEvidence,
-    Transaction, TransactionResult,
+    ProvenanceSubject, ProvenanceView, PulseContribution, ReconfigurationFailure, RuntimeFailure,
+    RuntimeFailureEvidence, Transaction, TransactionBuildFailure, TransactionResult,
 };
 pub use validation::{NetworkDefinitionGraphView, ValidatedNetwork};

@@ -31,6 +31,12 @@ pub(crate) fn observable_state_digest<D>(machine: &Machine<D>) -> ObservableStat
     ObservableStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
+pub(crate) fn declared_state_checkpoint<D>(machine: &Machine<D>) -> Vec<u8> {
+    let mut fact = Record::new();
+    fact.field("declared_state", |writer| write_state(writer, machine));
+    fact.finish()
+}
+
 pub(crate) fn execution_digest_input<D>(
     machine: &Machine<D>,
     projection_version: u64,
@@ -261,6 +267,60 @@ fn index_view<D>(
         .collect()
 }
 
+pub(crate) fn checkpoint_facts<D>(
+    compiled: &CompiledNetwork<D>,
+    view: &ProvenanceView<D>,
+) -> Vec<Vec<u8>> {
+    let mut table = ContentTable {
+        payloads: BTreeMap::new(),
+    };
+    let digests = index_view(compiled, view, &mut table);
+    digests
+        .iter()
+        .zip(view.records())
+        .map(|(digest, record)| {
+            let payload = match table.payloads.get(digest) {
+                Some(payload) => payload,
+                None => panic!("indexed provenance record must have its canonical payload"),
+            };
+            let mut fact = Record::new();
+            fact.field("record", |writer| writer.nested(payload));
+            match record {
+                ProvenanceRecord::PendingPulseDelay {
+                    event,
+                    origin,
+                    deadline,
+                    ..
+                }
+                | ProvenanceRecord::PendingTransportDelay {
+                    event,
+                    origin,
+                    deadline,
+                    ..
+                }
+                | ProvenanceRecord::PendingInertialDelay {
+                    event,
+                    origin,
+                    deadline,
+                    ..
+                }
+                | ProvenanceRecord::PendingPeriodicBoundary {
+                    event,
+                    origin,
+                    deadline,
+                    ..
+                } => {
+                    fact.field("event", |writer| writer.uint(event.value()));
+                    fact.field("origin", |writer| writer.uint(origin.ticks()));
+                    fact.field("deadline", |writer| writer.uint(deadline.ticks()));
+                }
+                _ => {}
+            }
+            fact.finish()
+        })
+        .collect()
+}
+
 fn digest_record<D>(
     compiled: &CompiledNetwork<D>,
     view: &ProvenanceView<D>,
@@ -399,6 +459,10 @@ fn provenance_payload<D>(
         | ProvenanceRecord::Derived { .. }
         | ProvenanceRecord::PulseDerived { .. }
         | ProvenanceRecord::PulseControlledLevel { .. } => {}
+        ProvenanceRecord::TopologyChange { revision, .. } => {
+            payload.field("revision", |writer| writer.uint(revision.value()));
+        }
+        ProvenanceRecord::Migration { .. } | ProvenanceRecord::Checkpoint { .. } => {}
     }
     if let Some(subject) = provenance_subject_bytes(compiled, record) {
         payload.field("subject", |writer| writer.nested(&subject));
@@ -411,6 +475,21 @@ fn provenance_payload<D>(
 
 fn write_provenance_kind<D>(writer: &mut Cbor, record: &ProvenanceRecord<D>) {
     match record {
+        ProvenanceRecord::TopologyChange { base, target, .. } => {
+            writer.variant_start("topology_change");
+            let mut body = Record::new();
+            body.field("base", |writer| writer.bytes(&base.as_bytes()));
+            body.field("target", |writer| writer.bytes(&target.as_bytes()));
+            writer.nested(&body.finish());
+        }
+        ProvenanceRecord::Migration { rule, .. } => {
+            writer.variant_start("migration");
+            writer.text(rule);
+        }
+        ProvenanceRecord::Checkpoint { fact, .. } => {
+            writer.variant_start("checkpoint");
+            writer.bytes(fact);
+        }
         ProvenanceRecord::InitializationTransaction { .. } => {
             writer.variant_null("initialization_transaction");
         }
@@ -504,6 +583,12 @@ fn provenance_subject_bytes<D>(
         }
         ProvenanceRecord::InitializationTransaction { .. }
         | ProvenanceRecord::ReadyTransaction { .. } => return None,
+        ProvenanceRecord::Migration { subject, .. } => {
+            write_provenance_subject(&mut writer, compiled, subject)
+        }
+        ProvenanceRecord::TopologyChange { .. } | ProvenanceRecord::Checkpoint { .. } => {
+            return None;
+        }
     }
     Some(writer.finish())
 }
@@ -521,6 +606,8 @@ fn provenance_time<D>(record: &ProvenanceRecord<D>) -> Option<u64> {
         | ProvenanceRecord::Derived { .. }
         | ProvenanceRecord::PulseDerived { .. }
         | ProvenanceRecord::PulseControlledLevel { .. } => None,
+        ProvenanceRecord::TopologyChange { at, .. } => Some(at.ticks()),
+        ProvenanceRecord::Migration { .. } | ProvenanceRecord::Checkpoint { .. } => None,
     }
 }
 

@@ -186,6 +186,15 @@ impl<D> ReplayFrame<D> {
         runtime_policy_id: RuntimePolicyId,
         time_domain: TimeDomainId,
     ) -> Result<Self, ReplayFailure<D>> {
+        if transaction.carries_patch() {
+            let mut evidence = ReplayEvidence::new();
+            evidence.underlying_code = "patch".to_owned();
+            return Err(replay_fail(
+                ReplayVariant::PatchPreparationDiverged,
+                EvidenceVariant::PatchPreparationDiverged,
+                evidence,
+            ));
+        }
         if transaction.expected_revision() != result.before_revision() {
             let mut evidence = ReplayEvidence::new();
             evidence.expected_revision = Some(transaction.expected_revision().value());
@@ -674,6 +683,9 @@ impl<D> Machine<D> {
         &mut self,
         transaction: Transaction<D>,
     ) -> Result<RecordedTransaction<D>, RuntimeFailure<D>> {
+        if transaction.carries_patch() {
+            return Err(RuntimeFailure::rejected_patch_recording());
+        }
         let retained = transaction.clone();
         let policy_id = self.runtime_policy_id();
         let time_domain = self.compiled().time_domain_id();
