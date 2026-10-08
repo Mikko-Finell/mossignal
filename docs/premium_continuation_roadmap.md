@@ -1008,7 +1008,7 @@ explanation behaviour still apply.
 
 ---
 
-## 60. Diagnostic inspection and integration completion
+## 60. [DONE] Diagnostic inspection and integration completion
 
 Finish practical access to the existing occurrence and persistent episode
 families from item 44 and their later integrations.

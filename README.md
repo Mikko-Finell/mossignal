@@ -366,6 +366,17 @@ facts and committed runtime facts separately, including qualified module nodes,
 edge observations, stored levels, latch controls, sample-hold state, pending
 delay work, schedules, outputs, and active diagnostic episodes.
 
+Use `DiagnosticScope` to select a direct or qualified node, or all primitive
+owners within a module hierarchy. `TransactionResult::occurrences_for` and
+`diagnostic_episode_changes_for` preserve the committed record order and remain
+usable after an owner is removed. `Machine::active_diagnostic_episodes_for`
+returns owned current records with their retained causal view. These reads do
+not change execution or the condition lifecycle.
+
+The executable [diagnostic example](crates/mossignal/examples/diagnostics.rs)
+shows occurrence evidence, unchanged-condition suppression, resolution, and
+removal termination. Run it with `cargo run -p mossignal --example diagnostics`.
+
 ## Current implemented catalogue
 
 The standard catalogue currently contains three canonical stateless modules:

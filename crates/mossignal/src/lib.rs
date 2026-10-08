@@ -44,6 +44,7 @@ pub mod binding;
 pub mod builder;
 mod cbor_decode;
 mod compile;
+mod diagnostic_inspection;
 pub mod diagnostics;
 mod episode;
 mod graph;
@@ -85,6 +86,7 @@ pub use builder::{
     ModuleBuilder, ModuleInstanceBuilder, NetworkBuilder, PulseRouteOutputs, Signal,
 };
 pub use compile::CompiledNetwork;
+pub use diagnostic_inspection::DiagnosticScope;
 pub use diagnostics::{ConflictControls, ConflictEvidence, DiagnosticOccurrence};
 pub use episode::{
     ActiveDiagnosticEpisode, DiagnosticConditionKey, DiagnosticEpisodeChange,
