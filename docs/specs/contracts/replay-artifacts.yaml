@@ -5,8 +5,15 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: 1b8d87b81555ee6285f9f0313c0c099346e2ca2a
-  working_tree: clean
+  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/exhaustive_diagnostic_code_catalogue.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    - docs/specs/processor_and_runtime_architecture.md
+    - docs/testing_and_verification_policy.md
 
 summary: >-
   Replay is the ordered fold of the ordinary machine transition from an exact
@@ -124,8 +131,10 @@ requirements:
     statement: >-
       Direct advancement to a later time and the stepwise sequence through
       the same strictly earlier deadlines are observationally equivalent.
-      Caller transactions still use strictly increasing times, and
-      equal-deadline events are one unordered batch. Replay uses that same
+      Caller transactions use non-regressing physical times and ordered
+      same-time reactions; equal-deadline events are one unordered batch.
+      Partition equivalence does not equate exact artifacts across additional
+      explicit settlements. Replay uses that same
       transition, so the two advancement styles remain equivalent when
       replayed. Replay of a module or standard-module network uses the
       ordinary flattened transition and reproduces that transition's events
@@ -406,7 +415,7 @@ sources:
     heading_path:
       - Part IX — Runtime policy, input, transaction, and patch artifacts
       - 75. Input schema binding
-    reviewed_hash: sha256:eb95f049f168441a248456ba4f8e24135c9ce7e046f7e102af14b5732e6dd987
+    reviewed_hash: sha256:52c3e9144182041220089c7fc8866f51b63d3101ba341cad983702b87c1880fd
   input-snapshot-artifact:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path:
@@ -440,7 +449,7 @@ sources:
   frame-payload:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part XI — Replay persistence, 107. Replay frame payload]
-    reviewed_hash: sha256:3c988a49e029fd08cb1782c98e094ee077c1e9e6f941799832b004cc705256e9
+    reviewed_hash: sha256:82f3bec1f7cfd5ac1da50cd3e3bc5a21699f0df9390f8a240d4e343b9d078dfe
   frame-construction:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part XI — Replay persistence, 108. Replay frame construction]
@@ -576,7 +585,7 @@ sources:
   processor-jumps:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VII — Logical time and temporal execution, 42. Large-time-jump equivalence]
-    reviewed_hash: sha256:af5b05c8286794fc47ca7318ca477aae3208739ee6a00967151c4982e1413370
+    reviewed_hash: sha256:dcbe17644aee212805cfd36957b5b5c400a3f74b6014f191d53c440ffe69cc49
   processor-transition:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VIII — Transactions and atomicity, 47. State-transition model]
@@ -654,7 +663,7 @@ sources:
   direct-jump-tests:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part IX — Temporal verification, 44. Direct-jump equivalence]
-    reviewed_hash: sha256:9b7524d7e25090b847af11c47ba86e311e4dc91f2af6fdb4de927c3f34c17954
+    reviewed_hash: sha256:8aeba52cfd6bed51a25ba94a8c2a4ed5389a5486569e2cbf14bb50f2de0cf208
   replay-equivalence:
     document: docs/testing_and_verification_policy.md
     heading_path:

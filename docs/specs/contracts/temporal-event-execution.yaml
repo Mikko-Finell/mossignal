@@ -5,8 +5,15 @@ kind: family
 status: reviewed
 
 source_baseline:
-  commit: b52c1738fdfca82ceeb7462c85614e6701d88275
+  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
   working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/built_in_node_semantics.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    - docs/specs/processor_and_runtime_architecture.md
+    - docs/testing_and_verification_policy.md
 
 summary: >-
   Ready-machine temporal execution owns a stable-identified pending-event
@@ -60,7 +67,7 @@ requirements:
     kind: semantic
     statement: >-
       A pending record retains its stable key, owner node, kind, exact deadline,
-      semantic payload, applicable multiplicity, originating logical time,
+      semantic payload, applicable multiplicity, immutable originating reaction stamp,
       originating revision, causal origin, and migration-relevant metadata.
       Pending work is machine-owned temporal state separate from reaction-scoped
       signal values and from private node-owned queues.
@@ -101,6 +108,8 @@ requirements:
       equivalent to chronological advancement through every meaningful pending
       deadline before T followed by the reaction at T. Distinct logical times
       remain distinct reactions even when crossed by one caller transaction.
+      Comparison preserves meaningful reaction partition; additionally inserted
+      explicit settlements need not retain identical stamps or freshness digests.
     sources: [api-large-jumps, runtime-jump-equivalence, jump-tests]
 
   - id: single-atomic-publication
@@ -172,7 +181,7 @@ sources:
   simultaneous-batches:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part I — Shared semantic rules, 7. Simultaneous batches]
-    reviewed_hash: sha256:6f0c086ed445bf436c4974044bddc2eb224e4d6299620fedf775de6c641c4941
+    reviewed_hash: sha256:840c202a66a25d61a16c4282166d91e7898d5aad526da45e0fe4988e92d2d4ff
   distinct-state:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part I — Shared semantic rules, 12. Distinct state concepts]
@@ -184,7 +193,7 @@ sources:
   api-time-progression:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part IV — Logical time, 22. Time progression]
-    reviewed_hash: sha256:c655529403d48a58bad273bd902e7eeeacbfb4782ccfdf35426acec04eaab48b
+    reviewed_hash: sha256:222d2a74f7298212500f210c34560d4e1dcbdd4ac93280a9054958e06f6698bc
   api-ready-ordering:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part V — Transactions and execution, 24. Transaction ordering, 24.2 Ready-machine transaction]
@@ -213,7 +222,7 @@ sources:
   api-results:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VI — Inputs and outputs, 31. `TransactionResult<D>` and semantic change sets]
-    reviewed_hash: sha256:0d3c33b0638857da3b4a5b504098f3ccb809fc9e684057ab704088b2a80dad31
+    reviewed_hash: sha256:abec36e6d21f864737dce9a8022257e58e70c0c9b7e5009b50194a2f6f794bb5
   runtime-event-records:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part V — Runtime storage, 29. Event records and deadline index]
@@ -225,15 +234,15 @@ sources:
   runtime-future-scheduling:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VII — Logical time and temporal execution, 40. Strictly future scheduling]
-    reviewed_hash: sha256:0bb63823143fbc899e9214d59df208ef221385c3dc1720c15d9563333f4f99e0
+    reviewed_hash: sha256:dccc792381220bcc46025857bc497a47eca63253b33b5738019e48a69fc6b586
   runtime-advancement:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VII — Logical time and temporal execution, 41. Advancing time]
-    reviewed_hash: sha256:2cd676a9ab1fa86bc37437cc7d485b15104ba231359672e214b1c0cff38bc278
+    reviewed_hash: sha256:a7d6e74e5a5ddff99b8496d4e5d30aa1fabab0a39f006de856fca41956885b86
   runtime-jump-equivalence:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VII — Logical time and temporal execution, 42. Large-time-jump equivalence]
-    reviewed_hash: sha256:af5b05c8286794fc47ca7318ca477aae3208739ee6a00967151c4982e1413370
+    reviewed_hash: sha256:dcbe17644aee212805cfd36957b5b5c400a3f74b6014f191d53c440ffe69cc49
   runtime-transition:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VIII — Transactions and atomicity, 47. State-transition model]
@@ -241,7 +250,7 @@ sources:
   persisted-event-records:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 92. Pending event records]
-    reviewed_hash: sha256:9d40b747e57c3e3392c351477272393b2c91536672b112fd87c2df41889d7c20
+    reviewed_hash: sha256:c32440d9553e34de6bc542bd26957d55e4ca5c7e5e4cb8522ea531f727b316b5
   persisted-event-calendar:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 91. Built-in state schemas]
@@ -265,7 +274,7 @@ sources:
   concrete-output-events:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XVII — Transaction results and changes, 66. Output events]
-    reviewed_hash: sha256:2fa14b1c92982a2f8bdba90ca3ebed0cb078987d88be60027c14a094813f6fa7
+    reviewed_hash: sha256:7cbcc70aa4934bd05d59f495a18779d0ca013405a6f4303cdfcdd4730a81d17b
   reference-calendar:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part III — Reference implementations, 9. Required reference paths, 9.3 Ordered semantic event calendar]
@@ -281,7 +290,7 @@ sources:
   jump-tests:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part IX — Temporal verification, 44. Direct-jump equivalence]
-    reviewed_hash: sha256:9b7524d7e25090b847af11c47ba86e311e4dc91f2af6fdb4de927c3f34c17954
+    reviewed_hash: sha256:8aeba52cfd6bed51a25ba94a8c2a4ed5389a5486569e2cbf14bb50f2de0cf208
   equal-deadline-tests:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part IX — Temporal verification, 45. Equal-deadline batching]

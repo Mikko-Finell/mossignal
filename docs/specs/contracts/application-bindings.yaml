@@ -5,8 +5,15 @@ kind: family
 status: reviewed
 
 source_baseline:
-  commit: 77c6da3d5c0f8b9be1e6e3fc0c0ad06996f660b3
-  working_tree: clean
+  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/exhaustive_diagnostic_code_catalogue.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    - docs/specs/processor_and_runtime_architecture.md
+    - docs/testing_and_verification_policy.md
 
 summary: >-
   Application bindings are immutable, compiled-topology-bound adapters between
@@ -25,10 +32,10 @@ scope:
     - module-instance bindings and authored graph connections
     - callbacks, subscriptions, delivery cursors, acknowledgement, and observer state
     - caller object-model interpretation and domain-specific entities
-    - binding persistence, codecs, replay identity, and topology-patch rebinding
+    - binding persistence, codecs and replay identity
+    - live patch/rebind lifecycle, owned by live-bindings.yaml
 
 known_uncovered:
-  - Rebinding assistance and projector invalidation across future committed topology patches
   - Bound projections for general inspection, explanation, state changes, and observer subscriptions
 
 aliases:
@@ -54,10 +61,11 @@ requirements:
       BindingSet<I, O> is an immutable adapter constructed against one
       CompiledNetwork<D>. Its builder accepts typed ExternalInputKey<S> and
       ExternalOutputKey<S> values, validates them against that compiled input and
-      output schema, and retains enough network, topology-revision, and
-      input-schema identity to reject use with another or stale topology without
-      positional retargeting.
-    sources: [concrete-binding-sets, concrete-compiled, concrete-shared-identity, concrete-revision]
+      output schema, and retains exact NetworkKey, NetworkFingerprint and
+      InputSchemaFingerprint compatibility, independently of runtime revision.
+      A current-definition map accepts a patched or restored machine; transaction
+      revision and freshness checks remain core responsibilities.
+    sources: [api-bindings, concrete-binding-sets, concrete-compiled, concrete-shared-identity, concrete-revision]
     basis: derived
 
   - id: unambiguous-bidirectional-mapping
@@ -75,8 +83,7 @@ requirements:
       Binding construction and compatibility checks use structured
       BindingFailure conditions for unknown endpoints, wrong signal kinds,
       duplicate endpoints, duplicate or ambiguous caller keys, missing bindings
-      required by a requested projection, wrong networks, and stale topology
-      revisions or schemas.
+      required by a requested projection, wrong networks, and stale semantic definitions or schemas.
       Binding evidence identifies the network context, binding slot, caller key
       where representable, conflicts or omissions, and expected signal kind. A
       diagnostic binding slot is identified by network fingerprint plus its
@@ -100,7 +107,8 @@ requirements:
     statement: >-
       Projecting an OutputEvent<D> associates its stable external-output key with
       the uniquely bound caller output identifier while retaining its exact
-      variant, level values or pulse count, logical time, CauseRef, revision, and
+      variant, level values or pulse count, reaction stamp and its physical
+      time, CauseRef, revision, and
       stream order. Current bound output observation is a pure reverse lookup and
       ordinary Machine inspection of established level-output state; it does not
       invent persistent current pulse values.
@@ -157,7 +165,7 @@ recommendations:
 implementation_freedom:
   - BindingSet storage, hashing strategy, iteration types, and the point at which a missing binding is rejected are free, provided every requested projection is complete, unique, deterministic, and schema-compatible.
   - Exact caller-observation builders, projected event and current-output wrapper types, method names, borrowing, and iterator shapes are free beyond the named public responsibilities; choose the smallest typed owned surface and test the concrete choice.
-  - BoundMachine is optional in the product contract. When included by a task, its constructor, ownership accessors, and convenience method grouping may be chosen as the smallest deterministic delegation layer.
+  - BoundMachine naming and convenience grouping may vary within the mandatory live-binding ownership and atomic publication responsibilities.
 
 open_questions: []
 
@@ -165,11 +173,11 @@ sources:
   api-bindings:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: ["Part III — Identity, bindings, and metadata", 17. External bindings]
-    reviewed_hash: sha256:6edc9bdc1143cbbcc8760ca2c8d87ca432c4c58c5d5aa6d65c8a42e294883796
+    reviewed_hash: sha256:a1fd74745c39a8169c4512f4547aa34cf5b94450ad43eb36575a15fc3b3672d2
   api-input-projection:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VI — Inputs and outputs, 30. Input projection]
-    reviewed_hash: sha256:687bbe8310b5c5fd2c113b0e1794adeb11926ce235ad83157896a527396a8678
+    reviewed_hash: sha256:959f3ff73bbfe55f534b9a8099d3ca2fdbaffb17a38cbcbeac251ad8129055dd
   api-snapshot:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VI — Inputs and outputs, 28. `InputSnapshot`]
@@ -177,11 +185,11 @@ sources:
   api-delta:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VI — Inputs and outputs, 29. `InputDelta`]
-    reviewed_hash: sha256:958e08534ced9e8911a287b64d28b417d81d7db221bad002df633e6e198ae1d9
+    reviewed_hash: sha256:e902bed5f1cae4bdd918fe426a8a8dee5de8d14db39303f06bf033f635f1e34a
   api-output-events:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VI — Inputs and outputs, 32. `OutputEvent<D>`]
-    reviewed_hash: sha256:007184f2cb51c1ebbc203631028d62385aad769a6846027c9cb606f432afb364
+    reviewed_hash: sha256:a962ea273f32708161f7842c758fde8bfdf32bdff85bbfa6a33230705133d03a
   api-inspection:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part IX — Inspection and explanation, 48. Inspection is core]
@@ -197,7 +205,7 @@ sources:
   concrete-input-artifacts:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XIV — Input schemas and values, 53. Network-bound input artifacts]
-    reviewed_hash: sha256:3e0b2ebd65b590938d3852ffd9a95ae6560c34b72751bc0a1fbe5d1122b05e2b
+    reviewed_hash: sha256:c4e82e631fcd060394620ff0fadefd9fa4691c3c18e672f9a600962330f2bfff
   concrete-snapshot:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XIV — Input schemas and values, 54. `InputSnapshot<D>`]
@@ -205,11 +213,11 @@ sources:
   concrete-delta:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XIV — Input schemas and values, 55. `InputDelta<D>`]
-    reviewed_hash: sha256:c2b2685fd582c0ac511cbb502c6de622135bb6d08e823ab487d0855b28439fd4
+    reviewed_hash: sha256:499f53fee603062d81342dba778e61b0d6ec0a8e7d854945b6b095298c9e64bc
   concrete-output-events:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XVII — Transaction results and changes, 66. Output events]
-    reviewed_hash: sha256:2fa14b1c92982a2f8bdba90ca3ebed0cb078987d88be60027c14a094813f6fa7
+    reviewed_hash: sha256:7cbcc70aa4934bd05d59f495a18779d0ca013405a6f4303cdfcdd4730a81d17b
   concrete-binding-subjects:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part V — Stable identity, 19. Subject references, 19.2 Non-structural diagnostic subject identities]
@@ -225,7 +233,7 @@ sources:
   concrete-bound-machine:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XXII — External bindings, 83. Optional bound-machine façade]
-    reviewed_hash: sha256:6e2eca187e844b02744c10a44d0798f7931e9fc8ecf91d55e03ef36c14a12d3c
+    reviewed_hash: sha256:841c5fed6dea4de44949ee6d5f21ff29cbadb198152ec44be22c1dd908cb9799
   concrete-shared-identity:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XXX — Public API coherence requirements, 107. Shared identity model]
@@ -253,7 +261,7 @@ sources:
   binding-codes:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part V — Exhaustive initial catalogue, 31. Bindings]
-    reviewed_hash: sha256:b921ec72e847d87e0edf6dd6db0b7d83e262f75860bb1b7abc0bce1f33b5b721
+    reviewed_hash: sha256:87d569f80c58cd5e98e201bc0e754aaf95f2022fae9121ffd90c1fa51c305921
   binding-failure-mapping:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part VI — Rust API integration, 46. Required mapping by API family, 46.3 Inputs and bindings]
@@ -269,7 +277,7 @@ sources:
   testing-observation:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part I — Verification model, 4. Semantic observation]
-    reviewed_hash: sha256:0df3c896d3b4a6740cfbd00de456cbda4a899470bd904e79866b713cf674d2b0
+    reviewed_hash: sha256:0c507b9a3fd275c4bf2e966493a791a5da3391745dfd38dbd8827b2232f80910
   testing-equivalence:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part I — Verification model, 5. Semantic equivalence]

@@ -86,7 +86,7 @@ The observation should include, where applicable:
 
 ```text
 lifecycle status
-logical time
+logical time and last reaction stamp
 topology revision
 network fingerprint
 external level valuation
@@ -917,7 +917,12 @@ Tests must compare:
 Apply(M, transaction_at(T))
 ```
 
-with an equivalent sequence that advances through each meaningful deadline and then `T`, accounting for the rule that caller transactions themselves must use strictly increasing times.
+with an equivalent sequence through each meaningful deadline and then `T`,
+preserving the same input/patch reaction partition. Repeated physical times are
+valid ordered reactions. Inserting extra explicit empty settlements can change
+stamps, freshness digests and transaction provenance; exact artifact equivalence
+is required only for the same transaction history. Physical behavior and
+deadline/count equivalence must not be normalized away.
 
 The resulting semantic state and chronological observable events must be equivalent.
 
@@ -968,7 +973,7 @@ Tests must verify:
 - current input has no instantaneous path to current output;
 - a due transition matures despite a new same-time input transition;
 - remembered input updates correctly;
-- same-deadline migrated transitions resolve by greatest originating logical time;
+- same-deadline transitions resolve by greatest immutable originating reaction stamp;
 - no same-time intermediate output transition is observable;
 - indistinguishable conflicting origins reject or resolve explicitly.
 
@@ -1086,7 +1091,7 @@ Focused tests must cover at least:
 - stale revision;
 - stale expected execution digest;
 - invalid lifecycle operation;
-- non-increasing time;
+- earlier physical time and checked same-time reaction-order overflow;
 - checked time overflow;
 - wrong network identity;
 - conflict-rejecting latch;
@@ -1226,7 +1231,10 @@ Every committed provenance derivation must be acyclic.
 
 Debug and test builds must be able to recompute acyclicity from the retained graph.
 
-Edges must advance in logical time, reaction dependency order, or migration/checkpoint establishment order as specified.
+Edges must advance in reaction stamp (physical time, then reaction order),
+dependency order within one reaction, or migration/checkpoint establishment
+order as specified. Repeated state transitions at one physical time must
+remain acyclic across their distinct reaction stamps.
 
 ## 68. Authoritative-root completeness
 
@@ -1703,7 +1711,7 @@ For small machine models, the harness may enumerate reachable states under all v
 Useful checked invariants include:
 
 - determinism;
-- no same-time second caller transaction;
+- ordered same-time caller transactions with checked occurrence allocation;
 - strictly future pending work;
 - state-cell single-successor rule;
 - atomic rejection;

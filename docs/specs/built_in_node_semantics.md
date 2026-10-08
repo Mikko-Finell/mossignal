@@ -58,7 +58,10 @@ Pulse multiplicity is semantically significant. A pulse is not a temporary `High
 
 ## 3. Reactions and transactions
 
-A **reaction** is one complete settlement at one logical time.
+A **reaction** is one complete settlement at one physical time, identified
+by its machine-local `ReactionStamp`. Separate caller transactions may
+produce ordered reactions at that same time; each reads its own committed
+predecessor under API section 22.1.
 
 A caller transaction may contain several reactions when advancing across earlier pending deadlines before settling the caller-supplied transaction time.
 
@@ -123,7 +126,7 @@ Before reaction:
   B = Low
   Any(A, B) = High
 
-At one logical time:
+In one reaction:
   A becomes Low
   B becomes High
 
@@ -137,7 +140,9 @@ This rule applies to outputs, downstream nodes, state changes, explanations, and
 
 ## 7. Simultaneous batches
 
-All stimuli at one logical time form one unordered batch.
+All stimuli within one reaction form one unordered batch. Separately
+submitted transactions at the same physical time remain ordered reactions,
+not one merged batch.
 
 Behavior MUST NOT depend on insertion order, connection order, collection iteration order, arbitrary ordering between simultaneous pulses, pending-event container order, or evaluator traversal order.
 
@@ -902,7 +907,12 @@ Every occurrence received at `T` is reproduced at `T + delay`.
 
 A pulse group due at `T` emits its complete multiplicity regardless of new pulses arriving at `T`. New pulses schedule strictly future groups and have no instantaneous path to current output.
 
-Groups sharing one deadline may sum multiplicities while preserving grouped causal contributors.
+All groups sharing one owner and deadline contribute their checked sum to one
+due batch, preserving distinct originating `ReactionStamp` values and grouped
+causal contributors. Separate count-one inputs at one physical time produce
+count two at their common maturity, not two ordered maturity reactions. A
+downstream Toggle does not change for that even batch. Delay preserves exact
+physical maturity and multiplicity, not the originating reaction partition.
 
 On duration change, the standard compatibility rule is:
 
@@ -939,13 +949,20 @@ A transition due at `T` matures regardless of a new input transition at `T`. The
 
 Duration changes or explicit migration may cause several queued transitions to mature at one deadline.
 
-The settled output for that reaction is the target of the matured transition with the greatest originating logical time.
+The settled output for that reaction is the target of the matured transition
+with the greatest immutable originating `ReactionStamp` (physical time, then
+reaction order). High followed by Low in separate reactions at S settles Low
+at S + delay; Low followed by High settles High. A value-based tie is forbidden.
 
 This is semantic chronological precedence, not pending-event iteration order. Only the final settled output is observable; no same-time intermediate output transitions exist.
 
 All matured transitions remain available to inspection and explanation. Earlier matured transitions are superseded at that deadline by later-originating ones.
 
-Ordinary node operation produces at most one queued input transition per originating reaction. A migration that would create conflicting transitions with indistinguishable originating time must explicitly resolve them or reject the patch.
+Ordinary node operation produces at most one queued input transition per
+originating reaction. Multiple same-owner/deadline transitions with distinct
+origin stamps are valid runtime, migration and restored state. Conflicting
+targets with the same origin stamp must be explicitly resolved by the declared
+migration rule or rejected. Restarting timing does not erase causal precedence.
 
 ### 52.2 Reconfiguration
 
@@ -990,6 +1007,12 @@ A contradictory input change exactly at `D`:
 Current input therefore has no instantaneous dependency on current output.
 
 If input changes again before a candidate matures, the existing candidate is canceled. A new candidate is established from that reaction time exactly when the newly settled input differs from the output that remains after current due obligations are applied.
+
+Separate reactions at the same S apply this rule sequentially: each sees the
+predecessor's remembered input and candidate. Cancellation is permanent; later
+current-time calls cannot resurrect removed work. A due candidate is consumed
+once in the first reaction processing D. A later input at D observes the
+committed output and can schedule only strictly future opposite work.
 
 Inspection exposes target, originating time, deadline, elapsed span, remaining span, originating cause, and recent cancellation or maturation.
 
@@ -1088,6 +1111,29 @@ If a disabled node settles `High` exactly on a preserved-phase boundary:
 
 - `Immediate` permits that boundary;
 - `AfterFirstPeriod` waits for the next boundary strictly after enable.
+
+#### 54.5.1 Once-only phase boundaries
+
+A phase is identified by its anchoring reaction stamp. Its physical anchor
+defines cadence and may change under an explicit preserving migration without
+creating a fresh phase. For that phase, retain the last settled boundary
+ordinal/time, whether emitted or
+suppressed. Merely reallocating a pending event key does not create a new
+boundary. Unchanged enable, empty current-time calls, preserving patches and
+preserved-phase recomputation MUST NOT emit an already settled boundary again.
+
+Under `PreservePhase`, an exact-boundary enable transition with `Immediate`
+permits that boundary only if it has not already been settled or suppressed in
+this phase. Low then High in later reactions at the same settled boundary does
+not replay it. Boundaries strictly before a re-enable are skipped without
+accumulation. A boundary reached while disabled is accounted as suppressed
+when enable or migration assesses that boundary.
+
+Under `RestartPhase`, a real disabled-to-enabled transition creates a fresh
+phase, even at the same physical time. `Immediate` may emit once for that new
+phase; `AfterFirstPeriod` waits one positive period. Explicit reset/reanchor
+migration can likewise create a fresh phase under its loss policy. Freshness
+is a semantic phase change, never a new event serial for retained work.
 
 ### 54.6 Large time jumps
 

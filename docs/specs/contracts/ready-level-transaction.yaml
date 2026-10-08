@@ -5,19 +5,26 @@ kind: lifecycle
 status: reviewed
 
 source_baseline:
-  commit: 27d343c64e3176ebccb7383c3cb268427d6d38cb
-  working_tree: clean
+  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/exhaustive_diagnostic_code_catalogue.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    - docs/specs/processor_and_runtime_architecture.md
+    - docs/testing_and_verification_policy.md
 
 summary: >-
   A ready-machine level transaction advances one initialized restricted machine
-  to a strictly later caller-supplied time, overlays one exact-bound InputDelta
+  to a non-regressing caller-supplied physical time, overlays one exact-bound InputDelta
   on its authoritative external levels, fully settles the Constant/Not graph,
   and atomically publishes changed level outputs without changing topology.
 
 scope:
   includes:
     - owned explicit level-only advancement transaction and exact preconditions
-    - strict ready-machine time progression without temporal deadlines
+    - ordered ready-machine reactions without temporal deadlines
     - retained omitted inputs and complete restricted full reevaluation
     - atomic Ready-state replacement and unchanged topology revision
     - deterministic LevelChanged events with resolvable causes
@@ -59,13 +66,13 @@ requirements:
       mismatches are structured runtime rejections.
     sources: [api-ready-transaction, api-delta, schema-binding, concrete-transaction-constructors, lifecycle-codes, runtime-codes, input-codes]
 
-  - id: strictly-later-caller-time
+  - id: non-regressing-caller-time
     kind: semantic
     statement: >-
       The requested time of every successful ready-machine transaction is
-      strictly later than the machine's current time. Equal or earlier times
-      receive a structured rejection so call order cannot become hidden same-time
-      semantics; the library supplies no wall clock or automatic advancement.
+      greater than or equal to the machine's current physical time. Equal time
+      creates a later ordered reaction under the occurrence contract; earlier
+      time is rejected. The library supplies no wall clock or automatic advancement.
     sources: [api-caller-time, api-time-progression, runtime-codes]
 
   - id: delta-overlay-retention
@@ -162,7 +169,7 @@ requirements:
     kind: verification
     statement: >-
       Tests cover empty, partial, complete, and explicit-reassertion deltas;
-      strict time increase; retained omitted levels; complete reevaluation;
+      non-regressing time and ordered current-time reactions; retained omitted levels; complete reevaluation;
       changed and unchanged output behavior; deterministic event order and
       resolvable causes; unchanged revision; applicable budget boundaries; and
       complete unchanged-state comparison after each supported rejection.
@@ -219,7 +226,7 @@ sources:
   runtime-causal-order:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part X — Causal provenance, 64. Causal order]
-    reviewed_hash: sha256:fe3199f5d66e4d27a982954372a012f701f5e39948fb997e88cc909638eda3d4
+    reviewed_hash: sha256:3847bcfe3fea5a94ebcb46c59559b49a4ec635885e61d76a1ec68d725eca92fa
   runtime-causal-provenance:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part X — Causal provenance, 63. Derivation structure]
@@ -239,7 +246,7 @@ sources:
   api-time-progression:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part IV — Logical time, 22. Time progression]
-    reviewed_hash: sha256:c655529403d48a58bad273bd902e7eeeacbfb4782ccfdf35426acec04eaab48b
+    reviewed_hash: sha256:222d2a74f7298212500f210c34560d4e1dcbdd4ac93280a9054958e06f6698bc
   api-transactions:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part V — Transactions and execution, 23. Explicit transaction values]
@@ -251,7 +258,7 @@ sources:
   api-atomic-input:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part V — Transactions and execution, 25. Atomic input semantics]
-    reviewed_hash: sha256:4018d4bb1c96c7961fd79c43975d7dc7c2caf9b6246e713fafe9d5c2fd31271e
+    reviewed_hash: sha256:85778e672a4d29bf326fec8cfc4f646c1349bb18d686cb19055a09463a45539e
   api-settlement:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part V — Transactions and execution, 26. Settlement]
@@ -273,11 +280,11 @@ sources:
   api-delta:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VI — Inputs and outputs, 29. `InputDelta`]
-    reviewed_hash: sha256:958e08534ced9e8911a287b64d28b417d81d7db221bad002df633e6e198ae1d9
+    reviewed_hash: sha256:e902bed5f1cae4bdd918fe426a8a8dee5de8d14db39303f06bf033f635f1e34a
   api-output-events:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VI — Inputs and outputs, 32. `OutputEvent<D>`]
-    reviewed_hash: sha256:007184f2cb51c1ebbc203631028d62385aad769a6846027c9cb606f432afb364
+    reviewed_hash: sha256:a962ea273f32708161f7842c758fde8bfdf32bdff85bbfa6a33230705133d03a
   api-causal-provenance:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part IX — Inspection and explanation, 53. Causal provenance]
@@ -287,7 +294,7 @@ sources:
     heading_path:
       - Part IX — Runtime policy, input, transaction, and patch artifacts
       - 75. Input schema binding
-    reviewed_hash: sha256:eb95f049f168441a248456ba4f8e24135c9ce7e046f7e102af14b5732e6dd987
+    reviewed_hash: sha256:52c3e9144182041220089c7fc8866f51b63d3101ba341cad983702b87c1880fd
   concrete-transaction-values:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XV — Transactions, 57. Owned explicit transaction values]
@@ -295,7 +302,7 @@ sources:
   concrete-transaction-constructors:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XV — Transactions, 58. Distinct constructors]
-    reviewed_hash: sha256:99c4783a9c2d269f0a3782d11385267bed3f73a44eabfda228e8375d41e65d57
+    reviewed_hash: sha256:9cdc2ac3116458261fa5aedeedbc280f19f6b8c553c2ec9486c0d864e7408603
   concrete-apply:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XVI — Apply and forecast, 61. Applying transactions]
@@ -307,7 +314,7 @@ sources:
   concrete-output-events:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XVII — Transaction results and changes, 66. Output events]
-    reviewed_hash: sha256:2fa14b1c92982a2f8bdba90ca3ebed0cb078987d88be60027c14a094813f6fa7
+    reviewed_hash: sha256:7cbcc70aa4934bd05d59f495a18779d0ca013405a6f4303cdfcdd4730a81d17b
   concrete-cause-references:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XX — Explanation and provenance, 76. Cause references]
@@ -321,11 +328,11 @@ sources:
     heading_path:
       - Part V — Exhaustive initial catalogue
       - 29. Runtime values, time, policy, and semantic rejection
-    reviewed_hash: sha256:c9f66339774d5f873cdf36804834c8e71d0ea3025aef36badde12a1ca570e825
+    reviewed_hash: sha256:03e52ae002fb86991e35ce32acfc991569a9c3e4165b162e889b83df72240b10
   input-codes:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part V — Exhaustive initial catalogue, 30. Input construction and projection]
-    reviewed_hash: sha256:3953dbde0d5f72123a26a59dc49c35ff13fe36622490c09d31e57557be10452c
+    reviewed_hash: sha256:5c6271217e53898efcf014898caca4ec33a1166dda72420d82b68deed9cc0e0d
   testing-reference-transaction:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part III — Reference implementations, 9. Required reference paths, 9.2 Clone-and-swap transaction executor]
@@ -353,11 +360,11 @@ sources:
   testing-rejections:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part X — Transaction and failure-atomicity verification, 56. Rejection categories]
-    reviewed_hash: sha256:33243021df94512d72edbf1c2d5609e8847f3194205f58ffd764a2638323d03a
+    reviewed_hash: sha256:2dcf0862ee35d7b571683fffec33a4c9ffe9e9151f0fc803aa6bc9d5f545ee52
   testing-provenance-acyclicity:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part XII — Provenance and explanation verification, 67. Provenance acyclicity]
-    reviewed_hash: sha256:9a1337ae39cf3aa552706924fff14a6df935a49eb937012b4eaef213acf13084
+    reviewed_hash: sha256:cb111e49efd867cb6198c0521326bee34a4f8ed9381668d7672caa88cc11ea32
   testing-budget-boundaries:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part XVI — Runtime-policy and budget verification, 92. Budget boundaries]

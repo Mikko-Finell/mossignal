@@ -888,7 +888,9 @@ is valid when its reaction dependencies are acyclic.
 
 Each operation computes current outputs and one proposed successor state. All state cells commit together after the complete reaction.
 
-There are no same-time microsteps and no repeated transition of one state cell.
+There are no hidden microsteps or repeated transitions of one state cell
+within a reaction. A separately submitted current-time transaction starts
+a new ordered reaction against the committed predecessor.
 
 ---
 
@@ -952,9 +954,17 @@ deadline > current\ reaction\ time
 
 Immediate behavior is produced directly in the current reaction rather than inserted into the calendar at the current time.
 
-With discrete time, positive delays, finite networks, and finite event creation per reaction, infinitely many temporal steps cannot occur before one finite target time.
+With discrete time, positive delays, finite networks, and finite event creation
+per reaction, infinitely many internal temporal steps cannot occur before one
+finite target time. The caller's separately submitted same-time transactions
+remain its own finite-work responsibility.
 
 ## 41. Advancing time
+
+Ready transactions admit `T >= now` and use the occurrence rules in API
+section 22.1. A transaction-local last stamp advances at each evaluated reaction;
+the final stamp is installed with the complete candidate store. Equal physical
+time never implies sharing predecessor state across distinct reactions.
 
 For a transaction at time (T), the processor must:
 
@@ -985,6 +995,11 @@ Step(d_k)\circ\dots\circ Step(d_1)
 followed by the reaction at (T).
 
 Equal-deadline events must be processed as one unordered batch for this equivalence to hold.
+
+The comparison preserves meaningful reaction partition. Additional explicit
+empty settlements introduce occurrence/transaction roots; exact freshness
+digests, stamp histories and snapshot/replay bytes need not match after such a
+different history. Physical duration arithmetic never uses reaction order.
 
 ## 43. Exact-deadline obligations
 
@@ -1041,7 +1056,32 @@ Pending events may be aggregated only where an established associative and commu
 
 Pulse-delay groups with equal semantic destination and deadline may sum multiplicities while preserving causal contributors.
 
+Maturity is one deadline reaction even when groups originated in distinct
+ordered reactions at the same physical time. Aggregation preserves counts and
+distinct causal origins, not original reaction partition. A downstream Toggle
+therefore sees parity of the due sum, and SampleHold sees one settled sample
+batch. Transport precedence compares immutable originating reaction stamps,
+not target values, event keys or vector order. Inertial work remains singular.
+
 Events at distinct logical times must not be collapsed without proving equivalence for the complete affected subsystem.
+
+### 46.1 Occurrence state and atomic staging
+
+The candidate store includes the last `ReactionStamp`, immutable pending
+stimulus origins, timing bases where migration restarts timing, periodic phase
+origin and settled-boundary watermark, and episode occurrence identity. Every
+new counter uses checked arithmetic. Order overflow is a semantic rejection;
+runtime work/provenance budgets still apply per outer transaction. There is no
+library-wide host phase budget or automatic consequence loop.
+
+Transaction and external-input provenance roots include their reaction stamp,
+including direct Pulse exports. Retained roots may describe earlier revisions;
+new input roots MUST describe the current reaction and MUST NOT inherit an old
+patch cause solely because physical time/revision coincide. Output and
+diagnostic streams retain stamps. Same-reaction supporters remain unordered.
+Every fallible evaluation, migration, root construction, digest and bound
+projection completes before publication; failure discards all candidate stamps,
+identity allocation, earlier deadline work and target bindings.
 
 ---
 
@@ -1355,8 +1395,8 @@ Examples include:
 
 Every provenance edge must advance in at least one of:
 
-* logical time;
-* reaction dependency order;
+* reaction stamp (physical time, then same-time reaction order);
+* dependency order within one reaction;
 * migration or checkpoint establishment order.
 
 This provides a well-founded order and implies acyclicity.
@@ -1496,6 +1536,11 @@ A diagnostic event is emitted when the episode:
 The same unchanged warning is not emitted on every unrelated transaction.
 
 ## 72. Episode identity
+
+An episode's beginning occurrence is a `ReactionStamp`, not only physical time.
+Condition identity and episode occurrence identity remain distinct. Beginning,
+material changes, resolution and termination expose producing stamps; rejected
+transactions allocate no published episode identity.
 
 Episode identity derives from stable semantic facts such as:
 

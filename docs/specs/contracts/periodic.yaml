@@ -5,8 +5,16 @@ kind: node
 status: reviewed
 
 source_baseline:
-  commit: aa1186b2f12dc2136a8c43bffed61eda8fba4c84
+  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
   working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/built_in_node_semantics.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    - docs/specs/processor_and_runtime_architecture.md
+    - docs/specs/reconfiguration_and_topology_patch_spec.md
+    - docs/testing_and_verification_policy.md
 
 summary: >-
   Periodic is a fixed Level-controlled temporal primitive that uses an exact
@@ -93,8 +101,9 @@ requirements:
     statement: >-
       With an existing preserved anchor, re-enable between phase boundaries
       schedules the next boundary under either first-emission policy. Re-enable
-      exactly on a phase boundary permits that boundary under Immediate, while
-      AfterFirstPeriod waits for the next boundary strictly after re-enable.
+      exactly on a phase boundary permits it under Immediate only if that phase
+      has not already settled or suppressed it. AfterFirstPeriod waits strictly
+      after re-enable. A fresh RestartPhase has its own anchoring stamp.
       Missed disabled boundaries remain unobservable.
     sources: [builtin-law]
 
@@ -190,7 +199,7 @@ sources:
   builtin-law:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part VI — Temporal nodes, 54. `Periodic`]
-    reviewed_hash: sha256:db831f50fa06edd08d1cc37b0516d8a161cbd256e97a111ccfb933a52531737a
+    reviewed_hash: sha256:8c46025efb728d9ed5e3330b449c1d1e6e6be73ca096b0df60fd4ed1a9cd377b
   builtin-initialization:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part VI — Temporal nodes, 50. Temporal initialization]
@@ -254,11 +263,11 @@ sources:
   runtime-advancement:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VII — Logical time and temporal execution, 41. Advancing time]
-    reviewed_hash: sha256:2cd676a9ab1fa86bc37437cc7d485b15104ba231359672e214b1c0cff38bc278
+    reviewed_hash: sha256:a7d6e74e5a5ddff99b8496d4e5d30aa1fabab0a39f006de856fca41956885b86
   runtime-jump:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VII — Logical time and temporal execution, 42. Large-time-jump equivalence]
-    reviewed_hash: sha256:af5b05c8286794fc47ca7318ca477aae3208739ee6a00967151c4982e1413370
+    reviewed_hash: sha256:dcbe17644aee212805cfd36957b5b5c400a3f74b6014f191d53c440ffe69cc49
   runtime-atomic:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part VIII — Transactions and atomicity, 48. Single commit point]
@@ -282,11 +291,11 @@ sources:
   periodic-event-record:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 92. Pending event records]
-    reviewed_hash: sha256:9d40b747e57c3e3392c351477272393b2c91536672b112fd87c2df41889d7c20
+    reviewed_hash: sha256:c32440d9553e34de6bc542bd26957d55e4ca5c7e5e4cb8522ea531f727b316b5
   periodic-migration:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part V — State compatibility and migration, 51. `Periodic` migration]
-    reviewed_hash: sha256:bb55292863a2d91f95fc602cc566258ea4c475c66f7bc0e8e6156c963de713f7
+    reviewed_hash: sha256:62158469ce6d2a947fe16e484f24edffb6eec7174f3bea6f60dcc8998555cfa4
   verification-initialization:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part VI — Initialization verification, 28. Temporal initialization]

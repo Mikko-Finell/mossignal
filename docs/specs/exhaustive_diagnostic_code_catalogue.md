@@ -649,6 +649,8 @@ current time where established
 requested time or operands
 required relation
 checked operation
+current reaction order where applicable
+attempted occurrence allocation and representable bound where applicable
 ```
 
 ### 14.20 `InputObservationEvidence`
@@ -698,6 +700,7 @@ previous stored state
 set and reset presence or settled values
 pulse counts where applicable
 logical time and revision
+producing reaction stamp
 ```
 
 ### 14.25 `BudgetEvidence`
@@ -877,7 +880,6 @@ Representative suggestion kinds include:
 resolve_stable_key_again
 rebuild_input_for_current_schema
 supply_missing_level
-use_establish_for_new_level
 prepare_patch_again
 remove_duplicate_connection
 connect_missing_required_input
@@ -1038,6 +1040,7 @@ network identity
 condition code
 primary structural subject
 condition discriminator
+beginning reaction stamp
 ```
 
 The resulting opaque identifier is persisted rather than recomputed from private runtime positions.
@@ -1292,7 +1295,8 @@ A more specific warning suppresses `validation.constant_result_node` when both w
 |---|---|---|---|---|---|
 | `runtime.stale_revision` | Error | Compatibility | Failure | `RevisionMismatchEvidence` | An operation expected a different topology revision from the machine's current revision. |
 | `runtime.stale_execution_state` | Error | Compatibility | Failure | `DigestMismatchEvidence` | An expected execution-state digest does not match the current machine. |
-| `runtime.time_not_strictly_increasing` | Error | CallerInput | Failure | `TimeEvidence` | A ready-machine transaction time is equal to or earlier than current logical time. |
+| `runtime.time_regression` | Error | CallerInput | Failure | `TimeEvidence` | A ready-machine transaction targets an earlier physical time. Equal time is an ordered reaction. |
+| `runtime.reaction_order_overflow` | Error | SemanticRejection | Failure | `TimeEvidence` | The next same-time reaction order cannot be represented; the complete transaction is rejected. |
 | `runtime.time_overflow` | Error | SemanticRejection | Failure | `TimeEvidence` | Checked logical-time arithmetic overflowed. |
 | `runtime.invalid_time_subtraction` | Error | CallerInput | Failure | `TimeEvidence` | A duration was requested from a later time to an earlier time. |
 | `runtime.zero_span_not_allowed` | Error | CallerInput | Failure | `ParameterEvidence` | A positive duration type or semantic operation received zero. |
@@ -1319,8 +1323,6 @@ A more specific warning suppresses `validation.constant_result_node` when both w
 | `input.foreign_schema` | Error | Compatibility | Failure | `InputSchemaEvidence` | The input artifact was built for a different schema family or target topology. |
 | `input.stale_schema` | Error | Compatibility | Failure | `InputSchemaEvidence` | The input artifact's fingerprint or revision is stale. |
 | `input.removed_endpoint` | Error | CallerInput | Failure | `InputObservationEvidence` | A target-bound patch input references an endpoint removed by the patch. |
-| `input.new_level_requires_establish` | Error | CallerInput | Failure | `InputObservationEvidence` | A newly introduced external level was set as preserved instead of explicitly established. |
-| `input.establish_not_permitted` | Error | CallerInput | Failure | `InputObservationEvidence` | `establish` was used for an input that is not newly introduced. |
 | `input.target_schema_mismatch` | Error | Compatibility | Failure | `InputSchemaEvidence` | Transaction input does not match the prepared patch's exact target schema. |
 
 ## 31. Bindings
@@ -1335,6 +1337,16 @@ A more specific warning suppresses `validation.constant_result_node` when both w
 | `binding.missing_required_binding` | Error | CallerInput | Report, Failure | `BindingEvidence` | A binding set required by the requested projection is incomplete. |
 | `binding.wrong_network` | Error | Compatibility | Failure | `BindingEvidence` | A binding set is used with another network identity. |
 | `binding.stale_schema` | Error | Compatibility | Failure | `BindingEvidence` | A binding projector or binding set is stale for the current topology. |
+| `binding.invalid_reconfiguration_context` | Error | CallerInput | Failure | `BindingEvidence` | The bound operation's patch presence and target-binding context do not agree. |
+
+Current-time runtime occurrences and episode changes carry their producing
+reaction stamp and remain in reaction order. Episode condition identity remains
+subject/code/discriminator-based; episode occurrence identity additionally uses
+its beginning stamp. Resolving and beginning the same condition in separate
+reactions at one physical time MUST create distinct episodes. Unchanged retained
+conflict still emits no repeated episode change. Order overflow consumes no
+episode or pending-event identity. Binding stale-schema evidence concerns exact
+definition compatibility; runtime revision mismatch uses `runtime.stale_revision`.
 
 ## 32. Inspection
 

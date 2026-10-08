@@ -876,11 +876,17 @@ For a ready-machine patch transaction:
 
 - preserved external `Level` inputs retain their authoritative values unless changed with `set`;
 - reassociated external `Level` inputs inherit the source value and are treated as preserved target inputs;
-- new external `Level` inputs must be supplied through `establish`;
+- new external `Level` inputs require an explicit `set` observation;
 - removed external inputs are invalid to reference;
 - target pulse inputs accept current-time counts, with absence meaning zero.
 
 For an initialization patch transaction, the target-bound `InputSnapshot` must contain every target external `Level` input, whether preserved, reassociated, or new.
+
+The target schema has the same definition identity as ordinary target input
+artifacts. Required new-Level values come from the prepared input plan and are
+checked by `with_patch` and runtime admission, not inferred as Low or encoded
+through a second input operation. Binding compatibility is definition-based;
+runtime revision and optional execution digest still guard the transaction.
 
 ## 34. Invalidated artifacts
 
@@ -1180,11 +1186,20 @@ Many-to-one or one-to-many event migration is not provided by the initial built-
 
 ## 47. Deadline recomputation and overdue policy
 
-A migration rule that computes a target deadline from an original event origin uses:
+A migration rule that recomputes a deadline uses the retained physical timing
+origin, separately from the immutable originating reaction stamp:
 
 ```text
-new_deadline = checked_add(original_origin, target_duration)
+new_deadline = checked_add(timing_origin, target_duration)
 ```
+
+For PulseDelay and TransportDelay, the timing origin initially equals the
+stimulus stamp's physical time. RestartFromPatchTime replaces that timing
+origin with the patch time; a later RecomputeFromOrigin uses that retained
+timing origin. For InertialDelay it is the qualification origin, likewise
+reset by RestartFromPatchTime. None of these changes replaces the immutable
+stimulus stamp or its causal precedence. Preserving a deadline also preserves
+its timing origin. This distinction must survive further patches and restore.
 
 Checked overflow rejects the patch transaction atomically.
 
@@ -1238,7 +1253,7 @@ Changing delay under `Standard` uses `PreserveDeadlines`:
 Each group receives deadline:
 
 ```text
-origin + target delay
+timing_origin + target delay
 ```
 
 Multiplicity and causal contributors are preserved.
@@ -1291,12 +1306,17 @@ Changing delay under `Standard` preserves every queued transition deadline. The 
 Every queued transition retains:
 
 - target level;
-- originating logical time;
+- immutable originating reaction stamp;
 - originating causal support.
 
-If migration causes several transitions to mature at one deadline, the target output for that reaction is selected by greatest originating logical time.
+If migration causes several transitions to mature at one deadline, the target
+output is selected by greatest originating reaction stamp. Same-owner/deadline
+groups with distinct stamps MUST be accepted by preserving migration and
+restoration. RestartFromPatchTime changes their physical timing base without
+replacing their original transition stamps or causal precedence.
 
-If two conflicting transitions have indistinguishable originating logical time and no specified semantic precedence, finalization rejects.
+If conflicting targets have identical originating stamps and no specified
+resolution, finalization rejects. Multiple events alone are not a conflict.
 
 ### 49.3 Connectivity changes
 
@@ -1400,6 +1420,8 @@ The state components are:
 optional phase anchor
 previous enabled observation
 optional next eligible boundary
+phase-origin reaction stamp
+last settled boundary ordinal (emitted or suppressed), if any
 ```
 
 ### 51.1 Standard rule
@@ -1445,6 +1467,15 @@ A target boundary exactly at `T` becomes a due-at-`T` fact whose emission still 
 
 Previous enabled observation is preserved.
 
+Existing phase identity and its settled-boundary watermark are preserved.
+Recomputation MUST skip an already settled boundary at the current physical
+time, even when it allocates a new pending key. When the period changes, the
+watermark is translated by physical boundary time into the target cadence:
+boundaries at or before the last accounted boundary time are ineligible; later
+target boundaries remain eligible. Under `PreserveNextDeadline`, a preserved
+future boundary becomes the next unconsumed target boundary, never a replay of
+an earlier one. Disabled recomputation retains suppression information.
+
 ### 51.4 `ReanchorAtPatchTime`
 
 The target anchor becomes `T`.
@@ -1456,6 +1487,11 @@ The target anchor becomes `T`.
 - under `RestartPhase`, a later disabled-to-enabled transition may establish a new anchor normally.
 
 The prior phase and pending schedule are discarded and reported as semantic loss.
+
+The new phase origin is the patch reaction stamp. A real same-time enable
+transition and reanchor fact authorize at most one immediate emission from
+that target phase, not two copies of the same boundary. `CancelSchedule`
+similarly creates fresh phase state if target initialization enables it.
 
 Previous enabled observation is preserved so the ordinary patch-time reaction can distinguish a real enable transition from mere reanchoring.
 
@@ -1506,7 +1542,7 @@ For a ready machine:
 - a removed external `Level` input loses its authoritative value;
 - external `Pulse` inputs have no persistent valuation to migrate.
 
-A same-time target input `set` or `establish` is not applied during structural migration. It becomes an authoritative source fact in the patch-time reaction.
+A same-time target input `set` is not applied during structural migration. It becomes an authoritative source fact in the patch-time reaction.
 
 The migration report distinguishes inherited valuation from same-time caller-supplied target input.
 
@@ -1673,6 +1709,15 @@ For a ready machine and patch effective at logical time `T`, the outer transacti
 
 Events strictly before `T` always execute under the old topology.
 
+A patch may target the current time as a later ordered reaction. Its source is
+the complete committed predecessor, including earlier same-time reactions and
+their consumed events. Allocate the target stamp before occurrence-sensitive
+finalization in private candidate state. Already published output cannot be
+undone or redispatched. Still-pending work explicitly recomputed to T joins
+this new target reaction once; the committed calendar remains strictly future.
+Preserving migration carries immutable stimulus origins and periodic consumed
+boundary state. Fresh timing bases are separate from original causal order.
+
 ## 64. Initialization patch ordering
 
 For an uninitialized machine and patch effective at initial time `T0`:
@@ -1706,7 +1751,9 @@ Preparation-time machine state MUST NOT be substituted.
 
 ## 66. Same-time external input boundary
 
-Migration reads pre-`T` source state.
+Migration reads the state entering the target reaction at `T`. For a later
+ordered reaction at the current time, this includes already committed earlier
+same-time reactions; it never reconstructs an earlier physical-time baseline.
 
 Same-time target input is applied as part of the target reaction, not retroactively as source migration state.
 
@@ -2057,7 +2104,7 @@ let tx = Transaction::advance(
     at,
     machine.revision(),
     prepared.input_delta()
-        .establish(new_input, LogicLevel::High)?
+        .set(new_input, LogicLevel::High)?
         .finish()?,
 )
 .with_patch(
@@ -2072,7 +2119,8 @@ let tx = Transaction::advance(
 - target input-schema binding;
 - lifecycle-compatible snapshot versus delta;
 - network identity;
-- time domain.
+- time domain;
+- explicit values for target Levels requiring establishment under the input plan.
 
 ## 85. Exact forecast
 

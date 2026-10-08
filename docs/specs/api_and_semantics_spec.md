@@ -541,6 +541,79 @@ pub struct BoundMachine<D, I, O> { /* opaque */ }
 
 `BoundMachine` MUST NOT change evaluator semantics.
 
+### 17.1 Live definition-compatible bindings
+
+Bindings are immutable adapters for the exact `NetworkKey`,
+`NetworkFingerprint` and `InputSchemaFingerprint` of a compiled definition.
+Runtime revision and execution freshness belong to transactions, not bindings.
+Bindings for the current definition MUST work with an already-patched or
+restored machine regardless of its revision. Equal endpoint schemas alone do
+not authorize use against another semantic definition.
+
+The bound façade MUST maintain complete unique same-kind input and output
+mappings for its installed definition. It supports ordinary core transactions,
+prepared patches with explicit target bindings, read-only core access and a
+consuming escape into machine and bindings. It MUST NOT expose raw mutable
+machine access while retaining a claim of binding coherence. Structural patch
+preparation delegates to the core and does not change live bindings.
+
+A mapping-only replacement validates against the installed definition and
+publishes only the replacement map. It changes no reaction stamp, revision,
+digest, schedule, state, output event or core provenance. It never replays a
+Pulse or establishes a Level. Previously returned projections retain owned
+caller identifiers and their ordinary immutable result/provenance.
+
+For a patch transaction, source mappings cover all events produced strictly
+before the effective-time target reaction; target mappings cover all target
+reaction events. The distinction follows producing topology revision, even
+when a stable endpoint and caller label survive or the patch is at current time.
+Events from subsequently removed source endpoints are retained. Initialization
+with a patch produces only target events. A no-patch transaction uses one
+captured map throughout. Removal is a topology consequence, not a fabricated
+Low or Pulse.
+
+Before publication the façade MUST validate source and target compatibility,
+mapping completeness/kinds, transaction patch structure and input obligations,
+and construct every fallible caller projection against the unpublished core
+candidate. Ordinary binding, projection or core failure leaves both live
+machine and mappings unchanged. Success installs core successor and target
+bindings together; no ordinary projection rejection may follow core commit.
+Caller `Eq`, `Clone`, iterators and allocation are not arbitrary-code rollback
+contracts: caller work needed for returned identifiers occurs before publication.
+The façade invokes no host callbacks during evaluation and does not execute the
+transaction twice to approximate atomic projection.
+
+Low-level standalone event projection requires the caller to supply the correct
+producing-definition mapping. An endpoint key alone cannot authenticate an
+event's definition. The supported bound result performs that selection and
+preserves endpoint, variant, values/count, stamp, time, revision, cause and
+stream position, with access to the ordinary result for diagnostics/migration.
+
+### 17.2 Live-binding acceptance cases
+
+Public bound and direct paths MUST be compared after normalizing only caller
+identifier projection. Verification includes complete semantic state, schedule,
+causes, output order and exact failure atomicity, not only final Levels.
+
+| Case | Required evidence |
+| --- | --- |
+| B-01 | Bind an already-patched/restored machine with exact current-definition maps at a noninitial revision. |
+| B-02 | Wrong definition/network/kind, unknown endpoint, incomplete map and ambiguous identifier reject before mutation. |
+| B-03, B-12 | Direct and bound initialization, same-time inputs, digest guards and prepared patches have equivalent core outcomes. |
+| B-04, B-05 | New Level requires explicit set; preserved/reassociated valuation follows the input plan; removed observations reject. |
+| B-06, B-07 | Earlier source events survive endpoint retirement and retain source labels; target events use target labels, even for a surviving stable key. |
+| B-08 | Invalid target map or rejected migration preserves both live predecessor parts, including stamp and pending identity. |
+| B-09, B-10 | Rebind emits no signal, changes no digest/stamp and leaves earlier owned projected results and causes intact. |
+| B-11 | Read-only access plus consuming raw escape cannot leave a coherent facade around stale mappings. |
+| B-13 | Compatible unrelated edits preserve latch/edge state and multiple delay groups; incompatible removal reports loss or rejects by policy. |
+| B-14 | Fan-out, ALL/ANY, Merge, Toggle, latch and ordinary PulseDelay use native authoring/execution paths without a second evaluator. |
+
+The host supplies explicit inactive values or authored constants for required
+disconnected Level sockets. Rebinding has no opinion about physical safety,
+busy admission or entity lifetime. Device retirement and fresh replacement use
+the core's stable correspondence and explicit loss policy; proximity is not
+continuity.
+
 ## 18. Diagnostic metadata
 
 Human-readable identity is separate from structural identity and bindings.
@@ -673,13 +746,94 @@ Time arithmetic MUST be checked and MUST NOT wrap. Overflow and invalid subtract
 
 The first successful transaction establishes an arbitrary initial logical time and initializes the machine.
 
-Every later successful transaction advances the ready machine to one strictly later caller-supplied time.
-
-All external changes intended for one logical time MUST be included in one transaction. A second independent transaction at the same time MUST be rejected, preventing call order from becoming hidden semantics.
+Every later successful transaction targets a caller-supplied time greater than or equal to the ready machine's current time. Earlier time is rejected. Separate successful transactions at one physical time are ordered reactions; input belonging to one simultaneous reaction MUST be supplied together.
 
 The caller may jump directly across distant times. The processor evaluates only meaningful intervening pending deadlines.
 
 Every newly scheduled temporal obligation MUST have a deadline strictly later than the reaction creating it. Immediate behavior is produced directly in the current reaction rather than inserted into the event calendar at the current time.
+
+### 22.1 Ordered reaction occurrences
+
+`ReactionStamp<D>` identifies a reaction occurrence within one machine history
+as `(Time<D>, u64 order)`. Order is not elapsed time. Initialization uses order
+zero. At a strictly greater physical time the first reaction uses zero; each
+subsequent reaction at the current time uses the previous order plus one.
+Allocation is checked and transaction-local. Exhaustion rejects the entire
+transaction without consuming an order. Stamps compare lexicographically only
+within the same machine history; they are not globally unique identifiers.
+
+Each successful explicit transaction evaluates its final reaction, including
+an empty delta, unchanged Level reassertions, or a patch with no output changes.
+An empty current-time transaction therefore advances order and exact freshness;
+it is an explicit settlement, not a polling operation. Inspection, forecast,
+structural preparation and binding-only replacement allocate no live occurrence.
+Internal deadline batches also receive stamps, but remain unpublished until
+their outer transaction succeeds. There is no second transaction counter.
+
+Within a reaction, inputs and due facts are unordered, share one coherent
+predecessor state, and stage one successor per state cell. A later reaction at
+the same time reads the preceding reaction's committed successor. No new
+fixed-point evaluator, epsilon time, callback or implicit same-time iteration
+is introduced. The caller owns the meaning and finite number of its reactions.
+
+The ready machine MUST expose its last committed stamp, separately from `now`
+and topology revision. Results MUST expose the ordered processed stamps. A
+revision identifies installed topology; `CauseRef` identifies a record in an
+owning immutable provenance view; neither substitutes for reaction occurrence.
+Within one history, an output event is distinguishable by its reaction stamp,
+stable endpoint and variant. Per-reaction endpoint publication remains singular
+and count-bearing; no separate event serial is required.
+
+### 22.2 Temporal partition and freshness
+
+One deadline is consumed once as a complete batch. A later current-time call
+cannot redispatch it. New positive-delay work remains physically in the future.
+A fresh input and due work in the same target transaction join one reaction;
+input delivered in a subsequent transaction observes that committed reaction
+and cannot suppress or undo it. A current-time patch likewise operates on the
+already committed predecessor, not a reconstructed pre-deadline state.
+
+`ExecutionStateDigest` includes the last stamp and all continuation-relevant
+occurrence state. An intervening current-time transaction invalidates an exact
+forecast even if it supplies only a Pulse or persistent Levels return to their
+old values. The expected-digest guard remains optional for ordinary apply and
+required by the caller when claiming exact preview freshness.
+
+Large-jump versus stepwise equivalence compares physical deadlines, counts,
+settled state, schedule and chronological signal/diagnostic behavior for the
+same meaningful input, patch and reaction partition. An inserted empty
+transaction is an additional occurrence: exact stamps, transaction roots,
+freshness digests and artifact bytes need not equal a history without that call.
+An inserted empty settlement is not necessarily behaviorally inert. For
+example, assessing a disabled preserved-phase Periodic exactly on a boundary
+suppresses it; enabling in a later reaction at that time cannot recover it.
+Equivalence must not delete such a settlement from the reaction partition.
+Resetting order at a later time prevents earlier empty calls from renumbering
+later reactions. Unordered input permutations within one reaction remain fully
+equivalent; merging separate reactions is not an equivalence.
+
+### 22.3 Ordered-reaction acceptance cases
+
+Verification MUST cover the following through public core and applicable bound
+paths. Rejections compare the complete predecessor, including all occurrence,
+phase, pending-event, episode and binding allocation state.
+
+| Case | Required evidence |
+| --- | --- |
+| T-01, T-02 | Complete initialization then two current-time reactions; earlier time rejects unchanged. |
+| T-03, T-04 | Simultaneous input permutations are equivalent; count two in one Toggle reaction differs from two count-one reactions. |
+| T-05, T-16 | Deadline settles once; a later current-time command produces a later stamp without timer replay. |
+| T-06 | High→Low and Low→High transport origins at one time settle by origin order, including preserving/recomputed/restarted queues. |
+| T-07 | Equal-maturity PulseDelay groups aggregate counts and retain distinct origins; downstream stateful consumers see one due batch. |
+| T-08 | Same-time inertial cancellation/replacement; periodic suppression/re-enable under both policies, including an empty disabled settlement exactly on a preserved boundary; no consumed phase replay after preserving or recomputing a patch. Explicit fresh reanchor can emit once. |
+| T-09 | Valid equal-deadline transport and pulse groups survive an unrelated patch, snapshot/restore and continuation. |
+| T-10 | Separate release/reconnect reactions expose real receiver history; one atomic High→High edit produces no fabricated release. |
+| T-11 | Direct identical Pulse exports at one time/revision have distinct stamps and transaction/input roots; a later input does not inherit an earlier patch cause. |
+| T-12 | Order exhaustion, arithmetic/budget failure and late failure after candidate deadlines or projection roll back the complete outer operation. |
+| T-13 | Repeated-time replay and restored next current-time order reproduce exact supported continuation, events, episodes and digests. |
+| T-14 | Pulse-only and empty intervening same-time transactions invalidate a guarded forecast even if persistent Levels agree; unguarded ordinary apply remains permitted. |
+| T-15 | Large jump and stepwise meaningful deadlines agree on physical behavior; inserted empty calls have the documented identity/freshness difference and do not alter delay duration. |
+| Episode order | Conflict begin→resolve→begin at one physical time yields distinct episodes with resolvable stamped causes. |
 
 # Part V — Transactions and execution
 
@@ -764,7 +918,7 @@ A temporal obligation due at `T` is determined from temporal state entering the 
 
 ## 25. Atomic input semantics
 
-All external input at one time is one unordered semantic batch.
+All external input in one reaction is one unordered semantic batch.
 
 Equivalent batches MUST produce equivalent results regardless of insertion order, collection iteration order, connection insertion order, binding order, or diagnostic metadata.
 
@@ -856,6 +1010,15 @@ An `InputDelta` MUST be rejected while the machine is `AwaitingInitialization` b
 
 Snapshots and deltas MUST be distinct, non-interchangeable types.
 
+Target-bound patch deltas use the same `set` Level observations and `pulse`
+counts as ordinary deltas. A new required Level needs an explicit `set` value;
+preserved or reassociated Levels may inherit through the prepared input plan.
+There is no second `establish` input operation. Ordinary artifact construction
+validates the target definition; `with_patch` MUST validate missing new-Level
+values and target identity before a valid patch transaction is formed. Runtime
+admission rechecks these obligations before candidate deadline work. No complete
+replacement snapshot is required for a ready patch.
+
 ## 30. Input projection
 
 The library SHOULD support prevalidated projection from caller-owned binding keys:
@@ -865,7 +1028,9 @@ let projector = bindings.input_projector(&compiled)?;
 let snapshot = projector.snapshot_from(observations)?;
 ```
 
-Projection MUST diagnose missing, duplicate, unknown, ambiguous, wrong-kind, wrong-network, and stale-revision observations.
+Projection MUST diagnose missing, duplicate, unknown, ambiguous, wrong-kind,
+wrong-network and stale-definition observations. Runtime revision/freshness
+rejections remain core transaction failures.
 
 The projector MUST NOT interpret the caller’s object model.
 
@@ -875,7 +1040,7 @@ Every successful transaction produces one immutable semantic change set regardle
 
 ```rust
 pub struct SemanticChangeSet<D> {
-    pub processed_times: Vec<Time<D>>,
+    pub processed_reactions: Vec<ReactionStamp<D>>,
     pub output_events: Vec<OutputEvent<D>>,
     pub state_changes: Vec<StateChange<D>>,
     pub topology_changes: Vec<TopologyChange>,
@@ -884,7 +1049,10 @@ pub struct SemanticChangeSet<D> {
 }
 ```
 
-`processed_times` contains the chronological logical reaction times processed by the outer transaction, including intervening deadlines and the requested final time.
+`processed_times` is the physical-time projection of the ordered processed
+`ReactionStamp<D>` sequence, including intervening deadlines and the final
+reaction. The result MUST expose that stamp sequence without requiring the
+caller to infer occurrence identity from times or output events.
 
 The successful result SHOULD expose:
 
@@ -915,7 +1083,7 @@ pub enum OutputEvent<D> {
     LevelEstablished {
         output: ExternalOutputKey<Level>,
         value: LogicLevel,
-        at: Time<D>,
+        reaction: ReactionStamp<D>,
         cause: CauseRef,
         revision: NetworkRevision,
     },
@@ -923,14 +1091,14 @@ pub enum OutputEvent<D> {
         output: ExternalOutputKey<Level>,
         from: LogicLevel,
         to: LogicLevel,
-        at: Time<D>,
+        reaction: ReactionStamp<D>,
         cause: CauseRef,
         revision: NetworkRevision,
     },
     Pulsed {
         output: ExternalOutputKey<Pulse>,
         count: PulseCount,
-        at: Time<D>,
+        reaction: ReactionStamp<D>,
         cause: CauseRef,
         revision: NetworkRevision,
     },
@@ -947,7 +1115,13 @@ Removing an output is reported as a topology consequence, not as a signal transi
 
 Pulse outputs preserve multiplicity, including pulses produced during initialization.
 
-Events MUST be deterministically ordered as one flat network-wide chronological stream. Events sharing one time use a canonical representation order that MUST NOT be interpreted as pulse causality.
+Every event MUST expose its producing `ReactionStamp<D>` in addition to physical
+time, revision and cause. Events MUST be ordered as one flat network-wide stream
+by reaction stamp, then by canonical stable endpoint/variant representation
+order within the reaction. Within-reaction representation order is not pulse
+causality. Identical endpoint/count/time/revision in separate reactions MUST
+remain separate events with distinct transaction/input causal roots, including
+direct external Pulse input-to-output connections.
 
 ## 33. State-change reporting
 
@@ -1154,6 +1328,12 @@ Active {
 A diagnostic event is emitted when an episode begins, materially changes, and optionally when it resolves.
 
 Active episode state affects future diagnostic emission and therefore MUST participate in snapshots, restoration, replay, execution-state digests, inspection, and reconfiguration.
+
+Episode beginning and material changes retain reaction stamps. Condition
+identity remains code/subject/discriminator; the episode occurrence includes
+its beginning stamp, so resolving and beginning at the same time produces a
+new episode. Reevaluation time/order alone is not material evidence change;
+unchanged evidence still produces no repeated change.
 
 An episode MUST NOT attach to a different subject because a dense runtime slot was reused.
 

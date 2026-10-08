@@ -5,8 +5,14 @@ kind: node
 status: reviewed
 
 source_baseline:
-  commit: f9fb2c6f85bbb645a84744d4a6f4eeccbfac9295
-  working_tree: clean
+  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/built_in_node_semantics.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    - docs/testing_and_verification_policy.md
 
 summary: >-
   TransportDelay remembers each settled Level input transition and reproduces
@@ -67,7 +73,7 @@ requirements:
       Transport state retains remembered input and output; queued obligations
       reside in the machine event calendar rather than duplicated opaque
       node-owned queues. Each transport event carries its target LogicLevel
-      and originating logical time for precedence.
+      and immutable originating reaction stamp for precedence.
     sources: [transport-law, transport-state-schema, transport-event-schema]
 
   - id: temporal-output-and-dependency-boundary
@@ -85,11 +91,11 @@ requirements:
     kind: semantic
     statement: >-
       When several transitions for one TransportDelay mature at one deadline,
-      the settled output is the target with greatest originating logical time,
+      the settled output is the target with greatest immutable originating reaction stamp,
       independent of event iteration order. No same-time intermediate output
       transitions are observable. All matured transitions remain available to
       inspection and explanation, with earlier origins superseded at that
-      deadline. Conflicting indistinguishable origins must be resolved or
+      deadline. Distinct ordered origins are valid; conflicting identical stamps must be resolved or
       rejected by the migration creating them, not assigned container order.
     sources: [transport-law]
 
@@ -137,7 +143,7 @@ sources:
   transport-law:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part VI — Temporal nodes, 52. `TransportDelay`]
-    reviewed_hash: sha256:90ff925d0d814b35995d104b90298aed4dc2b5f9427622b0a29fbceabea42050
+    reviewed_hash: sha256:3cadb4d528acd2d4abaf0dbbf91251e4dc3a4533b8d94fdd8d6931c553ef769e
   temporal-initialization:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part VI — Temporal nodes, 50. Temporal initialization]
@@ -185,7 +191,7 @@ sources:
   transport-event-schema:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 92. Pending event records]
-    reviewed_hash: sha256:9d40b747e57c3e3392c351477272393b2c91536672b112fd87c2df41889d7c20
+    reviewed_hash: sha256:c32440d9553e34de6bc542bd26957d55e4ca5c7e5e4cb8522ea531f727b316b5
   network-identity:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.1 Network fingerprint]
@@ -197,4 +203,4 @@ sources:
   transport-tests:
     document: docs/testing_and_verification_policy.md
     heading_path: [Part IX — Temporal verification, 48. `TransportDelay`]
-    reviewed_hash: sha256:1a048583fd94e1657f54b636b3e2fde74647ddd0c315d464d411a9dea93db787
+    reviewed_hash: sha256:d8c0a615a54b9da2926f3902b18845ad70c76b6eb17179bcb78288e561d05ba7

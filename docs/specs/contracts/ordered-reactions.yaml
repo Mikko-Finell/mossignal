@@ -1,0 +1,237 @@
+schema_version: "0.1"
+id: mossignal.runtime.ordered_reactions
+title: Ordered reaction occurrences at exact physical time
+kind: lifecycle
+status: reviewed
+
+source_baseline:
+  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/processor_and_runtime_architecture.md
+    - docs/specs/built_in_node_semantics.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/reconfiguration_and_topology_patch_spec.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    - docs/specs/exhaustive_diagnostic_code_catalogue.md
+
+summary: >-
+  ReactionStamp separates exact physical time from machine-local ordered
+  occurrence. It preserves unordered settlement within a reaction and distinct
+  committed predecessors across reactions, including current-time transactions.
+
+scope:
+  includes:
+    - occurrence allocation, admission, observable order and atomic identity
+    - temporal origin precedence and once-only maturity/phase accounting
+    - occurrence effects on provenance, diagnostics, freshness and artifacts
+  excludes:
+    - host phase scheduling, physical actions and consequence termination
+    - primitive laws unrelated to reaction occurrence
+    - application identifier projection and mapping ownership
+
+aliases: [ReactionStamp<D>, ordered same-time reactions, reaction order]
+
+requirements:
+  - id: machine-local-physical-time-and-order
+    kind: semantic
+    statement: >-
+      ReactionStamp is physical Time plus checked u64 order within one machine
+      history. Initialization and the first reaction at greater time use zero;
+      each later current-time reaction increments order. Earlier time rejects.
+      Orders never participate in physical duration arithmetic and are not
+      caller-assigned or globally unique.
+    sources: [occurrences, concrete-occurrence]
+
+  - id: explicit-settlement-and-predecessor
+    kind: lifecycle
+    statement: >-
+      Every successful explicit transaction evaluates its final reaction, even
+      an empty delta or unchanged reassertion, allocating a stamp. Inputs in one
+      reaction are unordered and share one predecessor and staged successor;
+      subsequent reactions read the committed successor. Inspection, forecast,
+      preparation and binding-only replacement allocate no live occurrence.
+      No fixed-point evaluator or implicit same-time loop is introduced.
+      Cross-reaction provenance advances by stamp, while dependency order
+      remains local to a reaction.
+    sources: [occurrences, causal-order]
+
+  - id: deadline-batch-once
+    kind: semantic
+    statement: >-
+      Internal deadline batches receive stamps within their unpublished outer
+      candidate. A deadline is consumed once; due work and fresh input in one
+      target transaction join one reaction. Later calls at that time cannot
+      undo or redispatch it. Ordinary new pending work is physically future.
+    sources: [partition, staging]
+
+  - id: physical-maturity-aggregation
+    kind: semantic
+    statement: >-
+      Equal-owner/deadline PulseDelay groups contribute their checked sum in
+      one due reaction with distinct causal origin stamps. Original reaction
+      partition is not replayed: Toggle uses parity of the due sum and sampled
+      storage receives one complete sample batch.
+    sources: [pulse-maturity, aggregation]
+
+  - id: immutable-transport-precedence
+    kind: semantic
+    statement: >-
+      Transport maturity selects the greatest immutable originating stamp,
+      not value or event order. Distinct same-time origins are valid grouped
+      pending state. Migration can change physical timing bases without erasing
+      causal precedence. RecomputeFromOrigin uses the retained timing origin,
+      including a prior restart; conflicting targets with identical stamps require
+      explicit resolution or rejection.
+    sources: [transport-precedence, transport-migration, timing-origin]
+
+  - id: singular-inertial-and-once-only-phase
+    kind: semantic
+    statement: >-
+      Same-time inertial updates replace/cancel the predecessor candidate
+      sequentially without resurrection. Periodic retains phase-origin stamp
+      and settled boundary watermark. PreservePhase and preserving/recomputed
+      schedules cannot replay settled or suppressed boundaries. Real RestartPhase
+      re-enable or explicit loss-permitted fresh phase can emit once under
+      Immediate, even at the same physical time.
+    sources: [inertial-law, periodic-once, periodic-migration]
+
+  - id: stamped-observable-occurrences
+    kind: public_surface
+    statement: >-
+      Machine exposes the last committed stamp and results expose processed
+      stamps. Output events, occurrences and episode changes expose producing
+      stamps; streams order by stamp then canonical within-reaction subjects.
+      Endpoint and variant distinguish singular count-bearing events within a
+      reaction. Direct identical Pulse exports in separate reactions retain
+      distinct stamped input/transaction causes and owning provenance views.
+    sources: [concrete-occurrence, output-stream, staging]
+
+  - id: episode-occurrence-identity
+    kind: semantic
+    statement: >-
+      Condition identity remains code/subject/discriminator. Episode occurrence
+      uses its beginning stamp and retains material-change stamps, so
+      resolve/rebegin at one physical time stays distinct. Unchanged retained
+      evidence does not emit repeated episode changes.
+    sources: [diagnostic-order, persistence-occurrence]
+
+  - id: freshness-and-partition-equivalence
+    kind: compatibility
+    statement: >-
+      Execution digest includes the last stamp and occurrence continuation
+      state; an intervening current-time transaction invalidates exact preview
+      freshness even if persistent values agree. Large-jump equivalence preserves
+      meaningful reaction partition and physical behavior, not exact identities
+      or artifact bytes across additionally inserted explicit settlements.
+      Empty settlements can also suppress a disabled Periodic boundary and
+      must not be removed from the meaningful reaction partition.
+    sources: [partition, persistence-occurrence]
+
+  - id: effective-time-patch-source
+    kind: reconfiguration
+    statement: >-
+      A current-time patch finalizes against the committed predecessor including
+      earlier same-time reactions. Already consumed work stays consumed; explicit
+      migration-created due-now work joins the new target batch once. Original
+      stimulus stamps and phase consumption survive compatible migration.
+    sources: [effective-time]
+
+  - id: atomic-order-and-resource-failure
+    kind: semantic
+    statement: >-
+      Order allocation, event/episode identity, candidate deadlines, provenance,
+      diagnostics, digest and bound projection share one publication boundary.
+      Checked order exhaustion and ordinary budgets reject the complete
+      transaction without consuming identities or earlier candidate work.
+    sources: [staging, diagnostic-order]
+
+  - id: canonical-continuation-and-replay
+    kind: persistence
+    statement: >-
+      Ready snapshots preserve the last stamp, pending immutable origins,
+      separate restarted timing bases, periodic phase/watermark and required
+      stamped causes/episodes. Restore validates them and accepts valid
+      equal-maturity groups. Repeated-time frames replay through ordinary apply
+      in frame order with exact predecessor digests. Affected versions evolve
+      coherently without historical pre-alpha readers or a compatibility freeze.
+    sources: [persistence-occurrence, replay-order]
+
+implementation_freedom:
+  - Private stamp storage and comparison helpers may vary within the checked u64 and public occurrence responsibilities.
+  - Phase watermark storage may use equivalent ordinal/time state when cadence migration preserves the same eligibility rule.
+
+sources:
+  occurrences:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IV — Logical time, 22. Time progression, 22.1 Ordered reaction occurrences]
+    reviewed_hash: sha256:4647672cb272bee66feac752ac906c3e439f4d43ca3e16baab40c0e4fa8eb1e2
+  partition:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IV — Logical time, 22. Time progression, 22.2 Temporal partition and freshness]
+    reviewed_hash: sha256:afc535e718d47fcd71e56aa5c04db2c1a126384f453a83accae59928c5147c9e
+  output-stream:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part VI — Inputs and outputs, 32. `OutputEvent<D>`]
+    reviewed_hash: sha256:a962ea273f32708161f7842c758fde8bfdf32bdff85bbfa6a33230705133d03a
+  causal-order:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 64. Causal order]
+    reviewed_hash: sha256:3847bcfe3fea5a94ebcb46c59559b49a4ec635885e61d76a1ec68d725eca92fa
+  staging:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 46. Event aggregation, 46.1 Occurrence state and atomic staging]
+    reviewed_hash: sha256:025a8e10d2e99932c96620e80e7717f4738c6bdbfc6a25492560a82f9c0c8452
+  aggregation:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part VII — Logical time and temporal execution, 46. Event aggregation]
+    reviewed_hash: sha256:89f8340a39ac95afca8dfa9117d10370735611f6aa61201b8689630b3f95dcdc
+  pulse-maturity:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 51. `PulseDelay`]
+    reviewed_hash: sha256:b35fa1de9a2b6c268ba2c2a820fb7c6b1d9dd57bf0eb455175974b2c76877958
+  transport-precedence:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 52. `TransportDelay`, 52.1 Same-deadline transition batches]
+    reviewed_hash: sha256:5363808b41a639c9c7246b5c16e1c8effc8b61bfd5389863c027c86f3e205d9c
+  timing-origin:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 47. Deadline recomputation and overdue policy]
+    reviewed_hash: sha256:a9cef30dc70f7bc45908cb72b3c6b784ec36db58d904888c1d58ea22a5c30336
+  transport-migration:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 49. `TransportDelay` migration, 49.2 Recomputed or restarted queues]
+    reviewed_hash: sha256:9ba0bb347eb5604a91953ad24c4f49692c8d28059fa8569cd985222b53daa65a
+  inertial-law:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 53. `InertialDelay`]
+    reviewed_hash: sha256:bf3a36b74befe5b6c4dbd72c2cde7ac0e8fb4bec4726a264865e67530a631250
+  periodic-once:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part VI — Temporal nodes, 54. `Periodic`, 54.5 Exact-boundary enable behavior, 54.5.1 Once-only phase boundaries]
+    reviewed_hash: sha256:433997fd6bc356f7bdedc66fd9de67b5f3ae4ed42aa4c0841fe28adb5fe359a8
+  periodic-migration:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 51. `Periodic` migration]
+    reviewed_hash: sha256:62158469ce6d2a947fe16e484f24edffb6eec7174f3bea6f60dcc8998555cfa4
+  effective-time:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part VIII — Transaction-time finalization and commitment, 63. Effective-time ordering]
+    reviewed_hash: sha256:1e23a5c565965f5a0f6b1eaf572114bfdb4f53262c4d2b79c4ff9d3b90ef211f
+  concrete-occurrence:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XV — Transactions, 58. Distinct constructors, 58.1 Reaction stamp surface]
+    reviewed_hash: sha256:df5ce2d2848f125acf3d9a62e273f4fbd8f7ffd70c874d2c9e2f16bae4b65f11
+  persistence-occurrence:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part X — Machine snapshot schema, 92. Pending event records, 92.1 Occurrence continuation and validation]
+    reviewed_hash: sha256:8e0966af8a61c6d67d739695c5e07442fc9725ea1ad9973d2d7c68aaff206155
+  replay-order:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path: [Part XI — Replay persistence, 107. Replay frame payload]
+    reviewed_hash: sha256:82f3bec1f7cfd5ac1da50cd3e3bc5a21699f0df9390f8a240d4e343b9d078dfe
+  diagnostic-order:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 31. Bindings]
+    reviewed_hash: sha256:87d569f80c58cd5e98e201bc0e754aaf95f2022fae9121ffd90c1fa51c305921

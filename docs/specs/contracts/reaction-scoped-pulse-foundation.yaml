@@ -5,8 +5,14 @@ kind: family
 status: reviewed
 
 source_baseline:
-  commit: 21d678edf8fa87764c75cc227f9aec46083b84a1
-  working_tree: clean
+  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/built_in_node_semantics.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/exhaustive_diagnostic_code_catalogue.md
+
 
 summary: >-
   Pulse values are typed, reaction-scoped simultaneous multiplicities that enter
@@ -45,8 +51,9 @@ requirements:
       Pulse is a signal kind distinct from Level. Its value in one logical
       reaction is one non-negative simultaneous PulseCount, not an ordered token
       sequence, temporary High, self-resetting level, or persistent current port
-      value. Equivalent same-time batches are order-independent, and activity at
-      different logical times remains in distinct reactions.
+      value. Equivalent batches within one reaction are order-independent.
+      Separate transactions at one physical time remain ordered reactions,
+      just as activity at different physical times remains distinct.
     sources: [api-pulse, builtin-pulse, simultaneous-batches, reaction-scoped-storage]
 
   - id: checked-fixed-width-count
@@ -105,10 +112,10 @@ requirements:
     kind: system_effect
     statement: >-
       A genuinely nonzero external Pulse output publishes one Pulsed event with
-      its exact count, logical time, current revision, and resolvable CauseRef,
-      including during initialization. Pulse events share the deterministic flat
-      network-wide event stream, and canonical ordering among same-time events
-      does not imply pulse causality.
+      its exact count, reaction stamp and physical time, current revision,
+      and resolvable CauseRef, including during initialization. Pulse events
+      share the flat network-wide stream ordered by stamp; canonical ordering
+      within one reaction does not imply pulse causality.
     sources: [api-output-events, concrete-transaction-result, concrete-output-events, builtin-output-establishment]
 
   - id: overflow-is-atomic-rejection
@@ -189,7 +196,7 @@ sources:
   simultaneous-batches:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part I — Shared semantic rules, 7. Simultaneous batches]
-    reviewed_hash: sha256:6f0c086ed445bf436c4974044bddc2eb224e4d6299620fedf775de6c641c4941
+    reviewed_hash: sha256:840c202a66a25d61a16c4282166d91e7898d5aad526da45e0fe4988e92d2d4ff
   concrete-count:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part III — Fundamental signal types, 12. Pulse counts]
@@ -209,7 +216,7 @@ sources:
   api-delta:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VI — Inputs and outputs, 29. `InputDelta`]
-    reviewed_hash: sha256:958e08534ced9e8911a287b64d28b417d81d7db221bad002df633e6e198ae1d9
+    reviewed_hash: sha256:e902bed5f1cae4bdd918fe426a8a8dee5de8d14db39303f06bf033f635f1e34a
   concrete-snapshot:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XIV — Input schemas and values, 54. `InputSnapshot<D>`]
@@ -217,11 +224,11 @@ sources:
   concrete-delta:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XIV — Input schemas and values, 55. `InputDelta<D>`]
-    reviewed_hash: sha256:c2b2685fd582c0ac511cbb502c6de622135bb6d08e823ab487d0855b28439fd4
+    reviewed_hash: sha256:499f53fee603062d81342dba778e61b0d6ec0a8e7d854945b6b095298c9e64bc
   input-codes:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: [Part V — Exhaustive initial catalogue, 30. Input construction and projection]
-    reviewed_hash: sha256:3953dbde0d5f72123a26a59dc49c35ff13fe36622490c09d31e57557be10452c
+    reviewed_hash: sha256:5c6271217e53898efcf014898caca4ec33a1166dda72420d82b68deed9cc0e0d
   pulse-fanout:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part I — Shared semantic rules, 10. Pulse fan-out]
@@ -269,7 +276,7 @@ sources:
   api-output-events:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part VI — Inputs and outputs, 32. `OutputEvent<D>`]
-    reviewed_hash: sha256:007184f2cb51c1ebbc203631028d62385aad769a6846027c9cb606f432afb364
+    reviewed_hash: sha256:a962ea273f32708161f7842c758fde8bfdf32bdff85bbfa6a33230705133d03a
   concrete-transaction-result:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XVII — Transaction results and changes, 64. `TransactionResult<D>`]
@@ -277,7 +284,7 @@ sources:
   concrete-output-events:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XVII — Transaction results and changes, 66. Output events]
-    reviewed_hash: sha256:2fa14b1c92982a2f8bdba90ca3ebed0cb078987d88be60027c14a094813f6fa7
+    reviewed_hash: sha256:7cbcc70aa4934bd05d59f495a18779d0ca013405a6f4303cdfcdd4730a81d17b
   builtin-output-establishment:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part VII — Boundaries and utilities, 57. Output establishment]
@@ -287,7 +294,7 @@ sources:
     heading_path:
       - Part V — Exhaustive initial catalogue
       - 29. Runtime values, time, policy, and semantic rejection
-    reviewed_hash: sha256:c9f66339774d5f873cdf36804834c8e71d0ea3025aef36badde12a1ca570e825
+    reviewed_hash: sha256:03e52ae002fb86991e35ce32acfc991569a9c3e4165b162e889b83df72240b10
   runtime-pulse-provenance:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part X — Causal provenance, 69. Pulse provenance]
@@ -299,7 +306,7 @@ sources:
   restricted-network-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
-    reviewed_hash: sha256:caf5b1eba334cfc2bca0002c169725fbbaffd1670fd57625ba943c2f487ef8bf
+    reviewed_hash: sha256:06674f6adf8b2b553c51d7338f44c4e98154f84ba9f93da713b7dac2864fe1ff
   input-schema-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.3 Input schema fingerprint]

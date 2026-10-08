@@ -5,8 +5,14 @@ kind: lifecycle
 status: reviewed
 
 source_baseline:
-  commit: cc3d74809c44dd9aab2bd27b662b600fe9abff65
+  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
   working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/exhaustive_diagnostic_code_catalogue.md
+    - docs/specs/processor_and_runtime_architecture.md
+    - docs/testing_and_verification_policy.md
 
 summary: >-
   An active diagnostic episode is machine-owned semantic state for one continuous
@@ -50,7 +56,8 @@ requirements:
     kind: semantic
     statement: >-
       A fresh opaque DiagnosticEpisodeId derives from network identity, condition
-      code, primary structural subject, and condition discriminator. Identity is
+      code, primary structural subject, condition discriminator and beginning
+      reaction stamp. Identity is
       stable across compatible state transitions and does not derive from rendered
       wording, provenance arena identities, or dense runtime positions. Dense-slot
       reuse must not transfer an episode to another subject.
@@ -155,7 +162,7 @@ sources:
   catalogue-identity:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: ["Part III — Reports, failures, ordering, and identity", 21. Episode identity and migration]
-    reviewed_hash: sha256:b2bdb6bd20d896b582b9a1ef5dabf958049abebea545e7365baae7f3aef1dd82
+    reviewed_hash: sha256:1ee378bc99d23040817531dd60f713021e9a0a758afee0c3fd29a484eed8e606
   episode-records:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XXVI — Persistent diagnostic episodes and observers, 95. Active diagnostic episodes]
@@ -167,7 +174,7 @@ sources:
   runtime-identity:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part XI — Persistent diagnostics, 72. Episode identity]
-    reviewed_hash: sha256:7dbc6c3f7eba35879f980ea7d26546ce65ace6f90dfc5b849930e34cac3c75ae
+    reviewed_hash: sha256:77d022ad564d1fff99d76497797621ab826725a29e5766be70bcee1317dfd922
   runtime-state:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part XI — Persistent diagnostics, 73. Semantic state]
@@ -183,7 +190,7 @@ sources:
   change-set:
     document: docs/specs/concrete_rust_api_surface.md
     heading_path: [Part XVII — Transaction results and changes, 65. Semantic change set]
-    reviewed_hash: sha256:8af2febf043005e8ea96062936f92b570a6363dcf699a9145fb07f99ebed7389
+    reviewed_hash: sha256:e559ddc7c7f4089ee8b660b21def497274a6fad57dd6bcae9c81d11ea6142e5d
   inspection:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: [Part IX — Inspection and explanation, 48. Inspection is core]

@@ -5,8 +5,16 @@ kind: lifecycle
 status: reviewed
 
 source_baseline:
-  commit: 07f960e70b12e5c2e38c8a9b27fb77896360b65c
-  working_tree: clean
+  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/exhaustive_diagnostic_code_catalogue.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    - docs/specs/processor_and_runtime_architecture.md
+    - docs/specs/reconfiguration_and_topology_patch_spec.md
+    - docs/testing_and_verification_policy.md
 
 summary: >-
   A prepared patch commits only through one ordinary transaction. At the
@@ -79,9 +87,9 @@ requirements:
     kind: semantic
     statement: >-
       For a ready machine, one outer transaction first applies the
-      patch-bearing checks. A requested time that is not strictly later than
-      the machine's current logical time fails with
-      runtime.time_not_strictly_increasing before candidate work. The
+      patch-bearing checks. A requested physical time earlier than the
+      machine's current time fails with runtime.time_regression before candidate
+      work. Equal time creates the next ordered reaction. The
       transaction then processes every deadline strictly earlier than the
       effective time under the old topology; finalizes migration against the
       candidate state immediately before that time; enforces the loss policy;
@@ -301,7 +309,7 @@ sources:
   effective-time:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part VIII — Transaction-time finalization and commitment, 63. Effective-time ordering]
-    reviewed_hash: sha256:996a1f72d961a1a6d3f9822380b37e967d99c5055665b19694723415a919375c
+    reviewed_hash: sha256:1e23a5c565965f5a0f6b1eaf572114bfdb4f53262c4d2b79c4ff9d3b90ef211f
   init-order:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part VIII — Transaction-time finalization and commitment, 64. Initialization patch ordering]
@@ -313,7 +321,7 @@ sources:
   same-time-input:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part VIII — Transaction-time finalization and commitment, 66. Same-time external input boundary]
-    reviewed_hash: sha256:9314b8cc2b16f17c66ce400807934483df63e1a99e86972d1ee7a68b614cc657
+    reviewed_hash: sha256:f7142ba4025df101796271e676fa4c81ee0d125be7a8be52a12b98ac9e8b8da8
   due-at-patch:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part VIII — Transaction-time finalization and commitment, 67. Events due exactly at patch time]
@@ -345,7 +353,7 @@ sources:
   external-inputs:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part VI — Other semantic state, 53. External input valuation migration]
-    reviewed_hash: sha256:0bb4abcc4afc08f595ca0d8ab001b25657de2c564d3685868b1248bab4bbbabf
+    reviewed_hash: sha256:242ae47107afb48776e3ccbb722e19d9a6b1b777c351ba7d2a0cc8b21420249d
   external-outputs:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part VI — Other semantic state, 54. External output baseline migration]
@@ -377,7 +385,7 @@ sources:
   transaction-attachment:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part X — Public API responsibilities, 84. Transaction attachment]
-    reviewed_hash: sha256:69a8d86ab7dd4d0a50ac95a202ea8b0ac6f14f708bfd49177131d32422578d84
+    reviewed_hash: sha256:2163ed57cb9115bbe90ba45c3915c9efc6e8378549d93b4e5ef3776ef819f308
   exact-forecast:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part X — Public API responsibilities, 85. Exact forecast]
@@ -457,7 +465,7 @@ sources:
   api-result:
     document: docs/specs/api_and_semantics_spec.md
     heading_path: ["Part VI — Inputs and outputs", "31. `TransactionResult<D>` and semantic change sets"]
-    reviewed_hash: sha256:0d3c33b0638857da3b4a5b504098f3ccb809fc9e684057ab704088b2a80dad31
+    reviewed_hash: sha256:abec36e6d21f864737dce9a8022257e58e70c0c9b7e5009b50194a2f6f794bb5
   processor-finalization:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part IX — Reconfiguration, 55. Two-stage patch handling, 55.2 Transaction-time finalization]
@@ -541,7 +549,7 @@ sources:
   catalogue-runtime:
     document: docs/specs/exhaustive_diagnostic_code_catalogue.md
     heading_path: ["Part V — Exhaustive initial catalogue", "29. Runtime values, time, policy, and semantic rejection"]
-    reviewed_hash: sha256:c9f66339774d5f873cdf36804834c8e71d0ea3025aef36badde12a1ca570e825
+    reviewed_hash: sha256:03e52ae002fb86991e35ce32acfc991569a9c3e4165b162e889b83df72240b10
   no-implicit-migration:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 105. No implicit topology migration]

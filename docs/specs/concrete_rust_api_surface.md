@@ -2499,7 +2499,8 @@ The schema identity includes enough information to distinguish:
 - the current compiled topology;
 - a prepared patch’s target topology;
 - input kind and stable identity;
-- whether a level input is newly introduced and requires establishment.
+- the target endpoint schema; new-Level obligations additionally come from the
+  prepared patch's input-valuation plan, not a separate schema fingerprint.
 
 These artifacts MUST NOT borrow a compiled network or prepared patch.
 
@@ -2552,12 +2553,6 @@ impl<D> InputDeltaBuilder<D> {
         value: LogicLevel,
     ) -> Result<Self, InputBuildFailure>;
 
-    pub fn establish(
-        self,
-        input: ExternalInputKey<Level>,
-        value: LogicLevel,
-    ) -> Result<Self, InputBuildFailure>;
-
     pub fn pulse(
         self,
         input: ExternalInputKey<Pulse>,
@@ -2572,13 +2567,13 @@ impl<D> InputDeltaBuilder<D> {
 For an ordinary current-topology delta:
 
 - `set` changes or reasserts existing external levels;
-- `establish` is invalid because no input is new.
 
 For a prepared-patch target delta:
 
-- `set` applies to preserved target inputs;
-- `establish` applies exactly to newly introduced target level inputs;
-- every newly introduced required level input MUST be established before `finish` succeeds;
+- `set` changes/reasserts preserved target inputs or supplies new target Levels;
+- `finish` validates the target schema but need not know the migration plan;
+- `Transaction::with_patch` MUST reject any missing value for a target Level
+  whose input-valuation plan requires establishment, before runtime execution;
 - removed old inputs are not part of the target schema and MUST be rejected if referenced.
 
 This avoids requiring a complete replacement snapshot merely because a patch adds one external level input.
@@ -2594,7 +2589,10 @@ impl<D> PreparedPatch<D> {
 
 The snapshot builder targets the resulting topology and is used when the patch participates in machine initialization.
 
-The delta builder targets the resulting topology and carries required establishment obligations for newly added external level inputs.
+The delta builder targets the resulting topology. The prepared patch's
+input-valuation plan carries required new-Level obligations, checked when
+attaching the patch and again at runtime admission. The one observation spelling
+is `set`; no `establish` method or compatibility alias is required.
 
 ---
 
@@ -2627,6 +2625,30 @@ impl<D> Transaction<D> {
 ```
 
 These constructors make the ordinary lifecycle distinction visible without splitting the machine into typestates.
+
+`advance` also represents a later ordered reaction at the current physical time;
+its name does not require positive elapsed time. Earlier physical time fails.
+
+### 58.1 Reaction stamp surface
+
+The occurrence type is opaque and owned:
+
+```rust
+pub struct ReactionStamp<D> { /* physical Time<D>, u64 order */ }
+
+impl<D> ReactionStamp<D> {
+    pub fn time(&self) -> Time<D>;
+    pub fn order(&self) -> u64;
+}
+```
+
+It supports domain-preserving equality and lexicographic ordering. Live order
+is allocated by the machine, not supplied by the caller. `Machine::last_reaction`
+returns `Option<ReactionStamp<D>>`; it is absent before initialization.
+`TransactionResult::processed_reactions` exposes the ordered stamp slice.
+Each `OutputEvent`, committed diagnostic occurrence and episode change exposes
+its stamp; existing physical-time access remains a projection of the stamp.
+Pending inspection exposes immutable origin stamps as well as physical timing.
 
 A caller may still construct a lifecycle-incompatible transaction and receive a structured runtime failure when applying it to the wrong machine state.
 
@@ -2789,7 +2811,7 @@ Fields MAY become private if equivalent accessors are provided. The result MUST 
 
 ```rust
 pub struct SemanticChangeSet<D> {
-    pub processed_times: Vec<Time<D>>,
+    pub processed_reactions: Vec<ReactionStamp<D>>,
     pub output_events: Vec<OutputEvent<D>>,
     pub state_changes: Vec<StateChange<D>>,
     pub topology_changes: Vec<TopologyChange>,
@@ -2800,7 +2822,9 @@ pub struct SemanticChangeSet<D> {
 }
 ```
 
-The collection order MUST be deterministic.
+The collection order MUST be deterministic. Physical processed times are
+derived from the stamp sequence; existing time access remains available as
+that projection, not separately editable occurrence state.
 
 ## 66. Output events
 
@@ -2810,7 +2834,7 @@ pub enum OutputEvent<D> {
     LevelEstablished {
         output: ExternalOutputKey<Level>,
         value: LogicLevel,
-        at: Time<D>,
+        reaction: ReactionStamp<D>,
         cause: CauseRef,
         revision: NetworkRevision,
     },
@@ -2818,14 +2842,14 @@ pub enum OutputEvent<D> {
         output: ExternalOutputKey<Level>,
         from: LogicLevel,
         to: LogicLevel,
-        at: Time<D>,
+        reaction: ReactionStamp<D>,
         cause: CauseRef,
         revision: NetworkRevision,
     },
     Pulsed {
         output: ExternalOutputKey<Pulse>,
         count: PulseCount,
-        at: Time<D>,
+        reaction: ReactionStamp<D>,
         cause: CauseRef,
         revision: NetworkRevision,
     },
@@ -3245,6 +3269,144 @@ It MUST delegate to the same core machine semantics and MUST NOT introduce callb
 
 The bound façade MUST NOT become the only way to use the machine.
 
+### 83.1 Supported live-binding surface
+
+The following is a representative proposed interface. Names and borrowing may
+be refined during bounded implementation; the responsibilities are mandatory.
+
+```rust
+impl<D, I: Eq + Clone, O: Eq + Clone> BoundMachine<D, I, O> {
+    pub fn new(machine: Machine<D>, bindings: BindingSet<I, O>)
+        -> Result<Self, BindingFailure>;
+    pub fn machine(&self) -> &Machine<D>;
+    pub fn bindings(&self) -> &BindingSet<I, O>;
+    pub fn into_parts(self) -> (Machine<D>, BindingSet<I, O>);
+    pub fn rebind(&mut self, bindings: BindingSet<I, O>)
+        -> Result<(), BindingFailure>;
+    pub fn prepare_patch(&self, patch: NetworkPatch<D>)
+        -> Report<PreparedPatch<D>, D>;
+    pub fn apply(&mut self, tx: Transaction<D>)
+        -> Result<BoundTransactionResult<D, O>, BoundApplyFailure<D, I>>;
+    pub fn apply_reconfigured(&mut self, tx: Transaction<D>, target: BindingSet<I, O>)
+        -> Result<BoundTransactionResult<D, O>, BoundApplyFailure<D, I>>;
+}
+```
+
+`new` and `rebind` require complete inputs and outputs for the exact installed
+definition, independently of runtime revision. `machine` provides ordinary
+read-only inspection, forecast, schedule and snapshot access. There is no
+`machine_mut` while the wrapper owns live mappings.
+
+`apply` accepts a no-patch core transaction. `apply_reconfigured` requires a
+patch-bearing transaction and target mappings compatible with its prepared
+target. Mismatched method/patch structure is rejected before execution as
+`binding.invalid_reconfiguration_context`. Both forward expected revision,
+optional execution digest, lifecycle and loss policy unchanged. Convenience
+`initialize`/`advance` may continue constructing these same transactions.
+
+`BindingSet::input_projector(prepared.resulting_compiled())` projects target
+observations using `set`/`pulse`; `with_patch` checks establishment obligations.
+No new patch-aware input payload or facade evaluator is introduced.
+
+`BoundTransactionResult` owns ordinary result plus projected events. A projection
+retains its stable core endpoint and producing stamp/revision/cause alongside
+the captured caller identifier. Before the one publication point, the shared
+private core staging path prepares the result, source/target projection and
+target bindings. Do not approximate this by a forecast followed by a second
+apply. Low-level projection helpers require an explicitly correct producing
+definition; core events do not authenticate that context by endpoint alone.
+
+### 83.2 Representative execution and edit flows
+
+The following is proposed Rust-shaped pseudocode, not compile-checked code.
+`compiled` is a normally validated/compiled circuit with one Level input
+`pressed`, one Pulse input `trip`, a stable Toggle receiving `trip` and exported
+as `lamp`, and a stable PulseDelay receiving `trip` with delay five ticks and
+exported as `delayed`. Toggle and delay nodes/ports have explicit authored keys
+for their surviving roles. The unused observed Level is still required at
+initialization. `extra` below is a new typed Level endpoint. The existing keyed
+builders can author this circuit; no forward reference or new primitive is
+needed. Error propagation is shown as `?` for readability.
+
+```rust
+let policy = RuntimePolicy::builder()
+    .max_internal_reactions(100).max_evaluated_operations(1000)
+    .max_pending_events(100).max_events_created_per_transaction(100)
+    .max_required_provenance_growth(10000).build()?;
+let source = BindingSet::builder(&compiled)
+    .bind_input(pressed, "pressed")?.bind_input(trip, "trip")?
+    .bind_output(lamp, "lamp")?.bind_output(delayed, "old-delay")?.finish()?;
+let mut bound = BoundMachine::new(compiled.spawn(policy.clone()), source)?;
+let t0 = Time::from_ticks(0);
+let one = PulseCount::new(1);
+let init = bound.bindings().input_projector(&compiled)?
+    .snapshot_from([InputObservation::Level { input: "pressed", value: LogicLevel::Low }])?;
+bound.apply(Transaction::initialize(t0, bound.machine().revision(), init))?;
+
+// Each explicit call supplies one trip, not a repeated retained Pulse.
+let first = bound.bindings().input_projector(&compiled)?
+    .delta_from([InputObservation::Pulse { input: "trip", count: one }])?;
+bound.apply(Transaction::advance(t0, bound.machine().revision(), first))?;
+let second = bound.bindings().input_projector(&compiled)?
+    .delta_from([InputObservation::Pulse { input: "trip", count: one }])?;
+bound.apply(Transaction::advance(t0, bound.machine().revision(), second))?;
+// Lamp changes High, then Low at stamps (0,1), (0,2); delay has two groups.
+let saved = bound.machine().snapshot();
+
+let t5 = Time::from_ticks(5);
+let due = compiled.input_delta().finish()?;
+let result = bound.apply(Transaction::advance(t5, bound.machine().revision(), due))?;
+// old-delay emits count two at (5,0). Another empty call at 5 uses (5,1),
+// emits no old delay again, and invalidates a forecast of the old predecessor.
+
+// Independent continuation branch: edit at tick 3 before those groups mature.
+let restored = compiled.restore(saved, policy)?;
+let maps = BindingSet::builder(&compiled)
+    .bind_input(pressed, "pressed")?.bind_input(trip, "trip")?
+    .bind_output(lamp, "lamp")?.bind_output(delayed, "old-delay")?.finish()?;
+let mut editing = BoundMachine::new(restored, maps)?;
+let patch = compiled.patch(editing.machine().revision())
+    .add_external_input(ExternalInputDef::new(extra.into(), DiagnosticMeta::default()))?
+    .finish();
+let prepared = editing.prepare_patch(patch).require_artifact()?;
+let target = prepared.resulting_compiled();
+let maps = BindingSet::builder(target)
+    .bind_input(pressed, "pressed")?.bind_input(trip, "trip")?
+    .bind_input(extra, "extra")?.bind_output(lamp, "lamp")?
+    .bind_output(delayed, "new-delay")?.finish()?;
+let missing = prepared.input_delta().finish()?;
+// Attaching missing rejects before apply: extra has no inherited Level.
+let rejected = Transaction::advance(Time::from_ticks(3), editing.machine().revision(), missing)
+    .with_patch(prepared.clone(), ReconfigurationPolicy::RejectStateLoss);
+assert!(rejected.is_err()); // live machine, bindings and pending keys unchanged
+let values = prepared.input_delta().set(extra, LogicLevel::Low)?.finish()?;
+let tx = Transaction::advance(Time::from_ticks(3), editing.machine().revision(), values)
+    .with_patch(prepared, ReconfigurationPolicy::RejectStateLoss)?
+    .expect_execution_state(editing.machine().execution_state_digest());
+editing.apply_reconfigured(tx, maps)?; // both delay groups retain keys and maturity
+// Next advance to 5 emits count two labeled new-delay. Bindings accept this
+// installed definition despite its noninitial runtime revision.
+
+let raw = editing.into_parts(); // raw ownership; no wrapper remains to go stale
+```
+
+For a patch that instead advances directly to tick 8, the deadline at 5 runs
+under source topology and its output retains `old-delay` in that patch result;
+only target-reaction events use `new-delay`. Endpoint retirement does not erase
+that earlier event. A later `rebind` changes future labels without altering
+this owned result. A patch effective at the already-committed tick 5 is a later
+stamp and cannot suppress the earlier emission. Supplying a new trip in the
+deadline transaction also schedules a new count for tick 10 without suppressing
+the old due count.
+
+Invalid/incomplete target bindings, stale expected revision/digest, prohibited
+state loss, checked order/deadline overflow or late runtime failure reject
+before publication of either live part. The host can compare snapshot, both
+digests, schedule, pending inspections and binding lookups with the predecessor.
+Core forecast through `machine()` uses the same candidate transition; its basis
+digest can guard the later bound apply. This does not promise world rollback
+for physical actions performed after a successful signal result.
+
 ---
 
 # Part XXIII — Reconfiguration
@@ -3608,7 +3770,10 @@ impl<D> PreparedPatch<D> {
 }
 ```
 
-A target snapshot is used when the patch participates in machine initialization. A target delta is used on a ready machine and requires explicit `establish` observations for every newly introduced external level input. Removed inputs are absent from the target schema and must be rejected if referenced.
+A target snapshot is used when the patch participates in machine initialization.
+A target delta uses explicit `set` observations for every newly introduced
+external Level. `with_patch` and runtime admission check those obligations.
+Removed inputs are absent from the target schema and must be rejected.
 
 Every resolved handle, compiled inspection plan, or other revision-bound artifact made stale by the proposed topology MUST be listed by category in the prepared invalidation analysis. Such artifacts never silently retarget.
 
@@ -4228,7 +4393,7 @@ let prepared = machine
 
 let target_input = prepared
     .input_delta()
-    .establish(new_input_key, LogicLevel::High)?
+    .set(new_input_key, LogicLevel::High)?
     .finish()?;
 
 let tx = Transaction::advance(

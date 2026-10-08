@@ -1,0 +1,138 @@
+schema_version: "0.1"
+id: mossignal.binding.live_reconfiguration
+title: Atomic live binding and reconfiguration lifecycle
+kind: lifecycle
+status: reviewed
+
+source_baseline:
+  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/api_and_semantics_spec.md
+    - docs/specs/concrete_rust_api_surface.md
+    - docs/specs/reconfiguration_and_topology_patch_spec.md
+    - docs/specs/exhaustive_diagnostic_code_catalogue.md
+
+summary: >-
+  A bound machine keeps complete immutable definition-compatible mappings
+  coherent with ordinary core execution, including target topology publication
+  and historical source/target output projection.
+
+scope:
+  includes:
+    - attaching a compatible already-patched/restored machine
+    - supported patch, rebind, read and raw ownership operations
+    - source/target projection and prepublication failure guarantees
+  excludes:
+    - caller gameplay, world atomicity and endpoint delivery admission
+    - binding persistence, subscriptions and a new evaluator
+    - core state/event migration algorithms
+
+aliases: [BoundMachine<D, I, O>, live bindings, apply_reconfigured]
+
+requirements:
+  - id: exact-definition-separate-from-freshness
+    kind: compatibility
+    statement: >-
+      Mapping compatibility uses exact network key, network fingerprint and
+      input-schema fingerprint independently of runtime revision. Current
+      mappings accept already-patched/restored machines. Equal endpoint schema
+      alone is insufficient; expected revision, prepared base and optional
+      expected execution digest remain core transaction guards.
+    sources: [live-lifecycle, concrete-live]
+
+  - id: coherent-complete-ownership
+    kind: lifecycle
+    statement: >-
+      The facade maintains complete unique same-kind input/output mappings,
+      read-only core access and a consuming machine/bindings escape. It does
+      not expose raw mutable machine access while retaining live bindings.
+      Patch preparation delegates without changing the machine or bindings.
+    sources: [live-lifecycle, concrete-live]
+
+  - id: supported-core-transaction-controls
+    kind: public_surface
+    statement: >-
+      Bound no-patch apply and patch apply with validated target bindings forward
+      lifecycle, revision, digest and explicit loss policy unchanged through the
+      ordinary core transition. Patch-presence/context mismatch is a structured
+      pre-execution rejection. No retries, reinitialization or policy downgrade
+      are implicit.
+    sources: [concrete-live, binding-codes]
+
+  - id: historical-producing-map
+    kind: system_effect
+    statement: >-
+      Source mappings project earlier deadline events under the source revision;
+      target mappings project the target reaction under its new revision.
+      Removed source endpoints and changed labels never discard or retarget
+      already produced events. A no-patch transaction uses one captured map.
+      Owned projections retain stable endpoint, caller identifier, variant,
+      values/count, stamp, time, revision, cause and stream order with the
+      ordinary immutable result.
+    sources: [live-lifecycle]
+
+  - id: prepublication-projection
+    kind: semantic
+    statement: >-
+      Definition/kind/completeness, input and patch context validation and all
+      fallible result projection occur on the unpublished ordinary candidate
+      before publishing the machine and target bindings together. Ordinary
+      mapping/projection/core rejection leaves both predecessor parts unchanged.
+      Do not execute forecast then apply as two evaluations. Caller iterator,
+      equality, cloning and allocation are not arbitrary-code rollback promises;
+      required caller work is prepared before publication.
+    sources: [live-lifecycle, concrete-live]
+
+  - id: mapping-only-replacement
+    kind: prohibition
+    statement: >-
+      Mapping-only replacement validates the installed definition and changes
+      only the map. It allocates no reaction, mutates no semantic state/digest,
+      creates no event, and replays no Pulse. Prior returned identifiers and
+      provenance remain owned and unchanged after later replacement.
+    sources: [live-lifecycle]
+
+  - id: target-input-obligations
+    kind: semantic
+    statement: >-
+      Target projection uses ordinary set/pulse observations. Missing new-Level
+      values are rejected by with_patch and rechecked before runtime candidate
+      deadlines; inherited valuations require the prepared correspondence plan.
+      Removed, unknown, duplicate and wrong-kind observations remain rejected.
+      Initialization requires every target Level explicitly.
+    sources: [target-input, concrete-input]
+
+  - id: standalone-context-responsibility
+    kind: public_surface
+    statement: >-
+      A standalone low-level projection caller supplies the correct producing
+      definition. Endpoint existence alone does not authenticate event origin.
+      Supported bound execution performs source/target selection itself without
+      interpreting caller identifiers or invoking host callbacks.
+    sources: [live-lifecycle]
+
+implementation_freedom:
+  - Exact convenience names and private staging mechanics may vary while preserving one evaluation and atomic coherent publication.
+
+sources:
+  live-lifecycle:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: ["Part III — Identity, bindings, and metadata", 17. External bindings, 17.1 Live definition-compatible bindings]
+    reviewed_hash: sha256:96099bb9bcc44558f178f67a9b7a929482ab37566c6810f89c7a433113bb7f8b
+  concrete-live:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXII — External bindings, 83. Optional bound-machine façade, 83.1 Supported live-binding surface]
+    reviewed_hash: sha256:f6a49ae5b614649fe243e2861045b9875f146cf54dea71280f7da838d857277d
+  target-input:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part IV — Patch normalization and structural preparation, 33. Target-bound input schema]
+    reviewed_hash: sha256:5ec6a0af0d3cc67ccc16682c55a1902d4614a28adc6dce73ef313cbb135cddfc
+  concrete-input:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIV — Input schemas and values, 55. `InputDelta<D>`]
+    reviewed_hash: sha256:499f53fee603062d81342dba778e61b0d6ec0a8e7d854945b6b095298c9e64bc
+  binding-codes:
+    document: docs/specs/exhaustive_diagnostic_code_catalogue.md
+    heading_path: [Part V — Exhaustive initial catalogue, 31. Bindings]
+    reviewed_hash: sha256:87d569f80c58cd5e98e201bc0e754aaf95f2022fae9121ffd90c1fa51c305921

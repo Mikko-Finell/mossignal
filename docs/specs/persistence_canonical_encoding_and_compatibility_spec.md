@@ -1563,6 +1563,7 @@ network fingerprint
 machine lifecycle
 current topology revision
 current logical time when ready
+last committed reaction stamp when ready
 authoritative external level valuation when ready
 stateful-node state
 temporal-node state
@@ -1841,11 +1842,15 @@ An input snapshot or delta artifact contains:
 network_key
 network fingerprint
 input schema fingerprint
-target topology revision context
 stable typed endpoint observations
 ```
 
-A target-bound patch input also contains the expected target fingerprint and target input-schema fingerprint.
+A target-bound patch input contains the target network fingerprint and target
+input-schema fingerprint. Revision context belongs to its enclosing transaction
+and prepared patch, rather than a separately supplied input-artifact revision.
+For ordinary inputs the same definition binding applies. New-Level obligations
+come from the prepared input plan; the schema fingerprint describes the typed
+endpoint schema and does not encode whether this machine inherited a value.
 
 The decoder must not bind observations by collection position.
 
@@ -2013,6 +2018,7 @@ It contains no fabricated:
 
 ```text
 current logical time
+last committed reaction stamp
 external level valuation
 settled current port values
 external output baseline
@@ -2114,7 +2120,7 @@ event kind
 deadline
 semantic payload
 multiplicity where applicable
-originating logical time
+immutable originating reaction stamp
 originating revision
 originating CauseDigest
 migration-relevant metadata
@@ -2129,7 +2135,7 @@ pulse_delay_group:
 
 transport_transition:
     target LogicLevel
-    originating logical time used for same-deadline precedence
+    immutable originating reaction stamp used for same-deadline precedence
 
 inertial_maturation:
     target LogicLevel
@@ -2154,6 +2160,41 @@ PendingEventKey
 Every deadline in a ready snapshot must be strictly later than snapshot time.
 
 Canceled events are absent from the pending set.
+
+### 92.1 Occurrence continuation and validation
+
+Encode a `ReactionStamp` as a record with `time` and unsigned 64-bit `order`.
+The ready lifecycle's last stamp has the same physical time as current time;
+an uninitialized snapshot has none. Every origin/phase stamp is no later than
+the committed stamp. It is semantic machine-local occurrence identity, not
+private allocation order or a globally unique history identifier.
+
+Pending records preserve immutable stimulus stamps, including distinct origins
+at one physical time. Where explicit migration restarts timing, encode the
+physical timing base separately from immutable causal origin; recomputation
+uses its declared migration rule. Transport conflicts are incompatible targets
+with indistinguishable origin stamps, not merely two events for one deadline.
+Inertial candidates and next periodic boundaries remain singular per owner.
+
+Periodic state includes phase-origin stamp, physical anchor and last settled
+boundary ordinal/time sufficient to exclude replay after restore or cadence
+recomputation. Provenance roots include producing stamps, even for direct Pulse
+exports. Episodes include beginning and last-material-change stamps, and their
+identity uses the beginning stamp so resolve/rebegin at one time stays distinct.
+
+Execution projection includes this occurrence/phase continuation state;
+observable projection also includes required stamped causal and diagnostic
+facts. Strict restoration validates stamp shape, lifecycle/time consistency,
+origin order, node-family cardinality, phase/ordinal/deadline consistency,
+pending/cause correspondence and digests before returning a machine. It MUST
+accept conforming equal-maturity groups and preserve the next current-time
+order exactly. It MUST NOT repair missing stamps or infer them from event keys.
+
+Snapshot, replay, digest, cause and affected node-state schema versions evolve
+coherently for this semantic change. Update applicable version/domain
+declarations and fixtures together during implementation; reject artifacts
+with unsupported versions within that revision. Pre-alpha evolution requires
+no reader for the earlier repository encoding, aliases or release freeze.
 
 ## 93. Public pending-event identity
 
@@ -2392,6 +2433,15 @@ A snapshot alone remains valid and intentionally requires a compatible compiled 
 # Part XI — Replay persistence
 
 ## 107. Replay frame payload
+
+Replay frame order is transaction order; repeated physical timestamps are
+valid and replay through ordinary apply. The input record need not supply a
+reaction order because the exact predecessor determines allocation. Recorded
+results, when present, include processed and producing stamps. Expected and
+resulting digests include continuation occurrence state, so reordering two
+otherwise identical current-time frames is not silently accepted. Patch-free
+recording remains the implemented delivery boundary; post-patch snapshots
+start subsequent logs. This amendment adds no prerequisite patch-log codec.
 
 A persisted replay frame contains:
 
