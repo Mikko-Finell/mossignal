@@ -699,15 +699,15 @@ fn normalized_causes(
         }
         match view.inspect(cause).unwrap() {
             CauseInspection::InitializationTransaction { at, .. } => {
-                records.push(format!("init {}", at.ticks()))
+                records.push(format!("init {}", at.time().ticks()))
             }
             CauseInspection::ReadyTransaction { at, .. } => {
-                records.push(format!("ready {}", at.ticks()))
+                records.push(format!("ready {}", at.time().ticks()))
             }
-            CauseInspection::ExternalObservation { input, value } => {
+            CauseInspection::ExternalObservation { input, value, .. } => {
                 records.push(format!("level {input:?} {value:?}"))
             }
-            CauseInspection::ExternalPulseObservation { input, count } => {
+            CauseInspection::ExternalPulseObservation { input, count, .. } => {
                 records.push(format!("pulse {input:?} {}", count.get()))
             }
             CauseInspection::Derived {

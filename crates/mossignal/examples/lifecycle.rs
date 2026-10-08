@@ -20,7 +20,7 @@ fn assert_lamp_changed(result: &TransactionResult<Ticks>, lamp: ExternalOutputKe
     assert!(matches!(
         result.output_events(),
         [OutputEvent::LevelChanged { output, from: LogicLevel::Low,
-            to: LogicLevel::High, at, .. }] if *output == lamp && at.ticks() == 5
+            to: LogicLevel::High, stamp: at, .. }] if *output == lamp && at.time().ticks() == 5
     ));
 }
 
@@ -106,6 +106,20 @@ fn main() {
         ))
         .unwrap();
     assert!(quiet.output_events().is_empty());
+    // An explicit empty call at the current time is another settled occurrence.
+    let same_time = original
+        .apply(Transaction::advance(
+            Time::from_ticks(2),
+            original.revision(),
+            network.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(
+        same_time.processed_reactions()[0].time(),
+        Time::from_ticks(2)
+    );
+    assert_eq!(same_time.processed_reactions()[0].order(), 1);
+    assert!(same_time.output_events().is_empty());
     let pending = original.inspect_pending_events().unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].owner, NodeSubject::Node(delay_node));

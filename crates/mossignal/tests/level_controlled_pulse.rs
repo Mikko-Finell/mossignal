@@ -244,10 +244,10 @@ fn reachable_observations(
             .inspect(cause)
             .unwrap_or_else(|failure| panic!("cause must resolve: {failure}"))
         {
-            CauseInspection::ExternalObservation { input, value } => {
+            CauseInspection::ExternalObservation { input, value, .. } => {
                 levels.insert((input, value));
             }
-            CauseInspection::ExternalPulseObservation { input, count } => {
+            CauseInspection::ExternalPulseObservation { input, count, .. } => {
                 pulses.insert((input, count));
             }
             CauseInspection::Derived { supporters, .. }
@@ -283,7 +283,7 @@ fn collect_observed_pulse_inputs(
         .inspect(cause)
         .unwrap_or_else(|failure| panic!("cause must resolve inside its view: {failure}"))
     {
-        CauseInspection::ExternalPulseObservation { input, count } => {
+        CauseInspection::ExternalPulseObservation { input, count, .. } => {
             found.insert((input, count));
         }
         CauseInspection::Derived { supporters, .. }

@@ -100,11 +100,17 @@ impl DiagnosticEpisodeId {
         Self(bytes)
     }
 
-    pub(crate) fn derive(network: NetworkKey, condition: &DiagnosticConditionKey) -> Self {
+    pub(crate) fn derive<D>(
+        network: NetworkKey,
+        condition: &DiagnosticConditionKey,
+        began: crate::ReactionStamp<D>,
+    ) -> Self {
         // SPEC: docs/specs/contracts/persistent-diagnostic-episodes.yaml "stable-episode-identity"
         // Network identity plus the full semantic owner excludes flattened slots and cause IDs.
         let mut hash = blake3::Hasher::new();
-        hash.update(b"mossignal/diagnostic_episode/v1\0");
+        hash.update(b"mossignal/diagnostic_episode/v2\0");
+        hash.update(&began.time().ticks().to_be_bytes());
+        hash.update(&began.order().to_be_bytes());
         hash.update(&network.as_u128().to_be_bytes());
         hash.update(&(condition.code.as_str().len() as u64).to_be_bytes());
         hash.update(condition.code.as_str().as_bytes());
@@ -132,8 +138,8 @@ pub struct ActiveDiagnosticEpisode<D> {
     identity: DiagnosticEpisodeId,
     condition: DiagnosticConditionKey,
     current: Arc<Problem<D>>,
-    began_at: Time<D>,
-    last_material_change: Time<D>,
+    began_at: crate::ReactionStamp<D>,
+    last_material_change: crate::ReactionStamp<D>,
     cause: CauseRef,
     provenance: ProvenanceView<D>,
 }
@@ -166,6 +172,16 @@ impl<D> Clone for ActiveDiagnosticEpisode<D> {
 }
 
 impl<D> ActiveDiagnosticEpisode<D> {
+    /// Returns the beginning occurrence of this continuous active interval.
+    #[must_use]
+    pub const fn began_stamp(&self) -> crate::ReactionStamp<D> {
+        self.began_at
+    }
+    /// Returns the last occurrence that changed material evidence.
+    #[must_use]
+    pub const fn last_material_stamp(&self) -> crate::ReactionStamp<D> {
+        self.last_material_change
+    }
     /// Returns the network-scoped episode identity.
     #[must_use]
     pub const fn identity(&self) -> DiagnosticEpisodeId {
@@ -184,12 +200,12 @@ impl<D> ActiveDiagnosticEpisode<D> {
     /// Returns when this continuous active interval began.
     #[must_use]
     pub const fn began_at(&self) -> Time<D> {
-        self.began_at
+        self.began_at.time()
     }
     /// Returns when the meaningful evidence last changed.
     #[must_use]
     pub const fn last_material_change(&self) -> Time<D> {
-        self.last_material_change
+        self.last_material_change.time()
     }
     /// Returns the cause of the retained evidence, resolved by this inspection's view.
     #[must_use]
@@ -206,8 +222,8 @@ impl<D> ActiveDiagnosticEpisode<D> {
         identity: DiagnosticEpisodeId,
         condition: DiagnosticConditionKey,
         current: Problem<D>,
-        began_at: Time<D>,
-        last_material_change: Time<D>,
+        began_at: crate::ReactionStamp<D>,
+        last_material_change: crate::ReactionStamp<D>,
         cause: CauseRef,
         provenance: ProvenanceView<D>,
     ) -> Self {
@@ -255,7 +271,7 @@ impl<D> ActiveDiagnosticEpisode<D> {
             self.condition.discriminator,
         );
         Self::restored(
-            DiagnosticEpisodeId::derive(network, &condition),
+            DiagnosticEpisodeId::derive(network, &condition, self.began_at),
             condition,
             Problem::new(primary, self.current.related().to_vec(), evidence),
             self.began_at,
@@ -285,17 +301,22 @@ pub enum DiagnosticEpisodeChangeKind {
 pub struct DiagnosticEpisodeChange<D> {
     identity: DiagnosticEpisodeId,
     kind: DiagnosticEpisodeChangeKind,
-    at: Time<D>,
+    at: crate::ReactionStamp<D>,
     before: Option<Arc<Problem<D>>>,
     after: Option<Arc<Problem<D>>>,
     cause: CauseRef,
 }
 
 impl<D> DiagnosticEpisodeChange<D> {
+    /// Returns the producing occurrence of this episode transition.
+    #[must_use]
+    pub const fn stamp(&self) -> crate::ReactionStamp<D> {
+        self.at
+    }
     pub(crate) fn migration_end(
         previous: &ActiveDiagnosticEpisode<D>,
         kind: DiagnosticEpisodeChangeKind,
-        at: Time<D>,
+        at: crate::ReactionStamp<D>,
         cause: CauseRef,
     ) -> Self {
         Self {
@@ -320,7 +341,7 @@ impl<D> DiagnosticEpisodeChange<D> {
     /// Returns the actual reaction time of this change.
     #[must_use]
     pub const fn at(&self) -> Time<D> {
-        self.at
+        self.at.time()
     }
     /// Returns prior active evidence; absent for Began.
     #[must_use]
@@ -371,7 +392,7 @@ pub(crate) fn reconcile<D>(
     active: &mut ActiveEpisodes<D>,
     changes: &mut Vec<DiagnosticEpisodeChange<D>>,
     network: NetworkKey,
-    at: Time<D>,
+    at: crate::ReactionStamp<D>,
     problems: Vec<Problem<D>>,
     causes: &BTreeMap<NodeSubject, CauseRef>,
     provenance: &ProvenanceView<D>,
@@ -385,7 +406,7 @@ pub(crate) fn reconcile<D>(
         };
         let evidence = conflict_evidence(&problem);
         assert!(
-            evidence.is_some_and(|evidence| evidence.at_ticks == at.ticks()),
+            evidence.is_some_and(|evidence| evidence.at_ticks == at.time().ticks()),
             "candidate episode evidence must identify its exact reaction time"
         );
         assert!(
@@ -404,7 +425,7 @@ pub(crate) fn reconcile<D>(
         };
         match (active.get(&key), current.remove(&key)) {
             (None, Some(problem)) => {
-                let identity = DiagnosticEpisodeId::derive(network, &key);
+                let identity = DiagnosticEpisodeId::derive(network, &key, at);
                 changes.push(DiagnosticEpisodeChange {
                     identity,
                     kind: DiagnosticEpisodeChangeKind::Began,
@@ -540,7 +561,7 @@ mod tests {
             &mut candidate,
             &mut changes,
             NetworkKey::from_u128(1),
-            Time::from_ticks(2),
+            crate::ReactionStamp::from_parts(Time::from_ticks(2), 0),
             vec![problem(&first, 2, LogicLevel::Low)],
             &causes,
             &first.provenance,
@@ -550,7 +571,7 @@ mod tests {
             &mut candidate,
             &mut changes,
             NetworkKey::from_u128(1),
-            Time::from_ticks(3),
+            crate::ReactionStamp::from_parts(Time::from_ticks(3), 0),
             vec![problem(&first, 3, LogicLevel::High)],
             &causes,
             &first.provenance,
@@ -561,14 +582,14 @@ mod tests {
         let after = candidate.values().next().unwrap();
         assert_eq!(after.identity, first.identity);
         assert_eq!(after.began_at, first.began_at);
-        assert_eq!(after.last_material_change, Time::from_ticks(3));
+        assert_eq!(after.last_material_change.time(), Time::from_ticks(3));
         assert_eq!(changes[0].after(), Some(after.current()));
         // Discarding the candidate (as on a later failed transaction phase) leaves all original evidence intact.
         drop(candidate);
         let unchanged = machine.store.active_episodes.values().next().unwrap();
         assert_eq!(unchanged.current(), first.current());
         assert_eq!(unchanged.cause, first.cause);
-        assert_eq!(unchanged.last_material_change, Time::from_ticks(1));
+        assert_eq!(unchanged.last_material_change.time(), Time::from_ticks(1));
     }
 
     #[test]
@@ -646,7 +667,7 @@ mod tests {
             Some(first.condition.clone())
         );
         assert_ne!(
-            DiagnosticEpisodeId::derive(NetworkKey::from_u128(2), &first.condition),
+            DiagnosticEpisodeId::derive(NetworkKey::from_u128(2), &first.condition, first.began_at),
             first.identity
         );
     }

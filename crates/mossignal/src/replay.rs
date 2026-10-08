@@ -14,7 +14,7 @@
 //! Level and pulse observations are separate key-sorted arrays. Pulse counts
 //! are encoded only when positive. `frame_index` is the position in that log,
 //! from zero. Concatenation renumbers it and does not keep a second index.
-//! The log content digest is BLAKE3 over `mossignal/replay_log_content/v1`,
+//! The log content digest is BLAKE3 over `mossignal/replay_log_content/v2`,
 //! and each frame's contribution is that frame's `artifact_integrity`
 //! digest. Presentation metadata is omitted.
 
@@ -43,9 +43,9 @@ use core::marker::PhantomData;
 use std::collections::BTreeMap;
 
 const ARTIFACT_PREFIX: [u8; 8] = [0x4d, 0x53, 0x49, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-const VERSION: u64 = 1;
-const ARTIFACT_INTEGRITY_DOMAIN: &str = "mossignal/artifact_integrity/v1";
-const REPLAY_LOG_CONTENT_DOMAIN: &str = "mossignal/replay_log_content/v1";
+const VERSION: u64 = 2;
+const ARTIFACT_INTEGRITY_DOMAIN: &str = "mossignal/artifact_integrity/v2";
+const REPLAY_LOG_CONTENT_DOMAIN: &str = "mossignal/replay_log_content/v2";
 
 const ENVELOPE_FIELDS: &[&str] = &[
     "artifact_kind",
@@ -1597,7 +1597,7 @@ fn log_content_digest(
 fn seal(kind: &str, time_domain: TimeDomainId, payload: &[u8]) -> Encoded {
     let bare = envelope(kind, time_domain, payload, None);
     let integrity =
-        *blake3::hash(&domain_separated(ARTIFACT_INTEGRITY_DOMAIN, 1, &bare)).as_bytes();
+        *blake3::hash(&domain_separated(ARTIFACT_INTEGRITY_DOMAIN, 2, &bare)).as_bytes();
     let signed = envelope(kind, time_domain, payload, Some(integrity));
     Encoded {
         bytes: standalone(&signed),
@@ -1798,7 +1798,7 @@ fn open_artifact<D>(
         .map(|(name, value)| (name.as_str(), value))
         .collect::<Vec<_>>();
     let bare = cbor_decode::encode_named_pairs(&pairs);
-    let actual = *blake3::hash(&domain_separated(ARTIFACT_INTEGRITY_DOMAIN, 1, &bare)).as_bytes();
+    let actual = *blake3::hash(&domain_separated(ARTIFACT_INTEGRITY_DOMAIN, 2, &bare)).as_bytes();
     if actual != integrity {
         return Err(crate::DecodeFailure::IntegrityDigestMismatch(
             persistence_problem(ProblemEvidence::PersistenceIntegrityDigestMismatch {
@@ -3227,7 +3227,7 @@ mod tests {
     fn seal_version(kind: &str, domain: TimeDomainId, payload: &[u8], version: u64) -> Vec<u8> {
         let bare = envelope_at(kind, domain, payload, None, version);
         let integrity =
-            *blake3::hash(&domain_separated(ARTIFACT_INTEGRITY_DOMAIN, 1, &bare)).as_bytes();
+            *blake3::hash(&domain_separated(ARTIFACT_INTEGRITY_DOMAIN, 2, &bare)).as_bytes();
         let signed = envelope_at(kind, domain, payload, Some(integrity), version);
         standalone(&signed)
     }
@@ -3434,7 +3434,7 @@ mod tests {
         let suffix =
             record_replay_log(&mut machine, transactions(&fixture)[1..].iter().cloned()).unwrap();
         let mut changed = suffix.clone();
-        changed.versions.artifact_schema_version = 2;
+        changed.versions.artifact_schema_version = 3;
         assert_eq!(
             code(&prefix.concatenate(&changed).unwrap_err()),
             "replay.logs_not_concatenable"
@@ -3445,17 +3445,17 @@ mod tests {
         let version = version_evidence(&decoded);
         assert_eq!(version.stage, "payload");
         assert_eq!(version.component, "artifact_schema_version");
-        assert_eq!(version.encountered, "2");
-        assert_eq!(version.required, "1");
+        assert_eq!(version.encountered, "3");
+        assert_eq!(version.required, "2");
         assert!(!version.upgrader_exists);
 
-        let envelope = seal_version("replay_log", log.time_domain, &log_payload(&log), 2);
+        let envelope = seal_version("replay_log", log.time_domain, &log_payload(&log), 3);
         let decoded = decode_replay_log(&context, &envelope, &limits(8)).unwrap_err();
         let version = version_evidence(&decoded);
         assert_eq!(version.stage, "envelope");
         assert_eq!(version.component, "artifact_schema_version");
-        assert_eq!(version.encountered, "2");
-        assert_eq!(version.required, "1");
+        assert_eq!(version.encountered, "3");
+        assert_eq!(version.required, "2");
     }
 
     #[test]
@@ -3489,7 +3489,7 @@ mod tests {
         let version = version_evidence(&result);
         assert_eq!(code(&result), "persistence.unsupported_version");
         assert_eq!(version.component, "artifact_schema_version");
-        assert_eq!(version.encountered, "1");
+        assert_eq!(version.encountered, "2");
         assert_eq!(version.required, "none");
         assert!(!version.upgrader_exists);
         assert_eq!(version.stage, "payload");

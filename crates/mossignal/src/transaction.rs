@@ -30,7 +30,7 @@ use crate::module::{NodeSubject, PulsePortSubject, QualifiedNodeRef};
 use crate::patch::{InputValuationPlan, OutputBaselinePlan, PreparedPatch};
 use crate::policy::{RuntimePolicy, RuntimePolicyId, RuntimePolicyLimit};
 use crate::signal::{Level, LogicLevel, Pulse, PulseCount};
-use crate::time::{Span, Time};
+use crate::time::{ReactionStamp, Span, Time};
 use core::fmt;
 use core::marker::PhantomData;
 use std::collections::{BTreeMap, BTreeSet};
@@ -188,9 +188,13 @@ impl<D> Transaction<D> {
 pub enum RuntimeFailureEvidence {
     AlreadyInitialized,
     DeltaBeforeInitialization,
-    TimeNotStrictlyIncreasing {
+    TimeRegression {
         current_ticks: u64,
         requested_ticks: u64,
+    },
+    ReactionOrderOverflow {
+        time_ticks: u64,
+        previous_order: u64,
     },
     StaleRevision {
         expected: NetworkRevision,
@@ -247,6 +251,7 @@ pub enum RuntimeFailureEvidence {
         set_count: PulseCount,
         reset_count: PulseCount,
         at_ticks: u64,
+        reaction_order: u64,
         revision: NetworkRevision,
     },
 
@@ -257,6 +262,7 @@ pub enum RuntimeFailureEvidence {
         set_level: LogicLevel,
         reset_level: LogicLevel,
         at_ticks: u64,
+        reaction_order: u64,
         revision: NetworkRevision,
     },
     StaleExecutionState {
@@ -349,15 +355,27 @@ impl RuntimeFailureEvidence {
                     marker: PhantomData,
                 }
             }
-            Self::TimeNotStrictlyIncreasing {
+            Self::TimeRegression {
                 current_ticks,
                 requested_ticks,
-            } => ProblemEvidence::RuntimeTimeNotStrictlyIncreasing {
+            } => ProblemEvidence::RuntimeTimeRegression {
                 evidence: TimeEvidence {
                     owner: None,
                     operation: TimeOperation::TransactionAdvance,
                     left_ticks: *current_ticks,
                     right_ticks: *requested_ticks,
+                },
+                marker: PhantomData,
+            },
+            Self::ReactionOrderOverflow {
+                time_ticks,
+                previous_order,
+            } => ProblemEvidence::RuntimeReactionOrderOverflow {
+                evidence: TimeEvidence {
+                    owner: None,
+                    operation: TimeOperation::ReactionOrderIncrement,
+                    left_ticks: *time_ticks,
+                    right_ticks: *previous_order,
                 },
                 marker: PhantomData,
             },
@@ -489,6 +507,7 @@ impl RuntimeFailureEvidence {
                 set_count,
                 reset_count,
                 at_ticks,
+                reaction_order,
                 revision,
             } => {
                 return Problem::new(
@@ -503,6 +522,7 @@ impl RuntimeFailureEvidence {
                                 set: *set_count,
                                 reset: *reset_count,
                             },
+                            reaction_order: *reaction_order,
                             at_ticks: *at_ticks,
                             revision: *revision,
                         },
@@ -517,6 +537,7 @@ impl RuntimeFailureEvidence {
                 set_level,
                 reset_level,
                 at_ticks,
+                reaction_order,
                 revision,
             } => {
                 return Problem::new(
@@ -531,6 +552,7 @@ impl RuntimeFailureEvidence {
                                 set: *set_level,
                                 reset: *reset_level,
                             },
+                            reaction_order: *reaction_order,
                             at_ticks: *at_ticks,
                             revision: *revision,
                         },
@@ -1070,7 +1092,7 @@ impl PulseContribution {
 #[derive(Clone)]
 pub(crate) enum ProvenanceRecord<D> {
     TopologyChange {
-        at: Time<D>,
+        at: ReactionStamp<D>,
         revision: NetworkRevision,
         base: NetworkFingerprint,
         target: NetworkFingerprint,
@@ -1086,24 +1108,27 @@ pub(crate) enum ProvenanceRecord<D> {
         supporters: Vec<CauseRef>,
     },
     InitializationTransaction {
-        at: Time<D>,
+        at: ReactionStamp<D>,
         revision: NetworkRevision,
     },
     ReadyTransaction {
-        at: Time<D>,
+        at: ReactionStamp<D>,
         revision: NetworkRevision,
     },
     ExternalObservation {
+        stamp: ReactionStamp<D>,
         input: ExternalInputKey<Level>,
         value: LogicLevel,
     },
     ExternalPulseObservation {
+        stamp: ReactionStamp<D>,
         input: ExternalInputKey<Pulse>,
         count: PulseCount,
     },
     PendingPulseDelay {
         event: PendingEventKey,
         owner: NodeSubject,
+        stimulus: ReactionStamp<D>,
         origin: Time<D>,
         deadline: Time<D>,
         count: PulseCount,
@@ -1113,6 +1138,7 @@ pub(crate) enum ProvenanceRecord<D> {
     PendingTransportDelay {
         event: PendingEventKey,
         owner: NodeSubject,
+        stimulus: ReactionStamp<D>,
         origin: Time<D>,
         deadline: Time<D>,
         target: LogicLevel,
@@ -1122,6 +1148,7 @@ pub(crate) enum ProvenanceRecord<D> {
     PendingInertialDelay {
         event: PendingEventKey,
         owner: NodeSubject,
+        stimulus: ReactionStamp<D>,
         origin: Time<D>,
         deadline: Time<D>,
         target: LogicLevel,
@@ -1131,6 +1158,7 @@ pub(crate) enum ProvenanceRecord<D> {
     PendingPeriodicBoundary {
         event: PendingEventKey,
         owner: NodeSubject,
+        stimulus: ReactionStamp<D>,
         origin: Time<D>,
         deadline: Time<D>,
         anchor: Time<D>,
@@ -1216,7 +1244,7 @@ impl<D> ProvenanceRecord<D> {
 pub enum CauseInspection<'a, D> {
     /// The topology fact effective at this reaction; it is not a signal.
     TopologyChange {
-        at: Time<D>,
+        at: ReactionStamp<D>,
         revision: NetworkRevision,
         base: NetworkFingerprint,
         target: NetworkFingerprint,
@@ -1240,24 +1268,27 @@ pub enum CauseInspection<'a, D> {
         supporters: &'a [CauseRef],
     },
     InitializationTransaction {
-        at: Time<D>,
+        at: ReactionStamp<D>,
         revision: NetworkRevision,
     },
     ReadyTransaction {
-        at: Time<D>,
+        at: ReactionStamp<D>,
         revision: NetworkRevision,
     },
     ExternalObservation {
+        stamp: ReactionStamp<D>,
         input: ExternalInputKey<Level>,
         value: LogicLevel,
     },
     ExternalPulseObservation {
+        stamp: ReactionStamp<D>,
         input: ExternalInputKey<Pulse>,
         count: PulseCount,
     },
     PendingPulseDelay {
         event: PendingEventKey,
         owner: &'a NodeSubject,
+        stimulus: ReactionStamp<D>,
         origin: Time<D>,
         deadline: Time<D>,
         count: PulseCount,
@@ -1267,6 +1298,7 @@ pub enum CauseInspection<'a, D> {
     PendingTransportDelay {
         event: PendingEventKey,
         owner: &'a NodeSubject,
+        stimulus: ReactionStamp<D>,
         origin: Time<D>,
         deadline: Time<D>,
         target: LogicLevel,
@@ -1276,6 +1308,7 @@ pub enum CauseInspection<'a, D> {
     PendingInertialDelay {
         event: PendingEventKey,
         owner: &'a NodeSubject,
+        stimulus: ReactionStamp<D>,
         origin: Time<D>,
         deadline: Time<D>,
         target: LogicLevel,
@@ -1285,6 +1318,7 @@ pub enum CauseInspection<'a, D> {
     PendingPeriodicBoundary {
         event: PendingEventKey,
         owner: &'a NodeSubject,
+        stimulus: ReactionStamp<D>,
         origin: Time<D>,
         deadline: Time<D>,
         anchor: Time<D>,
@@ -1514,21 +1548,28 @@ impl<D> ProvenanceView<D> {
                     revision: *revision,
                 }
             }
-            ProvenanceRecord::ExternalObservation { input, value } => {
-                CauseInspection::ExternalObservation {
-                    input: *input,
-                    value: *value,
-                }
-            }
-            ProvenanceRecord::ExternalPulseObservation { input, count } => {
-                CauseInspection::ExternalPulseObservation {
-                    input: *input,
-                    count: *count,
-                }
-            }
+            ProvenanceRecord::ExternalObservation {
+                input,
+                value,
+                stamp,
+            } => CauseInspection::ExternalObservation {
+                stamp: *stamp,
+                input: *input,
+                value: *value,
+            },
+            ProvenanceRecord::ExternalPulseObservation {
+                input,
+                count,
+                stamp,
+            } => CauseInspection::ExternalPulseObservation {
+                stamp: *stamp,
+                input: *input,
+                count: *count,
+            },
             ProvenanceRecord::PendingPulseDelay {
                 event,
                 owner,
+                stimulus,
                 origin,
                 deadline,
                 count,
@@ -1537,6 +1578,7 @@ impl<D> ProvenanceView<D> {
             } => CauseInspection::PendingPulseDelay {
                 event: *event,
                 owner,
+                stimulus: *stimulus,
                 origin: *origin,
                 deadline: *deadline,
                 count: *count,
@@ -1546,6 +1588,7 @@ impl<D> ProvenanceView<D> {
             ProvenanceRecord::PendingTransportDelay {
                 event,
                 owner,
+                stimulus,
                 origin,
                 deadline,
                 target,
@@ -1554,6 +1597,7 @@ impl<D> ProvenanceView<D> {
             } => CauseInspection::PendingTransportDelay {
                 event: *event,
                 owner,
+                stimulus: *stimulus,
                 origin: *origin,
                 deadline: *deadline,
                 target: *target,
@@ -1563,6 +1607,7 @@ impl<D> ProvenanceView<D> {
             ProvenanceRecord::PendingInertialDelay {
                 event,
                 owner,
+                stimulus,
                 origin,
                 deadline,
                 target,
@@ -1571,6 +1616,7 @@ impl<D> ProvenanceView<D> {
             } => CauseInspection::PendingInertialDelay {
                 event: *event,
                 owner,
+                stimulus: *stimulus,
                 origin: *origin,
                 deadline: *deadline,
                 target: *target,
@@ -1580,6 +1626,7 @@ impl<D> ProvenanceView<D> {
             ProvenanceRecord::PendingPeriodicBoundary {
                 event,
                 owner,
+                stimulus,
                 origin,
                 deadline,
                 anchor,
@@ -1591,6 +1638,7 @@ impl<D> ProvenanceView<D> {
             } => CauseInspection::PendingPeriodicBoundary {
                 event: *event,
                 owner,
+                stimulus: *stimulus,
                 origin: *origin,
                 deadline: *deadline,
                 anchor: *anchor,
@@ -1713,6 +1761,7 @@ impl<D> ProvenanceView<D> {
             self.scope,
             records,
             ProvenanceRecord::PendingPulseDelay {
+                stimulus: pending.stimulus,
                 event: pending.key,
                 owner,
                 origin: pending.origin,
@@ -1737,6 +1786,7 @@ impl<D> ProvenanceView<D> {
             self.scope,
             records,
             ProvenanceRecord::PendingTransportDelay {
+                stimulus: pending.stimulus,
                 event: pending.key,
                 owner,
                 origin: pending.origin,
@@ -1761,6 +1811,7 @@ impl<D> ProvenanceView<D> {
             self.scope,
             records,
             ProvenanceRecord::PendingInertialDelay {
+                stimulus: pending.stimulus,
                 event: pending.key,
                 owner,
                 origin: pending.origin,
@@ -1785,6 +1836,7 @@ impl<D> ProvenanceView<D> {
             self.scope,
             records,
             ProvenanceRecord::PendingPeriodicBoundary {
+                stimulus: pending.stimulus,
                 event: pending.key,
                 owner,
                 origin: pending.origin,
@@ -1832,7 +1884,7 @@ pub enum OutputEvent<D> {
     LevelEstablished {
         output: ExternalOutputKey<Level>,
         value: LogicLevel,
-        at: Time<D>,
+        stamp: ReactionStamp<D>,
         cause: CauseRef,
         revision: NetworkRevision,
     },
@@ -1840,17 +1892,34 @@ pub enum OutputEvent<D> {
         output: ExternalOutputKey<Level>,
         from: LogicLevel,
         to: LogicLevel,
-        at: Time<D>,
+        stamp: ReactionStamp<D>,
         cause: CauseRef,
         revision: NetworkRevision,
     },
     Pulsed {
         output: ExternalOutputKey<Pulse>,
         count: PulseCount,
-        at: Time<D>,
+        stamp: ReactionStamp<D>,
         cause: CauseRef,
         revision: NetworkRevision,
     },
+}
+
+impl<D> OutputEvent<D> {
+    /// Returns the producing machine-local occurrence.
+    #[must_use]
+    pub const fn stamp(&self) -> ReactionStamp<D> {
+        match self {
+            Self::LevelEstablished { stamp: at, .. }
+            | Self::LevelChanged { stamp: at, .. }
+            | Self::Pulsed { stamp: at, .. } => *at,
+        }
+    }
+    /// Returns exact physical time derived from the producing stamp.
+    #[must_use]
+    pub const fn at(&self) -> Time<D> {
+        self.stamp().time()
+    }
 }
 
 impl<D> fmt::Debug for OutputEvent<D> {
@@ -1859,7 +1928,7 @@ impl<D> fmt::Debug for OutputEvent<D> {
             Self::LevelEstablished {
                 output,
                 value,
-                at,
+                stamp: at,
                 cause,
                 revision,
             } => formatter
@@ -1874,7 +1943,7 @@ impl<D> fmt::Debug for OutputEvent<D> {
                 output,
                 from,
                 to,
-                at,
+                stamp: at,
                 cause,
                 revision,
             } => formatter
@@ -1889,7 +1958,7 @@ impl<D> fmt::Debug for OutputEvent<D> {
             Self::Pulsed {
                 output,
                 count,
-                at,
+                stamp: at,
                 cause,
                 revision,
             } => formatter
@@ -1907,6 +1976,7 @@ impl<D> fmt::Debug for OutputEvent<D> {
 /// The owned immutable result of a successful transaction.
 pub struct TransactionResult<D> {
     requested_time: Time<D>,
+    processed_reactions: Vec<ReactionStamp<D>>,
     before_revision: NetworkRevision,
     after_revision: NetworkRevision,
     before_execution_digest: ExecutionStateDigest,
@@ -1925,6 +1995,12 @@ impl<D> TransactionResult<D> {
     #[must_use]
     pub const fn requested_time(&self) -> Time<D> {
         self.requested_time
+    }
+
+    /// Returns every candidate reaction in chronological occurrence order.
+    #[must_use]
+    pub fn processed_reactions(&self) -> &[ReactionStamp<D>] {
+        &self.processed_reactions
     }
 
     /// Returns the machine revision observed before application.
@@ -2155,6 +2231,7 @@ impl<D> Machine<D> {
             patch.as_ref(),
             expected_execution,
         )?;
+        let stamp = ReactionStamp::from_parts(at, 0);
         let mut installed_network = None;
         let mut migration_report = None;
         let mut revision = self.store.revision;
@@ -2164,7 +2241,7 @@ impl<D> Machine<D> {
             let limits = self.policy.clone();
             let source = store_source(self);
             let finalized =
-                finalize(&prepared, policy, at, &source, &limits).map_err(migration_failure)?;
+                finalize(&prepared, policy, stamp, &source, &limits).map_err(migration_failure)?;
             migrated_edges = Some(finalized.edge_observations);
             migrated_stored = Some(finalized.stored_levels);
             revision = finalized.revision;
@@ -2194,17 +2271,17 @@ impl<D> Machine<D> {
             &pulses,
             edge_observations,
             stored_levels,
-            at,
+            stamp,
             revision,
             &BTreeMap::new(),
         )?;
-        let occurrences = pulse_latch_occurrences(network, at, revision, &evaluation);
+        let occurrences = pulse_latch_occurrences(network, stamp, revision, &evaluation);
         let mut active_episodes = self.store.active_episodes.clone();
         let mut diagnostic_episode_changes = Vec::new();
         let mut built = build_initialization_provenance(
             network,
             revision,
-            at,
+            stamp,
             &levels,
             &pulses,
             &evaluation,
@@ -2226,7 +2303,7 @@ impl<D> Machine<D> {
                 next_serial: &mut next_pending_event_serial,
                 created_events: &mut created_pending_events,
             },
-            at,
+            stamp,
             revision,
             &evaluation,
             &built.pulse_delay_schedules,
@@ -2255,7 +2332,7 @@ impl<D> Machine<D> {
         remap_pending_causes(&mut pending_events, built.provenance.scope);
         reconcile_level_episodes(
             network,
-            at,
+            stamp,
             revision,
             &evaluation,
             &built,
@@ -2270,7 +2347,7 @@ impl<D> Machine<D> {
         .map_err(|failure| reconfiguration_phase(failure, patched))?;
 
         let output_events = initialization_events(
-            at,
+            stamp,
             revision,
             &evaluation.external_outputs,
             &built.output_causes,
@@ -2293,6 +2370,7 @@ impl<D> Machine<D> {
         Ok(publish_success(
             self,
             PublicationReport {
+                processed_reactions: vec![stamp],
                 before_execution_digest,
                 requested_time: at,
                 before_revision,
@@ -2305,6 +2383,7 @@ impl<D> Machine<D> {
                 provenance,
             },
             PublishedCandidate {
+                stamp,
                 standard_history,
                 at,
                 levels,
@@ -2347,6 +2426,8 @@ impl<D> Machine<D> {
             expected_execution,
         )?;
 
+        let mut last_reaction = self.last_reaction();
+        let mut processed_reactions = Vec::new();
         let mut revision = self.store.revision;
         let (explicit_levels, pulses) = input.into_parts();
         let mut standard_history = self.store.standard_history.clone();
@@ -2396,6 +2477,8 @@ impl<D> Machine<D> {
                 Some(batch) => batch,
                 None => panic!("selected temporal deadline must retain its event batch"),
             };
+            let stamp = allocate_reaction(&mut last_reaction, deadline)?;
+            processed_reactions.push(stamp);
             let due = aggregate_due::<D>(&self.compiled, batch)?;
             let internal = self
                 .compiled
@@ -2411,12 +2494,10 @@ impl<D> Machine<D> {
                     deadline,
                     &periodic_anchors,
                 )
-                .map_err(|failure| {
-                    evaluation_failure(&self.compiled, failure, deadline, revision)
-                })?;
+                .map_err(|failure| evaluation_failure(&self.compiled, failure, stamp, revision))?;
             occurrences.extend(pulse_latch_occurrences(
                 &self.compiled,
-                deadline,
+                stamp,
                 revision,
                 &internal,
             ));
@@ -2426,7 +2507,7 @@ impl<D> Machine<D> {
             let mut built = build_ready_provenance(
                 &self.compiled,
                 revision,
-                deadline,
+                stamp,
                 &empty_levels,
                 &empty_pulses,
                 &internal,
@@ -2448,7 +2529,7 @@ impl<D> Machine<D> {
             remap_pending_causes(&mut pending_events, built.provenance.scope);
             remap_output_event_causes(&mut output_events, built.provenance.scope);
             let mut reaction_events = changed_events(
-                deadline,
+                stamp,
                 revision,
                 &output_baselines,
                 &internal.external_outputs,
@@ -2469,7 +2550,7 @@ impl<D> Machine<D> {
                     next_serial: &mut next_pending_event_serial,
                     created_events: &mut created_pending_events,
                 },
-                deadline,
+                stamp,
                 revision,
                 &internal,
                 &built.pulse_delay_schedules,
@@ -2502,7 +2583,7 @@ impl<D> Machine<D> {
             remap_output_event_causes(&mut output_events, built.provenance.scope);
             reconcile_level_episodes(
                 &self.compiled,
-                deadline,
+                stamp,
                 revision,
                 &internal,
                 &built,
@@ -2532,6 +2613,8 @@ impl<D> Machine<D> {
             )?;
         }
 
+        let stamp = allocate_reaction(&mut last_reaction, at)?;
+        processed_reactions.push(stamp);
         let mut installed_network = None;
         let mut migration_report = None;
         let mut output_plans = BTreeMap::new();
@@ -2558,9 +2641,9 @@ impl<D> Machine<D> {
                 periodic_anchor_causes: &periodic_anchor_causes,
                 periodic_cancellation_causes: &periodic_cancellation_causes,
             };
-            let mut finalized = finalize(&prepared, policy, at, &source, &self.policy)
+            let mut finalized = finalize(&prepared, policy, stamp, &source, &self.policy)
                 .map_err(migration_failure)?;
-            provenance = checkpoint_migration(&self.compiled, &provenance, at, &mut finalized);
+            provenance = checkpoint_migration(&self.compiled, &provenance, stamp, &mut finalized);
             let patch_cause =
                 provenance
                     .records
@@ -2591,7 +2674,7 @@ impl<D> Machine<D> {
                             crate::episode::DiagnosticEpisodeChange::migration_end(
                                 episode,
                                 crate::DiagnosticEpisodeChangeKind::Terminated,
-                                at,
+                                stamp,
                                 patch_cause,
                             ),
                         );
@@ -2660,9 +2743,17 @@ impl<D> Machine<D> {
                 &periodic_anchors,
             )
             .map_err(|failure| {
-                reconfiguration_phase(evaluation_failure(network, failure, at, revision), patched)
+                reconfiguration_phase(
+                    evaluation_failure(network, failure, stamp, revision),
+                    patched,
+                )
             })?;
-        occurrences.extend(pulse_latch_occurrences(network, at, revision, &evaluation));
+        occurrences.extend(pulse_latch_occurrences(
+            network,
+            stamp,
+            revision,
+            &evaluation,
+        ));
         reaction_count = reaction_count.saturating_add(1);
         // Earlier reactions used the old graph; charge their actual operation count.
         enforce_budget::<D>(
@@ -2685,7 +2776,7 @@ impl<D> Machine<D> {
         let mut built = build_ready_provenance(
             network,
             revision,
-            at,
+            stamp,
             &explicit_levels,
             &pulses,
             &evaluation,
@@ -2708,7 +2799,7 @@ impl<D> Machine<D> {
         remap_output_event_causes(&mut output_events, built.provenance.scope);
         let mut final_events = if patched {
             planned_level_events(
-                at,
+                stamp,
                 revision,
                 &output_plans,
                 LevelOutputValues {
@@ -2721,7 +2812,7 @@ impl<D> Machine<D> {
             )
         } else {
             changed_events(
-                at,
+                stamp,
                 revision,
                 &output_baselines,
                 &evaluation.external_outputs,
@@ -2738,7 +2829,7 @@ impl<D> Machine<D> {
                 next_serial: &mut next_pending_event_serial,
                 created_events: &mut created_pending_events,
             },
-            at,
+            stamp,
             revision,
             &evaluation,
             &built.pulse_delay_schedules,
@@ -2768,7 +2859,7 @@ impl<D> Machine<D> {
         remap_output_event_causes(&mut output_events, built.provenance.scope);
         reconcile_level_episodes(
             network,
-            at,
+            stamp,
             revision,
             &evaluation,
             &built,
@@ -2798,6 +2889,7 @@ impl<D> Machine<D> {
         Ok(publish_success(
             self,
             PublicationReport {
+                processed_reactions,
                 before_execution_digest,
                 requested_time: at,
                 before_revision,
@@ -2810,6 +2902,7 @@ impl<D> Machine<D> {
                 provenance,
             },
             PublishedCandidate {
+                stamp,
                 standard_history,
                 at,
                 levels,
@@ -2834,6 +2927,36 @@ impl<D> Machine<D> {
             },
         ))
     }
+}
+
+// SPEC: docs/specs/contracts/ordered-reactions.yaml "atomic-order-and-resource-failure"
+// Allocation lives only in the outer candidate; rejection consumes no live occurrence.
+fn allocate_reaction<D>(
+    last: &mut Option<ReactionStamp<D>>,
+    at: Time<D>,
+) -> Result<ReactionStamp<D>, RuntimeFailure<D>> {
+    let order = match *last {
+        Some(previous) if previous.time() == at => {
+            previous.order().checked_add(1).ok_or_else(|| {
+                RuntimeFailure::new(RuntimeFailureEvidence::ReactionOrderOverflow {
+                    time_ticks: at.ticks(),
+                    previous_order: previous.order(),
+                })
+            })?
+        }
+        Some(previous) if previous.time() > at => {
+            return Err(RuntimeFailure::new(
+                RuntimeFailureEvidence::TimeRegression {
+                    current_ticks: previous.time().ticks(),
+                    requested_ticks: at.ticks(),
+                },
+            ));
+        }
+        _ => 0,
+    };
+    let stamp = ReactionStamp::from_parts(at, order);
+    *last = Some(stamp);
+    Ok(stamp)
 }
 
 fn admit_initialization<D>(
@@ -2880,9 +3003,9 @@ fn admit_advance<D>(
     } else {
         validate_delta_binding(machine.compiled(), input)?;
     }
-    if at <= now {
+    if at < now {
         return Err(RuntimeFailure::new(
-            RuntimeFailureEvidence::TimeNotStrictlyIncreasing {
+            RuntimeFailureEvidence::TimeRegression {
                 current_ticks: now.ticks(),
                 requested_ticks: at.ticks(),
             },
@@ -3308,16 +3431,16 @@ fn evaluate_reaction<D>(
     pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     previous_edge_observations: &[EdgeObservation],
     previous_stored_levels: &[LogicLevel],
-    at: Time<D>,
+    at: ReactionStamp<D>,
     revision: NetworkRevision,
-    periodic_anchors: &BTreeMap<NodeKey, Time<D>>,
+    periodic_anchors: &BTreeMap<NodeKey, crate::machine::PeriodicPhase<D>>,
 ) -> Result<FullEvaluation, RuntimeFailure<D>> {
     match compiled.evaluate_reaction_with_state(
         levels,
         pulses,
         previous_edge_observations,
         previous_stored_levels,
-        at,
+        at.time(),
         periodic_anchors,
     ) {
         Ok(evaluation) => Ok(evaluation),
@@ -3343,7 +3466,7 @@ fn evaluate_reaction<D>(
 fn evaluation_failure<D>(
     compiled: &crate::CompiledNetwork<D>,
     failure: EvaluationFailure,
-    at: Time<D>,
+    at: ReactionStamp<D>,
     revision: NetworkRevision,
 ) -> RuntimeFailure<D> {
     match failure {
@@ -3369,7 +3492,7 @@ fn evaluation_failure<D>(
 fn pulse_latch_failure<D>(
     compiled: &crate::CompiledNetwork<D>,
     conflict: PulseLatchConflict,
-    at: Time<D>,
+    at: ReactionStamp<D>,
     revision: NetworkRevision,
 ) -> RuntimeFailureEvidence {
     RuntimeFailureEvidence::PulseLatchConflict {
@@ -3378,7 +3501,8 @@ fn pulse_latch_failure<D>(
         previous: conflict.previous,
         set_count: conflict.set_count,
         reset_count: conflict.reset_count,
-        at_ticks: at.ticks(),
+        reaction_order: at.order(),
+        at_ticks: at.time().ticks(),
         revision,
     }
 }
@@ -3386,7 +3510,7 @@ fn pulse_latch_failure<D>(
 fn level_latch_failure<D>(
     compiled: &crate::CompiledNetwork<D>,
     conflict: LevelLatchConflict,
-    at: Time<D>,
+    at: ReactionStamp<D>,
     revision: NetworkRevision,
 ) -> RuntimeFailureEvidence {
     RuntimeFailureEvidence::LevelLatchConflict {
@@ -3395,14 +3519,15 @@ fn level_latch_failure<D>(
         previous: conflict.previous,
         set_level: conflict.set_level,
         reset_level: conflict.reset_level,
-        at_ticks: at.ticks(),
+        reaction_order: at.order(),
+        at_ticks: at.time().ticks(),
         revision,
     }
 }
 
 fn pulse_latch_occurrences<D>(
     compiled: &crate::CompiledNetwork<D>,
-    at: Time<D>,
+    at: ReactionStamp<D>,
     revision: NetworkRevision,
     evaluation: &FullEvaluation,
 ) -> Vec<DiagnosticOccurrence<D>> {
@@ -3433,7 +3558,8 @@ fn pulse_latch_occurrences<D>(
                             set: conflict.set_count,
                             reset: conflict.reset_count,
                         },
-                        at_ticks: at.ticks(),
+                        reaction_order: at.order(),
+                        at_ticks: at.time().ticks(),
                         revision,
                     },
                     marker: PhantomData,
@@ -3452,7 +3578,7 @@ fn pulse_latch_occurrences<D>(
 #[allow(clippy::too_many_arguments)]
 fn reconcile_level_episodes<D>(
     compiled: &crate::CompiledNetwork<D>,
-    at: Time<D>,
+    at: ReactionStamp<D>,
     revision: NetworkRevision,
     evaluation: &FullEvaluation,
     built: &ProvenanceBuild<D>,
@@ -3479,7 +3605,8 @@ fn reconcile_level_episodes<D>(
                             set: conflict.set_level,
                             reset: conflict.reset_level,
                         },
-                        at_ticks: at.ticks(),
+                        reaction_order: at.order(),
+                        at_ticks: at.time().ticks(),
                         revision,
                     },
                     marker: PhantomData,
@@ -3524,7 +3651,7 @@ struct DuePulseDelays {
     counts: BTreeMap<NodeKey, PulseCount>,
     causes: BTreeMap<NodeKey, Vec<CauseRef>>,
     transport_targets: BTreeMap<NodeKey, LogicLevel>,
-    transport_origins: BTreeMap<NodeKey, u64>,
+    transport_origins: BTreeMap<NodeKey, (u64, u64)>,
     transport_causes: BTreeMap<NodeKey, Vec<CauseRef>>,
     inertial_targets: BTreeMap<NodeKey, LogicLevel>,
     inertial_origins: BTreeMap<NodeKey, u64>,
@@ -3564,19 +3691,14 @@ fn aggregate_due<D>(
                 due.causes.entry(event.node).or_default().push(event.cause);
             }
             PendingEvent::TransportDelay(event) => {
-                let replace = match due.transport_origins.get(&event.node).copied() {
-                    None => true,
-                    Some(previous) if event.origin.ticks() > previous => true,
-                    Some(previous) if event.origin.ticks() < previous => false,
-                    Some(_) => due
-                        .transport_targets
-                        .get(&event.node)
-                        .is_none_or(|target| event.target > *target),
-                };
-                if replace {
+                let origin = (event.stimulus.time().ticks(), event.stimulus.order());
+                if due
+                    .transport_origins
+                    .get(&event.node)
+                    .is_none_or(|previous| origin > *previous)
+                {
                     due.transport_targets.insert(event.node, event.target);
-                    due.transport_origins
-                        .insert(event.node, event.origin.ticks());
+                    due.transport_origins.insert(event.node, origin);
                 }
                 due.transport_causes
                     .entry(event.node)
@@ -3634,7 +3756,7 @@ fn aggregate_due<D>(
 #[allow(clippy::too_many_arguments)]
 fn schedule_pulse_delays<D>(
     scheduling: PulseDelayScheduling<'_, D>,
-    origin: Time<D>,
+    stamp: ReactionStamp<D>,
     revision: NetworkRevision,
     evaluation: &FullEvaluation,
     proposal_causes: &BTreeMap<NodeKey, CauseRef>,
@@ -3642,12 +3764,13 @@ fn schedule_pulse_delays<D>(
     inertial_proposal_causes: &BTreeMap<NodeKey, CauseRef>,
     periodic_proposal_causes: &BTreeMap<NodeKey, CauseRef>,
     cancellation_causes: &mut BTreeMap<NodeKey, CauseRef>,
-    periodic_anchors: &mut BTreeMap<NodeKey, Time<D>>,
+    periodic_anchors: &mut BTreeMap<NodeKey, crate::machine::PeriodicPhase<D>>,
     periodic_anchor_causes: &mut BTreeMap<NodeKey, CauseRef>,
     periodic_cancellation_causes: &mut BTreeMap<NodeKey, CauseRef>,
     provenance: &mut ProvenanceView<D>,
     policy: &RuntimePolicy,
 ) -> Result<(), RuntimeFailure<D>> {
+    let origin = stamp.time();
     enum Proposal<'a> {
         Pulse(&'a crate::compile::PulseDelayProposal),
         Transport(&'a crate::compile::TransportDelayProposal),
@@ -3705,6 +3828,7 @@ fn schedule_pulse_delays<D>(
                     None => panic!("every PulseDelay proposal must retain a scheduling cause"),
                 };
                 let mut pending = PendingPulseDelay {
+                    stimulus: stamp,
                     key,
                     node: proposal.node,
                     origin,
@@ -3755,6 +3879,7 @@ fn schedule_pulse_delays<D>(
                     None => panic!("every TransportDelay proposal must retain a scheduling cause"),
                 };
                 let mut pending = PendingTransportDelay {
+                    stimulus: stamp,
                     key,
                     node: proposal.node,
                     origin,
@@ -3816,6 +3941,7 @@ fn schedule_pulse_delays<D>(
                         })
                     })?;
                 let mut pending = PendingInertialDelay {
+                    stimulus: stamp,
                     key,
                     node: proposal.node,
                     origin,
@@ -3850,6 +3976,15 @@ fn schedule_pulse_delays<D>(
                     None => panic!("every Periodic proposal must retain a scheduling cause"),
                 };
                 let transitioned = proposal.previous_enable != proposal.enable;
+                // SPEC: docs/specs/contracts/ordered-reactions.yaml "singular-inertial-and-once-only-phase"
+                // An explicit disabled settlement consumes this boundary for the retained phase.
+                if let Some(phase) = periodic_anchors.get_mut(&proposal.node) {
+                    if origin >= phase.anchor
+                        && (origin.ticks() - phase.anchor.ticks()) % proposal.period_ticks == 0
+                    {
+                        phase.settled = Some(origin);
+                    }
+                }
                 if proposal.enable.is_low() {
                     if transitioned || proposal.due_ordinal.is_some() {
                         let canceled = remove_periodic_boundary(scheduling.pending, proposal.node)
@@ -3881,11 +4016,18 @@ fn schedule_pulse_delays<D>(
                         == crate::authored::ReenablePhasePolicy::RestartPhase
                         || !periodic_anchors.contains_key(&proposal.node))
                 {
-                    periodic_anchors.insert(proposal.node, origin);
+                    periodic_anchors.insert(
+                        proposal.node,
+                        crate::machine::PeriodicPhase {
+                            anchor: origin,
+                            origin: stamp,
+                            settled: Some(origin),
+                        },
+                    );
                     periodic_anchor_causes.insert(proposal.node, scheduling_cause);
                 }
                 let anchor = match periodic_anchors.get(&proposal.node).copied() {
-                    Some(anchor) => anchor,
+                    Some(phase) => phase.anchor,
                     None => panic!("enabled Periodic proposal must retain a phase anchor"),
                 };
                 let ordinal = if let Some(due) = proposal.due_ordinal {
@@ -3939,6 +4081,7 @@ fn schedule_pulse_delays<D>(
                         })
                     })?;
                 let mut pending = PendingPeriodicBoundary {
+                    stimulus: stamp,
                     key,
                     node: proposal.node,
                     origin,
@@ -4121,6 +4264,7 @@ fn remap_output_event_causes<D>(events: &mut [OutputEvent<D>], scope: Provenance
 }
 
 struct PublishedCandidate<D> {
+    stamp: ReactionStamp<D>,
     standard_history:
         BTreeMap<crate::QualifiedModuleRef, crate::standard::stateful::StandardHistory>,
     at: Time<D>,
@@ -4135,7 +4279,7 @@ struct PublishedCandidate<D> {
     establishment_causes: BTreeMap<NodeKey, CauseRef>,
     transport_transition_causes: BTreeMap<NodeKey, CauseRef>,
     inertial_cancellation_causes: BTreeMap<NodeKey, CauseRef>,
-    periodic_anchors: BTreeMap<NodeKey, Time<D>>,
+    periodic_anchors: BTreeMap<NodeKey, crate::machine::PeriodicPhase<D>>,
     periodic_anchor_causes: BTreeMap<NodeKey, CauseRef>,
     periodic_cancellation_causes: BTreeMap<NodeKey, CauseRef>,
     active_episodes: crate::episode::ActiveEpisodes<D>,
@@ -4148,6 +4292,7 @@ struct PublishedCandidate<D> {
 struct PublicationReport<D> {
     before_execution_digest: ExecutionStateDigest,
     requested_time: Time<D>,
+    processed_reactions: Vec<ReactionStamp<D>>,
     before_revision: NetworkRevision,
     after_revision: NetworkRevision,
     migration: Option<MigrationReport<D>>,
@@ -4166,6 +4311,7 @@ fn publish_success<D>(
     publish_candidate(machine, candidate);
     TransactionResult {
         requested_time: report.requested_time,
+        processed_reactions: report.processed_reactions,
         before_revision: report.before_revision,
         after_revision: report.after_revision,
         before_execution_digest: report.before_execution_digest,
@@ -4182,6 +4328,7 @@ fn publish_success<D>(
 
 fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<D>) {
     let PublishedCandidate {
+        stamp,
         standard_history,
         at,
         levels,
@@ -4213,6 +4360,7 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     candidate.revision = revision;
     candidate.standard_history = standard_history;
     candidate.status = MachineStatus::Ready { now: at };
+    candidate.last_reaction = Some(stamp);
     candidate.external_levels = levels;
     candidate.settled_levels = evaluation.values;
     // SPEC: docs/specs/contracts/reaction-scoped-pulse-foundation.yaml
@@ -4358,7 +4506,8 @@ fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRec
             supporters,
         } => {
             hasher.update(&[11]);
-            hasher.update(&at.ticks().to_be_bytes());
+            hasher.update(&at.time().ticks().to_be_bytes());
+            hasher.update(&at.order().to_be_bytes());
             hasher.update(&revision.value().to_be_bytes());
             hasher.update(&base.as_bytes());
             hasher.update(&target.as_bytes());
@@ -4383,27 +4532,42 @@ fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRec
         }
         ProvenanceRecord::InitializationTransaction { at, revision } => {
             hasher.update(&[0]);
-            hasher.update(&at.ticks().to_be_bytes());
+            hasher.update(&at.time().ticks().to_be_bytes());
+            hasher.update(&at.order().to_be_bytes());
             hasher.update(&revision.value().to_be_bytes());
         }
         ProvenanceRecord::ReadyTransaction { at, revision } => {
             hasher.update(&[1]);
-            hasher.update(&at.ticks().to_be_bytes());
+            hasher.update(&at.time().ticks().to_be_bytes());
+            hasher.update(&at.order().to_be_bytes());
             hasher.update(&revision.value().to_be_bytes());
         }
-        ProvenanceRecord::ExternalObservation { input, value } => {
+        ProvenanceRecord::ExternalObservation {
+            input,
+            value,
+            stamp,
+        } => {
             hasher.update(&[2]);
+            hasher.update(&stamp.time().ticks().to_be_bytes());
+            hasher.update(&stamp.order().to_be_bytes());
             hasher.update(&input.as_u128().to_be_bytes());
             hasher.update(&[u8::from(value.is_high())]);
         }
-        ProvenanceRecord::ExternalPulseObservation { input, count } => {
+        ProvenanceRecord::ExternalPulseObservation {
+            input,
+            count,
+            stamp,
+        } => {
             hasher.update(&[3]);
+            hasher.update(&stamp.time().ticks().to_be_bytes());
+            hasher.update(&stamp.order().to_be_bytes());
             hasher.update(&input.as_u128().to_be_bytes());
             hasher.update(&count.get().to_be_bytes());
         }
         ProvenanceRecord::PendingPulseDelay {
             event,
             owner,
+            stimulus,
             origin,
             deadline,
             count,
@@ -4414,6 +4578,8 @@ fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRec
             hasher.update(&event.value().to_be_bytes());
             hash_node_subject(hasher, owner);
             hasher.update(&origin.ticks().to_be_bytes());
+            hasher.update(&stimulus.time().ticks().to_be_bytes());
+            hasher.update(&stimulus.order().to_be_bytes());
             hasher.update(&deadline.ticks().to_be_bytes());
             hasher.update(&count.get().to_be_bytes());
             hasher.update(&revision.value().to_be_bytes());
@@ -4422,6 +4588,7 @@ fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRec
         ProvenanceRecord::PendingTransportDelay {
             event,
             owner,
+            stimulus,
             origin,
             deadline,
             target,
@@ -4432,6 +4599,8 @@ fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRec
             hasher.update(&event.value().to_be_bytes());
             hash_node_subject(hasher, owner);
             hasher.update(&origin.ticks().to_be_bytes());
+            hasher.update(&stimulus.time().ticks().to_be_bytes());
+            hasher.update(&stimulus.order().to_be_bytes());
             hasher.update(&deadline.ticks().to_be_bytes());
             hasher.update(&[u8::from(target.is_high())]);
             hasher.update(&revision.value().to_be_bytes());
@@ -4440,6 +4609,7 @@ fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRec
         ProvenanceRecord::PendingInertialDelay {
             event,
             owner,
+            stimulus,
             origin,
             deadline,
             target,
@@ -4450,6 +4620,8 @@ fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRec
             hasher.update(&event.value().to_be_bytes());
             hash_node_subject(hasher, owner);
             hasher.update(&origin.ticks().to_be_bytes());
+            hasher.update(&stimulus.time().ticks().to_be_bytes());
+            hasher.update(&stimulus.order().to_be_bytes());
             hasher.update(&deadline.ticks().to_be_bytes());
             hasher.update(&[u8::from(target.is_high())]);
             hasher.update(&revision.value().to_be_bytes());
@@ -4458,6 +4630,7 @@ fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRec
         ProvenanceRecord::PendingPeriodicBoundary {
             event,
             owner,
+            stimulus,
             origin,
             deadline,
             anchor,
@@ -4471,6 +4644,8 @@ fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRec
             hasher.update(&event.value().to_be_bytes());
             hash_node_subject(hasher, owner);
             hasher.update(&origin.ticks().to_be_bytes());
+            hasher.update(&stimulus.time().ticks().to_be_bytes());
+            hasher.update(&stimulus.order().to_be_bytes());
             hasher.update(&deadline.ticks().to_be_bytes());
             hasher.update(&anchor.ticks().to_be_bytes());
             hasher.update(&ordinal.to_be_bytes());
@@ -4551,7 +4726,7 @@ fn provenance_view_scope<D>(
 fn build_initialization_provenance<D>(
     compiled: &crate::CompiledNetwork<D>,
     revision: NetworkRevision,
-    at: Time<D>,
+    at: ReactionStamp<D>,
     levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     evaluation: &FullEvaluation,
@@ -4594,6 +4769,7 @@ fn build_initialization_provenance<D>(
                 scope,
                 &mut records,
                 ProvenanceRecord::ExternalObservation {
+                    stamp: at,
                     input: *input,
                     value: *value,
                 },
@@ -4608,6 +4784,7 @@ fn build_initialization_provenance<D>(
                 scope,
                 &mut records,
                 ProvenanceRecord::ExternalPulseObservation {
+                    stamp: at,
                     input: *input,
                     count: *count,
                 },
@@ -4656,7 +4833,7 @@ fn build_initialization_provenance<D>(
 fn checkpoint_migration<D>(
     source: &crate::CompiledNetwork<D>,
     previous: &ProvenanceView<D>,
-    at: Time<D>,
+    at: ReactionStamp<D>,
     finalized: &mut FinalizedPatch<D>,
 ) -> ProvenanceView<D> {
     // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "revision-provenance-and-episodes"
@@ -4698,6 +4875,7 @@ fn checkpoint_migration<D>(
             scope,
             &mut records,
             ProvenanceRecord::ExternalObservation {
+                stamp: at,
                 input: *input,
                 value: *value,
             },
@@ -4803,6 +4981,7 @@ fn checkpoint_migration<D>(
         let supporters = vec![migration];
         let record = match event {
             PendingEvent::PulseDelay(event) => ProvenanceRecord::PendingPulseDelay {
+                stimulus: event.stimulus,
                 event: key,
                 owner,
                 origin,
@@ -4812,6 +4991,7 @@ fn checkpoint_migration<D>(
                 supporters,
             },
             PendingEvent::TransportDelay(event) => ProvenanceRecord::PendingTransportDelay {
+                stimulus: event.stimulus,
                 event: key,
                 owner,
                 origin,
@@ -4821,6 +5001,7 @@ fn checkpoint_migration<D>(
                 supporters,
             },
             PendingEvent::Inertial(event) => ProvenanceRecord::PendingInertialDelay {
+                stimulus: event.stimulus,
                 event: key,
                 owner,
                 origin,
@@ -4830,6 +5011,7 @@ fn checkpoint_migration<D>(
                 supporters,
             },
             PendingEvent::Periodic(event) => ProvenanceRecord::PendingPeriodicBoundary {
+                stimulus: event.stimulus,
                 event: key,
                 owner,
                 origin,
@@ -4860,7 +5042,7 @@ fn checkpoint_migration<D>(
 fn build_ready_provenance<D>(
     compiled: &crate::CompiledNetwork<D>,
     revision: NetworkRevision,
-    at: Time<D>,
+    at: ReactionStamp<D>,
     explicit_levels: &BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     pulses: &BTreeMap<ExternalInputKey<Pulse>, PulseCount>,
     evaluation: &FullEvaluation,
@@ -4915,6 +5097,7 @@ fn build_ready_provenance<D>(
             scope,
             &mut records,
             ProvenanceRecord::ExternalObservation {
+                stamp: at,
                 input: *input,
                 value: *value,
             },
@@ -4928,6 +5111,7 @@ fn build_ready_provenance<D>(
                 scope,
                 &mut records,
                 ProvenanceRecord::ExternalPulseObservation {
+                    stamp: at,
                     input: *input,
                     count: *count,
                 },
@@ -5749,21 +5933,28 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> Prov
             at: *at,
             revision: *revision,
         },
-        ProvenanceRecord::ExternalObservation { input, value } => {
-            ProvenanceRecord::ExternalObservation {
-                input: *input,
-                value: *value,
-            }
-        }
-        ProvenanceRecord::ExternalPulseObservation { input, count } => {
-            ProvenanceRecord::ExternalPulseObservation {
-                input: *input,
-                count: *count,
-            }
-        }
+        ProvenanceRecord::ExternalObservation {
+            input,
+            value,
+            stamp,
+        } => ProvenanceRecord::ExternalObservation {
+            stamp: *stamp,
+            input: *input,
+            value: *value,
+        },
+        ProvenanceRecord::ExternalPulseObservation {
+            input,
+            count,
+            stamp,
+        } => ProvenanceRecord::ExternalPulseObservation {
+            stamp: *stamp,
+            input: *input,
+            count: *count,
+        },
         ProvenanceRecord::PendingPulseDelay {
             event,
             owner,
+            stimulus,
             origin,
             deadline,
             count,
@@ -5772,6 +5963,7 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> Prov
         } => ProvenanceRecord::PendingPulseDelay {
             event: *event,
             owner: owner.clone(),
+            stimulus: *stimulus,
             origin: *origin,
             deadline: *deadline,
             count: *count,
@@ -5784,6 +5976,7 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> Prov
         ProvenanceRecord::PendingPeriodicBoundary {
             event,
             owner,
+            stimulus,
             origin,
             deadline,
             anchor,
@@ -5795,6 +5988,7 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> Prov
         } => ProvenanceRecord::PendingPeriodicBoundary {
             event: *event,
             owner: owner.clone(),
+            stimulus: *stimulus,
             origin: *origin,
             deadline: *deadline,
             anchor: *anchor,
@@ -5810,6 +6004,7 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> Prov
         ProvenanceRecord::PendingInertialDelay {
             event,
             owner,
+            stimulus,
             origin,
             deadline,
             target,
@@ -5818,6 +6013,7 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> Prov
         } => ProvenanceRecord::PendingInertialDelay {
             event: *event,
             owner: owner.clone(),
+            stimulus: *stimulus,
             origin: *origin,
             deadline: *deadline,
             target: *target,
@@ -5830,6 +6026,7 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> Prov
         ProvenanceRecord::PendingTransportDelay {
             event,
             owner,
+            stimulus,
             origin,
             deadline,
             target,
@@ -5838,6 +6035,7 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> Prov
         } => ProvenanceRecord::PendingTransportDelay {
             event: *event,
             owner: owner.clone(),
+            stimulus: *stimulus,
             origin: *origin,
             deadline: *deadline,
             target: *target,
@@ -5923,7 +6121,7 @@ fn operation_cause(causes: &[CauseRef], index: usize) -> CauseRef {
 }
 
 fn initialization_events<D>(
-    at: Time<D>,
+    at: ReactionStamp<D>,
     revision: NetworkRevision,
     values: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     causes: &BTreeMap<ExternalOutputKey<Level>, CauseRef>,
@@ -5939,7 +6137,7 @@ fn initialization_events<D>(
             OutputEvent::LevelEstablished {
                 output: *output,
                 value: *value,
-                at,
+                stamp: at,
                 cause,
                 revision,
             }
@@ -5956,7 +6154,7 @@ struct LevelOutputValues<'a> {
 }
 
 fn planned_level_events<D>(
-    at: Time<D>,
+    at: ReactionStamp<D>,
     revision: NetworkRevision,
     plans: &BTreeMap<ExternalOutputKey<Level>, OutputBaselinePlan>,
     values: LevelOutputValues<'_>,
@@ -5980,7 +6178,7 @@ fn planned_level_events<D>(
                 events.push(OutputEvent::LevelEstablished {
                     output: *output,
                     value: *to,
-                    at,
+                    stamp: at,
                     cause,
                     revision,
                 });
@@ -5995,7 +6193,7 @@ fn planned_level_events<D>(
                         output: *output,
                         from,
                         to: *to,
-                        at,
+                        stamp: at,
                         cause,
                         revision,
                     });
@@ -6012,7 +6210,7 @@ fn planned_level_events<D>(
 }
 
 fn changed_events<D>(
-    at: Time<D>,
+    at: ReactionStamp<D>,
     revision: NetworkRevision,
     previous: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     settled: &BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
@@ -6036,7 +6234,7 @@ fn changed_events<D>(
                 output: *output,
                 from,
                 to: *to,
-                at,
+                stamp: at,
                 cause,
                 revision,
             })
@@ -6048,7 +6246,7 @@ fn changed_events<D>(
 }
 
 fn pulse_events<D>(
-    at: Time<D>,
+    at: ReactionStamp<D>,
     revision: NetworkRevision,
     values: &BTreeMap<ExternalOutputKey<Pulse>, PulseCount>,
     causes: &BTreeMap<ExternalOutputKey<Pulse>, CauseRef>,
@@ -6063,7 +6261,7 @@ fn pulse_events<D>(
             OutputEvent::Pulsed {
                 output: *output,
                 count: *count,
-                at,
+                stamp: at,
                 cause,
                 revision,
             }
@@ -6484,11 +6682,11 @@ mod tests {
                 DiagnosticCode::LifecycleDeltaBeforeInitialization,
             ),
             (
-                RuntimeFailureEvidence::TimeNotStrictlyIncreasing {
+                RuntimeFailureEvidence::TimeRegression {
                     current_ticks: 7,
                     requested_ticks: 7,
                 },
-                DiagnosticCode::RuntimeTimeNotStrictlyIncreasing,
+                DiagnosticCode::RuntimeTimeRegression,
             ),
             (
                 RuntimeFailureEvidence::StaleRevision {
@@ -6551,6 +6749,7 @@ mod tests {
                     previous: LogicLevel::Low,
                     set_count: PulseCount::ONE,
                     reset_count: PulseCount::new(2),
+                    reaction_order: 0,
                     at_ticks: 12,
                     revision: NetworkRevision::from_value(0),
                 },
@@ -6705,6 +6904,7 @@ mod tests {
         input_schema_fingerprint: crate::InputSchemaFingerprint,
         policy_id: crate::RuntimePolicyId,
         status: MachineStatus<()>,
+        last_reaction: Option<crate::ReactionStamp<()>>,
         revision: NetworkRevision,
         external_levels: std::collections::BTreeMap<ExternalInputKey<Level>, LogicLevel>,
         settled_levels: Vec<LogicLevel>,
@@ -6727,7 +6927,7 @@ mod tests {
         next_pending_event_serial: u64,
         transport_transition_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
         inertial_cancellation_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
-        periodic_anchors: std::collections::BTreeMap<NodeKey, crate::time::Time<()>>,
+        periodic_anchors: std::collections::BTreeMap<NodeKey, crate::machine::PeriodicPhase<()>>,
         periodic_anchor_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
         periodic_cancellation_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
     }
@@ -6739,6 +6939,7 @@ mod tests {
             input_schema_fingerprint: machine.compiled.input_schema_fingerprint(),
             policy_id: machine.policy.id(),
             status: machine.store.status,
+            last_reaction: machine.last_reaction(),
             revision: machine.store.revision,
             external_levels: machine.store.external_levels.clone(),
             settled_levels: machine.store.settled_levels.clone(),
@@ -6901,6 +7102,44 @@ mod tests {
                 recursively_assert_acyclic(success.provenance(), *cause);
             }
         }
+    }
+
+    #[test]
+    fn ordered_same_time_reactions_preserve_committed_predecessors() {
+        let compiled = compiled_toggle(LogicLevel::Low, false);
+        let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        let at = crate::time::Time::from_ticks(10);
+        machine
+            .apply(Transaction::initialize(
+                at,
+                machine.revision(),
+                compiled.input_snapshot().finish().unwrap(),
+            ))
+            .unwrap();
+        for expected in [LogicLevel::High, LogicLevel::Low] {
+            let delta = compiled
+                .input_delta()
+                .pulse(ExternalInputKey::from_u128(1), PulseCount::new(1))
+                .unwrap()
+                .finish()
+                .unwrap();
+            machine
+                .apply(Transaction::advance(at, machine.revision(), delta))
+                .unwrap();
+            assert_eq!(
+                machine.output_level(ExternalOutputKey::from_u128(30)),
+                Some(expected)
+            );
+        }
+        let before = machine.execution_state_digest();
+        machine
+            .apply(Transaction::advance(
+                at,
+                machine.revision(),
+                compiled.input_delta().finish().unwrap(),
+            ))
+            .unwrap();
+        assert_ne!(before, machine.execution_state_digest());
     }
 
     #[test]
@@ -7140,14 +7379,14 @@ mod tests {
             .unwrap();
         let failure = machine
             .apply(Transaction::advance(
-                crate::time::Time::from_ticks(10),
+                crate::time::Time::from_ticks(9),
                 machine.revision(),
                 odd,
             ))
             .unwrap_err();
         assert!(matches!(
             failure.evidence(),
-            RuntimeFailureEvidence::TimeNotStrictlyIncreasing { .. }
+            RuntimeFailureEvidence::TimeRegression { .. }
         ));
         assert_eq!(observe(&machine), before);
     }
@@ -7385,7 +7624,7 @@ mod tests {
             OutputEvent::LevelEstablished {
                 output: actual_output,
                 value,
-                at,
+                stamp: at,
                 cause,
                 revision: actual_revision,
             },
@@ -7395,7 +7634,7 @@ mod tests {
         };
         assert_eq!(*actual_output, output);
         assert_eq!(*value, LogicLevel::High);
-        assert_eq!(*at, crate::time::Time::from_ticks(37));
+        assert_eq!(at.time(), crate::time::Time::from_ticks(37));
         assert_eq!(*actual_revision, revision);
         assert!(result.provenance().inspect(*cause).is_ok());
         assert_eq!(machine.output_cause(output), Some(*cause));
@@ -8123,7 +8362,7 @@ mod tests {
                     output: actual_output,
                     from,
                     to,
-                    at,
+                    stamp: at,
                     cause,
                     revision: actual_revision,
                 },
@@ -8131,7 +8370,7 @@ mod tests {
                 assert_eq!(*actual_output, output);
                 assert_eq!(*from, LogicLevel::Low);
                 assert_eq!(*to, LogicLevel::High);
-                assert_eq!(*at, crate::time::Time::from_ticks(20));
+                assert_eq!(at.time(), crate::time::Time::from_ticks(20));
                 assert_eq!(*actual_revision, revision);
                 *cause
             }
@@ -8265,7 +8504,7 @@ mod tests {
         let other_schema = compiled_with_input(10, 2, 30);
         let input = ExternalInputKey::<Level>::from_u128(1);
 
-        for requested in [9, 10] {
+        for requested in [0, 9] {
             let mut machine = initialized_machine(&local, LogicLevel::Low);
             let before = observe(&machine);
             let failure = machine
@@ -8278,13 +8517,10 @@ mod tests {
                         .unwrap_or_else(|_| panic!("delta must build")),
                 ))
                 .unwrap_err();
-            assert_eq!(
-                failure.code(),
-                DiagnosticCode::RuntimeTimeNotStrictlyIncreasing
-            );
+            assert_eq!(failure.code(), DiagnosticCode::RuntimeTimeRegression);
             assert!(matches!(
                 failure.evidence(),
-                RuntimeFailureEvidence::TimeNotStrictlyIncreasing { .. }
+                RuntimeFailureEvidence::TimeRegression { .. }
             ));
             assert_eq!(observe(&machine), before);
         }
@@ -8908,6 +9144,7 @@ mod tests {
         let compiled = compiled_with_input(1, 2, 3);
         let node = NodeKey::from_u128(2);
         let first = PendingEvent::TransportDelay(PendingTransportDelay {
+            stimulus: crate::ReactionStamp::from_parts(crate::time::Time::from_ticks(3), 0),
             key: PendingEventKey::from_serial(1),
             node,
             origin: crate::time::Time::from_ticks(3),
@@ -8920,6 +9157,7 @@ mod tests {
             },
         });
         let second = PendingEvent::TransportDelay(PendingTransportDelay {
+            stimulus: crate::ReactionStamp::from_parts(crate::time::Time::from_ticks(5), 0),
             key: PendingEventKey::from_serial(2),
             node,
             origin: crate::time::Time::from_ticks(5),
@@ -8937,6 +9175,7 @@ mod tests {
             vec![
                 second,
                 PendingEvent::TransportDelay(PendingTransportDelay {
+                    stimulus: crate::ReactionStamp::from_parts(crate::time::Time::from_ticks(3), 0),
                     key: PendingEventKey::from_serial(1),
                     node,
                     origin: crate::time::Time::from_ticks(3),
@@ -8957,5 +9196,46 @@ mod tests {
             Some(&LogicLevel::High)
         );
         assert_eq!(forward.transport_causes, reverse.transport_causes);
+    }
+    #[test]
+    fn reaction_order_overflow_restores_and_rejects_atomically() {
+        let c = compiled_toggle(LogicLevel::Low, false);
+        let mut m = c.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        m.apply(Transaction::initialize(
+            crate::time::Time::from_ticks(10),
+            m.revision(),
+            c.input_snapshot().finish().unwrap(),
+        ))
+        .unwrap();
+        m.store.last_reaction = Some(crate::ReactionStamp::from_parts(
+            crate::time::Time::from_ticks(10),
+            u64::MAX,
+        ));
+        let mut restored = c
+            .restore(m.snapshot(), policy_with([10, 100, 0, 100, 1_000]))
+            .unwrap();
+        let before = restored.snapshot();
+        for forecast in [true, false] {
+            let tx = Transaction::advance(
+                crate::time::Time::from_ticks(10),
+                restored.revision(),
+                c.input_delta().finish().unwrap(),
+            );
+            let failure = if forecast {
+                restored.forecast(tx).unwrap_err()
+            } else {
+                restored.apply(tx).unwrap_err()
+            };
+            assert_eq!(failure.code().as_str(), "runtime.reaction_order_overflow");
+            assert_eq!(restored.snapshot(), before);
+        }
+        let result = restored
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(11),
+                restored.revision(),
+                c.input_delta().finish().unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(result.processed_reactions()[0].order(), 0);
     }
 }

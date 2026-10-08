@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 // SPEC: docs/specs/contracts/machine-snapshot-artifact.yaml "standalone-framing"
 // The eight prefix bytes frame the artifact and are not a digest input.
 const ARTIFACT_PREFIX: [u8; 8] = [0x4d, 0x53, 0x49, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-const SEMANTIC_VERSION: u64 = 1;
+const SEMANTIC_VERSION: u64 = 2;
 
 /// Caller-owned time-domain binding checked before snapshot bytes are emitted.
 #[derive(Debug)]
@@ -252,7 +252,7 @@ fn project<D>(machine: &Machine<D>, label: Option<&str>) -> MachineSnapshot<D> {
     // SPEC: docs/specs/contracts/machine-snapshot-artifact.yaml "snapshot-digest-identity"
     // SnapshotDigest hashes the envelope record with integrity_digest omitted.
     let digest_bytes =
-        *blake3::hash(&domain_separated(SNAPSHOT_DIGEST_DOMAIN, 1, &bare)).as_bytes();
+        *blake3::hash(&domain_separated(SNAPSHOT_DIGEST_DOMAIN, 2, &bare)).as_bytes();
     let snapshot = SnapshotDigest::from_digest(digest_bytes);
     let full = envelope(time_domain, &payload, Some(digest_bytes));
     MachineSnapshot {
@@ -272,6 +272,7 @@ fn assert_projection_invariants<D>(machine: &Machine<D>) {
     match machine.store.status {
         MachineStatus::AwaitingInitialization => {
             if !machine.store.pending_events.is_empty()
+                || machine.last_reaction().is_some()
                 || !machine.store.active_episodes.is_empty()
                 || machine.store.provenance.is_some()
                 || !machine.store.external_levels.is_empty()
@@ -448,6 +449,13 @@ fn ready_lifecycle<D>(
     });
     let ticks = now.ticks();
     record.field("time", |writer| writer.uint(ticks));
+    record.field("reaction_order", |writer| {
+        let order = match machine.last_reaction() {
+            Some(stamp) if stamp.time() == now => stamp.order(),
+            _ => panic!("ready snapshot must retain its committed reaction stamp at current time"),
+        };
+        writer.uint(order)
+    });
     record.finish()
 }
 
@@ -545,6 +553,12 @@ fn write_pending_events<D>(writer: &mut Cbor, machine: &Machine<D>, provenance: 
         record.field("origin_revision", |writer| writer.uint(revision));
         let origin = origin.ticks();
         record.field("origin_time", |writer| writer.uint(origin));
+        record.field("stimulus_time", |writer| {
+            writer.uint(event.stimulus().time().ticks())
+        });
+        record.field("stimulus_order", |writer| {
+            writer.uint(event.stimulus().order())
+        });
         record.field("owner", |writer| writer.nested(&owner));
         events.push((deadline, owner, kind_name, serial, record.finish()));
     }
@@ -723,8 +737,15 @@ fn remembered_value<D>(machine: &Machine<D>, remembered: usize, output: usize) -
 fn periodic_value<D>(machine: &Machine<D>, node: NodeKey, previous_enable: usize) -> Vec<u8> {
     let mut record = Record::new();
     if let Some(anchor) = machine.store.periodic_anchors.get(&node).copied() {
-        let ticks = anchor.ticks();
+        let ticks = anchor.anchor.ticks();
         record.field("anchor", |writer| writer.uint(ticks));
+        record.field("phase_time", |writer| {
+            writer.uint(anchor.origin.time().ticks())
+        });
+        record.field("phase_order", |writer| writer.uint(anchor.origin.order()));
+        if let Some(settled) = anchor.settled {
+            record.field("settled_boundary", |writer| writer.uint(settled.ticks()));
+        }
     }
     let previous = stored_level(machine, previous_enable);
     record.field("previous_enable", |writer| logic_level(writer, previous));
@@ -783,6 +804,9 @@ fn write_episodes<D>(writer: &mut Cbor, machine: &Machine<D>, provenance: &Cause
         let mut record = Record::new();
         let began = episode.began_at().ticks();
         record.field("began_at", |writer| writer.uint(began));
+        record.field("began_order", |writer| {
+            writer.uint(episode.began_stamp().order())
+        });
         record.field("cause", |writer| writer.bytes(&cause));
         let code = episode.condition().code().as_str();
         record.field("code", |writer| writer.text(code));
@@ -793,6 +817,9 @@ fn write_episodes<D>(writer: &mut Cbor, machine: &Machine<D>, provenance: &Cause
         record.field("identity", |writer| writer.bytes(&identity));
         let changed = episode.last_material_change().ticks();
         record.field("last_material_change", |writer| writer.uint(changed));
+        record.field("last_material_order", |writer| {
+            writer.uint(episode.last_material_stamp().order())
+        });
         let owner = encode_node_subject(episode.condition().owner());
         record.field("owner", |writer| writer.nested(&owner));
         let revision = episode_evidence_revision(episode.current());
@@ -957,7 +984,7 @@ fn cause_digest<D>(
 
 pub(crate) fn snapshot_digest_bytes(time_domain: TimeDomainId, payload: &[u8]) -> [u8; 32] {
     let bare = envelope(time_domain, payload, None);
-    *blake3::hash(&domain_separated(SNAPSHOT_DIGEST_DOMAIN, 1, &bare)).as_bytes()
+    *blake3::hash(&domain_separated(SNAPSHOT_DIGEST_DOMAIN, 2, &bare)).as_bytes()
 }
 
 fn envelope(time_domain: TimeDomainId, payload: &[u8], integrity: Option<[u8; 32]>) -> Vec<u8> {
@@ -1042,8 +1069,8 @@ mod tests {
     use std::path::PathBuf;
 
     const PREFIX: [u8; 8] = [0x4d, 0x53, 0x49, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-    const SNAPSHOT_DOMAIN: &str = "mossignal/snapshot_digest/v1";
-    const PROVENANCE_DOMAIN: &str = "mossignal/provenance_record/v1";
+    const SNAPSHOT_DOMAIN: &str = "mossignal/snapshot_digest/v2";
+    const PROVENANCE_DOMAIN: &str = "mossignal/provenance_record/v2";
     const ENVELOPE_FIELDS: &[&str] = &[
         "artifact_kind",
         "artifact_schema_version",
@@ -1539,7 +1566,7 @@ mod tests {
         let fields = record(envelope);
         assert_eq!(field_names(&fields), ENVELOPE_FIELDS);
         for name in VERSION_FIELDS {
-            assert_eq!(uint(field(&fields, name)), 1, "{name}");
+            assert_eq!(uint(field(&fields, name)), 2, "{name}");
         }
         assert_eq!(text(field(&fields, "artifact_kind")), "machine_snapshot");
         let integrity = byte_string(field(&fields, "integrity_digest"));
@@ -1582,7 +1609,7 @@ mod tests {
             "patch_semantics_version",
             "provenance_semantics_version",
         ] {
-            assert_eq!(uint(field(&versions, name)), 1, "{name}");
+            assert_eq!(uint(field(&versions, name)), 2, "{name}");
         }
         let (lifecycle_name, lifecycle_body) = variant(field(&payload, "lifecycle"));
         let provenance = record(field(&payload, "provenance"));
@@ -1633,6 +1660,7 @@ mod tests {
                     "external_levels",
                     "output_baselines",
                     "pending_events",
+                    "reaction_order",
                     "settled_levels",
                     "time",
                 ]
@@ -1653,7 +1681,9 @@ mod tests {
                         "kind",
                         "origin_revision",
                         "origin_time",
-                        "owner"
+                        "owner",
+                        "stimulus_order",
+                        "stimulus_time"
                     ]
                 );
                 assert!(uint(field(&event, "deadline")) > time);
@@ -1724,14 +1754,14 @@ mod tests {
             .filter(|(name, _)| name != "integrity_digest")
             .collect::<Vec<_>>();
         let bare = encode_record(&fields);
-        blake3::hash(&domain_record(SNAPSHOT_DOMAIN, 1, &bare))
+        blake3::hash(&domain_record(SNAPSHOT_DOMAIN, 2, &bare))
             .as_bytes()
             .to_vec()
     }
 
     fn provenance_digest(record: &Value) -> Vec<u8> {
         let encoded = encode_value(record);
-        blake3::hash(&domain_record(PROVENANCE_DOMAIN, 1, &encoded))
+        blake3::hash(&domain_record(PROVENANCE_DOMAIN, 2, &encoded))
             .as_bytes()
             .to_vec()
     }

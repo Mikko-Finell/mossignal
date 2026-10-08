@@ -160,8 +160,11 @@ fn pulses(result: &mossignal::TransactionResult<TestDomain>) -> Vec<(u128, u64, 
         .iter()
         .map(|event| match event {
             OutputEvent::Pulsed {
-                output, count, at, ..
-            } => (output.as_u128(), count.get(), at.ticks()),
+                output,
+                count,
+                stamp: at,
+                ..
+            } => (output.as_u128(), count.get(), at.time().ticks()),
             _ => panic!("Periodic fixture has only a Pulse output"),
         })
         .collect()
@@ -936,8 +939,8 @@ fn equal_deadline_periodics_are_insertion_order_invariant_and_simultaneous() {
             .unwrap();
         assert!(matches!(
             result.output_events(),
-            [OutputEvent::Pulsed { count, at, .. }]
-                if count.get() == 2 && *at == Time::from_ticks(5)
+            [OutputEvent::Pulsed { count, stamp: at, .. }]
+                if count.get() == 2 && at.time() == Time::from_ticks(5)
         ));
     }
 }
@@ -1116,4 +1119,50 @@ fn periodic_inspection_respects_lifecycle_and_maximum_time_cancellation() {
     let result = advance(&fixture, &mut machine, u64::MAX, Some(LogicLevel::Low));
     assert!(pulses(&result).is_empty());
     assert_eq!(result.schedule(), Schedule::Dormant);
+}
+
+#[test]
+fn ordered_reactions_preserve_consumed_and_suppressed_boundaries() {
+    for first in [
+        FirstEmissionPolicy::Immediate,
+        FirstEmissionPolicy::AfterFirstPeriod,
+    ] {
+        for phase in [
+            ReenablePhasePolicy::PreservePhase,
+            ReenablePhasePolicy::RestartPhase,
+        ] {
+            let f = fixture(first, phase);
+            let (mut m, _) = initialize(&f, LogicLevel::High, 0);
+            let due = advance(&f, &mut m, 5, None);
+            assert_eq!(pulses(&due).len(), 1);
+            assert!(pulses(&advance(&f, &mut m, 5, Some(LogicLevel::Low))).is_empty());
+            let enabled = advance(&f, &mut m, 5, Some(LogicLevel::High));
+            assert_eq!(
+                pulses(&enabled).len(),
+                usize::from(
+                    phase == ReenablePhasePolicy::RestartPhase
+                        && first == FirstEmissionPolicy::Immediate
+                )
+            );
+            assert!(pulses(&advance(&f, &mut m, 5, None)).is_empty());
+            let mut restored = f.compiled.restore(m.snapshot(), policy()).unwrap();
+            assert_eq!(restored.last_reaction(), m.last_reaction());
+            assert!(pulses(&advance(&f, &mut restored, 5, None)).is_empty());
+            assert_eq!(pulses(&advance(&f, &mut restored, 10, None)).len(), 1);
+
+            let (mut suppressed, _) = initialize(&f, LogicLevel::High, 0);
+            advance(&f, &mut suppressed, 1, Some(LogicLevel::Low));
+            let empty = advance(&f, &mut suppressed, 5, None);
+            assert!(pulses(&empty).is_empty());
+            let mut restored = f.compiled.restore(suppressed.snapshot(), policy()).unwrap();
+            let enabled = advance(&f, &mut restored, 5, Some(LogicLevel::High));
+            assert_eq!(
+                pulses(&enabled).len(),
+                usize::from(
+                    phase == ReenablePhasePolicy::RestartPhase
+                        && first == FirstEmissionPolicy::Immediate
+                )
+            );
+        }
+    }
 }

@@ -296,6 +296,8 @@ pub struct PendingEventInspection<D> {
     pub node_kind: NodeKind<D>,
     /// Revision observed by this read; `revision` is the scheduling revision.
     pub observed_revision: NetworkRevision,
+    /// Immutable originating occurrence, independent of a restarted timing basis.
+    pub origin_stamp: crate::ReactionStamp<D>,
     pub origin: Time<D>,
     pub deadline: Time<D>,
     pub remaining: Span<D>,
@@ -415,7 +417,7 @@ pub enum ExplainedObservation<D> {
     Pending(PendingEventInspection<D>),
     OutputEvent {
         output: AnyExternalOutputKey,
-        at: Time<D>,
+        at: crate::ReactionStamp<D>,
         revision: NetworkRevision,
         value: OutputEventValue,
         cause: CauseRef,
@@ -738,6 +740,7 @@ impl<D> Machine<D> {
             })
             .retention;
         PendingEventInspection {
+            origin_stamp: event.stimulus(),
             event: key,
             owner,
             node_kind: definition.kind().clone(),
@@ -893,7 +896,7 @@ impl<D> TransactionResult<D> {
             crate::OutputEvent::LevelEstablished {
                 output,
                 value,
-                at,
+                stamp: at,
                 revision,
                 cause,
             } => (
@@ -907,7 +910,7 @@ impl<D> TransactionResult<D> {
                 output,
                 from,
                 to,
-                at,
+                stamp: at,
                 revision,
                 cause,
             } => (
@@ -923,7 +926,7 @@ impl<D> TransactionResult<D> {
             crate::OutputEvent::Pulsed {
                 output,
                 count,
-                at,
+                stamp: at,
                 revision,
                 cause,
             } => (

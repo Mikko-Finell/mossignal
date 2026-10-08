@@ -307,7 +307,8 @@ pub enum DiagnosticCode {
     LifecycleDeltaBeforeInitialization,
     RuntimeStaleRevision,
     RuntimeStaleExecutionState,
-    RuntimeTimeNotStrictlyIncreasing,
+    RuntimeTimeRegression,
+    RuntimeReactionOrderOverflow,
     RuntimeTimeOverflow,
     RuntimeInvalidTimeSubtraction,
     RuntimeZeroSpanNotAllowed,
@@ -617,6 +618,7 @@ pub enum NodeEvidence {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeOperation {
+    ReactionOrderIncrement,
     TimeAddition,
     NonZeroTimeAddition,
     SpanAddition,
@@ -753,6 +755,8 @@ pub struct ConflictEvidence {
     pub controls: ConflictControls,
     /// The exact logical tick at which the conflict settled.
     pub at_ticks: u64,
+    /// The producing occurrence order at that exact physical time.
+    pub reaction_order: u64,
     /// The topology revision under which the conflict settled.
     pub revision: NetworkRevision,
 }
@@ -1249,7 +1253,11 @@ pub enum ProblemEvidence<D> {
         evidence: DigestMismatchEvidence,
         marker: PhantomData<fn() -> D>,
     },
-    RuntimeTimeNotStrictlyIncreasing {
+    RuntimeTimeRegression {
+        evidence: TimeEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    RuntimeReactionOrderOverflow {
         evidence: TimeEvidence,
         marker: PhantomData<fn() -> D>,
     },
@@ -2218,7 +2226,8 @@ opening_diagnostic_registry! {
     LifecycleDeltaBeforeInitialization, Self::LifecycleDeltaBeforeInitialization { .. }, "lifecycle.delta_before_initialization", Error, CallerInput, Lifecycle, false, true, false;
     RuntimeStaleRevision, Self::RuntimeStaleRevision { .. }, "runtime.stale_revision", Error, Compatibility, RevisionMismatch, false, true, false;
     RuntimeStaleExecutionState, Self::RuntimeStaleExecutionState { .. }, "runtime.stale_execution_state", Error, Compatibility, DigestMismatch, false, true, false;
-    RuntimeTimeNotStrictlyIncreasing, Self::RuntimeTimeNotStrictlyIncreasing { .. }, "runtime.time_not_strictly_increasing", Error, CallerInput, Time, false, true, false;
+    RuntimeTimeRegression, Self::RuntimeTimeRegression { .. }, "runtime.time_regression", Error, CallerInput, Time, false, true, false;
+    RuntimeReactionOrderOverflow, Self::RuntimeReactionOrderOverflow { .. }, "runtime.reaction_order_overflow", Error, SemanticRejection, Time, false, true, false;
     RuntimeTimeOverflow, Self::RuntimeTimeOverflow { .. }, "runtime.time_overflow", Error, SemanticRejection, Time, false, true, false;
     RuntimeInvalidTimeSubtraction, Self::RuntimeInvalidTimeSubtraction { .. }, "runtime.invalid_time_subtraction", Error, CallerInput, Time, false, true, false;
     RuntimeZeroSpanNotAllowed, Self::RuntimeZeroSpanNotAllowed { .. }, "runtime.zero_span_not_allowed", Error, CallerInput, Parameter, false, true, false;
@@ -2431,7 +2440,7 @@ impl<D> Diagnostic<D> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticOccurrence<D> {
     problem: Problem<D>,
-    at: Time<D>,
+    at: crate::ReactionStamp<D>,
     revision: NetworkRevision,
 }
 
@@ -2439,14 +2448,15 @@ impl<D> DiagnosticOccurrence<D> {
     /// Creates an occurrence only for a code whose catalogue delivery permits it.
     pub fn new(
         problem: Problem<D>,
-        at: Time<D>,
+        at: crate::ReactionStamp<D>,
         revision: NetworkRevision,
     ) -> Result<Self, Box<Problem<D>>> {
         let evidence_is_coherent = match problem.evidence() {
             ProblemEvidence::RuntimePulseLatchConflictRetained { evidence, .. } => {
                 evidence.policy == ConflictPolicy::RetainAndDiagnose
                     && matches!(evidence.controls, ConflictControls::Pulse { set, reset } if set.is_positive() && reset.is_positive())
-                    && evidence.at_ticks == at.ticks()
+                    && evidence.at_ticks == at.time().ticks()
+                    && evidence.reaction_order == at.order()
                     && evidence.revision == revision
             }
             _ => true,
@@ -2466,6 +2476,12 @@ impl<D> DiagnosticOccurrence<D> {
         }
     }
 
+    /// Returns the producing occurrence.
+    #[must_use]
+    pub const fn stamp(&self) -> crate::ReactionStamp<D> {
+        self.at
+    }
+
     /// Returns the complete catalogue-backed problem.
     #[must_use]
     pub const fn problem(&self) -> &Problem<D> {
@@ -2475,7 +2491,7 @@ impl<D> DiagnosticOccurrence<D> {
     /// Returns the exact reaction time of the condition.
     #[must_use]
     pub const fn at(&self) -> Time<D> {
-        self.at
+        self.at.time()
     }
 
     /// Returns the topology revision under which the condition settled.
@@ -2823,8 +2839,11 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         ProblemEvidence::RuntimeStaleExecutionState { .. } => {
             ConditionDiscriminator::Operation(DiagnosticCode::RuntimeStaleExecutionState)
         }
-        ProblemEvidence::RuntimeTimeNotStrictlyIncreasing { .. } => {
-            ConditionDiscriminator::Operation(DiagnosticCode::RuntimeTimeNotStrictlyIncreasing)
+        ProblemEvidence::RuntimeTimeRegression { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimeTimeRegression)
+        }
+        ProblemEvidence::RuntimeReactionOrderOverflow { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::RuntimeReactionOrderOverflow)
         }
         ProblemEvidence::RuntimeTimeOverflow { .. } => {
             ConditionDiscriminator::Operation(DiagnosticCode::RuntimeTimeOverflow)
@@ -3362,7 +3381,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 193);
+        assert_eq!(leaves.len(), 194);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {
@@ -3626,6 +3645,7 @@ mod tests {
                 set: PulseCount::ONE,
                 reset: PulseCount::new(2),
             },
+            reaction_order: 0,
             at_ticks: at.ticks(),
             revision,
         };
@@ -3637,7 +3657,10 @@ mod tests {
                 marker: PhantomData,
             },
         );
-        assert!(DiagnosticOccurrence::new(retained, at, revision).is_ok());
+        assert!(
+            DiagnosticOccurrence::new(retained, crate::ReactionStamp::from_parts(at, 0), revision)
+                .is_ok()
+        );
 
         let wrong_control_kind = Problem::new(
             SubjectRef::Node(NodeKey::from_u128(7)),
@@ -3653,20 +3676,35 @@ mod tests {
                 marker: PhantomData,
             },
         );
-        assert!(DiagnosticOccurrence::new(wrong_control_kind, at, revision).is_err());
+        assert!(
+            DiagnosticOccurrence::new(
+                wrong_control_kind,
+                crate::ReactionStamp::from_parts(at, 0),
+                revision
+            )
+            .is_err()
+        );
 
         let wrong_time = Problem::new(
             SubjectRef::Node(NodeKey::from_u128(7)),
             Vec::new(),
             ProblemEvidence::RuntimePulseLatchConflictRetained {
                 evidence: ConflictEvidence {
+                    reaction_order: 0,
                     at_ticks: 4,
                     ..conflict.clone()
                 },
                 marker: PhantomData,
             },
         );
-        assert!(DiagnosticOccurrence::new(wrong_time, at, revision).is_err());
+        assert!(
+            DiagnosticOccurrence::new(
+                wrong_time,
+                crate::ReactionStamp::from_parts(at, 0),
+                revision
+            )
+            .is_err()
+        );
 
         let wrong_policy = Problem::new(
             SubjectRef::Node(NodeKey::from_u128(7)),
@@ -3679,7 +3717,14 @@ mod tests {
                 marker: PhantomData,
             },
         );
-        assert!(DiagnosticOccurrence::new(wrong_policy, at, revision).is_err());
+        assert!(
+            DiagnosticOccurrence::new(
+                wrong_policy,
+                crate::ReactionStamp::from_parts(at, 0),
+                revision
+            )
+            .is_err()
+        );
 
         let rejected = Problem::new(
             SubjectRef::Node(NodeKey::from_u128(7)),
@@ -3689,7 +3734,10 @@ mod tests {
                 marker: PhantomData,
             },
         );
-        assert!(DiagnosticOccurrence::new(rejected, at, revision).is_err());
+        assert!(
+            DiagnosticOccurrence::new(rejected, crate::ReactionStamp::from_parts(at, 0), revision)
+                .is_err()
+        );
 
         let operation_failure = Problem::new(
             SubjectRef::Operation(OperationSubjectRef::MachineTransaction),
@@ -3703,6 +3751,13 @@ mod tests {
                 marker: PhantomData,
             },
         );
-        assert!(DiagnosticOccurrence::new(operation_failure, at, revision).is_err());
+        assert!(
+            DiagnosticOccurrence::new(
+                operation_failure,
+                crate::ReactionStamp::from_parts(at, 0),
+                revision
+            )
+            .is_err()
+        );
     }
 }

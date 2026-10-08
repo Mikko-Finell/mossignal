@@ -179,27 +179,27 @@ fn normalize_event(event: &OutputEvent<TestTicks>) -> NormalizedEvent {
         OutputEvent::LevelEstablished {
             output,
             value,
-            at,
+            stamp: at,
             revision,
             ..
         } => NormalizedEvent::Established {
             output: *output,
             value: *value,
-            at: at.ticks(),
+            at: at.time().ticks(),
             revision: *revision,
         },
         OutputEvent::LevelChanged {
             output,
             from,
             to,
-            at,
+            stamp: at,
             revision,
             ..
         } => NormalizedEvent::Changed {
             output: *output,
             from: *from,
             to: *to,
-            at: at.ticks(),
+            at: at.time().ticks(),
             revision: *revision,
         },
         _ => panic!("composed level circuits must emit level output events"),

@@ -25,7 +25,7 @@ use crate::standard::{
     AllEqualInspection, AtMostInspection, ExactlyInspection, StandardInternalCategory,
     StandardModuleDeclaration, all_equal_result_key, at_most_result_key, exactly_result_key,
 };
-use crate::time::{NonZeroSpan, Time};
+use crate::time::{NonZeroSpan, ReactionStamp, Time};
 use crate::transaction::{CauseRef, ProvenanceView};
 use core::fmt;
 use core::marker::PhantomData;
@@ -126,6 +126,7 @@ impl std::error::Error for ScheduleFailure {}
 pub(crate) struct PendingPulseDelay<D> {
     pub(crate) key: PendingEventKey,
     pub(crate) node: NodeKey,
+    pub(crate) stimulus: ReactionStamp<D>,
     pub(crate) origin: Time<D>,
     pub(crate) deadline: Time<D>,
     pub(crate) count: PulseCount,
@@ -145,6 +146,7 @@ impl<D> Copy for PendingPulseDelay<D> {}
 pub(crate) struct PendingTransportDelay<D> {
     pub(crate) key: PendingEventKey,
     pub(crate) node: NodeKey,
+    pub(crate) stimulus: ReactionStamp<D>,
     pub(crate) origin: Time<D>,
     pub(crate) deadline: Time<D>,
     pub(crate) target: LogicLevel,
@@ -164,6 +166,7 @@ impl<D> Copy for PendingTransportDelay<D> {}
 pub(crate) struct PendingInertialDelay<D> {
     pub(crate) key: PendingEventKey,
     pub(crate) node: NodeKey,
+    pub(crate) stimulus: ReactionStamp<D>,
     pub(crate) origin: Time<D>,
     pub(crate) deadline: Time<D>,
     pub(crate) target: LogicLevel,
@@ -183,6 +186,7 @@ impl<D> Copy for PendingInertialDelay<D> {}
 pub(crate) struct PendingPeriodicBoundary<D> {
     pub(crate) key: PendingEventKey,
     pub(crate) node: NodeKey,
+    pub(crate) stimulus: ReactionStamp<D>,
     pub(crate) origin: Time<D>,
     pub(crate) deadline: Time<D>,
     pub(crate) anchor: Time<D>,
@@ -218,6 +222,14 @@ impl<D> Clone for PendingEvent<D> {
 impl<D> Copy for PendingEvent<D> {}
 
 impl<D> PendingEvent<D> {
+    pub(crate) fn stimulus(self) -> ReactionStamp<D> {
+        match self {
+            Self::PulseDelay(e) => e.stimulus,
+            Self::TransportDelay(e) => e.stimulus,
+            Self::Inertial(e) => e.stimulus,
+            Self::Periodic(e) => e.stimulus,
+        }
+    }
     pub(crate) fn identity(
         self,
     ) -> (
@@ -296,6 +308,7 @@ impl<D> PulseDelayDefinitionInspection<D> {
 pub struct PendingPulseDelayInspection<D> {
     event: PendingEventKey,
     node: NodeKey,
+    stimulus: ReactionStamp<D>,
     origin: Time<D>,
     deadline: Time<D>,
     count: PulseCount,
@@ -304,6 +317,12 @@ pub struct PendingPulseDelayInspection<D> {
 }
 
 impl<D> PendingPulseDelayInspection<D> {
+    /// Returns the immutable originating occurrence, independent of retiming.
+    #[must_use]
+    pub const fn origin_stamp(&self) -> ReactionStamp<D> {
+        self.stimulus
+    }
+
     #[must_use]
     pub const fn event(&self) -> PendingEventKey {
         self.event
@@ -380,6 +399,7 @@ impl<D> TransportDelayDefinitionInspection<D> {
 pub struct PendingTransportDelayInspection<D> {
     event: PendingEventKey,
     node: NodeKey,
+    stimulus: ReactionStamp<D>,
     origin: Time<D>,
     deadline: Time<D>,
     target: LogicLevel,
@@ -392,6 +412,7 @@ impl<D> Clone for PendingTransportDelayInspection<D> {
         Self {
             event: self.event,
             node: self.node,
+            stimulus: self.stimulus,
             origin: self.origin,
             deadline: self.deadline,
             target: self.target,
@@ -402,6 +423,12 @@ impl<D> Clone for PendingTransportDelayInspection<D> {
 }
 
 impl<D> PendingTransportDelayInspection<D> {
+    /// Returns the immutable originating occurrence, independent of retiming.
+    #[must_use]
+    pub const fn origin_stamp(&self) -> ReactionStamp<D> {
+        self.stimulus
+    }
+
     #[must_use]
     pub const fn event(&self) -> PendingEventKey {
         self.event
@@ -483,6 +510,7 @@ impl<D> InertialDelayDefinitionInspection<D> {
 pub struct PendingInertialDelayInspection<D> {
     event: PendingEventKey,
     node: NodeKey,
+    stimulus: ReactionStamp<D>,
     origin: Time<D>,
     deadline: Time<D>,
     target: LogicLevel,
@@ -495,6 +523,7 @@ impl<D> Clone for PendingInertialDelayInspection<D> {
         Self {
             event: self.event,
             node: self.node,
+            stimulus: self.stimulus,
             origin: self.origin,
             deadline: self.deadline,
             target: self.target,
@@ -505,6 +534,12 @@ impl<D> Clone for PendingInertialDelayInspection<D> {
 }
 
 impl<D> PendingInertialDelayInspection<D> {
+    /// Returns the immutable originating occurrence, independent of retiming.
+    #[must_use]
+    pub const fn origin_stamp(&self) -> ReactionStamp<D> {
+        self.stimulus
+    }
+
     #[must_use]
     pub const fn event(&self) -> PendingEventKey {
         self.event
@@ -706,6 +741,7 @@ impl<D> PeriodicDefinitionInspection<D> {
 pub struct PendingPeriodicBoundaryInspection<D> {
     event: PendingEventKey,
     node: NodeSubject,
+    stimulus: ReactionStamp<D>,
     origin: Time<D>,
     deadline: Time<D>,
     anchor: Time<D>,
@@ -721,6 +757,7 @@ impl<D> Clone for PendingPeriodicBoundaryInspection<D> {
         Self {
             event: self.event,
             node: self.node.clone(),
+            stimulus: self.stimulus,
             origin: self.origin,
             deadline: self.deadline,
             anchor: self.anchor,
@@ -734,6 +771,12 @@ impl<D> Clone for PendingPeriodicBoundaryInspection<D> {
 }
 
 impl<D> PendingPeriodicBoundaryInspection<D> {
+    /// Returns the immutable originating occurrence, independent of retiming.
+    #[must_use]
+    pub const fn origin_stamp(&self) -> ReactionStamp<D> {
+        self.stimulus
+    }
+
     #[must_use]
     pub const fn event(&self) -> PendingEventKey {
         self.event
@@ -785,6 +828,8 @@ pub struct PeriodicInspection<D> {
     remembered_enable: LogicLevel,
     enable: LogicLevel,
     anchor: Option<Time<D>>,
+    phase_origin: Option<ReactionStamp<D>>,
+    settled_boundary: Option<Time<D>>,
     revision: NetworkRevision,
     at: Time<D>,
     current_support: CauseRef,
@@ -805,6 +850,8 @@ impl<D> Clone for PeriodicInspection<D> {
             remembered_enable: self.remembered_enable,
             enable: self.enable,
             anchor: self.anchor,
+            phase_origin: self.phase_origin,
+            settled_boundary: self.settled_boundary,
             revision: self.revision,
             at: self.at,
             current_support: self.current_support,
@@ -845,6 +892,16 @@ impl<D> PeriodicInspection<D> {
     #[must_use]
     pub const fn anchor(&self) -> Option<Time<D>> {
         self.anchor
+    }
+    /// Returns the occurrence that established the current phase.
+    #[must_use]
+    pub const fn phase_origin(&self) -> Option<ReactionStamp<D>> {
+        self.phase_origin
+    }
+    /// Returns the most recent emitted or suppressed boundary of this phase.
+    #[must_use]
+    pub const fn settled_boundary(&self) -> Option<Time<D>> {
+        self.settled_boundary
     }
     #[must_use]
     pub const fn revision(&self) -> NetworkRevision {
@@ -1170,6 +1227,7 @@ impl ModuleOutputInspection {
 /// One qualified pending temporal obligation owned by a module-local PulseDelay.
 pub struct ModulePendingPulseDelayInspection<D> {
     event: PendingEventKey,
+    stimulus: ReactionStamp<D>,
     origin: Time<D>,
     deadline: Time<D>,
     count: PulseCount,
@@ -1177,6 +1235,11 @@ pub struct ModulePendingPulseDelayInspection<D> {
 }
 
 impl<D> ModulePendingPulseDelayInspection<D> {
+    /// Returns immutable originating occurrence.
+    #[must_use]
+    pub const fn origin_stamp(&self) -> ReactionStamp<D> {
+        self.stimulus
+    }
     #[must_use]
     pub const fn event(&self) -> PendingEventKey {
         self.event
@@ -1547,11 +1610,33 @@ impl<D> fmt::Debug for MachineStatus<D> {
     }
 }
 
+// SPEC: docs/specs/contracts/ordered-reactions.yaml "singular-inertial-and-once-only-phase"
+// Cadence/anchor and phase identity are separate; settled includes suppressed boundaries.
+#[derive(Debug)]
+pub(crate) struct PeriodicPhase<D> {
+    pub(crate) anchor: Time<D>,
+    pub(crate) origin: ReactionStamp<D>,
+    pub(crate) settled: Option<Time<D>>,
+}
+impl<D> Clone for PeriodicPhase<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<D> Copy for PeriodicPhase<D> {}
+impl<D> PartialEq for PeriodicPhase<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.anchor == other.anchor && self.origin == other.origin && self.settled == other.settled
+    }
+}
+impl<D> Eq for PeriodicPhase<D> {}
+
 pub(crate) struct MachineStore<D> {
     // Explicit last-reaction history, never input to network evaluation.
     pub(crate) standard_history:
         BTreeMap<QualifiedModuleRef, crate::standard::stateful::StandardHistory>,
     pub(crate) status: MachineStatus<D>,
+    pub(crate) last_reaction: Option<ReactionStamp<D>>,
     pub(crate) revision: NetworkRevision,
     pub(crate) external_levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     pub(crate) settled_levels: Vec<LogicLevel>,
@@ -1568,7 +1653,7 @@ pub(crate) struct MachineStore<D> {
     pub(crate) establishment_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) transport_transition_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) inertial_cancellation_causes: BTreeMap<NodeKey, CauseRef>,
-    pub(crate) periodic_anchors: BTreeMap<NodeKey, Time<D>>,
+    pub(crate) periodic_anchors: BTreeMap<NodeKey, PeriodicPhase<D>>,
     pub(crate) periodic_anchor_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) periodic_cancellation_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) active_episodes: crate::episode::ActiveEpisodes<D>,
@@ -1581,6 +1666,7 @@ impl<D> Clone for MachineStore<D> {
         Self {
             standard_history: self.standard_history.clone(),
             status: self.status,
+            last_reaction: self.last_reaction,
             revision: self.revision,
             external_levels: self.external_levels.clone(),
             settled_levels: self.settled_levels.clone(),
@@ -1665,6 +1751,12 @@ impl<D> ForecastState<D> {
     #[must_use]
     pub fn now(&self) -> Option<Time<D>> {
         self.machine.now()
+    }
+
+    /// Returns the candidate last occurrence without modifying the live machine.
+    #[must_use]
+    pub fn last_reaction(&self) -> Option<ReactionStamp<D>> {
+        self.machine.last_reaction()
     }
 
     /// Returns the candidate topology revision.
@@ -2671,6 +2763,7 @@ impl<D> Machine<D> {
             store: MachineStore {
                 standard_history: BTreeMap::new(),
                 status: MachineStatus::AwaitingInitialization,
+                last_reaction: None,
                 revision: NetworkRevision::INITIAL,
                 external_levels: BTreeMap::new(),
                 settled_levels: Vec::new(),
@@ -2726,6 +2819,12 @@ impl<D> Machine<D> {
             MachineStatus::AwaitingInitialization => None,
             MachineStatus::Ready { now } => Some(now),
         }
+    }
+
+    /// Returns the last committed occurrence, or absence before initialization.
+    #[must_use]
+    pub const fn last_reaction(&self) -> Option<ReactionStamp<D>> {
+        self.store.last_reaction
     }
 
     /// Returns the machine-local revision of the installed topology.
@@ -2943,6 +3042,7 @@ impl<D> Machine<D> {
                     Some(PendingPulseDelayInspection {
                         event: event.key,
                         node: event.node,
+                        stimulus: event.stimulus,
                         origin: event.origin,
                         deadline: event.deadline,
                         count: event.count,
@@ -3032,6 +3132,7 @@ impl<D> Machine<D> {
                     Some(PendingTransportDelayInspection {
                         event: event.key,
                         node: event.node,
+                        stimulus: event.stimulus,
                         origin: event.origin,
                         deadline: event.deadline,
                         target: event.target,
@@ -3130,6 +3231,7 @@ impl<D> Machine<D> {
                     Some(PendingInertialDelayInspection {
                         event: event.key,
                         node: event.node,
+                        stimulus: event.stimulus,
                         origin: event.origin,
                         deadline: event.deadline,
                         target: event.target,
@@ -3220,6 +3322,7 @@ impl<D> Machine<D> {
                     Some(PendingPeriodicBoundaryInspection {
                         event: event.key,
                         node: self.compiled.node_subject(event.node),
+                        stimulus: event.stimulus,
                         origin: event.origin,
                         deadline: event.deadline,
                         anchor: event.anchor,
@@ -3236,6 +3339,16 @@ impl<D> Machine<D> {
             .as_ref()
             .map(PendingPeriodicBoundaryInspection::deadline);
         Some(PeriodicInspection {
+            phase_origin: self
+                .store
+                .periodic_anchors
+                .get(&node)
+                .map(|phase| phase.origin),
+            settled_boundary: self
+                .store
+                .periodic_anchors
+                .get(&node)
+                .and_then(|phase| phase.settled),
             node: self.compiled.node_subject(node),
             period,
             first_emission,
@@ -3247,7 +3360,11 @@ impl<D> Machine<D> {
                 .get(enable_operation)?
                 .as_ref()
                 .copied()?,
-            anchor: self.store.periodic_anchors.get(&node).copied(),
+            anchor: self
+                .store
+                .periodic_anchors
+                .get(&node)
+                .map(|phase| phase.anchor),
             revision: self.store.revision,
             at: now,
             current_support,
@@ -3363,6 +3480,7 @@ impl<D> Machine<D> {
                     PendingEvent::PulseDelay(event) if event.node == flat => {
                         Some(ModulePendingPulseDelayInspection {
                             event: event.key,
+                            stimulus: event.stimulus,
                             origin: event.origin,
                             deadline: event.deadline,
                             count: event.count,

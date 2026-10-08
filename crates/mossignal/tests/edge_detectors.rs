@@ -219,7 +219,7 @@ fn edge_pulse_activity_is_result_owned_while_remembered_state_remains_inspectabl
         OutputEvent::Pulsed {
             output,
             count,
-            at,
+            stamp: at,
             cause,
             revision,
         },
@@ -229,7 +229,7 @@ fn edge_pulse_activity_is_result_owned_while_remembered_state_remains_inspectabl
     };
     assert_eq!(*output, fixture.output);
     assert_eq!(*count, PulseCount::ONE);
-    assert_eq!(*at, Time::from_ticks(1));
+    assert_eq!(at.time(), Time::from_ticks(1));
     assert_eq!(*revision, machine.revision());
     assert!(emitted.provenance().inspect(*cause).is_ok());
 
@@ -334,7 +334,7 @@ fn reachable_levels(
             .inspect(cause)
             .unwrap_or_else(|failure| panic!("cause must resolve: {failure}"))
         {
-            CauseInspection::ExternalObservation { input, value } => {
+            CauseInspection::ExternalObservation { input, value, .. } => {
                 levels.insert((input, value));
             }
             CauseInspection::Derived { supporters, .. }

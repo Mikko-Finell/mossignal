@@ -1333,6 +1333,169 @@ fn inherited_input_and_retimed_pending_work_restore_against_target() {
 }
 
 #[test]
+fn ordered_restart_then_recompute_uses_restarted_basis_and_immutable_origin() {
+    let mut builder =
+        NetworkBuilder::with_key(NetworkKey::from_u128(720), TimeDomainId::from_u128(730));
+    let input = ExternalInputKey::<Pulse>::from_u128(1);
+    let source = builder
+        .add_pulse_input(input, DiagnosticMeta::default())
+        .unwrap();
+    let node = NodeKey::from_u128(2);
+    let delayed = builder
+        .add_pulse_delay(
+            node,
+            source,
+            PulseDelayConfig::new(delay(10)),
+            DiagnosticMeta::default(),
+        )
+        .unwrap()
+        .into_outputs();
+    let output = ExternalOutputKey::<Pulse>::from_u128(3);
+    builder
+        .add_pulse_output(output, delayed, DiagnosticMeta::default())
+        .unwrap();
+    let compiled = compile(builder);
+    let mut machine = compiled.spawn(policy());
+    init(
+        &mut machine,
+        Time::from_ticks(0),
+        compiled.input_snapshot().finish().unwrap(),
+    );
+    machine
+        .apply(Transaction::advance(
+            Time::from_ticks(0),
+            machine.revision(),
+            compiled
+                .input_delta()
+                .pulse(input, PulseCount::ONE)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    let origin = machine.inspect_pulse_delay(node).unwrap().pending()[0].origin_stamp();
+    assert_eq!(origin.order(), 1);
+    let restart = prepare(
+        &machine,
+        machine
+            .patch()
+            .replace_node(
+                node,
+                node_def(&compiled, node),
+                NodeMigrationDirective::PulseDelay(PulseDelayMigration::RestartFromPatchTime),
+            )
+            .unwrap()
+            .finish(),
+    );
+    machine
+        .apply(
+            Transaction::advance(
+                Time::from_ticks(4),
+                machine.revision(),
+                level_delta(restart.resulting_compiled(), &[]),
+            )
+            .with_patch(restart, ReconfigurationPolicy::AllowReportedStateLoss)
+            .unwrap(),
+        )
+        .unwrap();
+    let inspection = machine.inspect_pulse_delay(node).unwrap();
+    assert_eq!(inspection.pending()[0].origin(), Time::from_ticks(4));
+    assert_eq!(inspection.pending()[0].origin_stamp(), origin);
+    let old = node_def(machine.compiled(), node);
+    let replacement = NodeDef::new(
+        node,
+        NodeKind::pulse_delay(delay(2)),
+        old.ports().clone(),
+        DiagnosticMeta::default(),
+    );
+    let recompute = prepare(
+        &machine,
+        machine
+            .patch()
+            .replace_node(
+                node,
+                replacement,
+                NodeMigrationDirective::PulseDelay(PulseDelayMigration::RecomputeFromOrigin {
+                    overdue: mossignal::OverdueMigrationPolicy::Reject,
+                }),
+            )
+            .unwrap()
+            .finish(),
+    );
+    let target = recompute.resulting_compiled().clone();
+    let result = machine
+        .apply(
+            Transaction::advance(
+                Time::from_ticks(5),
+                machine.revision(),
+                level_delta(&target, &[]),
+            )
+            .with_patch(recompute, ReconfigurationPolicy::RejectStateLoss)
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(!pulsed(&result, output));
+    let inspection = machine.inspect_pulse_delay(node).unwrap();
+    assert_eq!(inspection.pending()[0].deadline(), Time::from_ticks(6));
+    assert_eq!(inspection.pending()[0].origin_stamp(), origin);
+    let mut restored = target.restore(machine.snapshot(), policy()).unwrap();
+    let tx = Transaction::advance(
+        Time::from_ticks(6),
+        machine.revision(),
+        level_delta(&target, &[]),
+    );
+    let real = machine.apply(tx.clone()).unwrap();
+    let replayed = restored.apply(tx).unwrap();
+    assert!(pulsed(&real, output));
+    assert_eq!(
+        real.after_observable_digest(),
+        replayed.after_observable_digest()
+    );
+    assert_eq!(machine.snapshot(), restored.snapshot());
+}
+
+#[test]
+fn ordered_current_time_patch_preserves_predecessor_boundary_and_phase() {
+    let (mut machine, _, node, output) =
+        periodic_migration_machine(mossignal::FirstEmissionPolicy::Immediate, LogicLevel::High);
+    let due = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(5),
+            machine.revision(),
+            level_delta(machine.compiled(), &[]),
+        ))
+        .unwrap();
+    assert!(pulsed(&due, output));
+    let phase = machine.inspect_periodic(node).unwrap().phase_origin();
+    let patch = replace_periodic(
+        &machine,
+        node,
+        5,
+        mossignal::FirstEmissionPolicy::Immediate,
+        NodeMigrationDirective::Periodic(mossignal::PeriodicMigration::RecomputeFromExistingAnchor),
+    );
+    let target = patch.resulting_compiled().clone();
+    let result = machine
+        .apply(
+            Transaction::advance(
+                Time::from_ticks(5),
+                machine.revision(),
+                level_delta(&target, &[]),
+            )
+            .with_patch(patch, ReconfigurationPolicy::RejectStateLoss)
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(!pulsed(&result, output));
+    assert_eq!(result.processed_reactions()[0].order(), 1);
+    let inspected = machine.inspect_periodic(node).unwrap();
+    assert_eq!(inspected.phase_origin(), phase);
+    assert_eq!(inspected.settled_boundary(), Some(Time::from_ticks(5)));
+    assert_eq!(inspected.next_deadline(), Some(Time::from_ticks(10)));
+    target.restore(machine.snapshot(), policy()).unwrap();
+}
+
+#[test]
 fn removed_level_input_reports_the_reached_valuation_as_loss() {
     let mut builder =
         NetworkBuilder::with_key(NetworkKey::from_u128(74), TimeDomainId::from_u128(75));
@@ -2632,8 +2795,8 @@ fn periodic_recomputation_keeps_a_preserved_future_phase_reference() {
         assert_eq!(pulsed(&applied, output), patch_time == 5);
         if patch_time == 5 {
             assert!(
-                matches!(applied.output_events(), [OutputEvent::Pulsed { at, count, output: found, .. }]
-                if *at == Time::from_ticks(5) && *count == PulseCount::ONE && *found == output)
+                matches!(applied.output_events(), [OutputEvent::Pulsed { stamp: at, count, output: found, .. }]
+                if at.time() == Time::from_ticks(5) && *count == PulseCount::ONE && *found == output)
             );
         }
         let inspected = machine.inspect_periodic(node).unwrap();
@@ -2656,8 +2819,8 @@ fn periodic_recomputation_keeps_a_preserved_future_phase_reference() {
             let fired = machine.apply(firing.clone()).unwrap();
             restored.apply(firing).unwrap();
             assert!(
-                matches!(fired.output_events(), [OutputEvent::Pulsed { at, count, output: found, .. }]
-                if *at == Time::from_ticks(5) && *count == PulseCount::ONE && *found == output)
+                matches!(fired.output_events(), [OutputEvent::Pulsed { stamp: at, count, output: found, .. }]
+                if at.time() == Time::from_ticks(5) && *count == PulseCount::ONE && *found == output)
             );
             assert_eq!(
                 machine

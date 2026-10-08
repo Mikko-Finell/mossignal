@@ -833,7 +833,7 @@ impl<D> CompiledNetwork<D> {
         previous_edge_observations: &[EdgeObservation],
         previous_stored_levels: &[LogicLevel],
         at: Time<D>,
-        periodic_anchors: &BTreeMap<NodeKey, Time<D>>,
+        periodic_anchors: &BTreeMap<NodeKey, crate::machine::PeriodicPhase<D>>,
     ) -> Result<FullEvaluation, EvaluationFailure> {
         self.inner.evaluate_reaction_with_due(
             external_levels,
@@ -861,7 +861,7 @@ impl<D> CompiledNetwork<D> {
         due_inertials: &BTreeMap<NodeKey, LogicLevel>,
         due_periodics: &BTreeMap<NodeKey, u64>,
         at: Time<D>,
-        periodic_anchors: &BTreeMap<NodeKey, Time<D>>,
+        periodic_anchors: &BTreeMap<NodeKey, crate::machine::PeriodicPhase<D>>,
     ) -> Result<FullEvaluation, EvaluationFailure> {
         self.inner.evaluate_reaction_with_due(
             external_levels,
@@ -1704,7 +1704,7 @@ impl<D> CompiledInner<D> {
         previous_edge_observations: &[EdgeObservation],
         previous_stored_levels: &[LogicLevel],
         at: Time<D>,
-        periodic_anchors: &BTreeMap<NodeKey, Time<D>>,
+        periodic_anchors: &BTreeMap<NodeKey, crate::machine::PeriodicPhase<D>>,
         due_pulses: &BTreeMap<NodeKey, PulseCount>,
         due_transports: &BTreeMap<NodeKey, LogicLevel>,
         due_inertials: &BTreeMap<NodeKey, LogicLevel>,
@@ -2515,8 +2515,9 @@ impl<D> CompiledInner<D> {
                             && match (*reenable_phase, periodic_anchors.get(key).copied()) {
                                 (ReenablePhasePolicy::RestartPhase, _) | (_, None) => true,
                                 (ReenablePhasePolicy::PreservePhase, Some(anchor)) => {
-                                    at.ticks() >= anchor.ticks()
-                                        && (at.ticks() - anchor.ticks()) % *period_ticks == 0
+                                    at >= anchor.anchor
+                                        && (at.ticks() - anchor.anchor.ticks()) % *period_ticks == 0
+                                        && anchor.settled.is_none_or(|settled| settled < at)
                                 }
                             };
                         let emitted = current.is_high() && (due.is_some() || immediate);

@@ -518,14 +518,14 @@ fn bound_machine_delegates_and_projects_level_and_pulse_events_losslessly() {
                 OutputEvent::LevelEstablished {
                     output,
                     value,
-                    at,
+                    stamp: at,
                     cause,
                     revision,
                 },
                 ProjectedOutputEvent::LevelEstablished {
                     output: OutputId::Level,
                     value: projected_value,
-                    at: projected_at,
+                    stamp: projected_at,
                     cause: projected_cause,
                     revision: projected_revision,
                 },
@@ -540,14 +540,14 @@ fn bound_machine_delegates_and_projects_level_and_pulse_events_losslessly() {
                 OutputEvent::Pulsed {
                     output,
                     count,
-                    at,
+                    stamp: at,
                     cause,
                     revision,
                 },
                 ProjectedOutputEvent::Pulsed {
                     output: OutputId::Pulse,
                     count: projected_count,
-                    at: projected_at,
+                    stamp: projected_at,
                     cause: projected_cause,
                     revision: projected_revision,
                 },
@@ -563,13 +563,13 @@ fn bound_machine_delegates_and_projects_level_and_pulse_events_losslessly() {
     }
     assert!(matches!(
         &bound_result.projected_output_events()[0],
-        ProjectedOutputEvent::LevelEstablished { output: OutputId::Level, value: LogicLevel::High, at, .. }
-        if *at == Time::from_ticks(5)
+        ProjectedOutputEvent::LevelEstablished { output: OutputId::Level, value: LogicLevel::High, stamp: at, .. }
+        if at.time() == Time::from_ticks(5)
     ));
     assert!(matches!(
         &bound_result.projected_output_events()[1],
-        ProjectedOutputEvent::Pulsed { output: OutputId::Pulse, count, at, .. }
-        if *count == PulseCount::new(2) && *at == Time::from_ticks(5)
+        ProjectedOutputEvent::Pulsed { output: OutputId::Pulse, count, stamp: at, .. }
+        if *count == PulseCount::new(2) && at.time() == Time::from_ticks(5)
     ));
     for event in bound_result.projected_output_events() {
         let cause = match event {
@@ -616,9 +616,9 @@ fn bound_machine_delegates_and_projects_level_and_pulse_events_losslessly() {
             output: OutputId::Level,
             from: LogicLevel::High,
             to: LogicLevel::Low,
-            at,
+            stamp: at,
             ..
-        }] if *at == Time::from_ticks(6)
+        }] if at.time() == Time::from_ticks(6)
     ));
     assert_eq!(bound.output_level(&OutputId::Level), Ok(LogicLevel::Low));
     assert_eq!(
@@ -688,7 +688,7 @@ fn bound_current_output_is_level_only_and_failed_projection_is_machine_atomic() 
         bound.output_level(&OutputId::Level),
     );
     assert!(matches!(
-        bound.advance(Time::from_ticks(1), Vec::<InputObservation<InputId>>::new(),),
+        bound.advance(Time::from_ticks(0), Vec::<InputObservation<InputId>>::new(),),
         Err(BoundApplyFailure::Runtime(_))
     ));
     assert_eq!(

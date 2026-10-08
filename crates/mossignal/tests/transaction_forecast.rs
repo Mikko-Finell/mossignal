@@ -159,14 +159,14 @@ fn assert_same_events(left: &[OutputEvent<Domain>], right: &[OutputEvent<Domain>
                 OutputEvent::LevelEstablished {
                     output: left_output,
                     value: left_value,
-                    at: left_at,
+                    stamp: left_at,
                     cause: left_cause,
                     revision: left_revision,
                 },
                 OutputEvent::LevelEstablished {
                     output: right_output,
                     value: right_value,
-                    at: right_at,
+                    stamp: right_at,
                     cause: right_cause,
                     revision: right_revision,
                 },
@@ -182,7 +182,7 @@ fn assert_same_events(left: &[OutputEvent<Domain>], right: &[OutputEvent<Domain>
                     output: left_output,
                     from: left_from,
                     to: left_to,
-                    at: left_at,
+                    stamp: left_at,
                     cause: left_cause,
                     revision: left_revision,
                 },
@@ -190,7 +190,7 @@ fn assert_same_events(left: &[OutputEvent<Domain>], right: &[OutputEvent<Domain>
                     output: right_output,
                     from: right_from,
                     to: right_to,
-                    at: right_at,
+                    stamp: right_at,
                     cause: right_cause,
                     revision: right_revision,
                 },
@@ -206,14 +206,14 @@ fn assert_same_events(left: &[OutputEvent<Domain>], right: &[OutputEvent<Domain>
                 OutputEvent::Pulsed {
                     output: left_output,
                     count: left_count,
-                    at: left_at,
+                    stamp: left_at,
                     cause: left_cause,
                     revision: left_revision,
                 },
                 OutputEvent::Pulsed {
                     output: right_output,
                     count: right_count,
-                    at: right_at,
+                    stamp: right_at,
                     cause: right_cause,
                     revision: right_revision,
                 },
@@ -333,7 +333,7 @@ fn forecast_failure_matches_apply_and_publishes_nothing() {
 
     machine
         .apply(Transaction::initialize(
-            Time::from_ticks(0),
+            Time::from_ticks(1),
             machine.revision(),
             level_snapshot(&compiled, input, LogicLevel::Low),
         ))
@@ -345,7 +345,7 @@ fn forecast_failure_matches_apply_and_publishes_nothing() {
             machine.revision(),
             level_delta(&compiled, input, LogicLevel::High),
         ))
-        .expect_err("a non-increasing time must fail");
+        .expect_err("a earlier time must fail");
     assert_unchanged(&ready, &machine);
     let applied = machine
         .apply(Transaction::advance(
@@ -353,7 +353,7 @@ fn forecast_failure_matches_apply_and_publishes_nothing() {
             machine.revision(),
             level_delta(&compiled, input, LogicLevel::High),
         ))
-        .expect_err("the same non-increasing time must fail");
+        .expect_err("the same earlier time must fail");
     assert_same_failure(&forecast, &applied);
     assert_unchanged(&ready, &machine);
 }

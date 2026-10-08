@@ -354,8 +354,11 @@ fn pulse_events<D>(events: &[OutputEvent<D>]) -> Vec<(u128, u64, u64)> {
         .iter()
         .map(|event| match event {
             OutputEvent::Pulsed {
-                output, count, at, ..
-            } => (output.as_u128(), count.get(), at.ticks()),
+                output,
+                count,
+                stamp: at,
+                ..
+            } => (output.as_u128(), count.get(), at.time().ticks()),
             _ => panic!("temporal fixture must publish only pulse events"),
         })
         .collect()
@@ -449,6 +452,7 @@ fn pulse_delay_schedules_exact_future_work_and_fires_once() {
         count,
         revision,
         supporters,
+        ..
     } = initialized
         .provenance()
         .inspect(pending.cause())
@@ -526,9 +530,9 @@ fn transport_delay_preserves_reversals_and_due_work_at_target_time() {
         [OutputEvent::LevelEstablished {
             output: actual,
             value: LogicLevel::Low,
-            at,
+            stamp: at,
             ..
-        }] if *actual == output && *at == Time::from_ticks(10)
+        }] if *actual == output && at.time() == Time::from_ticks(10)
     ));
     assert_eq!(machine.next_deadline(), Ok(Some(Time::from_ticks(15))));
     let inspection = machine.inspect_transport_delay(node).unwrap();
@@ -573,9 +577,9 @@ fn transport_delay_preserves_reversals_and_due_work_at_target_time() {
             OutputEvent::LevelChanged {
                 output: actual,
                 to,
-                at,
+                stamp: at,
                 ..
-            } => (*actual, *to, *at),
+            } => (*actual, *to, at.time()),
             _ => panic!("jumped TransportDelay must publish only level changes"),
         })
         .collect::<Vec<_>>();
@@ -623,9 +627,9 @@ fn inertial_delay_cancels_replaces_and_matures_one_candidate() {
         [OutputEvent::LevelEstablished {
             output: actual,
             value: LogicLevel::Low,
-            at,
+            stamp: at,
             ..
-        }] if *actual == output && *at == Time::from_ticks(10)
+        }] if *actual == output && at.time() == Time::from_ticks(10)
     ));
     let first = machine.inspect_inertial_delay(node).unwrap();
     assert_eq!(first.remembered_input(), LogicLevel::High);
@@ -673,7 +677,7 @@ fn inertial_delay_cancels_replaces_and_matures_one_candidate() {
         CauseInspection::Derived { supporters: input_supporters, .. }
             if input_supporters.iter().any(|input_cause| matches!(
                 canceled_inspection.provenance().inspect(*input_cause).unwrap(),
-                CauseInspection::ExternalObservation { input: observed, value: LogicLevel::Low }
+                CauseInspection::ExternalObservation { input: observed, value: LogicLevel::Low , .. }
                     if observed == input
             ))
     )));
@@ -712,9 +716,9 @@ fn inertial_delay_cancels_replaces_and_matures_one_candidate() {
             output: actual,
             from: LogicLevel::Low,
             to: LogicLevel::High,
-            at,
+            stamp: at,
             ..
-        }] if *actual == output && *at == Time::from_ticks(18)
+        }] if *actual == output && at.time() == Time::from_ticks(18)
     ));
     let final_inspection = machine.inspect_inertial_delay(node).unwrap();
     assert_eq!(final_inspection.committed(), LogicLevel::High);
@@ -761,9 +765,9 @@ fn inertial_delay_exact_deadline_matures_before_opposite_replacement() {
             output: actual,
             from: LogicLevel::Low,
             to: LogicLevel::High,
-            at,
+            stamp: at,
             ..
-        }] if *actual == output && *at == Time::from_ticks(5)
+        }] if *actual == output && at.time() == Time::from_ticks(5)
     ));
     let pending = machine.inspect_inertial_delay(node).unwrap();
     assert_eq!(pending.committed(), LogicLevel::High);
@@ -787,9 +791,9 @@ fn inertial_delay_exact_deadline_matures_before_opposite_replacement() {
             output: actual,
             from: LogicLevel::High,
             to: LogicLevel::Low,
-            at,
+            stamp: at,
             ..
-        }] if *actual == output && *at == Time::from_ticks(10)
+        }] if *actual == output && at.time() == Time::from_ticks(10)
     ));
     assert!(
         machine
@@ -858,8 +862,8 @@ fn transport_delay_initial_state_is_shared_by_input_memory_and_output() {
                 ))
                 .unwrap();
             assert!(matches!(result.output_events(),
-                [OutputEvent::LevelEstablished { value, at, .. }]
-                    if *value == initial && *at == Time::from_ticks(11)
+                [OutputEvent::LevelEstablished { value, stamp: at, .. }]
+                    if *value == initial && at.time() == Time::from_ticks(11)
             ));
             let observed = machine.inspect_transport_delay(fixture.node).unwrap();
             assert_eq!(observed.initial(), initial);
@@ -945,7 +949,9 @@ fn transport_delay_matches_reference_recurrence_across_input_histories() {
                         .output_events()
                         .iter()
                         .map(|event| match event {
-                            OutputEvent::LevelChanged { at, to, .. } => (at.ticks(), *to),
+                            OutputEvent::LevelChanged { stamp: at, to, .. } => {
+                                (at.time().ticks(), *to)
+                            }
                             _ => panic!("reference history may publish only LevelChanged events"),
                         })
                         .collect::<Vec<_>>();
@@ -1202,8 +1208,8 @@ fn transport_chain_direct_jump_matches_internal_deadline_steps() {
     assert!(at_target.output_events().is_empty());
     for events in [direct.output_events(), at_second.output_events()] {
         assert!(matches!(events,
-            [OutputEvent::LevelChanged { output, to: LogicLevel::High, at, .. }]
-                if *output == fixture.output && *at == Time::from_ticks(9)
+            [OutputEvent::LevelChanged { output, to: LogicLevel::High, stamp: at, .. }]
+                if *output == fixture.output && at.time() == Time::from_ticks(9)
         ));
     }
     for machine in [&jumped, &stepped] {
@@ -1909,5 +1915,225 @@ fn every_temporal_budget_accepts_exact_limit_and_rejects_one_below_atomically() 
                 Ok(Schedule::WakeAt(Time::from_ticks(3)))
             );
         }
+    }
+}
+
+fn external_round_trip<D>(
+    compiled: &mossignal::CompiledNetwork<D>,
+    machine: &mossignal::Machine<D>,
+) -> mossignal::Machine<D> {
+    let context = mossignal::PersistenceContext::new(compiled.time_domain_id());
+    let bytes = mossignal::encode_snapshot(&context, &machine.snapshot()).unwrap();
+    let snapshot = mossignal::decode_snapshot(
+        &context,
+        bytes.as_bytes(),
+        &mossignal::DecodePolicy::new(
+            8_000_000, 64, 2_000_000, 8_000_000, 200_000, 10_000, 10_000, 10_000, 1_000, 10_000,
+            100_000, 100_000, 10_000, 1_000, 1_000_000,
+        ),
+    )
+    .unwrap();
+    let restored = compiled.restore(snapshot, generous_policy()).unwrap();
+    assert_eq!(
+        restored.execution_state_digest(),
+        machine.execution_state_digest()
+    );
+    assert_eq!(restored.last_reaction(), machine.last_reaction());
+    restored
+}
+
+#[test]
+fn ordered_pulse_groups_aggregate_and_survive_external_restore() {
+    let f = delay_fixture(5);
+    let mut m = f.compiled.spawn(generous_policy());
+    m.apply(Transaction::initialize(
+        Time::from_ticks(0),
+        m.revision(),
+        f.compiled.input_snapshot().finish().unwrap(),
+    ))
+    .unwrap();
+    for order in 1..=2 {
+        let delta = f
+            .compiled
+            .input_delta()
+            .pulse(f.input, PulseCount::ONE)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let result = m
+            .apply(Transaction::advance(
+                Time::from_ticks(0),
+                m.revision(),
+                delta,
+            ))
+            .unwrap();
+        assert_eq!(result.processed_reactions()[0].order(), order);
+    }
+    let pending = m.inspect_pulse_delay(f.node).unwrap();
+    assert_eq!(pending.pending().len(), 2);
+    assert_eq!(pending.pending()[0].origin_stamp().order(), 1);
+    assert_eq!(pending.pending()[1].origin_stamp().order(), 2);
+    let mut restored = external_round_trip(&f.compiled, &m);
+    let result = restored
+        .apply(Transaction::advance(
+            Time::from_ticks(5),
+            restored.revision(),
+            f.compiled.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+    assert!(
+        matches!(result.output_events(), [OutputEvent::Pulsed { count, .. }] if count.get() == 2)
+    );
+    assert_eq!(result.output_events()[0].stamp().order(), 0);
+    let again = restored
+        .apply(Transaction::advance(
+            Time::from_ticks(5),
+            restored.revision(),
+            f.compiled.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+    assert!(again.output_events().is_empty());
+    assert_eq!(again.processed_reactions()[0].order(), 1);
+}
+
+#[test]
+fn ordered_transport_origins_choose_last_stimulus_after_restore() {
+    for initial in [LogicLevel::Low, LogicLevel::High] {
+        let f = transport_fixture(initial, 5);
+        let mut m = f.compiled.spawn(generous_policy());
+        m.apply(Transaction::initialize(
+            Time::from_ticks(0),
+            m.revision(),
+            f.compiled
+                .input_snapshot()
+                .set(f.input, initial)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+        for level in [initial.invert(), initial] {
+            let delta = f
+                .compiled
+                .input_delta()
+                .set(f.input, level)
+                .unwrap()
+                .finish()
+                .unwrap();
+            m.apply(Transaction::advance(
+                Time::from_ticks(0),
+                m.revision(),
+                delta,
+            ))
+            .unwrap();
+        }
+        let mut restored = external_round_trip(&f.compiled, &m);
+        let result = restored
+            .apply(Transaction::advance(
+                Time::from_ticks(5),
+                restored.revision(),
+                f.compiled.input_delta().finish().unwrap(),
+            ))
+            .unwrap();
+        assert!(result.output_events().is_empty());
+        assert_eq!(restored.output_level(f.output), Some(initial));
+        assert_eq!(restored.schedule().unwrap(), Schedule::Dormant);
+    }
+}
+
+#[test]
+fn ordered_inertial_cancellation_does_not_resurrect_a_candidate() {
+    let f = inertial_fixture(LogicLevel::Low, 5);
+    let mut m = f.compiled.spawn(generous_policy());
+    m.apply(Transaction::initialize(
+        Time::from_ticks(0),
+        m.revision(),
+        f.compiled
+            .input_snapshot()
+            .set(f.input, LogicLevel::Low)
+            .unwrap()
+            .finish()
+            .unwrap(),
+    ))
+    .unwrap();
+    for level in [LogicLevel::High, LogicLevel::Low, LogicLevel::High] {
+        m.apply(Transaction::advance(
+            Time::from_ticks(0),
+            m.revision(),
+            f.compiled
+                .input_delta()
+                .set(f.input, level)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    }
+    let mut restored = external_round_trip(&f.compiled, &m);
+    let due = restored
+        .apply(Transaction::advance(
+            Time::from_ticks(5),
+            restored.revision(),
+            f.compiled
+                .input_delta()
+                .set(f.input, LogicLevel::Low)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(restored.output_level(f.output), Some(LogicLevel::High));
+    assert_eq!(due.output_events().len(), 1);
+    restored
+        .apply(Transaction::advance(
+            Time::from_ticks(5),
+            restored.revision(),
+            f.compiled.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(restored.output_level(f.output), Some(LogicLevel::High));
+    assert_eq!(
+        restored.schedule().unwrap(),
+        Schedule::WakeAt(Time::from_ticks(10))
+    );
+}
+
+#[test]
+fn ordered_maturity_overflow_preserves_the_complete_predecessor() {
+    let f = delay_fixture(5);
+    let mut m = f.compiled.spawn(generous_policy());
+    m.apply(Transaction::initialize(
+        Time::from_ticks(0),
+        m.revision(),
+        f.compiled.input_snapshot().finish().unwrap(),
+    ))
+    .unwrap();
+    for count in [u64::MAX, 1] {
+        m.apply(Transaction::advance(
+            Time::from_ticks(0),
+            m.revision(),
+            f.compiled
+                .input_delta()
+                .pulse(f.input, PulseCount::new(count))
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
+        .unwrap();
+    }
+    let before = m.snapshot();
+    for forecast in [true, false] {
+        let tx = Transaction::advance(
+            Time::from_ticks(5),
+            m.revision(),
+            f.compiled.input_delta().finish().unwrap(),
+        );
+        let failure = if forecast {
+            m.forecast(tx).unwrap_err()
+        } else {
+            m.apply(tx).unwrap_err()
+        };
+        assert_eq!(failure.code().as_str(), "runtime.pulse_count_overflow");
+        assert_eq!(m.snapshot(), before);
     }
 }

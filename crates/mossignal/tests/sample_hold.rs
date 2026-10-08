@@ -136,12 +136,12 @@ fn facts(view: &ProvenanceView<Domain>, root: CauseRef) -> Facts {
         match view.inspect(cause).unwrap() {
             CauseInspection::InitializationTransaction { at, .. }
             | CauseInspection::ReadyTransaction { at, .. } => {
-                out.times.insert(at.ticks());
+                out.times.insert(at.time().ticks());
             }
-            CauseInspection::ExternalObservation { input, value } => {
+            CauseInspection::ExternalObservation { input, value, .. } => {
                 out.levels.insert((input.as_u128(), value));
             }
-            CauseInspection::ExternalPulseObservation { input, count } => {
+            CauseInspection::ExternalPulseObservation { input, count, .. } => {
                 out.pulses.insert((input.as_u128(), count.get()));
             }
             CauseInspection::Derived { supporters, .. }
@@ -831,10 +831,10 @@ fn composed_capture_histories_are_invariant_under_definition_and_input_permutati
                                     output,
                                     from,
                                     to,
-                                    at,
+                                    stamp: at,
                                     revision,
                                     cause,
-                                } => (*output, *from, *to, at.ticks(), *revision, *cause),
+                                } => (*output, *from, *to, at.time().ticks(), *revision, *cause),
                                 _ => panic!(
                                     "composed history must publish only actual Level transitions"
                                 ),
@@ -1296,7 +1296,12 @@ fn delayed_samples_capture_at_each_actual_reaction_and_exact_target_batch() {
         r.output_events()
             .iter()
             .map(|e| match e {
-                OutputEvent::LevelChanged { at, from, to, .. } => (at.ticks(), *from, *to),
+                OutputEvent::LevelChanged {
+                    stamp: at,
+                    from,
+                    to,
+                    ..
+                } => (at.time().ticks(), *from, *to),
                 _ => panic!("only changed Levels expected"),
             })
             .collect::<Vec<_>>()

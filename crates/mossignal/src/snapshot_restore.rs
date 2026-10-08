@@ -42,7 +42,7 @@ use core::marker::PhantomData;
 use std::collections::{BTreeMap, BTreeSet};
 
 const ARTIFACT_PREFIX: [u8; 8] = [0x4d, 0x53, 0x49, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-const SUPPORTED_VERSION: u64 = 1;
+const SUPPORTED_VERSION: u64 = 2;
 
 const ENVELOPE_FIELDS: &[&str] = &[
     "artifact_kind",
@@ -925,6 +925,7 @@ struct Artifact {
 }
 
 struct LifecycleReady {
+    order: u64,
     boundary: Boundary,
     time: u64,
     levels: Vec<(u128, LogicLevel)>,
@@ -965,6 +966,8 @@ enum ParsedState {
         output: LogicLevel,
     },
     Periodic {
+        phase: Option<(u64, u64)>,
+        settled: Option<u64>,
         anchor: Option<u64>,
         previous: LogicLevel,
     },
@@ -979,6 +982,7 @@ struct BaselineEntry {
 }
 
 struct PendingEntry {
+    stimulus: (u64, u64),
     key: u64,
     owner_bytes: Vec<u8>,
     owner: StableName,
@@ -1004,6 +1008,8 @@ struct SettledEntry {
 }
 
 struct EpisodeEntry {
+    began_order: u64,
+    changed_order: u64,
     identity: [u8; 32],
     code: String,
     discriminator: u64,
@@ -1039,6 +1045,8 @@ struct ParsedRecord {
     revision: Option<u64>,
     subject: Option<ParsedSubject>,
     time: Option<u64>,
+    order: Option<u64>,
+    stimulus_time: Option<u64>,
     inapplicable: bool,
 }
 
@@ -1232,7 +1240,7 @@ fn interpret_artifact<D>(
         .map(|(name, value)| (name.as_str(), value))
         .collect();
     let bare = cbor_decode::encode_named_pairs(&bare_pairs);
-    let actual = *blake3::hash(&domain_separated(SNAPSHOT_DIGEST_DOMAIN, 1, &bare)).as_bytes();
+    let actual = *blake3::hash(&domain_separated(SNAPSHOT_DIGEST_DOMAIN, 2, &bare)).as_bytes();
     if actual != integrity {
         return Err(DecodeFailure::IntegrityDigestMismatch(persistence_problem(
             ProblemEvidence::PersistenceIntegrityDigestMismatch {
@@ -1724,13 +1732,44 @@ fn parse_state_record<D>(value: Value, path: &str) -> Result<ParsedState, Decode
         return Ok(ParsedState::Remembered { remembered, output });
     }
     if fields.contains_key("previous_enable") || fields.contains_key("anchor") {
-        reject_unknown_fields(&fields, &["anchor", "previous_enable"], path)?;
+        reject_unknown_fields(
+            &fields,
+            &[
+                "anchor",
+                "previous_enable",
+                "phase_time",
+                "phase_order",
+                "settled_boundary",
+            ],
+            path,
+        )?;
         let anchor = match take_optional(&mut fields, "anchor") {
             Some(value) => Some(expect_uint(&value, path)?),
             None => None,
         };
         let previous = expect_level(take_required(&mut fields, "previous_enable", path)?, path)?;
-        return Ok(ParsedState::Periodic { anchor, previous });
+        let phase_time = take_optional(&mut fields, "phase_time")
+            .map(|v| expect_uint(&v, path))
+            .transpose()?;
+        let phase_order = take_optional(&mut fields, "phase_order")
+            .map(|v| expect_uint(&v, path))
+            .transpose()?;
+        let settled = take_optional(&mut fields, "settled_boundary")
+            .map(|v| expect_uint(&v, path))
+            .transpose()?;
+        let phase = phase_time.zip(phase_order);
+        if anchor.is_some() != phase.is_some()
+            || phase_time.is_some() != phase_order.is_some()
+            || (anchor.is_none() && settled.is_some())
+        {
+            return Err(malformed(path, "periodic phase"));
+        }
+        return Ok(ParsedState::Periodic {
+            anchor,
+            previous,
+            phase,
+            settled,
+        });
     }
     if let Some(name) = fields.keys().next() {
         return Err(unknown_field(path, name));
@@ -1847,6 +1886,8 @@ fn parse_episode<D>(
         &fields,
         &[
             "began_at",
+            "began_order",
+            "last_material_order",
             "cause",
             "code",
             "discriminator",
@@ -1870,7 +1911,14 @@ fn parse_episode<D>(
     )?;
     let owner = parse_stable_name(take_required(&mut fields, "owner", path)?, counters, path)?;
     let revision = expect_uint(&take_required(&mut fields, "revision", path)?, path)?;
+    let began_order = expect_uint(&take_required(&mut fields, "began_order", path)?, path)?;
+    let changed_order = expect_uint(
+        &take_required(&mut fields, "last_material_order", path)?,
+        path,
+    )?;
     Ok(EpisodeEntry {
+        began_order,
+        changed_order,
         identity,
         code,
         discriminator,
@@ -1978,6 +2026,7 @@ fn parse_ready<D>(
             "pending_events",
             "settled_levels",
             "time",
+            "reaction_order",
         ],
         path,
     )?;
@@ -1990,7 +2039,9 @@ fn parse_ready<D>(
     )?;
     let settled = parse_settled(take_required(&mut fields, "settled_levels", path)?)?;
     let time = expect_uint(&take_required(&mut fields, "time", path)?, path)?;
+    let order = expect_uint(&take_required(&mut fields, "reaction_order", path)?, path)?;
     Ok(LifecycleReady {
+        order,
         boundary,
         time,
         levels,
@@ -2131,6 +2182,8 @@ fn parse_pending_event<D>(
             "kind",
             "origin_revision",
             "origin_time",
+            "stimulus_time",
+            "stimulus_order",
             "owner",
         ],
         path,
@@ -2144,7 +2197,12 @@ fn parse_pending_event<D>(
     let owner_value = take_required(&mut fields, "owner", path)?;
     let owner_bytes = cbor_decode::encode(&owner_value);
     let owner = parse_stable_name(owner_value, counters, path)?;
+    let stimulus = (
+        expect_uint(&take_required(&mut fields, "stimulus_time", path)?, path)?,
+        expect_uint(&take_required(&mut fields, "stimulus_order", path)?, path)?,
+    );
     Ok(PendingEntry {
+        stimulus,
         key,
         owner_bytes,
         owner,
@@ -2290,7 +2348,7 @@ fn parse_record<D>(
 ) -> Result<ParsedRecord, DecodeFailure<D>> {
     let path = "payload.provenance.records";
     let bytes = cbor_decode::encode(&value);
-    let digest = *blake3::hash(&domain_separated(PROVENANCE_RECORD_DOMAIN, 1, &bytes)).as_bytes();
+    let digest = *blake3::hash(&domain_separated(PROVENANCE_RECORD_DOMAIN, 2, &bytes)).as_bytes();
     let mut fields = into_fields(value, path)?;
     reject_unknown_fields(
         &fields,
@@ -2301,6 +2359,8 @@ fn parse_record<D>(
             "revision",
             "subject",
             "time",
+            "reaction_order",
+            "stimulus_time",
         ],
         path,
     )?;
@@ -2339,6 +2399,30 @@ fn parse_record<D>(
         Some(value) => Some(expect_uint(&value, path)?),
         None => None,
     };
+    let order = take_optional(&mut fields, "reaction_order")
+        .map(|v| expect_uint(&v, path))
+        .transpose()?;
+    let stimulus_time = take_optional(&mut fields, "stimulus_time")
+        .map(|v| expect_uint(&v, path))
+        .transpose()?;
+    let stamped = matches!(
+        kind,
+        RecordKind::Initialization
+            | RecordKind::Ready
+            | RecordKind::TopologyChange { .. }
+            | RecordKind::ExternalObservation { .. }
+            | RecordKind::ExternalPulse { .. }
+            | RecordKind::PendingPulse { .. }
+            | RecordKind::PendingTransport { .. }
+            | RecordKind::PendingInertial { .. }
+            | RecordKind::PendingPeriodic { .. }
+    );
+    if stamped != order.is_some()
+        || stamped != stimulus_time.is_some()
+        || (stamped && time.is_none())
+    {
+        return Err(malformed(path, "reaction stamp"));
+    }
     inapplicable |= record_fields_inapplicable(
         &kind,
         revision.is_some(),
@@ -2357,6 +2441,8 @@ fn parse_record<D>(
         revision,
         subject,
         time,
+        order,
+        stimulus_time,
         inapplicable,
     })
 }
@@ -2392,7 +2478,7 @@ fn record_fields_inapplicable(
         RecordKind::Migration { .. } => revision || time,
         RecordKind::Checkpoint { .. } => revision || subject || time,
         RecordKind::ExternalObservation { .. } | RecordKind::ExternalPulse { .. } => {
-            revision || time || predecessors
+            revision || predecessors
         }
         RecordKind::Derived
         | RecordKind::PulseDerived { .. }
@@ -2639,15 +2725,35 @@ fn parse_reenable_phase<D>(value: Value) -> Result<ReenablePhasePolicy, DecodeFa
 struct Installed {
     edges: Vec<EdgeObservation>,
     stored: Vec<LogicLevel>,
-    anchors: BTreeMap<NodeKey, u64>,
+    anchors: BTreeMap<NodeKey, InstalledPhase>,
     levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     baselines: BTreeMap<ExternalOutputKey<Level>, (LogicLevel, [u8; 32])>,
     pending: Vec<ResolvedPending>,
     singular: Vec<SingularRef>,
 }
 
+struct InstalledPhase {
+    anchor: u64,
+    origin: (u64, u64),
+    settled: Option<u64>,
+}
+
+impl InstalledPhase {
+    fn runtime<D>(&self) -> crate::machine::PeriodicPhase<D> {
+        crate::machine::PeriodicPhase {
+            anchor: Time::from_ticks(self.anchor),
+            origin: crate::ReactionStamp::from_parts(
+                Time::from_ticks(self.origin.0),
+                self.origin.1,
+            ),
+            settled: self.settled.map(Time::from_ticks),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ResolvedPending {
+    stimulus: (u64, u64),
     key: u64,
     node: NodeKey,
     kind: PendingKind,
@@ -2666,6 +2772,8 @@ struct SingularRef {
 }
 
 struct CheckedEpisode<D> {
+    began_order: u64,
+    changed_order: u64,
     identity: DiagnosticEpisodeId,
     condition: DiagnosticConditionKey,
     problem: Problem<D>,
@@ -3184,6 +3292,7 @@ fn initial_matches(
             ParsedState::Periodic {
                 anchor: None,
                 previous,
+                ..
             },
         ) => stored.get(index) == Some(&previous),
         (ExpectedSlot::Pulse | ExpectedSlot::Transport, ParsedState::Temporal(None))
@@ -3246,12 +3355,31 @@ fn apply_slot(
             write_stored(&mut installed.stored, remembered, remembered_level)
                 && write_stored(&mut installed.stored, output, output_level)
         }
-        (ExpectedSlot::Periodic(index), ParsedState::Periodic { anchor, previous }) => {
+        (
+            ExpectedSlot::Periodic(index),
+            ParsedState::Periodic {
+                anchor,
+                previous,
+                phase,
+                settled,
+            },
+        ) => {
             if !write_stored(&mut installed.stored, index, previous) {
                 return false;
             }
             if let Some(anchor) = anchor {
-                installed.anchors.insert(node, anchor);
+                if let Some(phase) = phase {
+                    installed.anchors.insert(
+                        node,
+                        InstalledPhase {
+                            anchor,
+                            origin: phase,
+                            settled,
+                        },
+                    );
+                } else {
+                    return false;
+                }
             }
             true
         }
@@ -3345,12 +3473,45 @@ fn check_pending<D>(
     let Lifecycle::Ready(ready) = &artifact.lifecycle else {
         return Ok(());
     };
+    for (node, phase) in &installed.anchors {
+        if phase.origin > (ready.time, ready.order)
+            || phase
+                .settled
+                .is_some_and(|at| at > ready.time || at < phase.origin.0)
+        {
+            return Err(fail_lifecycle());
+        }
+        let Some((period, ..)) = compiled.periodic(*node) else {
+            return Err(fail_lifecycle());
+        };
+        // SPEC: docs/specs/contracts/ordered-reactions.yaml "singular-inertial-and-once-only-phase"
+        // A committed reaction at this cadence boundary has assessed it, even while disabled.
+        if ready.time >= phase.anchor
+            && (ready.time - phase.anchor) % period.ticks() == 0
+            && phase.settled != Some(ready.time)
+        {
+            return Err(fail_lifecycle());
+        }
+    }
     let mut seen = BTreeSet::new();
+    let mut transports = BTreeMap::new();
     for event in &ready.pending {
         if event.revision > artifact.revision.value() {
             return Err(fail_revision(artifact.revision.value(), event.revision));
         }
         let node = resolve_name(compiled, &event.owner)?;
+        if let PendingKind::Transport { target, .. } = event.kind {
+            if transports
+                .insert((node, event.deadline, event.stimulus), target)
+                .is_some_and(|previous| previous != target)
+            {
+                return Err(fail_pending(
+                    Some(event.key),
+                    &node_label(node),
+                    "conflicting origin stamp",
+                ));
+            }
+        }
         let node_kind = node_identity(compiled, node);
         let expected = pending_owner_kind(event.kind_name);
         if node_kind != Some(expected) {
@@ -3360,7 +3521,10 @@ fn check_pending<D>(
                 "kind",
             ));
         }
-        if event.deadline <= ready.time || event.origin >= event.deadline {
+        if event.stimulus > (ready.time, ready.order)
+            || event.deadline <= ready.time
+            || event.origin >= event.deadline
+        {
             return Err(fail_pending(
                 Some(event.key),
                 &owner_label(&event.owner),
@@ -3382,6 +3546,7 @@ fn check_pending<D>(
             ));
         }
         installed.pending.push(ResolvedPending {
+            stimulus: event.stimulus,
             key: event.key,
             node,
             kind: event.kind,
@@ -3467,6 +3632,13 @@ fn check_episodes<D>(
         {
             return Err(fail_episode_schema(episode));
         }
+        if let Lifecycle::Ready(ready) = &artifact.lifecycle {
+            if (episode.last_material_change, episode.changed_order) > (ready.time, ready.order) {
+                return Err(fail_episode(episode));
+            }
+        } else {
+            return Err(fail_lifecycle());
+        }
         let checked = checked_episode(compiled, episode, owner)?;
         if !conditions.insert(checked.condition.clone()) {
             return Err(fail_episode(episode));
@@ -3490,7 +3662,14 @@ fn checked_episode<D>(
         DiagnosticCode::RuntimeLevelLatchConflictRetained,
         discriminator,
     );
-    let identity = DiagnosticEpisodeId::derive(compiled.network_key(), &condition);
+    let identity = DiagnosticEpisodeId::derive(
+        compiled.network_key(),
+        &condition,
+        crate::ReactionStamp::<D>::from_parts(
+            Time::from_ticks(episode.began_at),
+            episode.began_order,
+        ),
+    );
     let controls_match = episode.evidence.controls
         == ConflictControls::Level {
             set: LogicLevel::High,
@@ -3501,7 +3680,8 @@ fn checked_episode<D>(
         || episode.evidence.policy != ConflictPolicy::RetainAndDiagnose
         || !controls_match
         || episode.evidence.revision != episode.revision
-        || episode.last_material_change < episode.began_at
+        || (episode.last_material_change, episode.changed_order)
+            < (episode.began_at, episode.began_order)
     {
         return Err(fail_episode(episode));
     }
@@ -3514,6 +3694,7 @@ fn checked_episode<D>(
                 policy: episode.evidence.policy,
                 previous: episode.evidence.previous,
                 controls: episode.evidence.controls,
+                reaction_order: episode.changed_order,
                 at_ticks: episode.last_material_change,
                 revision: NetworkRevision::from_value(episode.revision),
             },
@@ -3521,6 +3702,8 @@ fn checked_episode<D>(
         },
     );
     Ok(CheckedEpisode {
+        began_order: episode.began_order,
+        changed_order: episode.changed_order,
         identity: DiagnosticEpisodeId::from_bytes(episode.identity),
         condition,
         problem,
@@ -3588,6 +3771,39 @@ fn check_provenance<D>(
     let indexed = index_records(&artifact.provenance.records)?;
     reject_inapplicable(&indexed)?;
     reject_record_revisions(artifact, &indexed)?;
+    if let Lifecycle::Ready(ready) = &artifact.lifecycle {
+        for record in indexed.values() {
+            if let Some(time) = record.stimulus_time {
+                let stamp = (time, record.order.unwrap_or(0));
+                if stamp > (ready.time, ready.order)
+                    || record.time.is_some_and(|basis| basis < time)
+                    || matches!(record.kind, RecordKind::Initialization) && stamp.1 != 0
+                {
+                    return Err(fail_graph(
+                        GraphFault::Conflict,
+                        &hex(&record.digest),
+                        record_kind_name(&record.kind),
+                        "reaction stamp",
+                    ));
+                }
+                if !matches!(
+                    record.kind,
+                    RecordKind::PendingPulse { .. }
+                        | RecordKind::PendingTransport { .. }
+                        | RecordKind::PendingInertial { .. }
+                        | RecordKind::PendingPeriodic { .. }
+                ) && record.time != Some(time)
+                {
+                    return Err(fail_graph(
+                        GraphFault::Conflict,
+                        &hex(&record.digest),
+                        record_kind_name(&record.kind),
+                        "occurrence time",
+                    ));
+                }
+            }
+        }
+    }
     reject_roles(&indexed)?;
     reject_unresolved_subjects(compiled, &indexed)?;
     reject_missing_predecessors(&indexed)?;
@@ -4052,7 +4268,7 @@ fn materialize_record<D>(
     let contributions = contribution_causes(compiled, record, ordinals)?;
     match &record.kind {
         RecordKind::TopologyChange { base, target } => Ok(ProvenanceRecord::TopologyChange {
-            at: Time::from_ticks(required_time(record)?),
+            at: required_stamp(record)?,
             revision: required_revision(record)?,
             base: NetworkFingerprint::from_digest(*base),
             target: NetworkFingerprint::from_digest(*target),
@@ -4068,18 +4284,20 @@ fn materialize_record<D>(
             supporters,
         }),
         RecordKind::Initialization => Ok(ProvenanceRecord::InitializationTransaction {
-            at: Time::from_ticks(required_time(record)?),
+            at: required_stamp(record)?,
             revision: required_revision(record)?,
         }),
         RecordKind::Ready => Ok(ProvenanceRecord::ReadyTransaction {
-            at: Time::from_ticks(required_time(record)?),
+            at: required_stamp(record)?,
             revision: required_revision(record)?,
         }),
         RecordKind::ExternalObservation { value } => Ok(ProvenanceRecord::ExternalObservation {
+            stamp: required_stamp(record)?,
             input: required_level_input(record)?,
             value: *value,
         }),
         RecordKind::ExternalPulse { count } => Ok(ProvenanceRecord::ExternalPulseObservation {
+            stamp: required_stamp(record)?,
             input: required_pulse_input(record)?,
             count: PulseCount::new(*count),
         }),
@@ -4087,6 +4305,7 @@ fn materialize_record<D>(
             let (event, owner, origin, deadline, revision) =
                 pending_facts(compiled, record, installed)?;
             Ok(ProvenanceRecord::PendingPulseDelay {
+                stimulus: required_stamp(record)?,
                 event,
                 owner,
                 origin,
@@ -4100,6 +4319,7 @@ fn materialize_record<D>(
             let (event, owner, origin, deadline, revision) =
                 pending_facts(compiled, record, installed)?;
             Ok(ProvenanceRecord::PendingTransportDelay {
+                stimulus: required_stamp(record)?,
                 event,
                 owner,
                 origin,
@@ -4113,6 +4333,7 @@ fn materialize_record<D>(
             let (event, owner, origin, deadline, revision) =
                 pending_facts(compiled, record, installed)?;
             Ok(ProvenanceRecord::PendingInertialDelay {
+                stimulus: required_stamp(record)?,
                 event,
                 owner,
                 origin,
@@ -4144,6 +4365,7 @@ fn materialize_record<D>(
                 record,
             )?;
             Ok(ProvenanceRecord::PendingPeriodicBoundary {
+                stimulus: required_stamp(record)?,
                 event,
                 owner,
                 origin,
@@ -4252,6 +4474,29 @@ fn scoped_cause<D>(
             "scope",
         )),
     }
+}
+
+fn required_stamp<D>(record: &ParsedRecord) -> Result<crate::ReactionStamp<D>, RestoreFailure<D>> {
+    let time = record.stimulus_time.ok_or_else(|| {
+        fail_graph(
+            GraphFault::Conflict,
+            &hex(&record.digest),
+            "record",
+            "stimulus_time",
+        )
+    })?;
+    let order = record.order.ok_or_else(|| {
+        fail_graph(
+            GraphFault::Conflict,
+            &hex(&record.digest),
+            "record",
+            "reaction_order",
+        )
+    })?;
+    Ok(crate::ReactionStamp::from_parts(
+        Time::from_ticks(time),
+        order,
+    ))
 }
 
 fn required_time<D>(record: &ParsedRecord) -> Result<u64, RestoreFailure<D>> {
@@ -4618,7 +4863,10 @@ fn assign_pending<D>(
         let record = records
             .get(&event.cause)
             .ok_or_else(|| fail_pending(Some(event.key), &node_label(event.node), "cause"))?;
-        if !pending_record_kind(&record.kind, event.node_kind) {
+        if !pending_record_kind(&record.kind, event.node_kind)
+            || record.stimulus_time != Some(event.stimulus.0)
+            || record.order != Some(event.stimulus.1)
+        {
             return Err(fail_pending(
                 Some(event.key),
                 &node_label(event.node),
@@ -4662,6 +4910,10 @@ fn pending_event<D>(
     match (event.kind, &record.kind) {
         (PendingKind::Pulse { count }, RecordKind::PendingPulse { .. }) => {
             Ok(PendingEvent::PulseDelay(PendingPulseDelay {
+                stimulus: crate::ReactionStamp::from_parts(
+                    Time::from_ticks(event.stimulus.0),
+                    event.stimulus.1,
+                ),
                 key,
                 node: event.node,
                 origin,
@@ -4673,6 +4925,10 @@ fn pending_event<D>(
         }
         (PendingKind::Transport { target, .. }, RecordKind::PendingTransport { .. }) => {
             Ok(PendingEvent::TransportDelay(PendingTransportDelay {
+                stimulus: crate::ReactionStamp::from_parts(
+                    Time::from_ticks(event.stimulus.0),
+                    event.stimulus.1,
+                ),
                 key,
                 node: event.node,
                 origin,
@@ -4684,6 +4940,10 @@ fn pending_event<D>(
         }
         (PendingKind::Inertial { target, .. }, RecordKind::PendingInertial { .. }) => {
             Ok(PendingEvent::Inertial(PendingInertialDelay {
+                stimulus: crate::ReactionStamp::from_parts(
+                    Time::from_ticks(event.stimulus.0),
+                    event.stimulus.1,
+                ),
                 key,
                 node: event.node,
                 origin,
@@ -4701,6 +4961,10 @@ fn pending_event<D>(
                 ..
             },
         ) => Ok(PendingEvent::Periodic(PendingPeriodicBoundary {
+            stimulus: crate::ReactionStamp::from_parts(
+                Time::from_ticks(event.stimulus.0),
+                event.stimulus.1,
+            ),
             key,
             node: event.node,
             origin,
@@ -4954,7 +5218,7 @@ fn latest_transaction<D>(
     ordinals: &BTreeMap<[u8; 32], u32>,
     scope: [u8; 32],
 ) -> Result<Option<CauseRef>, RestoreFailure<D>> {
-    let mut selected: Option<(u64, [u8; 32])> = None;
+    let mut selected: Option<((u64, u64), [u8; 32])> = None;
     for digest in members {
         let Some(record) = records.get(digest) else {
             continue;
@@ -4965,7 +5229,7 @@ fn latest_transaction<D>(
         ) {
             continue;
         }
-        let time = record.time.unwrap_or(0);
+        let time = (record.time.unwrap_or(0), record.order.unwrap_or(0));
         let replace = match selected {
             Some((selected_time, selected_digest)) => {
                 (time, *digest) > (selected_time, selected_digest)
@@ -5013,8 +5277,14 @@ fn episode_views<D>(
                 episode.identity,
                 episode.condition.clone(),
                 episode.problem,
-                Time::from_ticks(episode.began),
-                Time::from_ticks(episode.changed),
+                crate::ReactionStamp::from_parts(
+                    Time::from_ticks(episode.began),
+                    episode.began_order,
+                ),
+                crate::ReactionStamp::from_parts(
+                    Time::from_ticks(episode.changed),
+                    episode.changed_order,
+                ),
                 cause,
                 view,
             ),
@@ -5043,7 +5313,7 @@ fn check_settled<D>(
     let anchors = installed
         .anchors
         .iter()
-        .map(|(node, ticks)| (*node, Time::from_ticks(*ticks)))
+        .map(|(node, phase)| (*node, phase.runtime()))
         .collect();
     let evaluation = match compiled.evaluate_reaction_with_state(
         &installed.levels,
@@ -5127,11 +5397,15 @@ fn publish_machine<D>(
     machine.store.periodic_anchors = installed
         .anchors
         .into_iter()
-        .map(|(node, ticks)| (node, Time::from_ticks(ticks)))
+        .map(|(node, phase)| (node, phase.runtime()))
         .collect();
     match (&artifact.lifecycle, evaluation) {
         (Lifecycle::Awaiting, None) => Ok(machine),
         (Lifecycle::Ready(ready), Some(evaluation)) => {
+            machine.store.last_reaction = Some(crate::ReactionStamp::from_parts(
+                Time::from_ticks(ready.time),
+                ready.order,
+            ));
             machine.store.status = MachineStatus::Ready {
                 now: Time::from_ticks(ready.time),
             };
@@ -5699,7 +5973,7 @@ mod tests {
         let mut artifact = artifact.clone();
         remove_named(envelope_mut(&mut artifact), "integrity_digest");
         let bare = named_bytes(envelope_mut(&mut artifact));
-        let digest = *blake3::hash(&domain_separated(SNAPSHOT_DIGEST_DOMAIN, 1, &bare)).as_bytes();
+        let digest = *blake3::hash(&domain_separated(SNAPSHOT_DIGEST_DOMAIN, 2, &bare)).as_bytes();
         insert_named(
             envelope_mut(&mut artifact),
             "integrity_digest",
@@ -5815,7 +6089,7 @@ mod tests {
 
     fn record_digest(record: &Value) -> [u8; 32] {
         let bytes = cbor_decode::encode(record);
-        *blake3::hash(&domain_separated(PROVENANCE_RECORD_DOMAIN, 1, &bytes)).as_bytes()
+        *blake3::hash(&domain_separated(PROVENANCE_RECORD_DOMAIN, 2, &bytes)).as_bytes()
     }
 
     fn provenance_items<'a>(artifact: &'a mut Value, name: &str) -> &'a mut Vec<Value> {
@@ -6125,28 +6399,28 @@ mod tests {
     }
 
     #[test]
-    fn resigned_version_two_is_unsupported_and_payload_disagreement_matches() {
+    fn resigned_version_three_is_unsupported_and_payload_disagreement_matches() {
         let (compiled, machine) = toggle(2);
         let bytes = encoded(&machine);
         let versioned = edited(&bytes, |artifact| {
-            set_uint(envelope_mut(artifact), "artifact_schema_version", 2);
+            set_uint(envelope_mut(artifact), "artifact_schema_version", 3);
         });
         let failure = decode_with(&compiled, &versioned, &decode_policy()).expect_err("version");
         assert_eq!(failure.code().as_str(), "persistence.unsupported_version");
         assert!(matches!(failure, DecodeFailure::UnsupportedVersion(_)));
         let (component, required, upgrader) = version_evidence(&failure);
         assert_eq!(component, "artifact_schema_version");
-        assert_eq!(required, "1");
+        assert_eq!(required, "2");
         assert!(!upgrader);
         let disagreed = edited(&bytes, |artifact| {
             let versions = record_field_mut(payload_mut(artifact), "semantic_versions");
-            set_uint(versions, "core_semantics_version", 2);
+            set_uint(versions, "core_semantics_version", 3);
         });
         let failure = decode_with(&compiled, &disagreed, &decode_policy()).expect_err("payload");
         assert_eq!(failure.code().as_str(), "persistence.unsupported_version");
         let (component, required, upgrader) = version_evidence(&failure);
         assert_eq!(component, "core_semantics_version");
-        assert_eq!(required, "1");
+        assert_eq!(required, "2");
         assert!(!upgrader);
     }
 
@@ -6345,6 +6619,178 @@ mod tests {
                 assert!(evidence.subject.is_empty());
             }
             other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn ordered_pending_and_phase_stamps_cannot_exceed_the_committed_occurrence() {
+        let (compiled, machine) = families();
+        let bytes = encoded(&machine);
+        let future_origin = edited(&bytes, |artifact| {
+            let pending = record_field_mut(ready_body_mut(artifact), "pending_events");
+            assert!(set_first_named_uint(pending, "stimulus_order", 1));
+        });
+        expect_restore(
+            &compiled,
+            &future_origin,
+            policy(),
+            "persistence.pending_event_invalid",
+        );
+        for field in ["phase_order", "settled_boundary"] {
+            let future_phase = edited(&bytes, |artifact| {
+                let state = payload_field_mut(artifact, "node_state_table");
+                assert!(set_first_named_uint(state, field, 2));
+            });
+            expect_restore(
+                &compiled,
+                &future_phase,
+                policy(),
+                "persistence.lifecycle_shape_invalid",
+            );
+        }
+        let missing_order = edited(&bytes, |artifact| {
+            remove_named(ready_body_mut(artifact), "reaction_order");
+        });
+        assert!(decode_with(&compiled, &missing_order, &decode_policy()).is_err());
+    }
+
+    fn disabled_preserved_periodic(at: u64) -> (CompiledNetwork<()>, Machine<()>) {
+        let mut builder =
+            NetworkBuilder::with_key(NetworkKey::from_u128(77), TimeDomainId::from_u128(2));
+        let input = ExternalInputKey::<Level>::from_u128(10);
+        let enable = must(builder.add_level_input(input, DiagnosticMeta::default()));
+        let pulse = must(builder.add_periodic(
+            crate::key::NodeKey::from_u128(29),
+            enable,
+            PeriodicConfig::new(
+                span(5),
+                FirstEmissionPolicy::Immediate,
+                ReenablePhasePolicy::PreservePhase,
+            ),
+            DiagnosticMeta::default(),
+        ))
+        .into_outputs();
+        must(builder.add_pulse_output(
+            ExternalOutputKey::<Pulse>::from_u128(40),
+            pulse,
+            DiagnosticMeta::default(),
+        ));
+        let compiled = compile(builder);
+        let mut machine = compiled.spawn(policy());
+        let initial = must(must(compiled.input_snapshot().set(input, LogicLevel::High)).finish());
+        must(machine.apply(Transaction::initialize(
+            Time::from_ticks(0),
+            machine.revision(),
+            initial,
+        )));
+        let disabled = must(must(compiled.input_delta().set(input, LogicLevel::Low)).finish());
+        must(machine.apply(Transaction::advance(
+            Time::from_ticks(1),
+            machine.revision(),
+            disabled,
+        )));
+        must(machine.apply(Transaction::advance(
+            Time::from_ticks(at),
+            machine.revision(),
+            empty_delta(&compiled),
+        )));
+        (compiled, machine)
+    }
+
+    fn reject_damaged_periodic_watermark(settled: Option<Time<()>>) {
+        let (compiled, mut machine) = disabled_preserved_periodic(5);
+        let phase = machine
+            .store
+            .periodic_anchors
+            .get_mut(&crate::key::NodeKey::from_u128(29))
+            .unwrap();
+        assert_eq!(phase.settled, Some(Time::from_ticks(5)));
+        phase.settled = settled;
+        // Re-encode the mutated semantic store so every digest is correct for
+        // the malformed continuation; rejection must come from validation.
+        let bytes = encoded(&machine);
+        let snapshot = must(decode_with(&compiled, &bytes, &decode_policy()));
+        assert_eq!(
+            snapshot.execution_state_digest(),
+            machine.execution_state_digest()
+        );
+        assert_eq!(
+            snapshot.observable_state_digest(),
+            machine.observable_state_digest()
+        );
+        match restore_bytes(&compiled, &bytes, policy()) {
+            Ok(mut restored) => {
+                let enabled = must(
+                    must(
+                        compiled
+                            .input_delta()
+                            .set(ExternalInputKey::<Level>::from_u128(10), LogicLevel::High),
+                    )
+                    .finish(),
+                );
+                let replayed = must(restored.apply(Transaction::advance(
+                    Time::from_ticks(5),
+                    restored.revision(),
+                    enabled,
+                )));
+                assert!(
+                    matches!(replayed.output_events(), [crate::OutputEvent::Pulsed { count, stamp, .. }] if *count == PulseCount::ONE && stamp.time() == Time::from_ticks(5))
+                );
+                panic!("restore accepted a damaged watermark and replayed the suppressed boundary");
+            }
+            Err(failure) => assert_eq!(
+                failure.code().as_str(),
+                "persistence.lifecycle_shape_invalid"
+            ),
+        }
+    }
+
+    #[test]
+    fn periodic_watermark_missing_at_settled_boundary_is_rejected() {
+        reject_damaged_periodic_watermark(None);
+    }
+
+    #[test]
+    fn periodic_watermark_regressed_at_settled_boundary_is_rejected() {
+        reject_damaged_periodic_watermark(Some(Time::from_ticks(0)));
+    }
+
+    #[test]
+    fn periodic_watermark_preserves_valid_boundaries_and_unvisited_disabled_gaps() {
+        for (at, expected_settled, next) in [(5, 5, 10), (6, 0, 10), (11, 0, 15)] {
+            let (compiled, mut original) = disabled_preserved_periodic(at);
+            let node = crate::key::NodeKey::from_u128(29);
+            assert_eq!(
+                original.inspect_periodic(node).unwrap().settled_boundary(),
+                Some(Time::from_ticks(expected_settled))
+            );
+            let mut restored = must_restore(&compiled, &encoded(&original), policy());
+            assert_same(&original, &restored);
+            let enabled = must(
+                must(
+                    compiled
+                        .input_delta()
+                        .set(ExternalInputKey::<Level>::from_u128(10), LogicLevel::High),
+                )
+                .finish(),
+            );
+            let tx = Transaction::advance(Time::from_ticks(at), original.revision(), enabled);
+            let result = must(restored.apply(tx.clone()));
+            must(original.apply(tx));
+            assert!(result.output_events().is_empty());
+            assert_same(&original, &restored);
+            assert_eq!(
+                restored.inspect_periodic(node).unwrap().next_deadline(),
+                Some(Time::from_ticks(next))
+            );
+            let due = must(restored.apply(Transaction::advance(
+                Time::from_ticks(next),
+                restored.revision(),
+                empty_delta(&compiled),
+            )));
+            assert!(
+                matches!(due.output_events(), [crate::OutputEvent::Pulsed { count, .. }] if *count == PulseCount::ONE)
+            );
         }
     }
 

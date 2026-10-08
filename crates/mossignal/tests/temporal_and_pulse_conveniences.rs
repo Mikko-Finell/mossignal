@@ -337,22 +337,22 @@ fn level_observations(
             OutputEvent::LevelEstablished {
                 output: actual,
                 value,
-                at,
+                stamp: at,
                 ..
             } if *actual == output => LevelObservation::Established {
                 value: *value,
-                at: at.ticks(),
+                at: at.time().ticks(),
             },
             OutputEvent::LevelChanged {
                 output: actual,
                 from,
                 to,
-                at,
+                stamp: at,
                 ..
             } if *actual == output => LevelObservation::Changed {
                 from: *from,
                 to: *to,
-                at: at.ticks(),
+                at: at.time().ticks(),
             },
             _ => panic!("debounce must emit only its level output events"),
         })

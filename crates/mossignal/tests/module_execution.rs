@@ -566,8 +566,11 @@ fn nested_instances_keep_state_pending_work_and_provenance_independent() {
         .iter()
         .filter_map(|event| match event {
             OutputEvent::Pulsed {
-                output, count, at, ..
-            } => Some((*output, *count, at.ticks())),
+                output,
+                count,
+                stamp: at,
+                ..
+            } => Some((*output, *count, at.time().ticks())),
             _ => None,
         })
         .collect::<Vec<_>>();

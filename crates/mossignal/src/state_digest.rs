@@ -1,6 +1,6 @@
 //! Canonical execution-state and observable-state projections.
 //!
-//! Projection version 1 is the record written here and locked by the golden
+//! Projection version 2 is the record written here and locked by the golden
 //! digest-input vectors. `standard_history` stays out of both digests: it is
 //! last-reaction inspection cache, and current explanation is the execution
 //! projection plus the required provenance closure.
@@ -22,12 +22,12 @@ use crate::transaction::{
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn execution_state_digest<D>(machine: &Machine<D>) -> ExecutionStateDigest {
-    let input = execution_digest_input(machine, 1, 1);
+    let input = execution_digest_input(machine, 2, 2);
     ExecutionStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
 pub(crate) fn observable_state_digest<D>(machine: &Machine<D>) -> ObservableStateDigest {
-    let input = observable_digest_input(machine, 1, 1);
+    let input = observable_digest_input(machine, 2, 2);
     ObservableStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
@@ -338,7 +338,7 @@ fn digest_record<D>(
     stack[index] = true;
     let relations = predecessor_relations(compiled, view, index, memo, stack, table);
     let payload = provenance_payload(compiled, &view.records()[index], &relations);
-    let input = domain_separated(PROVENANCE_RECORD_DOMAIN, 1, &payload);
+    let input = domain_separated(PROVENANCE_RECORD_DOMAIN, 2, &payload);
     let digest = *blake3::hash(&input).as_bytes();
     table.insert(digest, payload);
     memo[index] = Some(digest);
@@ -443,7 +443,7 @@ fn provenance_payload<D>(
             }
         });
     }
-    payload.field("provenance_semantics_version", |writer| writer.uint(1));
+    payload.field("provenance_semantics_version", |writer| writer.uint(2));
     match record {
         ProvenanceRecord::InitializationTransaction { revision, .. }
         | ProvenanceRecord::ReadyTransaction { revision, .. }
@@ -466,6 +466,10 @@ fn provenance_payload<D>(
     }
     if let Some(subject) = provenance_subject_bytes(compiled, record) {
         payload.field("subject", |writer| writer.nested(&subject));
+    }
+    if let Some(stamp) = provenance_stamp(record) {
+        payload.field("reaction_order", |writer| writer.uint(stamp.order()));
+        payload.field("stimulus_time", |writer| writer.uint(stamp.time().ticks()));
     }
     if let Some(time) = provenance_time(record) {
         payload.field("time", |writer| writer.uint(time));
@@ -593,21 +597,27 @@ fn provenance_subject_bytes<D>(
     Some(writer.finish())
 }
 
-fn provenance_time<D>(record: &ProvenanceRecord<D>) -> Option<u64> {
+fn provenance_stamp<D>(record: &ProvenanceRecord<D>) -> Option<crate::ReactionStamp<D>> {
     match record {
         ProvenanceRecord::InitializationTransaction { at, .. }
         | ProvenanceRecord::ReadyTransaction { at, .. }
-        | ProvenanceRecord::PendingPulseDelay { origin: at, .. }
-        | ProvenanceRecord::PendingTransportDelay { origin: at, .. }
-        | ProvenanceRecord::PendingInertialDelay { origin: at, .. }
-        | ProvenanceRecord::PendingPeriodicBoundary { origin: at, .. } => Some(at.ticks()),
-        ProvenanceRecord::ExternalObservation { .. }
-        | ProvenanceRecord::ExternalPulseObservation { .. }
-        | ProvenanceRecord::Derived { .. }
-        | ProvenanceRecord::PulseDerived { .. }
-        | ProvenanceRecord::PulseControlledLevel { .. } => None,
-        ProvenanceRecord::TopologyChange { at, .. } => Some(at.ticks()),
-        ProvenanceRecord::Migration { .. } | ProvenanceRecord::Checkpoint { .. } => None,
+        | ProvenanceRecord::TopologyChange { at, .. } => Some(*at),
+        ProvenanceRecord::ExternalObservation { stamp, .. }
+        | ProvenanceRecord::ExternalPulseObservation { stamp, .. } => Some(*stamp),
+        ProvenanceRecord::PendingPulseDelay { stimulus, .. }
+        | ProvenanceRecord::PendingTransportDelay { stimulus, .. }
+        | ProvenanceRecord::PendingInertialDelay { stimulus, .. }
+        | ProvenanceRecord::PendingPeriodicBoundary { stimulus, .. } => Some(*stimulus),
+        _ => None,
+    }
+}
+fn provenance_time<D>(record: &ProvenanceRecord<D>) -> Option<u64> {
+    match record {
+        ProvenanceRecord::PendingPulseDelay { origin, .. }
+        | ProvenanceRecord::PendingTransportDelay { origin, .. }
+        | ProvenanceRecord::PendingInertialDelay { origin, .. }
+        | ProvenanceRecord::PendingPeriodicBoundary { origin, .. } => Some(origin.ticks()),
+        _ => provenance_stamp(record).map(|stamp| stamp.time().ticks()),
     }
 }
 
@@ -674,6 +684,13 @@ fn write_lifecycle<D>(writer: &mut Cbor, machine: &Machine<D>) {
             });
             let ticks = now.ticks();
             body.field("time", |writer| writer.uint(ticks));
+            let order = match machine.last_reaction() {
+                Some(stamp) if stamp.time() == now => stamp.order(),
+                _ => {
+                    panic!("ready machine must retain its committed reaction stamp at current time")
+                }
+            };
+            body.field("reaction_order", |writer| writer.uint(order));
             writer.nested(&body.finish());
         }
     }
@@ -742,8 +759,15 @@ fn state_value<D>(machine: &Machine<D>, slot: &crate::compile::DigestStateSlot) 
         DigestStateFamily::Periodic { previous_enable } => {
             let mut body = Record::new();
             if let Some(anchor) = machine.store.periodic_anchors.get(&slot.flat).copied() {
-                let ticks = anchor.ticks();
+                let ticks = anchor.anchor.ticks();
                 body.field("anchor", |writer| writer.uint(ticks));
+                body.field("phase_time", |writer| {
+                    writer.uint(anchor.origin.time().ticks())
+                });
+                body.field("phase_order", |writer| writer.uint(anchor.origin.order()));
+                if let Some(settled) = anchor.settled {
+                    body.field("settled_boundary", |writer| writer.uint(settled.ticks()));
+                }
             }
             if let Some(boundary) = singular_event(machine, slot.flat, "periodic") {
                 body.field("next_boundary", |writer| writer.uint(boundary));
@@ -784,6 +808,12 @@ fn write_pending_events<D>(writer: &mut Cbor, machine: &Machine<D>, context: &Pr
         record.field("origin_revision", |writer| writer.uint(revision));
         let origin = origin.ticks();
         record.field("origin_time", |writer| writer.uint(origin));
+        record.field("stimulus_time", |writer| {
+            writer.uint(event.stimulus().time().ticks())
+        });
+        record.field("stimulus_order", |writer| {
+            writer.uint(event.stimulus().order())
+        });
         record.field("owner", |writer| writer.nested(&owner));
         events.push((
             deadline,
@@ -854,6 +884,9 @@ fn write_episodes<D>(writer: &mut Cbor, machine: &Machine<D>, context: &Projecti
         let mut record = Record::new();
         let began = episode.began_at().ticks();
         record.field("began_at", |writer| writer.uint(began));
+        record.field("began_order", |writer| {
+            writer.uint(episode.began_stamp().order())
+        });
         record.field("cause", |writer| writer.bytes(&cause));
         let code = episode.condition().code().as_str();
         record.field("code", |writer| writer.text(code));
@@ -864,6 +897,9 @@ fn write_episodes<D>(writer: &mut Cbor, machine: &Machine<D>, context: &Projecti
         record.field("identity", |writer| writer.bytes(&identity));
         let changed = episode.last_material_change().ticks();
         record.field("last_material_change", |writer| writer.uint(changed));
+        record.field("last_material_order", |writer| {
+            writer.uint(episode.last_material_stamp().order())
+        });
         let owner = node_subject_bytes(episode.condition().owner());
         record.field("owner", |writer| writer.nested(&owner));
         episodes.push((identity, record.finish()));
@@ -1367,11 +1403,11 @@ mod tests {
         assert_eq!(machine.revision().value(), 0);
         assert_golden(
             "execution_state_uninitialized.hex",
-            &execution_digest_input(&machine, 1, 1),
+            &execution_digest_input(&machine, 2, 2),
         );
         assert_golden(
             "observable_state_uninitialized.hex",
-            &observable_digest_input(&machine, 1, 1),
+            &observable_digest_input(&machine, 2, 2),
         );
         let uninitialized_execution = machine.execution_state_digest();
         let result = initialize(&mut machine, 1);
@@ -1390,11 +1426,11 @@ mod tests {
         );
         assert_golden(
             "execution_state_ready.hex",
-            &execution_digest_input(&machine, 1, 1),
+            &execution_digest_input(&machine, 2, 2),
         );
         assert_golden(
             "observable_state_ready.hex",
-            &observable_digest_input(&machine, 1, 1),
+            &observable_digest_input(&machine, 2, 2),
         );
         assert_golden(
             "execution_state_digest_ready.hex",
@@ -1422,8 +1458,8 @@ mod tests {
             golden_toggle(DiagnosticMeta::default()),
             [8, 100, 4, 8, 100],
         );
-        let execution = execution_digest_input(&machine, 1, 1);
-        let observable = observable_digest_input(&machine, 1, 1);
+        let execution = execution_digest_input(&machine, 2, 2);
+        let observable = observable_digest_input(&machine, 2, 2);
         assert!(
             execution
                 .windows(b"awaiting_initialization".len())
@@ -1465,8 +1501,8 @@ mod tests {
             [8, 100, 4, 8, 100],
         );
         let payload = projection_payload(&machine, 1, false);
-        let execution = domain_separated(EXECUTION_STATE_DOMAIN, 1, &payload);
-        let observable = domain_separated(OBSERVABLE_STATE_DOMAIN, 1, &payload);
+        let execution = domain_separated(EXECUTION_STATE_DOMAIN, 2, &payload);
+        let observable = domain_separated(OBSERVABLE_STATE_DOMAIN, 2, &payload);
         assert_ne!(execution, observable);
         assert_ne!(blake3::hash(&execution), blake3::hash(&observable));
     }
@@ -1477,7 +1513,7 @@ mod tests {
             golden_toggle(DiagnosticMeta::default()),
             [8, 100, 4, 8, 100],
         );
-        let current = execution_digest_input(&machine, 1, 1);
+        let current = execution_digest_input(&machine, 2, 2);
         assert_ne!(current, execution_digest_input(&machine, 2, 1));
         assert_ne!(current, execution_digest_input(&machine, 1, 2));
         assert_ne!(
@@ -1749,12 +1785,12 @@ mod tests {
             .unwrap_or_else(|failure| panic!("fixture initialization must commit: {failure}"));
         let before_keys = machine.pending_keys_in_storage_order();
         assert!(before_keys.len() >= 2);
-        let execution = execution_digest_input(&machine, 1, 1);
-        let observable = observable_digest_input(&machine, 1, 1);
+        let execution = execution_digest_input(&machine, 2, 2);
+        let observable = observable_digest_input(&machine, 2, 2);
         machine.reverse_pending_batches_for_test();
         assert_ne!(machine.pending_keys_in_storage_order(), before_keys);
-        assert_eq!(execution_digest_input(&machine, 1, 1), execution);
-        assert_eq!(observable_digest_input(&machine, 1, 1), observable);
+        assert_eq!(execution_digest_input(&machine, 2, 2), execution);
+        assert_eq!(observable_digest_input(&machine, 2, 2), observable);
     }
 
     fn pulse_delay_node(node: u128, input: InPortKey<Pulse>, output: u128) -> NodeDef<()> {
@@ -1798,12 +1834,12 @@ mod tests {
         initialize(&mut machine, 1);
         let ordinals = machine.supporter_ordinals_for_test();
         assert!(ordinals.len() >= 2);
-        let execution = execution_digest_input(&machine, 1, 1);
-        let observable = observable_digest_input(&machine, 1, 1);
+        let execution = execution_digest_input(&machine, 2, 2);
+        let observable = observable_digest_input(&machine, 2, 2);
         machine.reverse_provenance_supporters_for_test();
         assert_ne!(machine.supporter_ordinals_for_test(), ordinals);
-        assert_eq!(execution_digest_input(&machine, 1, 1), execution);
-        assert_eq!(observable_digest_input(&machine, 1, 1), observable);
+        assert_eq!(execution_digest_input(&machine, 2, 2), execution);
+        assert_eq!(observable_digest_input(&machine, 2, 2), observable);
 
         let identities: Vec<_> = machine
             .store
@@ -1821,8 +1857,8 @@ mod tests {
         resorted.sort();
         assert_eq!(sorted, resorted);
         machine.rebuild_episodes_reversed_for_test();
-        assert_eq!(execution_digest_input(&machine, 1, 1), execution);
-        let bytes = execution_digest_input(&machine, 1, 1);
+        assert_eq!(execution_digest_input(&machine, 2, 2), execution);
+        let bytes = execution_digest_input(&machine, 2, 2);
         let first = bytes.windows(32).position(|window| window == sorted[0]);
         let second = bytes.windows(32).position(|window| window == sorted[1]);
         match (first, second) {
@@ -1902,7 +1938,7 @@ mod tests {
         );
         let compiled = compile(network);
         let machine = compiled.clone().spawn(generous_policy());
-        let bytes = execution_digest_input(&machine, 1, 1);
+        let bytes = execution_digest_input(&machine, 2, 2);
         assert!(
             bytes
                 .windows(b"module_node".len())

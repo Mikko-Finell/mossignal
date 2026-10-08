@@ -155,6 +155,79 @@ impl<D> Time<D> {
     }
 }
 
+/// One settled occurrence in a machine history, ordered by physical time then order.
+///
+/// Machines allocate stamps; order is not a duration and has no global identity.
+/// Initialization and the first reaction at a later time use order zero.
+///
+/// ```
+/// use mossignal::{Machine, ReactionStamp, TransactionResult};
+///
+/// fn inspect_occurrence<D>(machine: &Machine<D>, result: &TransactionResult<D>) {
+///     let stamp: ReactionStamp<D> = *result.processed_reactions().last().unwrap();
+///     assert_eq!(machine.last_reaction(), Some(stamp));
+///     let physical_ticks = stamp.time().ticks();
+///     let order_within_time = stamp.order();
+/// }
+/// ```
+pub struct ReactionStamp<D> {
+    time: Time<D>,
+    order: u64,
+}
+impl<D> ReactionStamp<D> {
+    pub(crate) const fn from_parts(time: Time<D>, order: u64) -> Self {
+        Self { time, order }
+    }
+    /// Returns exact physical time; order never changes physical duration.
+    #[must_use]
+    pub const fn time(&self) -> Time<D> {
+        self.time
+    }
+    /// Returns the machine-local order at this physical time.
+    #[must_use]
+    pub const fn order(&self) -> u64 {
+        self.order
+    }
+}
+impl<D> Clone for ReactionStamp<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<D> Copy for ReactionStamp<D> {}
+impl<D> PartialEq for ReactionStamp<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.time == other.time && self.order == other.order
+    }
+}
+impl<D> Eq for ReactionStamp<D> {}
+impl<D> PartialOrd for ReactionStamp<D> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl<D> Ord for ReactionStamp<D> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.time
+            .cmp(&other.time)
+            .then(self.order.cmp(&other.order))
+    }
+}
+impl<D> Hash for ReactionStamp<D> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.time.hash(state);
+        self.order.hash(state);
+    }
+}
+impl<D> fmt::Debug for ReactionStamp<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReactionStamp")
+            .field("time", &self.time)
+            .field("order", &self.order)
+            .finish()
+    }
+}
+
 /// A non-negative integral tick count in the caller-defined time domain `D`.
 ///
 /// The caller defines what one tick means. Arithmetic is checked and never

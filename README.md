@@ -253,9 +253,16 @@ After initialization the machine is `Ready { now }`. Ready transactions use an
 - supplied levels replace authoritative current values;
 - omitted levels retain their previous values;
 - pulse inputs apply only to the current reaction and never persist;
-- the requested time must be strictly greater than the current time;
+- the requested time must be equal to or greater than the current time;
 - the transaction must carry the current network revision and matching network
   and input-schema identities.
+
+Every successful reaction receives a machine-local `ReactionStamp`: exact
+physical time plus a checked order. Initialization and the first reaction at a
+later time use order zero; subsequent calls at the current time increment it.
+Even an explicit empty delta or unchanged level reassertion settles a reaction
+and changes freshness. Outputs and diagnostics retain their producing stamps.
+Read-only inspection, preparation and forecast do not allocate live occurrences.
 
 ### One reaction and output publication
 

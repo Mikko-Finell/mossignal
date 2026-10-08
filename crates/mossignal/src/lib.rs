@@ -177,3 +177,5 @@ pub use transaction::{
     RuntimeFailureEvidence, Transaction, TransactionBuildFailure, TransactionResult,
 };
 pub use validation::{NetworkDefinitionGraphView, ValidatedNetwork};
+
+pub use time::ReactionStamp;

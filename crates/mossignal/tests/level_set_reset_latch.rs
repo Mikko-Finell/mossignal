@@ -363,7 +363,7 @@ fn episodes_begin_remain_quiet_resolve_and_begin_again_with_owned_evidence() {
         .unwrap();
     assert_eq!(new.diagnostic_episode_changes()[0].kind(), Change::Began);
     let later = m.active_diagnostic_episodes().unwrap().remove(0);
-    assert_eq!(later.identity(), active.identity()); // identity denotes the stable condition, not an event serial
+    assert_ne!(later.identity(), active.identity()); // each continuous interval has its beginning occurrence
     assert_eq!(later.began_at(), Time::from_ticks(6));
     assert!(active.provenance().inspect(active.cause()).is_ok());
     assert!(
@@ -385,6 +385,48 @@ fn episodes_begin_remain_quiet_resolve_and_begin_again_with_owned_evidence() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn ordered_same_time_episode_intervals_have_distinct_occurrence_identity() {
+    let f = fixture(LOW, ConflictPolicy::RetainAndDiagnose);
+    let mut machine = f.compiled.spawn(policy(1000));
+    machine
+        .apply(Transaction::initialize(
+            Time::from_ticks(2),
+            machine.revision(),
+            snapshot(&f, HIGH, HIGH),
+        ))
+        .unwrap();
+    let first = machine.active_diagnostic_episodes().unwrap().remove(0);
+    assert_eq!(first.began_stamp().order(), 0);
+    let resolved = machine
+        .apply(Transaction::advance(
+            Time::from_ticks(2),
+            machine.revision(),
+            delta(&f, LOW, HIGH),
+        ))
+        .unwrap();
+    assert_eq!(resolved.diagnostic_episode_changes()[0].stamp().order(), 1);
+    let mut restored = f
+        .compiled
+        .restore(machine.snapshot(), policy(1000))
+        .unwrap();
+    let tx = Transaction::advance(
+        Time::from_ticks(2),
+        machine.revision(),
+        delta(&f, HIGH, HIGH),
+    );
+    let began = machine.apply(tx.clone()).unwrap();
+    restored.apply(tx).unwrap();
+    let second = machine.active_diagnostic_episodes().unwrap().remove(0);
+    assert_eq!(second.began_stamp().order(), 2);
+    assert_ne!(first.identity(), second.identity());
+    assert_eq!(
+        began.diagnostic_episode_changes()[0].stamp(),
+        second.began_stamp()
+    );
+    assert_eq!(machine.snapshot(), restored.snapshot());
 }
 
 #[test]
@@ -429,7 +471,7 @@ fn ordinary_history_and_same_value_requests_preserve_state_and_causes() {
         let transaction_times = supporters
             .iter()
             .filter_map(|cause| match result.provenance().inspect(*cause).unwrap() {
-                mossignal::CauseInspection::ReadyTransaction { at, .. } => Some(at.ticks()),
+                mossignal::CauseInspection::ReadyTransaction { at, .. } => Some(at.time().ticks()),
                 _ => None,
             })
             .collect::<Vec<_>>();

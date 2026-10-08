@@ -580,7 +580,7 @@ pub(crate) struct FinalizedPatch<D> {
     pub output_baselines: BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     pub pending_events: BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
     pub next_serial: u64,
-    pub periodic_anchors: BTreeMap<NodeKey, Time<D>>,
+    pub periodic_anchors: BTreeMap<NodeKey, crate::machine::PeriodicPhase<D>>,
     pub episodes: ActiveEpisodes<D>,
     pub input_causes: BTreeMap<ExternalInputKey<Level>, CauseRef>,
     pub output_causes: BTreeMap<ExternalOutputKey<Level>, CauseRef>,
@@ -660,7 +660,7 @@ pub(crate) struct MigrationSource<'a, D> {
     pub output_baselines: &'a BTreeMap<ExternalOutputKey<Level>, LogicLevel>,
     pub pending_events: &'a BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
     pub next_serial: u64,
-    pub periodic_anchors: &'a BTreeMap<NodeKey, Time<D>>,
+    pub periodic_anchors: &'a BTreeMap<NodeKey, crate::machine::PeriodicPhase<D>>,
     pub episodes: &'a ActiveEpisodes<D>,
     pub input_causes: &'a BTreeMap<ExternalInputKey<Level>, CauseRef>,
     pub output_causes: &'a BTreeMap<ExternalOutputKey<Level>, CauseRef>,
@@ -677,10 +677,11 @@ pub(crate) struct MigrationSource<'a, D> {
 pub(crate) fn finalize<D>(
     prepared: &PreparedPatch<D>,
     policy: ReconfigurationPolicy,
-    at: Time<D>,
+    stamp: crate::ReactionStamp<D>,
     source: &MigrationSource<'_, D>,
     limits: &RuntimePolicy,
 ) -> Result<FinalizedPatch<D>, MigrationFault> {
+    let at = stamp.time();
     // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "finalize-prepared-plan"
     // The static plan is applied to the reached state and is not recomputed.
     let plan = prepared.static_plan();
@@ -718,7 +719,7 @@ pub(crate) fn finalize<D>(
         next_serial,
         anchors,
         records: events,
-    } = migrate_events(plan, &directives, source, target, at, source.next_serial)?;
+    } = migrate_events(plan, &directives, source, target, stamp, source.next_serial)?;
     enforce_pending_budget::<D>(limits, &pending)?;
     reject_conflicting_transitions(target, &pending)?;
     let losses = realized_losses(plan, source, at);
@@ -1325,7 +1326,7 @@ struct EventClaim {
 struct MigratedEvents<D> {
     pending: BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
     next_serial: u64,
-    anchors: BTreeMap<NodeKey, Time<D>>,
+    anchors: BTreeMap<NodeKey, crate::machine::PeriodicPhase<D>>,
     records: Vec<EventMigrationRecord>,
 }
 
@@ -1334,12 +1335,13 @@ fn migrate_events<D>(
     directives: &BTreeMap<SubjectRef, NodeMigrationDirective<D>>,
     source: &MigrationSource<'_, D>,
     target: &CompiledNetwork<D>,
-    at: Time<D>,
+    stamp: crate::ReactionStamp<D>,
     mut next_serial: u64,
 ) -> Result<MigratedEvents<D>, MigrationFault> {
+    let at = stamp.time();
     let claims = claim_events(plan.event_rules(), source.compiled, target)?;
     let mut pending: BTreeMap<Time<D>, Vec<PendingEvent<D>>> = BTreeMap::new();
-    let mut anchors: BTreeMap<NodeKey, Time<D>> = BTreeMap::new();
+    let mut anchors: BTreeMap<NodeKey, crate::machine::PeriodicPhase<D>> = BTreeMap::new();
     let mut records = Vec::new();
     for claim in claims {
         let directive = directives.get(&claim.subject).copied();
@@ -1351,8 +1353,32 @@ fn migrate_events<D>(
         let named_rule = directive
             .map(|directive| format!("{directive:?}/{arm:?}"))
             .unwrap_or_else(|| format!("Standard/{arm:?}"));
-        let migrated =
+        let mut migrated =
             apply_pending_arm(&claim, &owned, arm, directive, target, at, &mut next_serial)?;
+        update_anchor(&claim, directive, arm, source, target, stamp, &mut anchors);
+        if let Some(phase) = claim.target.and_then(|node| anchors.get(&node)) {
+            for event in &mut migrated {
+                if let PendingEvent::Periodic(boundary) = event {
+                    if phase.origin == stamp {
+                        boundary.stimulus = stamp;
+                    }
+                    if boundary.deadline == at && phase.settled.is_some_and(|settled| settled >= at)
+                    {
+                        // SPEC: docs/specs/contracts/ordered-reactions.yaml "singular-inertial-and-once-only-phase"
+                        // Recomputing cadence cannot redispatch a predecessor's settled boundary.
+                        let Some((period, ..)) = target.periodic(boundary.node) else {
+                            panic!("periodic migration target must retain its cadence");
+                        };
+                        boundary.ordinal = boundary.ordinal.checked_add(1).ok_or_else(|| {
+                            time_fault(target, boundary.node, at.ticks(), period.ticks())
+                        })?;
+                        boundary.deadline = at.checked_add_nonzero(period).map_err(|_| {
+                            time_fault(target, boundary.node, at.ticks(), period.ticks())
+                        })?;
+                    }
+                }
+            }
+        }
         if migrated.is_empty() {
             if owned.is_empty() {
                 records.push(event_record(
@@ -1389,7 +1415,6 @@ fn migrate_events<D>(
             ));
             pending.entry(deadline).or_default().push(event);
         }
-        update_anchor(&claim, directive, arm, source, target, at, &mut anchors);
     }
     reject_unclaimed_events(plan.event_rules(), source)?;
     Ok(MigratedEvents {
@@ -1728,6 +1753,7 @@ fn recompute_periodic<D>(
     let key = allocate_serial(next_serial)?;
     let sample = events[0];
     Ok(vec![PendingEvent::Periodic(PendingPeriodicBoundary {
+        stimulus: sample.stimulus(),
         key,
         node: destination,
         origin: at,
@@ -1871,9 +1897,10 @@ fn update_anchor<D>(
     arm: PendingArm,
     source: &MigrationSource<'_, D>,
     target: &CompiledNetwork<D>,
-    at: Time<D>,
-    anchors: &mut BTreeMap<NodeKey, Time<D>>,
+    stamp: crate::ReactionStamp<D>,
+    anchors: &mut BTreeMap<NodeKey, crate::machine::PeriodicPhase<D>>,
 ) {
+    let at = stamp.time();
     let Some(destination) = claim.target.filter(|node| target.periodic(*node).is_some()) else {
         return;
     };
@@ -1889,7 +1916,14 @@ fn update_anchor<D>(
             PeriodicMigration::ReanchorAtPatchTime
         ))
     ) {
-        anchors.insert(destination, at);
+        anchors.insert(
+            destination,
+            crate::machine::PeriodicPhase {
+                anchor: at,
+                origin: stamp,
+                settled: None,
+            },
+        );
         return;
     }
     if matches!(
@@ -1903,7 +1937,13 @@ fn update_anchor<D>(
                 .first()
                 .map(|event| event.identity().3)
         }) {
-            anchors.insert(destination, deadline);
+            if let Some(mut phase) = claim
+                .source
+                .and_then(|node| source.periodic_anchors.get(&node).copied())
+            {
+                phase.anchor = deadline;
+                anchors.insert(destination, phase);
+            }
             return;
         }
     }
@@ -1960,7 +2000,9 @@ fn reject_conflicting_transitions<D>(
         for event in batch {
             let node = event.identity().1;
             let duplicate = match event {
-                PendingEvent::TransportDelay(_) => transport.insert(node, ()).is_some(),
+                PendingEvent::TransportDelay(event) => transport
+                    .insert((node, event.stimulus), event.target)
+                    .is_some_and(|target| target != event.target),
                 PendingEvent::Inertial(_) => inertial.insert(node, ()).is_some(),
                 _ => false,
             };

@@ -45,7 +45,8 @@ lifecycle.already_initialized|Error|CallerInput|Lifecycle|false|true|false|false
 lifecycle.delta_before_initialization|Error|CallerInput|Lifecycle|false|true|false|false|false
 runtime.stale_revision|Error|Compatibility|RevisionMismatch|false|true|false|false|false
 runtime.stale_execution_state|Error|Compatibility|DigestMismatch|false|true|false|false|false
-runtime.time_not_strictly_increasing|Error|CallerInput|Time|false|true|false|false|false
+runtime.time_regression|Error|CallerInput|Time|false|true|false|false|false
+runtime.reaction_order_overflow|Error|SemanticRejection|Time|false|true|false|false|false
 runtime.time_overflow|Error|SemanticRejection|Time|false|true|false|false|false
 runtime.invalid_time_subtraction|Error|CallerInput|Time|false|true|false|false|false
 runtime.zero_span_not_allowed|Error|CallerInput|Parameter|false|true|false|false|false

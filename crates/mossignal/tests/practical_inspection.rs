@@ -585,7 +585,7 @@ fn pulse_explanation_preserves_joint_counts_and_port_identity_under_permutation(
         let mut initializations = 0;
         for edge in &explanation.causal.edges {
             match explanation.causal.provenance().inspect(edge.cause).unwrap() {
-                CauseInspection::ExternalPulseObservation { input, count } => {
+                CauseInspection::ExternalPulseObservation { input, count, .. } => {
                     observations.push((input, count))
                 }
                 CauseInspection::InitializationTransaction { .. } => initializations += 1,

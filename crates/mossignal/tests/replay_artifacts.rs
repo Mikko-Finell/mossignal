@@ -496,20 +496,22 @@ fn checkpoint_mismatches_use_one_replay_code() {
 fn runtime_failure_keeps_its_code_and_the_prior_frames() {
     let (compiled, input, output) = golden_not();
     let mut machine = compiled.spawn(policy());
+    let revision = machine.revision();
     let failure = record_replay_log(
         &mut machine,
         [
-            init_tx(&compiled, input, LogicLevel::High),
+            Transaction::initialize(
+                Time::from_ticks(1),
+                revision,
+                level_snapshot(&compiled, &[(input, LogicLevel::High)]),
+            ),
             advance_tx(&compiled, input, 0, LogicLevel::Low),
         ],
     )
     .unwrap_err();
-    assert_eq!(
-        failure.code().as_str(),
-        "runtime.time_not_strictly_increasing"
-    );
+    assert_eq!(failure.code().as_str(), "runtime.time_regression");
     assert!(machine.is_initialized());
-    assert_eq!(machine.now(), Some(Time::from_ticks(0)));
+    assert_eq!(machine.now(), Some(Time::from_ticks(1)));
     assert_eq!(machine.output_level(output), Some(LogicLevel::Low));
 
     let mut fresh = compiled.spawn(policy());
@@ -698,8 +700,11 @@ fn pulse_events<D>(events: &[OutputEvent<D>]) -> Vec<(u128, u64, u64)> {
         .iter()
         .map(|event| match event {
             OutputEvent::Pulsed {
-                output, count, at, ..
-            } => (output.as_u128(), count.get(), at.ticks()),
+                output,
+                count,
+                stamp: at,
+                ..
+            } => (output.as_u128(), count.get(), at.time().ticks()),
             _ => panic!("pulse delay must publish pulse events"),
         })
         .collect()
