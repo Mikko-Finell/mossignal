@@ -67,6 +67,8 @@ input.foreign_schema|Error|Compatibility|InputSchema|false|true|false|false|fals
 input.stale_schema|Error|Compatibility|InputSchema|false|true|false|false|false
 inspection.unknown_subject|Error|CallerInput|MissingReference|false|true|false|false|false
 inspection.wrong_subject_kind|Error|CallerInput|KindMismatch|false|true|false|false|false
+inspection.pending_event_not_found|Error|CallerInput|PendingEvent|false|true|false|false|false
+explanation.unknown_subject|Error|CallerInput|MissingReference|false|true|false|false|false
 explanation.foreign_cause|Error|Compatibility|Provenance|false|true|false|false|false
 explanation.invalid_cause|Error|CallerInput|Provenance|false|true|false|false|false
 internal.diagnostic_evidence_conflict|Error|LibraryDefect|InternalInvariant|false|false|false|false|true

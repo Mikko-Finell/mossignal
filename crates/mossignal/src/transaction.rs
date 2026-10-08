@@ -1394,6 +1394,22 @@ pub struct ProvenanceView<D> {
     records: Arc<Vec<ProvenanceRecord<D>>>,
 }
 
+impl<D> fmt::Debug for ProvenanceView<D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProvenanceView")
+            .field("scope", &self.scope)
+            .field("records", &self.records.len())
+            .finish()
+    }
+}
+impl<D> PartialEq for ProvenanceView<D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.scope == other.scope
+    }
+}
+impl<D> Eq for ProvenanceView<D> {}
+
 struct ProvenanceBuild<D> {
     provenance: ProvenanceView<D>,
     operation_causes: Vec<CauseRef>,

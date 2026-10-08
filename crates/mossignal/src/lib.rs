@@ -1,4 +1,43 @@
-//! Core value types for Mossignal.
+//! Mossignal authoring, execution, and owned semantic inspection.
+//!
+//! Graph slices describe structural possibility, including delayed paths.
+//! Current explanations follow recorded support; their transition cause remains
+//! separate when the output stays unchanged. Owned observations retain their
+//! provenance after subsequent transactions.
+//!
+//! ```
+//! use mossignal::{Explain, NetworkBuilder, RuntimePolicy, TimeDomainId, Transaction};
+//! use mossignal::key::{ExternalInputKey, ExternalOutputKey};
+//! use mossignal::metadata::DiagnosticMeta;
+//! use mossignal::signal::{Level, LogicLevel};
+//! use mossignal::time::Time;
+//!
+//! let mut builder = NetworkBuilder::<()>::new(TimeDomainId::from_u128(1));
+//! let input = ExternalInputKey::<Level>::from_u128(2);
+//! let output = ExternalOutputKey::<Level>::from_u128(3);
+//! let signal = builder.add_level_input(input, DiagnosticMeta::default()).unwrap();
+//! let inverted = builder.not(signal).unwrap();
+//! builder.add_level_output(output, inverted, DiagnosticMeta::default()).unwrap();
+//! let network = builder.finish().require_artifact().unwrap()
+//!     .compile().require_artifact().unwrap();
+//! let paths = network.slice_affecting(output.into()).unwrap();
+//! assert!(!paths.subjects().is_empty());
+//! let policy = RuntimePolicy::builder()
+//!     .max_internal_reactions(100).max_evaluated_operations(1000)
+//!     .max_pending_events(100).max_events_created_per_transaction(100)
+//!     .max_required_provenance_growth(1000).build().unwrap();
+//! let mut machine = network.spawn(policy);
+//! let snapshot = network.input_snapshot().set(input, LogicLevel::Low).unwrap()
+//!     .finish().unwrap();
+//! let result = machine.apply(Transaction::initialize(
+//!     Time::from_ticks(0), machine.revision(), snapshot)).unwrap();
+//! let observation = machine.inspect_output(output).unwrap();
+//! assert_eq!(observation.level, Some(LogicLevel::High));
+//! let explanation = machine.explain(Explain::CurrentOutput(output.into())).unwrap();
+//! assert!(!explanation.current_support.is_empty());
+//! let event = result.explain_output_event(0).unwrap();
+//! assert!(!event.causal.edges.is_empty());
+//! ```
 
 pub mod authored;
 pub mod binding;
@@ -7,8 +46,10 @@ mod cbor_decode;
 mod compile;
 pub mod diagnostics;
 mod episode;
+mod graph;
 pub mod identity;
 mod input;
+mod inspection;
 pub mod key;
 mod machine;
 pub mod metadata;
@@ -49,12 +90,19 @@ pub use episode::{
     ActiveDiagnosticEpisode, DiagnosticConditionKey, DiagnosticEpisodeChange,
     DiagnosticEpisodeChangeKind, DiagnosticEpisodeId,
 };
+pub use graph::{GraphElement, GraphQueryFailure, GraphSubjectRef, NetworkSlice, Region, RegionId};
 pub use identity::{
     ExecutionStateDigest, InputSchemaFingerprint, ModuleFingerprint, NetworkFingerprint,
     ObservableStateDigest, SnapshotDigest, TimeDomainId,
 };
 pub use input::{
     InputBuildFailure, InputDelta, InputDeltaBuilder, InputSnapshot, InputSnapshotBuilder,
+};
+pub use inspection::{
+    CausalExplanation, Explain, ExplainedObservation, Explanation, ExplanationEdge,
+    InputPortInspection, InspectionFailure, ModuleBehavior, NodeInspection, NodeStateInspection,
+    OutputEventValue, OutputInspection, OutputPortInspection, PendingEventInspection,
+    PendingPayload, RetentionStatus,
 };
 pub use machine::{
     DiagnosticEpisodeInspectionFailure, EdgeDetectorDefinitionInspection, EdgeDetectorInspection,

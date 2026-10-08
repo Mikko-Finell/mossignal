@@ -329,6 +329,8 @@ pub enum DiagnosticCode {
     InputStaleSchema,
     InspectionUnknownSubject,
     InspectionWrongSubjectKind,
+    InspectionPendingEventNotFound,
+    ExplanationUnknownSubject,
     ExplanationForeignCause,
     ExplanationInvalidCause,
     InternalDiagnosticEvidenceConflict,
@@ -692,6 +694,8 @@ pub enum InspectionSubjectKind {
     SampleHold,
     Module,
     LevelOutput,
+    GraphElement(crate::GraphElement),
+    OutputEvent(usize),
     SignalKind(SignalKind),
 }
 
@@ -1330,6 +1334,14 @@ pub enum ProblemEvidence<D> {
         marker: PhantomData<fn() -> D>,
     },
     InspectionWrongSubjectKind {
+        evidence: InspectionEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    InspectionPendingEventNotFound {
+        evidence: PendingEventEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    ExplanationUnknownSubject {
         evidence: InspectionEvidence,
         marker: PhantomData<fn() -> D>,
     },
@@ -2228,6 +2240,8 @@ opening_diagnostic_registry! {
     InputStaleSchema, Self::InputStaleSchema { .. }, "input.stale_schema", Error, Compatibility, InputSchema, false, true, false;
     InspectionUnknownSubject, Self::InspectionUnknownSubject { .. }, "inspection.unknown_subject", Error, CallerInput, MissingReference, false, true, false;
     InspectionWrongSubjectKind, Self::InspectionWrongSubjectKind { .. }, "inspection.wrong_subject_kind", Error, CallerInput, KindMismatch, false, true, false;
+    InspectionPendingEventNotFound, Self::InspectionPendingEventNotFound { .. }, "inspection.pending_event_not_found", Error, CallerInput, PendingEvent, false, true, false;
+    ExplanationUnknownSubject, Self::ExplanationUnknownSubject { .. }, "explanation.unknown_subject", Error, CallerInput, MissingReference, false, true, false;
     ExplanationForeignCause, Self::ExplanationForeignCause { .. }, "explanation.foreign_cause", Error, Compatibility, Provenance, false, true, false;
     ExplanationInvalidCause, Self::ExplanationInvalidCause { .. }, "explanation.invalid_cause", Error, CallerInput, Provenance, false, true, false;
     InternalDiagnosticEvidenceConflict, Self::InternalDiagnosticEvidenceConflict { .. }, "internal.diagnostic_evidence_conflict", Error, LibraryDefect, InternalInvariant, false, false, true;
@@ -2875,6 +2889,12 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         ProblemEvidence::InspectionWrongSubjectKind { .. } => {
             ConditionDiscriminator::Operation(DiagnosticCode::InspectionWrongSubjectKind)
         }
+        ProblemEvidence::InspectionPendingEventNotFound { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::InspectionPendingEventNotFound)
+        }
+        ProblemEvidence::ExplanationUnknownSubject { .. } => {
+            ConditionDiscriminator::Operation(DiagnosticCode::ExplanationUnknownSubject)
+        }
         ProblemEvidence::ExplanationForeignCause { .. } => {
             ConditionDiscriminator::Operation(DiagnosticCode::ExplanationForeignCause)
         }
@@ -3342,7 +3362,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 184);
+        assert_eq!(leaves.len(), 192);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {

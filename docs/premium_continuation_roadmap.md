@@ -960,7 +960,7 @@ Explicitly exclude:
 
 ---
 
-## 59. Practical graph inspection and causal explanations
+## 59. [DONE] Practical graph inspection and causal explanations
 
 Finish a small read-only API for navigating the supported circuit, inspecting
 its current condition, and tracing recorded causes. Extend the existing graph

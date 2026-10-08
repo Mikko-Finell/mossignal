@@ -1207,6 +1207,95 @@ impl<D> CompiledNetwork<D> {
             .map(|index| index.0)
     }
 
+    pub(crate) fn node_definition(&self, subject: &NodeSubject) -> Option<&NodeDef<D>> {
+        match subject {
+            NodeSubject::Node(key) => self
+                .inner
+                .definition
+                .nodes()
+                .iter()
+                .find(|node| node.key() == *key),
+            NodeSubject::Qualified(key) => self
+                .module(&QualifiedModuleRef::new(key.instances().to_vec()))?
+                .definition()
+                .nodes()
+                .iter()
+                .find(|node| node.key() == key.node()),
+        }
+    }
+
+    pub(crate) fn input_port_operations(&self, node: NodeKey) -> Vec<(AnyInPortKey, usize)> {
+        let Some(index) = self.inner.node_lookup.get(&node) else {
+            return Vec::new();
+        };
+        self.inner.nodes[index.0]
+            .inputs
+            .iter()
+            .map(|index| {
+                let Some((&flat, _)) = self
+                    .inner
+                    .input_port_lookup
+                    .iter()
+                    .find(|(_, port)| *port == index)
+                else {
+                    panic!("compiled input descriptors must retain stable port correspondence");
+                };
+                let local = self
+                    .inner
+                    .qualified_input_reverse
+                    .get(&flat)
+                    .map_or(flat, |qualified| qualified.port());
+                let source = self
+                    .inner
+                    .input_source(*index)
+                    .unwrap_or_else(|_| panic!("validated input ports must have compiled drivers"));
+                (local, source.0)
+            })
+            .collect()
+    }
+
+    pub(crate) fn output_port_operations(&self, node: NodeKey) -> Vec<(AnyOutPortKey, usize)> {
+        let Some(index) = self.inner.node_lookup.get(&node) else {
+            return Vec::new();
+        };
+        self.inner.nodes[index.0]
+            .outputs
+            .iter()
+            .map(|index| {
+                let Some((&flat, _)) = self
+                    .inner
+                    .output_port_lookup
+                    .iter()
+                    .find(|(_, port)| *port == index)
+                else {
+                    panic!("compiled output descriptors must retain stable port correspondence");
+                };
+                let local = self
+                    .inner
+                    .qualified_output_reverse
+                    .get(&flat)
+                    .copied()
+                    .unwrap_or(flat);
+                let Some(operation) = self
+                    .inner
+                    .operation_lookup
+                    .get(&ReactionVertex::NodeOutput(flat))
+                else {
+                    panic!("compiled output ports must have output operations");
+                };
+                (local, operation.0)
+            })
+            .collect()
+    }
+
+    pub(crate) fn external_output_support_operation(
+        &self,
+        output: AnyExternalOutputKey,
+    ) -> Option<usize> {
+        let index = self.inner.external_output_lookup.get(&output)?;
+        Some(self.inner.external_outputs[index.0].source.0)
+    }
+
     pub(crate) fn stable_owner(&self, node: NodeKey) -> StableOwner {
         match self.inner.qualified_node_reverse.get(&node) {
             Some(qualified) => {

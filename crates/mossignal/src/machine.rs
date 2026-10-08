@@ -349,6 +349,7 @@ pub struct PulseDelayInspection<D> {
     at: Time<D>,
     pending: Vec<PendingPulseDelayInspection<D>>,
     next_deadline: Option<Time<D>>,
+    provenance: ProvenanceView<D>,
 }
 
 /// Structural information available for one compiled TransportDelay.
@@ -1031,6 +1032,12 @@ impl TransportDelayInspectionFailure {
 }
 
 impl<D> PulseDelayInspection<D> {
+    /// Retains the provenance resolving every cause in this owned observation.
+    #[must_use]
+    pub const fn provenance(&self) -> &ProvenanceView<D> {
+        &self.provenance
+    }
+
     #[must_use]
     pub const fn node(&self) -> NodeKey {
         self.node
@@ -1326,9 +1333,16 @@ pub struct ModuleInspection<D> {
     nodes: Vec<ModuleNodeInspection<D>>,
     connections: Vec<QualifiedConnectionRef>,
     modules: Vec<QualifiedModuleRef>,
+    provenance: ProvenanceView<D>,
 }
 
 impl<D> ModuleInspection<D> {
+    /// Retains the provenance resolving every cause in this owned observation.
+    #[must_use]
+    pub const fn provenance(&self) -> &ProvenanceView<D> {
+        &self.provenance
+    }
+
     #[must_use]
     pub const fn module(&self) -> &QualifiedModuleRef {
         &self.module
@@ -1627,7 +1641,7 @@ pub struct Machine<D> {
 pub struct ForecastState<D> {
     // SPEC: docs/specs/contracts/transaction-forecast.yaml "hypothetical-only"
     // No apply, mutation, or conversion into the live machine.
-    machine: Machine<D>,
+    pub(crate) machine: Machine<D>,
 }
 
 impl<D> ForecastState<D> {
@@ -1925,7 +1939,7 @@ impl EdgeDetectorDefinitionInspection {
 ///     let _ = inspection.output();
 /// }
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeDetectorInspection<D> {
     node: NodeKey,
     detector: EdgeDetectorKind,
@@ -1935,9 +1949,16 @@ pub struct EdgeDetectorInspection<D> {
     observation_cause: CauseRef,
     revision: NetworkRevision,
     at: Time<D>,
+    provenance: ProvenanceView<D>,
 }
 
 impl<D> EdgeDetectorInspection<D> {
+    /// Retains the provenance resolving every cause in this owned observation.
+    #[must_use]
+    pub const fn provenance(&self) -> &ProvenanceView<D> {
+        &self.provenance
+    }
+
     #[must_use]
     pub const fn node(&self) -> NodeKey {
         self.node
@@ -2038,7 +2059,7 @@ impl ToggleDefinitionInspection {
 }
 
 /// One owned observation of committed Toggle state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToggleInspection<D> {
     node: NodeKey,
     initial: LogicLevel,
@@ -2046,9 +2067,16 @@ pub struct ToggleInspection<D> {
     revision: NetworkRevision,
     at: Time<D>,
     latest_inversion: Option<CauseRef>,
+    provenance: ProvenanceView<D>,
 }
 
 impl<D> ToggleInspection<D> {
+    /// Retains the provenance resolving every cause in this owned observation.
+    #[must_use]
+    pub const fn provenance(&self) -> &ProvenanceView<D> {
+        &self.provenance
+    }
+
     /// Returns the inspected Toggle's stable node identity.
     #[must_use]
     pub const fn node(&self) -> NodeKey {
@@ -2145,7 +2173,7 @@ impl PulseSetResetLatchDefinitionInspection {
 }
 
 /// One owned observation of committed pulse set/reset latch state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PulseSetResetLatchInspection<D> {
     node: NodeKey,
     initial: LogicLevel,
@@ -2154,9 +2182,16 @@ pub struct PulseSetResetLatchInspection<D> {
     revision: NetworkRevision,
     at: Time<D>,
     latest_establishment: CauseRef,
+    provenance: ProvenanceView<D>,
 }
 
 impl<D> PulseSetResetLatchInspection<D> {
+    /// Retains the provenance resolving every cause in this owned observation.
+    #[must_use]
+    pub const fn provenance(&self) -> &ProvenanceView<D> {
+        &self.provenance
+    }
+
     /// Returns the stable node key.
     #[must_use]
     pub const fn node(&self) -> NodeKey {
@@ -2266,7 +2301,7 @@ impl LevelSetResetLatchDefinitionInspection {
 }
 
 /// One owned observation of committed level set/reset latch state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LevelSetResetLatchInspection<D> {
     node: NodeKey,
     initial: LogicLevel,
@@ -2277,9 +2312,16 @@ pub struct LevelSetResetLatchInspection<D> {
     revision: NetworkRevision,
     at: Time<D>,
     latest_establishment: CauseRef,
+    provenance: ProvenanceView<D>,
 }
 
 impl<D> LevelSetResetLatchInspection<D> {
+    /// Retains the provenance resolving every cause in this owned observation.
+    #[must_use]
+    pub const fn provenance(&self) -> &ProvenanceView<D> {
+        &self.provenance
+    }
+
     /// Returns the stable node key.
     #[must_use]
     pub const fn node(&self) -> NodeKey {
@@ -2914,6 +2956,11 @@ impl<D> Machine<D> {
         pending.sort_by_key(|event| (event.deadline, event.event));
         let next_deadline = pending.first().map(PendingPulseDelayInspection::deadline);
         Ok(PulseDelayInspection {
+            provenance: self
+                .store
+                .provenance
+                .clone()
+                .unwrap_or_else(|| panic!("ready inspections must retain committed provenance")),
             node,
             delay: definition.delay,
             revision: self.store.revision,
@@ -2958,7 +3005,10 @@ impl<D> Machine<D> {
             .ok_or(TransportDelayInspectionFailure::NotTransportDelay(node))
     }
 
-    fn transport_delay_observation(&self, node: NodeKey) -> Option<TransportDelayInspection<D>> {
+    pub(crate) fn transport_delay_observation(
+        &self,
+        node: NodeKey,
+    ) -> Option<TransportDelayInspection<D>> {
         let MachineStatus::Ready { now } = self.store.status else {
             return None;
         };
@@ -3053,7 +3103,10 @@ impl<D> Machine<D> {
             .ok_or(InertialDelayInspectionFailure::NotInertialDelay(node))
     }
 
-    fn inertial_delay_observation(&self, node: NodeKey) -> Option<InertialDelayInspection<D>> {
+    pub(crate) fn inertial_delay_observation(
+        &self,
+        node: NodeKey,
+    ) -> Option<InertialDelayInspection<D>> {
         let MachineStatus::Ready { now } = self.store.status else {
             return None;
         };
@@ -3148,7 +3201,7 @@ impl<D> Machine<D> {
             .ok_or(PeriodicInspectionFailure::NotPeriodic(node))
     }
 
-    fn periodic_observation(&self, node: NodeKey) -> Option<PeriodicInspection<D>> {
+    pub(crate) fn periodic_observation(&self, node: NodeKey) -> Option<PeriodicInspection<D>> {
         let MachineStatus::Ready { now } = self.store.status else {
             return None;
         };
@@ -3431,6 +3484,11 @@ impl<D> Machine<D> {
         });
         let stateful_standard = crate::standard::stateful::inspect(self, &module);
         Ok(ModuleInspection {
+            provenance: self
+                .store
+                .provenance
+                .clone()
+                .unwrap_or_else(|| panic!("ready inspections must retain committed provenance")),
             stateful_standard,
             module,
             origin: definition.origin().clone(),
@@ -3535,6 +3593,11 @@ impl<D> Machine<D> {
             .copied()
             .ok_or(EdgeDetectorInspectionFailure::NotEdgeDetector(node))?;
         Ok(EdgeDetectorInspection {
+            provenance: self
+                .store
+                .provenance
+                .clone()
+                .unwrap_or_else(|| panic!("ready inspections must retain committed provenance")),
             node,
             detector: definition.detector,
             initialization: definition.initialization,
@@ -3584,6 +3647,11 @@ impl<D> Machine<D> {
             .copied()
             .ok_or(ToggleInspectionFailure::NotToggle(node))?;
         Ok(ToggleInspection {
+            provenance: self
+                .store
+                .provenance
+                .clone()
+                .unwrap_or_else(|| panic!("ready inspections must retain committed provenance")),
             node,
             initial: definition.initial,
             committed,
@@ -3634,6 +3702,11 @@ impl<D> Machine<D> {
             PulseSetResetLatchInspectionFailure::NotPulseSetResetLatch(node),
         )?;
         Ok(PulseSetResetLatchInspection {
+            provenance: self
+                .store
+                .provenance
+                .clone()
+                .unwrap_or_else(|| panic!("ready inspections must retain committed provenance")),
             node,
             initial: definition.initial,
             conflict: definition.conflict,
@@ -3690,6 +3763,11 @@ impl<D> Machine<D> {
                 node,
             ))?;
         Ok(LevelSetResetLatchInspection {
+            provenance: self
+                .store
+                .provenance
+                .clone()
+                .unwrap_or_else(|| panic!("ready inspections must retain committed provenance")),
             set,
             reset,
             node,
@@ -3733,7 +3811,7 @@ impl<D> Machine<D> {
         }))
     }
 
-    fn sample_hold_observation(&self, node: NodeKey) -> Option<SampleHoldInspection<D>> {
+    pub(crate) fn sample_hold_observation(&self, node: NodeKey) -> Option<SampleHoldInspection<D>> {
         let MachineStatus::Ready { now } = self.store.status else {
             return None;
         };

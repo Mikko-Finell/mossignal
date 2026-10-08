@@ -182,3 +182,11 @@ ReconfigurationFailure::ConflictingMigratedTransitions|reconfiguration.conflicti
 ReconfigurationFailure::StateLossRejected|reconfiguration.state_loss_rejected
 ReconfigurationFailure::TimeArithmeticFailure|runtime.time_overflow
 ReconfigurationFailure::MigrationBudgetExceeded|runtime.budget_exceeded
+GraphQueryFailure::UnknownSubject|inspection.unknown_subject
+InspectionFailure::NotInitialized|lifecycle.not_initialized
+InspectionFailure::Graph|delegate
+InspectionFailure::UnknownPending|inspection.pending_event_not_found
+InspectionFailure::UnknownExplanationSubject|explanation.unknown_subject
+InspectionFailure::UnknownOutputEvent|explanation.unknown_subject
+InspectionFailure::NoCurrentPulse|inspection.wrong_subject_kind
+InspectionFailure::Cause|delegate
