@@ -39,6 +39,7 @@ use std::sync::Arc;
 const PROVENANCE_VIEW_SCOPE_DOMAIN: &[u8] = b"mossignal/provenance_view_scope/v1";
 type ProvenanceScope = [u8; 32];
 const UNFINALIZED_PROVENANCE_SCOPE: ProvenanceScope = [0; 32];
+pub(crate) const MIGRATED_CANCELLATION_RULE: &str = "retained_cancellation";
 
 enum TransactionKind<D> {
     Initialize(InputSnapshot<D>),
@@ -4714,30 +4715,40 @@ fn checkpoint_migration<D>(
             },
         );
     }
-    for causes in [
-        &mut finalized.edge_observation_causes,
-        &mut finalized.toggle_inversion_causes,
-        &mut finalized.establishment_causes,
-        &mut finalized.transport_transition_causes,
-        &mut finalized.inertial_cancellation_causes,
-        &mut finalized.periodic_anchor_causes,
-        &mut finalized.periodic_cancellation_causes,
+    for (causes, rule_override) in [
+        (&mut finalized.edge_observation_causes, None),
+        (&mut finalized.toggle_inversion_causes, None),
+        (&mut finalized.establishment_causes, None),
+        (&mut finalized.transport_transition_causes, None),
+        (
+            &mut finalized.inertial_cancellation_causes,
+            Some(MIGRATED_CANCELLATION_RULE),
+        ),
+        (&mut finalized.periodic_anchor_causes, None),
+        (
+            &mut finalized.periodic_cancellation_causes,
+            Some(MIGRATED_CANCELLATION_RULE),
+        ),
     ] {
         for (node, cause) in causes {
             let subject = finalized.compiled.node_subject(*node);
-            let rule = finalized
-                .report
-                .states()
-                .iter()
-                .find(|state| match state.subject() {
-                    SubjectRef::Node(key) => subject == NodeSubject::Node(*key),
-                    SubjectRef::QualifiedNode(key) => {
-                        subject == NodeSubject::Qualified(key.clone())
-                    }
-                    _ => false,
-                })
-                .map(|state| state.fact())
-                .unwrap_or("preserve");
+            // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "committed-snapshot-and-later-replay"
+            // Checkpointing pending ancestry must retain a cancellation root's role.
+            let rule = rule_override.unwrap_or_else(|| {
+                finalized
+                    .report
+                    .states()
+                    .iter()
+                    .find(|state| match state.subject() {
+                        SubjectRef::Node(key) => subject == NodeSubject::Node(*key),
+                        SubjectRef::QualifiedNode(key) => {
+                            subject == NodeSubject::Qualified(key.clone())
+                        }
+                        _ => false,
+                    })
+                    .map(|state| state.fact())
+                    .unwrap_or("preserve")
+            });
             *cause = push_record(
                 scope,
                 &mut records,
@@ -4747,6 +4758,23 @@ fn checkpoint_migration<D>(
                     supporters: vec![*cause, patch],
                 },
             );
+        }
+    }
+    // SPEC: docs/specs/contracts/periodic.yaml "focused-inspection-and-provenance"
+    // Reanchoring a fresh disabled timer creates a phase without a prior anchor cause.
+    for node in finalized.periodic_anchors.keys() {
+        if let std::collections::btree_map::Entry::Vacant(entry) =
+            finalized.periodic_anchor_causes.entry(*node)
+        {
+            entry.insert(push_record(
+                scope,
+                &mut records,
+                ProvenanceRecord::Migration {
+                    subject: provenance_subject(&finalized.compiled, *node),
+                    rule: "reanchor_at_patch_time".to_owned(),
+                    supporters: vec![patch],
+                },
+            ));
         }
     }
     for event in finalized.pending_events.values_mut().flatten() {

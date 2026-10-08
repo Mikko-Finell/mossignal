@@ -1506,7 +1506,9 @@ fn decide_pending<D>(
                 at,
             );
             let arm = if set { *when_set } else { *when_clear };
-            if matches!(arm, PendingArm::Reject) && !events.is_empty() {
+            // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "finalize-prepared-plan"
+            // A retained phase can select Reject even with no pending boundary.
+            if matches!(arm, PendingArm::Reject) {
                 return Err(MigrationFault::Pending {
                     subject: Box::new(claim.subject.clone()),
                     fact: (*fact).to_owned(),
@@ -1719,7 +1721,7 @@ fn recompute_periodic<D>(
     {
         at
     } else {
-        next_boundary(anchor, at, period.ticks(), destination, target)?
+        next_boundary(anchor, at, period.ticks(), first, destination, target)?
     };
     let ordinal = (deadline.ticks() - anchor.ticks()) / period.ticks();
     let cause = events[0].identity().5;
@@ -1743,11 +1745,14 @@ fn next_boundary<D>(
     anchor: Time<D>,
     at: Time<D>,
     period: u64,
+    first: crate::FirstEmissionPolicy,
     node: NodeKey,
     target: &CompiledNetwork<D>,
 ) -> Result<Time<D>, MigrationFault> {
     let steps = if at.ticks() <= anchor.ticks() {
-        1
+        // SPEC: docs/specs/reconfiguration_and_topology_patch_spec.md "51.3 `RecomputeFromExistingAnchor`"
+        // Immediate admits ordinal zero, including a preserved future phase reference.
+        u64::from(first == crate::FirstEmissionPolicy::AfterFirstPeriod)
     } else {
         let elapsed = at.ticks() - anchor.ticks();
         let quot = elapsed / period;
@@ -2111,9 +2116,14 @@ fn fact_is_set_at<D>(
         "inertial_candidate" => events
             .iter()
             .any(|event| matches!(event, PendingEvent::Inertial(_))),
-        "periodic_schedule" => events
-            .iter()
-            .any(|event| matches!(event, PendingEvent::Periodic(_))),
+        // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "explicit-loss-policy"
+        // A disabled preserved phase remains information even without a pending event.
+        "periodic_schedule" => {
+            flat.is_some_and(|node| source.periodic_anchors.contains_key(&node))
+                || events
+                    .iter()
+                    .any(|event| matches!(event, PendingEvent::Periodic(_)))
+        }
         "periodic_anchor" => flat.is_some_and(|node| source.periodic_anchors.contains_key(&node)),
         "elapsed_wait" | "elapsed_qualification" => {
             events.iter().any(|event| event.identity().2 < at)

@@ -2356,3 +2356,590 @@ fn periodic_preserved_boundary_starts_target_cadence_and_reanchor_can_emit_now()
         target.restore(machine.snapshot(), policy()).unwrap();
     }
 }
+
+fn periodic_migration_machine(
+    first: mossignal::FirstEmissionPolicy,
+    enabled: LogicLevel,
+) -> (
+    Machine<Domain>,
+    ExternalInputKey<Level>,
+    NodeKey,
+    ExternalOutputKey<Pulse>,
+) {
+    periodic_migration_machine_with_phase(
+        first,
+        enabled,
+        mossignal::ReenablePhasePolicy::PreservePhase,
+    )
+}
+
+fn periodic_migration_machine_with_phase(
+    first: mossignal::FirstEmissionPolicy,
+    enabled: LogicLevel,
+    phase: mossignal::ReenablePhasePolicy,
+) -> (
+    Machine<Domain>,
+    ExternalInputKey<Level>,
+    NodeKey,
+    ExternalOutputKey<Pulse>,
+) {
+    let mut builder =
+        NetworkBuilder::with_key(NetworkKey::from_u128(96), TimeDomainId::from_u128(97));
+    let input = ExternalInputKey::from_u128(1);
+    let enable = builder
+        .add_level_input(input, DiagnosticMeta::default())
+        .unwrap();
+    let node = NodeKey::from_u128(2);
+    let pulse = builder
+        .add_periodic(
+            node,
+            enable,
+            mossignal::PeriodicConfig::new(delay(5), first, phase),
+            DiagnosticMeta::default(),
+        )
+        .unwrap()
+        .into_outputs();
+    let output = ExternalOutputKey::from_u128(3);
+    builder
+        .add_pulse_output(output, pulse, DiagnosticMeta::default())
+        .unwrap();
+    let compiled = compile(builder);
+    let mut machine = compiled.spawn(policy());
+    init(
+        &mut machine,
+        Time::from_ticks(0),
+        level_snapshot(&compiled, &[(input, enabled)]),
+    );
+    (machine, input, node, output)
+}
+
+fn replace_periodic(
+    machine: &Machine<Domain>,
+    node: NodeKey,
+    period: u64,
+    first: mossignal::FirstEmissionPolicy,
+    directive: NodeMigrationDirective<Domain>,
+) -> PreparedPatch<Domain> {
+    let old = node_def(machine.compiled(), node);
+    let replacement = NodeDef::new(
+        node,
+        NodeKind::periodic(mossignal::PeriodicConfig::new(
+            delay(period),
+            first,
+            mossignal::ReenablePhasePolicy::PreservePhase,
+        )),
+        old.ports().clone(),
+        DiagnosticMeta::default(),
+    );
+    prepare(
+        machine,
+        machine
+            .patch()
+            .replace_node(node, replacement, directive)
+            .unwrap()
+            .finish(),
+    )
+}
+
+#[test]
+fn periodic_migration_rejects_a_retained_anchor_without_pending_work() {
+    // Section 51: disabled PreservePhase retains state even with an empty calendar.
+    for first in [
+        mossignal::FirstEmissionPolicy::Immediate,
+        mossignal::FirstEmissionPolicy::AfterFirstPeriod,
+    ] {
+        for directive in [
+            NodeMigrationDirective::Standard,
+            NodeMigrationDirective::Periodic(mossignal::PeriodicMigration::RejectIfAnchored),
+        ] {
+            for loss_policy in [
+                ReconfigurationPolicy::RejectStateLoss,
+                ReconfigurationPolicy::AllowReportedStateLoss,
+            ] {
+                let (mut machine, input, node, _) =
+                    periodic_migration_machine(first, LogicLevel::High);
+                machine
+                    .apply(Transaction::advance(
+                        Time::from_ticks(1),
+                        machine.revision(),
+                        level_delta(machine.compiled(), &[(input, LogicLevel::Low)]),
+                    ))
+                    .unwrap();
+                let inspected = machine.inspect_periodic(node).unwrap();
+                assert_eq!(inspected.anchor(), Some(Time::from_ticks(0)));
+                assert!(inspected.pending().is_none());
+                let prepared = replace_periodic(&machine, node, 7, first, directive);
+                // Same-time re-enable is target input, not source migration state.
+                let transaction = Transaction::advance(
+                    Time::from_ticks(2),
+                    machine.revision(),
+                    level_delta(prepared.resulting_compiled(), &[(input, LogicLevel::High)]),
+                )
+                .with_patch(prepared, loss_policy)
+                .unwrap();
+                let before = machine.snapshot();
+                let forecast_failure = machine.forecast(transaction.clone()).unwrap_err();
+                assert_eq!(machine.snapshot(), before);
+                let failure = machine.apply(transaction).unwrap_err();
+                assert_eq!(
+                    failure.code().as_str(),
+                    "reconfiguration.pending_event_migration_rejected"
+                );
+                assert_eq!(failure.code(), forecast_failure.code());
+                assert!(
+                    matches!(failure.evidence(), mossignal::RuntimeFailureEvidence::PendingEventMigrationRejected { evidence }
+                    if evidence.subject == SubjectRef::Node(node) && evidence.fact == "periodic_anchor")
+                );
+                assert_eq!(machine.snapshot(), before);
+            }
+        }
+    }
+}
+
+#[test]
+fn periodic_reanchor_reports_disabled_phase_loss_and_obeys_loss_policy() {
+    for first in [
+        mossignal::FirstEmissionPolicy::Immediate,
+        mossignal::FirstEmissionPolicy::AfterFirstPeriod,
+    ] {
+        let (mut machine, input, node, output) =
+            periodic_migration_machine(first, LogicLevel::High);
+        machine
+            .apply(Transaction::advance(
+                Time::from_ticks(1),
+                machine.revision(),
+                level_delta(machine.compiled(), &[(input, LogicLevel::Low)]),
+            ))
+            .unwrap();
+        let prepared = replace_periodic(
+            &machine,
+            node,
+            7,
+            first,
+            NodeMigrationDirective::Periodic(mossignal::PeriodicMigration::ReanchorAtPatchTime),
+        );
+        let target = prepared.resulting_compiled().clone();
+        let transaction = |loss_policy| {
+            Transaction::advance(
+                Time::from_ticks(2),
+                machine.revision(),
+                level_delta(&target, &[]),
+            )
+            .with_patch(prepared.clone(), loss_policy)
+            .unwrap()
+        };
+        let rejecting = transaction(ReconfigurationPolicy::RejectStateLoss);
+        let allowing = transaction(ReconfigurationPolicy::AllowReportedStateLoss);
+        let before = machine.snapshot();
+        let failure = machine.apply(rejecting).unwrap_err();
+        assert_eq!(
+            failure.code().as_str(),
+            "reconfiguration.state_loss_rejected"
+        );
+        assert_eq!(machine.snapshot(), before);
+        let forecast = machine.forecast(allowing.clone()).unwrap();
+        assert_eq!(machine.snapshot(), before);
+        let applied = machine.apply(allowing).unwrap();
+        assert_eq!(
+            applied.after_execution_digest(),
+            forecast.result().after_execution_digest()
+        );
+        assert!(
+            applied
+                .migration()
+                .unwrap()
+                .losses()
+                .iter()
+                .any(|loss| loss.subject() == &SubjectRef::Node(node)
+                    && loss.fact() == "periodic_schedule"
+                    && loss.event().is_none())
+        );
+        assert!(!pulsed(&applied, output));
+        let inspected = machine.inspect_periodic(node).unwrap();
+        assert_eq!(inspected.anchor(), Some(Time::from_ticks(2)));
+        assert!(inspected.pending().is_none());
+        let mut restored = target.restore(machine.snapshot(), policy()).unwrap();
+        let enabling = Transaction::advance(
+            Time::from_ticks(3),
+            machine.revision(),
+            level_delta(&target, &[(input, LogicLevel::High)]),
+        );
+        let applied = machine.apply(enabling.clone()).unwrap();
+        restored.apply(enabling).unwrap();
+        assert!(!pulsed(&applied, output));
+        assert_eq!(
+            machine
+                .inspect_periodic(node)
+                .unwrap()
+                .pending()
+                .unwrap()
+                .deadline(),
+            Time::from_ticks(9)
+        );
+        assert_eq!(machine.snapshot(), restored.snapshot());
+    }
+}
+
+#[test]
+fn periodic_recomputation_keeps_a_preserved_future_phase_reference() {
+    for patch_time in [3, 5] {
+        let (mut machine, _, node, output) = periodic_migration_machine(
+            mossignal::FirstEmissionPolicy::AfterFirstPeriod,
+            LogicLevel::High,
+        );
+        let preserved = replace_periodic(
+            &machine,
+            node,
+            7,
+            mossignal::FirstEmissionPolicy::Immediate,
+            NodeMigrationDirective::Periodic(mossignal::PeriodicMigration::PreserveNextDeadline),
+        );
+        machine
+            .apply(
+                Transaction::advance(
+                    Time::from_ticks(2),
+                    machine.revision(),
+                    level_delta(preserved.resulting_compiled(), &[]),
+                )
+                .with_patch(preserved, ReconfigurationPolicy::RejectStateLoss)
+                .unwrap(),
+            )
+            .unwrap();
+        let inspected = machine.inspect_periodic(node).unwrap();
+        assert_eq!(inspected.anchor(), Some(Time::from_ticks(5)));
+        assert_eq!(inspected.pending().unwrap().ordinal(), 0);
+        let recomputed = replace_periodic(
+            &machine,
+            node,
+            11,
+            mossignal::FirstEmissionPolicy::Immediate,
+            NodeMigrationDirective::Periodic(
+                mossignal::PeriodicMigration::RecomputeFromExistingAnchor,
+            ),
+        );
+        let target = recomputed.resulting_compiled().clone();
+        let applied = machine
+            .apply(
+                Transaction::advance(
+                    Time::from_ticks(patch_time),
+                    machine.revision(),
+                    level_delta(&target, &[]),
+                )
+                .with_patch(recomputed, ReconfigurationPolicy::RejectStateLoss)
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(pulsed(&applied, output), patch_time == 5);
+        if patch_time == 5 {
+            assert!(
+                matches!(applied.output_events(), [OutputEvent::Pulsed { at, count, output: found, .. }]
+                if *at == Time::from_ticks(5) && *count == PulseCount::ONE && *found == output)
+            );
+        }
+        let inspected = machine.inspect_periodic(node).unwrap();
+        assert_eq!(inspected.anchor(), Some(Time::from_ticks(5)));
+        assert_eq!(
+            inspected.pending().unwrap().deadline(),
+            Time::from_ticks(if patch_time == 3 { 5 } else { 16 })
+        );
+        assert_eq!(
+            inspected.pending().unwrap().ordinal(),
+            u64::from(patch_time == 5)
+        );
+        let mut restored = target.restore(machine.snapshot(), policy()).unwrap();
+        if patch_time == 3 {
+            let firing = Transaction::advance(
+                Time::from_ticks(5),
+                machine.revision(),
+                level_delta(&target, &[]),
+            );
+            let fired = machine.apply(firing.clone()).unwrap();
+            restored.apply(firing).unwrap();
+            assert!(
+                matches!(fired.output_events(), [OutputEvent::Pulsed { at, count, output: found, .. }]
+                if *at == Time::from_ticks(5) && *count == PulseCount::ONE && *found == output)
+            );
+            assert_eq!(
+                machine
+                    .inspect_periodic(node)
+                    .unwrap()
+                    .pending()
+                    .unwrap()
+                    .deadline(),
+                Time::from_ticks(16)
+            );
+            assert_eq!(machine.snapshot(), restored.snapshot());
+        }
+    }
+}
+
+#[test]
+fn periodic_migration_retains_distinct_anchor_and_cancellation_causes() {
+    let (mut machine, input, node, output) = periodic_migration_machine(
+        mossignal::FirstEmissionPolicy::AfterFirstPeriod,
+        LogicLevel::High,
+    );
+    machine
+        .apply(Transaction::advance(
+            Time::from_ticks(1),
+            machine.revision(),
+            level_delta(machine.compiled(), &[(input, LogicLevel::Low)]),
+        ))
+        .unwrap();
+    // Repeated patches checkpoint prior cancellation evidence without losing its role.
+    for at in [2, 3] {
+        let prepared = metadata_patch(&machine, &format!("checkpoint-{at}"));
+        machine
+            .apply(
+                Transaction::advance(
+                    Time::from_ticks(at),
+                    machine.revision(),
+                    level_delta(prepared.resulting_compiled(), &[]),
+                )
+                .with_patch(prepared, ReconfigurationPolicy::RejectStateLoss)
+                .unwrap(),
+            )
+            .unwrap();
+        let inspected = machine.inspect_periodic(node).unwrap();
+        assert_eq!(inspected.anchor(), Some(Time::from_ticks(0)));
+        assert!(inspected.pending().is_none());
+        let restored = machine
+            .compiled()
+            .restore(machine.snapshot(), policy())
+            .unwrap();
+        assert_eq!(machine.snapshot(), restored.snapshot());
+        let restored_inspection = restored.inspect_periodic(node).unwrap();
+        assert!(restored_inspection.anchor_cause().is_some());
+        assert!(restored_inspection.last_cancellation().is_some());
+    }
+    let mut restored = machine
+        .compiled()
+        .restore(machine.snapshot(), policy())
+        .unwrap();
+    let enabling = Transaction::advance(
+        Time::from_ticks(4),
+        machine.revision(),
+        level_delta(machine.compiled(), &[(input, LogicLevel::High)]),
+    );
+    machine.apply(enabling.clone()).unwrap();
+    restored.apply(enabling).unwrap();
+    let firing = Transaction::advance(
+        Time::from_ticks(5),
+        machine.revision(),
+        level_delta(machine.compiled(), &[]),
+    );
+    assert!(pulsed(&machine.apply(firing.clone()).unwrap(), output));
+    restored.apply(firing).unwrap();
+    assert_eq!(machine.snapshot(), restored.snapshot());
+}
+
+#[test]
+fn periodic_migration_allows_fresh_anchorless_state() {
+    for directive in [
+        NodeMigrationDirective::Standard,
+        NodeMigrationDirective::Periodic(mossignal::PeriodicMigration::RejectIfAnchored),
+        NodeMigrationDirective::Periodic(mossignal::PeriodicMigration::ReanchorAtPatchTime),
+    ] {
+        let first = mossignal::FirstEmissionPolicy::AfterFirstPeriod;
+        let (mut machine, _, node, _) = periodic_migration_machine(first, LogicLevel::Low);
+        assert!(machine.inspect_periodic(node).unwrap().anchor().is_none());
+        let prepared = replace_periodic(&machine, node, 7, first, directive);
+        let result = machine
+            .apply(
+                Transaction::advance(
+                    Time::from_ticks(2),
+                    machine.revision(),
+                    level_delta(prepared.resulting_compiled(), &[]),
+                )
+                .with_patch(prepared, ReconfigurationPolicy::RejectStateLoss)
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(result.migration().unwrap().losses().is_empty());
+        let inspected = machine.inspect_periodic(node).unwrap();
+        if inspected.anchor().is_some() {
+            assert!(inspected.anchor_cause().is_some());
+        }
+        let restored = machine
+            .compiled()
+            .restore(machine.snapshot(), policy())
+            .unwrap();
+        assert_eq!(machine.snapshot(), restored.snapshot());
+        let inspected = restored.inspect_periodic(node).unwrap();
+        assert!(
+            inspected
+                .provenance()
+                .inspect(inspected.current_support())
+                .is_ok()
+        );
+        if inspected.anchor().is_some() {
+            assert!(inspected.anchor_cause().is_some());
+        }
+    }
+}
+
+#[test]
+fn periodic_restoration_retains_cancellation_without_an_anchor() {
+    let (mut machine, input, node, _) = periodic_migration_machine_with_phase(
+        mossignal::FirstEmissionPolicy::AfterFirstPeriod,
+        LogicLevel::High,
+        mossignal::ReenablePhasePolicy::RestartPhase,
+    );
+    machine
+        .apply(Transaction::advance(
+            Time::from_ticks(1),
+            machine.revision(),
+            level_delta(machine.compiled(), &[(input, LogicLevel::Low)]),
+        ))
+        .unwrap();
+    let inspected = machine.inspect_periodic(node).unwrap();
+    assert!(inspected.anchor().is_none());
+    assert!(inspected.anchor_cause().is_none());
+    assert!(inspected.last_cancellation().is_some());
+    let restored = machine
+        .compiled()
+        .restore(machine.snapshot(), policy())
+        .unwrap();
+    let inspected = restored.inspect_periodic(node).unwrap();
+    assert!(inspected.anchor().is_none());
+    assert!(inspected.anchor_cause().is_none());
+    assert!(inspected.last_cancellation().is_some());
+    assert_eq!(machine.snapshot(), restored.snapshot());
+    let prepared = metadata_patch(&machine, "cancellation-without-anchor");
+    machine
+        .apply(
+            Transaction::advance(
+                Time::from_ticks(2),
+                machine.revision(),
+                level_delta(prepared.resulting_compiled(), &[]),
+            )
+            .with_patch(prepared, ReconfigurationPolicy::RejectStateLoss)
+            .unwrap(),
+        )
+        .unwrap();
+    let restored = machine
+        .compiled()
+        .restore(machine.snapshot(), policy())
+        .unwrap();
+    let inspected = restored.inspect_periodic(node).unwrap();
+    assert!(inspected.anchor().is_none());
+    assert!(inspected.anchor_cause().is_none());
+    assert!(inspected.last_cancellation().is_some());
+    assert_eq!(machine.snapshot(), restored.snapshot());
+}
+
+fn inertial_migration_machine() -> (Machine<Domain>, ExternalInputKey<Level>, NodeKey) {
+    let mut builder =
+        NetworkBuilder::with_key(NetworkKey::from_u128(98), TimeDomainId::from_u128(99));
+    let input = ExternalInputKey::from_u128(1);
+    let signal = builder
+        .add_level_input(input, DiagnosticMeta::default())
+        .unwrap();
+    let node = NodeKey::from_u128(2);
+    builder
+        .add_inertial_delay(
+            node,
+            signal,
+            mossignal::InertialDelayConfig::new(delay(5), LogicLevel::Low),
+            DiagnosticMeta::default(),
+        )
+        .unwrap();
+    let compiled = compile(builder);
+    let mut machine = compiled.spawn(policy());
+    init(
+        &mut machine,
+        Time::from_ticks(0),
+        level_snapshot(&compiled, &[(input, LogicLevel::Low)]),
+    );
+    (machine, input, node)
+}
+
+#[test]
+fn inertial_migration_retains_the_cancellation_role_through_checkpoints() {
+    let (mut machine, input, node) = inertial_migration_machine();
+    for (at, level) in [(1, LogicLevel::High), (2, LogicLevel::Low)] {
+        machine
+            .apply(Transaction::advance(
+                Time::from_ticks(at),
+                machine.revision(),
+                level_delta(machine.compiled(), &[(input, level)]),
+            ))
+            .unwrap();
+    }
+    assert!(
+        machine
+            .inspect_inertial_delay(node)
+            .unwrap()
+            .last_cancellation()
+            .is_some()
+    );
+    for at in [3, 4] {
+        let prepared = metadata_patch(&machine, &format!("inertial-checkpoint-{at}"));
+        machine
+            .apply(
+                Transaction::advance(
+                    Time::from_ticks(at),
+                    machine.revision(),
+                    level_delta(prepared.resulting_compiled(), &[]),
+                )
+                .with_patch(prepared, ReconfigurationPolicy::RejectStateLoss)
+                .unwrap(),
+            )
+            .unwrap();
+        let restored = machine
+            .compiled()
+            .restore(machine.snapshot(), policy())
+            .unwrap();
+        assert_eq!(machine.snapshot(), restored.snapshot());
+        assert!(
+            restored
+                .inspect_inertial_delay(node)
+                .unwrap()
+                .last_cancellation()
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn inertial_restoration_keeps_a_matured_transition_distinct_from_cancellation() {
+    for canceled in [true, false] {
+        let (mut machine, input, node) = inertial_migration_machine();
+        machine
+            .apply(Transaction::advance(
+                Time::from_ticks(1),
+                machine.revision(),
+                level_delta(machine.compiled(), &[(input, LogicLevel::High)]),
+            ))
+            .unwrap();
+        machine
+            .apply(Transaction::advance(
+                Time::from_ticks(6),
+                machine.revision(),
+                level_delta(machine.compiled(), &[]),
+            ))
+            .unwrap();
+        let inspected = machine.inspect_inertial_delay(node).unwrap();
+        assert_eq!(inspected.output(), LogicLevel::High);
+        assert!(inspected.last_cancellation().is_none());
+        if canceled {
+            for (at, level) in [(8, LogicLevel::Low), (9, LogicLevel::High)] {
+                machine
+                    .apply(Transaction::advance(
+                        Time::from_ticks(at),
+                        machine.revision(),
+                        level_delta(machine.compiled(), &[(input, level)]),
+                    ))
+                    .unwrap();
+            }
+        }
+        let restored = machine
+            .compiled()
+            .restore(machine.snapshot(), policy())
+            .unwrap();
+        let inspected = restored.inspect_inertial_delay(node).unwrap();
+        assert_eq!(inspected.output(), LogicLevel::High);
+        assert_eq!(inspected.last_cancellation().is_some(), canceled);
+        assert_eq!(machine.snapshot(), restored.snapshot());
+    }
+}

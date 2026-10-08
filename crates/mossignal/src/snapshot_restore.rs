@@ -33,7 +33,8 @@ use crate::standard::RetainedExpansionError;
 use crate::state_digest::{cause_digest_index, encode_settled_endpoint};
 use crate::time::Time;
 use crate::transaction::{
-    CauseRef, ProvenanceRecord, ProvenanceSubject, ProvenanceView, PulseContribution,
+    CauseRef, MIGRATED_CANCELLATION_RULE, ProvenanceRecord, ProvenanceSubject, ProvenanceView,
+    PulseContribution,
 };
 use crate::{ConflictPolicy, EdgeObservation, FirstEmissionPolicy, ReenablePhasePolicy};
 use core::fmt;
@@ -3911,8 +3912,23 @@ fn restore_ready_provenance<D>(
     let machine_roots = machine_root_list(&artifact.provenance);
     let machine_members = reachable(&machine_roots, records)
         .ok_or_else(|| fail_graph(GraphFault::Closure, "", "record", "machine"))?;
-    let (view, ordinals) = build_view(compiled, records, graph, &machine_members, installed)?;
+    let inspection_fact = cbor_decode::encode(&Value::Array(vec![
+        Value::Text("restored_execution_state".to_owned()),
+        Value::Bytes(artifact.execution.as_bytes().to_vec()),
+    ]));
+    let (view, ordinals) = build_view(
+        compiled,
+        records,
+        graph,
+        &machine_members,
+        installed,
+        Some(&inspection_fact),
+    )?;
     let scope = view.scope();
+    let inspection_checkpoint = (view.len() > ordinals.len()).then_some(CauseRef::from_parts(
+        scope,
+        u32::try_from(ordinals.len()).unwrap_or(u32::MAX),
+    ));
     let mut restored = empty_provenance();
     restored.view = Some(view);
     assign_inputs(
@@ -3942,7 +3958,8 @@ fn restore_ready_provenance<D>(
     )?;
     assign_state(compiled, artifact, records, &ordinals, scope, &mut restored)?;
     require_edge_observation_causes(compiled, &restored)?;
-    restored.operation = latest_transaction(records, &machine_members, &ordinals, scope)?;
+    restored.operation =
+        latest_transaction(records, &machine_members, &ordinals, scope)?.or(inspection_checkpoint);
     restored.episodes = episode_views(compiled, artifact, episodes, records, graph)?;
     Ok(restored)
 }
@@ -3966,6 +3983,7 @@ fn build_view<D>(
     graph: &BTreeMap<[u8; 32], Vec<[u8; 32]>>,
     members: &BTreeSet<[u8; 32]>,
     installed: &Installed,
+    inspection_checkpoint: Option<&[u8]>,
 ) -> Result<BuiltView<D>, RestoreFailure<D>> {
     let order = match kahn_order(&subgraph(graph, members)) {
         Some(order) => order,
@@ -3982,6 +4000,24 @@ fn build_view<D>(
             .get(digest)
             .ok_or_else(|| fail_graph(GraphFault::Digest, &hex(digest), "record", "missing"))?;
         built.push(materialize_record(compiled, record, &ordinals, installed)?);
+    }
+    // SPEC: docs/specs/contracts/machine-snapshot-restoration.yaml "events-episodes-and-provenance"
+    // A valid ready snapshot can retain no transaction ancestry; its checked state
+    // still provides an inspection cause without changing any persisted semantic root.
+    if !built.iter().any(|record| {
+        matches!(
+            record,
+            ProvenanceRecord::InitializationTransaction { .. }
+                | ProvenanceRecord::ReadyTransaction { .. }
+                | ProvenanceRecord::TopologyChange { .. }
+        )
+    }) {
+        if let Some(fact) = inspection_checkpoint {
+            built.push(ProvenanceRecord::Checkpoint {
+                fact: fact.to_vec(),
+                supporters: Vec::new(),
+            });
+        }
     }
     let view = ProvenanceView::restored(compiled.network_key(), compiled.fingerprint(), built);
     Ok((view, ordinals))
@@ -4773,11 +4809,17 @@ fn assign_node_roots<D>(
     }
     if digests.len() == 1 {
         let cause = scoped_cause(ordinals, digests[0], scope)?;
-        insert_primary(restored, family, node, cause);
+        // SPEC: docs/specs/contracts/machine-snapshot-restoration.yaml "events-episodes-and-provenance"
+        // RestartPhase can leave only a cancellation root after discarding its anchor.
+        if family_has_secondary(family) && is_cancellation_root(records, digests[0]) {
+            insert_secondary(restored, family, node, cause)?;
+        } else {
+            insert_primary(restored, family, node, cause);
+        }
         return Ok(());
     }
-    let first_pending = supporters_include_pending(records, digests[0]);
-    let second_pending = supporters_include_pending(records, digests[1]);
+    let first_pending = is_cancellation_root(records, digests[0]);
+    let second_pending = is_cancellation_root(records, digests[1]);
     let (primary, secondary) = match (first_pending, second_pending) {
         (false, true) => (digests[0], digests[1]),
         (true, false) => (digests[1], digests[0]),
@@ -4797,12 +4839,21 @@ fn assign_node_roots<D>(
         scoped_cause(ordinals, primary, scope)?,
     );
     let secondary = scoped_cause(ordinals, secondary, scope)?;
+    insert_secondary(restored, family, node, secondary)
+}
+
+fn insert_secondary<D>(
+    restored: &mut RestoredProvenance<D>,
+    family: CauseFamily,
+    node: NodeKey,
+    cause: CauseRef,
+) -> Result<(), RestoreFailure<D>> {
     match family {
         CauseFamily::Inertial => {
-            restored.inertial_cancels.insert(node, secondary);
+            restored.inertial_cancels.insert(node, cause);
         }
         CauseFamily::Periodic => {
-            restored.periodic_cancels.insert(node, secondary);
+            restored.periodic_cancels.insert(node, cause);
         }
         _ => {
             return Err(fail_graph(
@@ -4820,17 +4871,28 @@ fn family_has_secondary(family: CauseFamily) -> bool {
     matches!(family, CauseFamily::Inertial | CauseFamily::Periodic)
 }
 
-fn supporters_include_pending(
-    records: &BTreeMap<[u8; 32], &ParsedRecord>,
-    digest: [u8; 32],
-) -> bool {
+fn is_cancellation_root(records: &BTreeMap<[u8; 32], &ParsedRecord>, digest: [u8; 32]) -> bool {
     records.get(&digest).is_some_and(|record| {
-        record.predecessors.iter().any(|predecessor| {
-            matches!(predecessor.role, PredecessorRole::Supporter)
-                && records
-                    .get(&predecessor.digest)
-                    .is_some_and(|predecessor| is_pending_record(&predecessor.kind))
-        })
+        if matches!(&record.kind, RecordKind::Migration { rule } if rule == MIGRATED_CANCELLATION_RULE) {
+            return true;
+        }
+        // SPEC: docs/specs/contracts/machine-snapshot-restoration.yaml "events-episodes-and-provenance"
+        // A matured transition supports pending work and its transaction directly;
+        // cancellation instead supports the canceled work and a replacement derivation.
+        let mut pending = false;
+        let mut transaction = false;
+        for predecessor in &record.predecessors {
+            if !matches!(predecessor.role, PredecessorRole::Supporter) {
+                continue;
+            }
+            let Some(predecessor) = records.get(&predecessor.digest) else {
+                continue;
+            };
+            pending |= is_pending_record(&predecessor.kind);
+            transaction |= matches!(predecessor.kind,
+                RecordKind::Initialization | RecordKind::Ready | RecordKind::TopologyChange { .. });
+        }
+        pending && !transaction
     })
 }
 
@@ -4942,7 +5004,8 @@ fn episode_views<D>(
                 "cause",
             )
         })?;
-        let (view, ordinals) = build_view(compiled, records, graph, &members, &empty_installed())?;
+        let (view, ordinals) =
+            build_view(compiled, records, graph, &members, &empty_installed(), None)?;
         let cause = scoped_cause(&ordinals, episode.cause, view.scope())?;
         restored.insert(
             episode.condition.clone(),
@@ -5094,7 +5157,7 @@ fn publish_machine<D>(
             machine.store.pending_events = provenance.pending;
             if let Some(cause) = provenance.operation {
                 // Inspection reads operation causes before the next transaction replaces them.
-                // The snapshot keeps the transaction record, not each operation's derived cause.
+                // Required roots retain transaction ancestry or a checked snapshot-state checkpoint.
                 machine.store.operation_causes = vec![cause; compiled.operation_count()];
             }
             Ok(machine)
