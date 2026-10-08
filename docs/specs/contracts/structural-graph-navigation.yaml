@@ -1,0 +1,106 @@
+schema_version: "0.1"
+id: mossignal.graph.structural_navigation
+title: Structural graph navigation and regions
+kind: concept
+status: reviewed
+source_baseline:
+  commit: 6063ae23cdd6f5795e76a80f1276daa996bd6127
+  working_tree: dirty
+summary: >-
+  Read-only graph navigation preserves stable structural subjects and module
+  hierarchy. Regions partition structural connectivity, while directed slices
+  describe conservative structural possibility rather than actual activation.
+scope:
+  includes:
+    - immutable structural views, weak regions, and directed dependency slices
+    - stable subject identity and retained module correspondence
+  excludes:
+    - reaction cycle validation and evaluator ordering
+    - runtime causal support and observer subscriptions
+aliases: [GraphView, RegionId, NetworkSlice, slice_between]
+requirements:
+  - id: immutable-hierarchical-view
+    kind: public_surface
+    statement: >-
+      Graph views borrow immutable artifacts and preserve stable keys, module
+      hierarchy, module origins, exact standard declarations, public interfaces,
+      and canonical internal subjects even when execution is flattened.
+    sources: [api-view, concrete-view]
+  - id: weak-component-partition
+    kind: semantic
+    statement: >-
+      Regions are automatically derived weak components of the structural graph;
+      direction is ignored only for region membership. They partition structural
+      subjects and do not own independent lifecycle or execution state. Region
+      merges or splits alone do not reset surviving state.
+    sources: [api-regions, runtime-regions]
+  - id: membership-derived-identity
+    kind: semantic
+    statement: >-
+      RegionId derives from canonical ordered component membership and identifies
+      a region only with network fingerprint and topology revision. It is not
+      caller allocated, merge or split operations create new region identities,
+      and components need not contain a node.
+    sources: [concrete-identities]
+  - id: structural-possibility
+    kind: semantic
+    statement: >-
+      Graph queries operate on authoritative structural connectivity. Directed
+      dependency queries describe structural possibility, not current activation
+      or actual causal support.
+    sources: [runtime-structural, api-queries]
+  - id: representation-independent-queries
+    kind: verification
+    statement: >-
+      Verification checks that semantically equivalent stable-keyed definitions
+      built in different insertion orders have equivalent structural views,
+      region partitions, and graph-query results. Private dense layout must not
+      change public query semantics.
+    sources: [testing-determinism]
+recommendations:
+  - id: direct-regions-and-slices
+    statement: >-
+      Provide region membership and upstream, downstream, and source-to-destination
+      slices, including relevant stateful, temporal, and module elements. Slice
+      results should be owned and stable-keyed.
+    sources: [api-queries, concrete-queries]
+implementation_freedom:
+  - Private traversal, indexing, result representation, and deterministic ordering are unconstrained beyond the represented identity and semantic requirements.
+open_questions: []
+sources:
+  api-view:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part XI — Modules and graph queries, 65. Read-only graph view]
+    reviewed_hash: sha256:16bdb05e6144bb1a6e36f1b9970cb3a158e7f54d8b522188b918417dce3e5c58
+  api-queries:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part XI — Modules and graph queries, 66. Region and dependency queries]
+    reviewed_hash: sha256:9f3a365a8d62ac963cb11c2632d87e8b47fc29b7aebb0c99cfe77b0100842ca2
+  api-regions:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part I — Semantic model, 4. Networks and regions]
+    reviewed_hash: sha256:1167ff3772cef215644a79adc1b08d16952d1a5be25b2713616c1787b167ebaa
+  runtime-regions:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 20. Regions]
+    reviewed_hash: sha256:c8e2dea1682147ca03f2bacd412d1223cf156c95c28d954a455e47124104cba1
+  runtime-structural:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part III — Graph model and causality, 13. Structural graph]
+    reviewed_hash: sha256:13afeacf095b272e64162817fd64fc0c363133b7a1cc39c6189bfc3a614ffc92
+  concrete-identities:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part V — Stable identity, 19. Subject references, 19.2 Non-structural diagnostic subject identities]
+    reviewed_hash: sha256:a7a95096b19f82e8ad43ee54fd36d0179151fd03e604b6ef3f44127a7ec957b7
+  concrete-view:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXI — Graph access, 79. Graph views]
+    reviewed_hash: sha256:597997793197e5c8a9b874b59697dcd5f4db3911f786b77c663a8f4ee14a26f1
+  concrete-queries:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XXI — Graph access, 80. Graph queries]
+    reviewed_hash: sha256:d60a211483c48fe6c8e5d60d951cddc2a5167945adc934abe47fb732bf8ab73a
+  testing-determinism:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part V — Validation and compilation verification, 21. Deterministic compilation]
+    reviewed_hash: sha256:6fff9070c48a6e58873c29fe3b3c9470ccb584f707112932967b714187e6aa72

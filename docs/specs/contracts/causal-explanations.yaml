@@ -1,0 +1,125 @@
+schema_version: "0.1"
+id: mossignal.provenance.causal_explanations
+title: Structured current and recorded causal explanations
+kind: concept
+status: reviewed
+source_baseline:
+  commit: 6063ae23cdd6f5795e76a80f1276daa996bd6127
+  working_tree: dirty
+summary: >-
+  Explanations derive current support from settled facts and node laws, and
+  historical establishment from retained provenance. Structured owned evidence
+  exposes temporal conditions and retention boundaries without invented causes.
+scope:
+  includes:
+    - current node, module, output, pending-work, and recorded-event explanations
+    - support versus transition, authoritative roots, and retention boundaries
+  excludes:
+    - desired-state solvers, missing-pulse history queries, and rendering
+    - provenance persistence encoding and collection algorithms
+    - cause-reference ownership and lifetime represented by semantic-inspection
+aliases: [Explain, Explanation, RetentionStatus]
+requirements:
+  - id: current-versus-transition
+    kind: semantic
+    statement: >-
+      Current combinational support is reconstructed from settled upstream facts,
+      reaction structure, and applicable node laws. It remains distinct from
+      historical causes establishing stored state and the latest transition.
+      Stateful explanations distinguish establishment, preservation, conflicts,
+      and reset or overwrite policy where applicable, including previous state,
+      current controls, and the rule producing current output and successor state.
+    sources: [api-provenance, api-results, runtime-support, node-explanations]
+  - id: temporal-facts
+    kind: semantic
+    statement: >-
+      Temporal explanations expose deadlines, remaining spans, origin and
+      scheduling owner, cancellation conditions, and coalescing or replacement
+      policy where applicable.
+    sources: [api-results]
+  - id: structured-owned-support
+    kind: public_surface
+    statement: >-
+      Explanations return structured data independent of prose. Semantically
+      unordered supporters remain unordered in meaning even when canonically
+      represented.
+    sources: [api-results, concrete-results]
+  - id: public-module-law
+    kind: public_surface
+    statement: >-
+      A standard module explanation presents its public behavior and ports first,
+      with internal primitive support retained as subordinate hierarchical paths.
+      It identifies the instance and exact descriptor, relevant public input
+      facts, prior and successor aggregate state, the applied public rule, output
+      or non-emission, and suppression, reset, or conflict facts where applicable.
+      Grouping preserves required contributors, pulse multiplicity, selected and
+      suppressed branches, and migration ancestry, with primitive drill-down.
+    sources: [concrete-results, standard-explanations]
+  - id: authoritative-retention-boundary
+    kind: semantic
+    statement: >-
+      Retained causal support is an acyclic derivation graph. Historical
+      explanation paths terminate at authoritative roots such as
+      initialization, observations, temporal origins, migration, or checkpoints.
+      Retention identifies complete ancestry from initialization or an explicit
+      checkpoint boundary. An unexplained previous value is not a root, and no
+      result may claim a cause or historical completeness it cannot derive.
+    sources: [api-provenance, api-results, runtime-checkpoints]
+  - id: explanation-verification
+    kind: verification
+    statement: >-
+      Tests verify authoritative-root reachability and permutation invariance of
+      unordered support while preserving identity, counts, joint grouping, and
+      blocker meaning. Focused tests change current support of an unchanged
+      output and require updated support with its transition cause preserved.
+    sources: [testing-roots, testing-supporters, testing-current]
+recommendations:
+  - id: all-current-supporters
+    statement: >-
+      Explanations should report all current supporters or applicable blockers
+      rather than an arbitrary minimal proof.
+    sources: [node-explanations]
+implementation_freedom:
+  - Public result shapes and traversal strategy may be chosen deterministically without introducing broad why-not or historical query facilities.
+open_questions: []
+sources:
+  api-provenance:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 53. Causal provenance]
+    reviewed_hash: sha256:9a55ead387cffd6833521d6efa179e653027358990c73721faf8e258eb064574
+  api-results:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 55. Explanation result]
+    reviewed_hash: sha256:1a61f7de84fff85eb1e1d0b7c94908c36805d27ceeea98f992bfd406d5ae1290
+  concrete-results:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XX — Explanation and provenance, 78. Explanation values]
+    reviewed_hash: sha256:70418e9340fd2cdf5b5457b19f6e2a50d9642d43b57b86812320925c46caae1c
+  node-explanations:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 18. Explanations and causes]
+    reviewed_hash: sha256:af07465662f1f93e504301c409b8a58c05f1558940699e318face0445feec256
+  standard-explanations:
+    document: docs/specs/standard_module_catalogue_spec.md
+    heading_path: [Part IV — Shared standard-module semantics, 31. Explanations]
+    reviewed_hash: sha256:571a425cec86521bb2dccce7f429d850db0add3c8c5fa965bd4d2bb4709bf665
+  runtime-support:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 65. Current support and transition cause]
+    reviewed_hash: sha256:5d08e732804e9aad13ba3e00ed410d86020e8c126a8dcf318ab7359b3c6cee14
+  runtime-checkpoints:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 67. Provenance checkpoints]
+    reviewed_hash: sha256:6f611e67f50c6d563697cf774b0f4798623f7bf5b63cf0067a4d24c2931016cc
+  testing-roots:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 68. Authoritative-root completeness]
+    reviewed_hash: sha256:31301008860a4fec9c0cd20e272a80b5323700daa6818a7c21cc57bd3de40523
+  testing-supporters:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 69. Joint and unordered support]
+    reviewed_hash: sha256:3b2733fa8677bd720ac117940b9a9f355a75e54f8f9170f4731999309a7555bd
+  testing-current:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XII — Provenance and explanation verification, 70. Current support versus latest transition]
+    reviewed_hash: sha256:b4740b878989222112bdfa1c20e0f0d819014635cc4bdaadf4f671048eff0e49

@@ -1,0 +1,125 @@
+schema_version: "0.1"
+id: mossignal.inspection.semantic_projection
+title: Owned semantic inspection
+kind: artifact
+status: reviewed
+source_baseline:
+  commit: 6063ae23cdd6f5795e76a80f1276daa996bd6127
+  working_tree: dirty
+summary: >-
+  Inspection projects a complete committed machine version into owned stable
+  observations without affecting execution. Definition facts remain available
+  before initialization, separately from ready-only runtime facts.
+scope:
+  includes:
+    - direct node, output, pending-work, and module observations
+    - ownership, lifecycle, and distinctions between state and history
+    - ownership and lifetime of causal observation artifacts
+  excludes:
+    - stable query builders, compiled plans, subscriptions, and rendering
+    - diagnostic lifecycle laws and causal explanation derivation
+    - module public/expanded correspondence owned by module-aware-execution and standard-catalogue-foundation
+aliases: [NodeInspection, OutputInspection, PendingEventInspection]
+requirements:
+  - id: definition-versus-runtime
+    kind: lifecycle
+    statement: >-
+      Definition and structural inspection are available before initialization.
+      Runtime reads requiring settled values, pending work, active diagnostics,
+      schedules, or explanations fail structurally as not initialized then.
+    sources: [api-inspection, concrete-lifecycle]
+  - id: complete-owned-observation
+    kind: public_surface
+    statement: >-
+      Canonical inspection results are owned and identify observed revision and
+      logical time where applicable. Node inspections expose applicable stable
+      identity, kind, current levels, declared and stored state, latest transition,
+      pending events and deadlines, causal justification, active conditions,
+      metadata, containment, region, and checkpoint boundary.
+    sources: [api-node, concrete-owned]
+  - id: state-versus-history
+    kind: semantic
+    statement: >-
+      Inspection distinguishes current persistent levels, internal stored state,
+      pending future work, active conditions, current support, latest transition
+      cause, and explicitly retained reaction history. Pulses have no persistent
+      current value after their reaction completes.
+    sources: [api-node, concrete-owned]
+  - id: retained-cause-ownership
+    kind: public_surface
+    statement: >-
+      An owned observation artifact exposing cause references retains a provenance
+      view sufficient to resolve them even after the machine changes or compacts
+      later history. A cause reference is meaningful only with its owning machine
+      or artifact; it does not expose a private arena index as durable identity.
+    sources: [concrete-causes]
+  - id: temporal-work-observation
+    kind: public_surface
+    statement: >-
+      Temporal inspection exposes applicable pending identities, origins,
+      deadlines, payloads or targets, multiplicity, cancellation and migration
+      policy, causal ancestry, and the next eligible deadline. Canceled work is
+      absent from pending work; any retained cancellation history stays historical.
+    sources: [node-temporal-inspection]
+  - id: pure-committed-projection
+    kind: semantic
+    statement: >-
+      Reads observe one complete committed version and do not change execution,
+      scheduling, migration, fingerprints, provenance, or semantic digests.
+    sources: [runtime-projection]
+  - id: inspection-purity-verification
+    kind: verification
+    statement: >-
+      Verification compares machine digests and complete semantic observations
+      before and after applicable direct inspection, explanation, and graph reads.
+    sources: [testing-purity]
+recommendations:
+  - id: direct-and-forecast-reads
+    statement: >-
+      Provide direct node, output, and pending-event methods, typed built-in
+      variants, and equivalent read-only methods on ForecastState.
+    sources: [api-direct, api-node, concrete-direct]
+implementation_freedom:
+  - Representation and convenience names remain open provided equivalent semantic information and owned causal access are preserved.
+open_questions: []
+sources:
+  api-inspection:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 48. Inspection is core]
+    reviewed_hash: sha256:22fc5616b40716c3dda6327430fc974ce61fc62f507639e681fab7ab23b30003
+  api-direct:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 49. Direct inspection]
+    reviewed_hash: sha256:32b5209ca83f7a12a72765b0a9d77eaeb68747bdb9990f3bb8150121a3433b13
+  api-node:
+    document: docs/specs/api_and_semantics_spec.md
+    heading_path: [Part IX — Inspection and explanation, 50. Node inspection]
+    reviewed_hash: sha256:7f7ea35ea75be92ce5b6c936a20f45d2cc824d64c747959ae65233bcf143f5f4
+  concrete-direct:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIX — Inspection, 71. Direct inspection]
+    reviewed_hash: sha256:587055fde66a96491804ff86b526e395f5ceb4959ae1752ef98ba0911a6f72e3
+  concrete-owned:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIX — Inspection, 72. Owned inspection values]
+    reviewed_hash: sha256:90f6d3724be4c8c5f52adb19ab3c9960c57c3ce1c2b01854cf013bf633b2272f
+  concrete-lifecycle:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XIX — Inspection, 75. Structural inspection before initialization]
+    reviewed_hash: sha256:0f2c382d87f76b4d64cf759acb40ed379e2fbd5aece968f52318dfdc6a9bebe4
+  concrete-causes:
+    document: docs/specs/concrete_rust_api_surface.md
+    heading_path: [Part XX — Explanation and provenance, 76. Cause references]
+    reviewed_hash: sha256:812a33c6984f4f42065c3e2d8272bc5f6721ec60e4d5cb8748e65f11223e5742
+  node-temporal-inspection:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: ["Part VIII — Inspection, explanation, and migration obligations", 62. Temporal inspection]
+    reviewed_hash: sha256:8443220398b6d411c9fad55a65408b86674cbafca845ec53880fbf68bd093ae2
+  runtime-projection:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XII — Inspection and observer state, 75. Inspection as projection]
+    reviewed_hash: sha256:9613e929cb9c5f38508c3c48889f9a5ec4246a762b9e7a367d7f51aec2d9bedc
+  testing-purity:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XIV — Inspection and observer verification, 78. Inspection purity]
+    reviewed_hash: sha256:417f23a13d6e0198272e0c3d054ea0d8f43de706803305c8bcf0edcbb2e6e55c
