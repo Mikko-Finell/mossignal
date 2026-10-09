@@ -1610,6 +1610,21 @@ Recomputed or restarted events retain original originating causes and add the pa
 
 Required provenance ancestry may be replaced by an authoritative checkpoint only where the general provenance-retention specification permits equivalent future explanation and replay.
 
+The `TopologyChange` supporter rule uses the current SOURCE retention-root
+manifest in Processor and Runtime Architecture sections 68.1 and 70. Capture it
+after strictly earlier deadlines and before source removal/reset, target input,
+or target settlement. Map those deduplicated roots to source-qualified facts and
+retain their complete selected closure, including facts for removed/reset source
+subjects. Neither all historical allocations nor independently owned external
+artifacts are supporters. Source event roots needed only by the transaction
+result remain independently resolvable without becoming patch supporters.
+
+This root-directed meaning uses the provenance and machine-projection version
+profile in Persistence, Canonical Encoding, and Compatibility section 16.10.
+It changes provenance interpretation, not physical patch operations,
+correspondence, migration directives or state-loss rules. Migration must continue
+to preserve original pending ancestry and explicit source/checkpoint boundaries.
+
 ## 57. Current diagnostic metadata and paths
 
 Metadata and hierarchy changes may alter rendered diagnostic paths without changing the semantic identity of preserved runtime facts.

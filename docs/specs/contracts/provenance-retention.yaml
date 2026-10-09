@@ -4,8 +4,11 @@ title: Root-directed causal retention and optional collection
 kind: lifecycle
 status: reviewed
 source_baseline:
-  commit: 207cd9758682f49ad6457776560972512c669a56
-  working_tree: clean
+  commit: 2100fc027ead42e5526c81eda611443af2de8f83
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/processor_and_runtime_architecture.md
+
 summary: >-
   Required causal storage is selected by current and policy-selected historical
   roots. Collection can release unrelated optional records while the explanation,
@@ -14,9 +17,10 @@ scope:
   includes:
     - root-directed retention and collection of optional causal records
     - the distinction between optional retention and required-provenance budgets
+    - current machine manifests, independent artifact ownership and logical growth accounting
   excludes:
-    - authoritative roots and checkpoint completeness represented by causal-explanations
-    - owned cause-reference lifetimes represented by semantic-inspection
+    - authoritative checkpoint completeness represented by causal-explanations
+    - owned cause-reference lookup/API guarantees represented by semantic-inspection
     - canonical cause content and digest projections represented by machine-state-digests
     - exact collection algorithms, checkpoint APIs, and application history policy
 requirements:
@@ -35,6 +39,43 @@ requirements:
       belong to runtime policy identity. Performance-only tuning that cannot
       affect semantic results is excluded from that policy.
     sources: [runtime-budget, runtime-policy]
+  - id: current-machine-root-manifest
+    kind: lifecycle
+    statement: >-
+      Current retention roots include external level origins, current operation
+      and port support and explicit last-reaction evidence, state establishment
+      and latest transition, edge and temporal facts, output baselines, pending
+      scheduling, inertial qualification, periodic phase and required cancellation,
+      active diagnostic beginning/current evidence, and current qualified module
+      reset/toggle/capture evidence. The manifest deduplicates cause identities;
+      uninitialized machines have no runtime causal roots. Restoration owns its
+      validated or reconstructed current facts under the declared boundary.
+      Retention and canonical projection roots are distinct inventories.
+    sources: [runtime-current-ownership]
+  - id: independent-artifact-ownership
+    kind: lifecycle
+    statement: >-
+      Results and owned observations, explanations, episodes and forecasts own
+      every exposed cause's sufficient closure independently. Results cover the
+      full change set and event stream, including intermediate deadlines and
+      pre-patch source events. An episode does not retain an old complete machine
+      view. External artifact ownership cannot enlarge the machine root manifest
+      or change migration, budgets, digests or snapshot projection. Releasing one
+      owner preserves ancestry still owned elsewhere. Collection never truncates
+      required ancestry or promises bounded total history; dead lookup metadata
+      must not accumulate from obsolete artifacts or rejected candidates.
+    sources: [runtime-current-ownership]
+  - id: logical-growth-independent-of-reclamation
+    kind: semantic
+    statement: >-
+      Charge newly required logical records at the outer-transaction accounting
+      boundary, including earlier internal reactions. Reclaimed old records,
+      sharing, canonical coalescing, caches, physical allocation and external
+      ownership cannot offset or change the charge. Equivalent replacement source
+      checkpoint wrappers are not new appends; newly introduced patch, migration
+      and reaction records retain their growth charge. All admission precedes
+      publication and rejection preserves predecessor ownership.
+    sources: [runtime-budget]
 recommendations:
   - id: prune-optional-before-failure
     statement: >-
@@ -49,14 +90,21 @@ known_uncovered:
   - An explicit public checkpoint or historical-retention configuration surface.
 open_questions: []
 sources:
+  runtime-current-ownership:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path:
+      - Part X — Causal provenance
+      - 68. Retention
+      - 68.1 Current machine and artifact ownership
+    reviewed_hash: sha256:9ee699344be66ad0d759faa2ec76b214cbd49400582761084ccbd4d12b658ec2
   runtime-retention:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part X — Causal provenance, 68. Retention]
-    reviewed_hash: sha256:90b0e7ad7ff19307fc6fc71d15ae62390c46d47083721153c2911c151e27af94
+    reviewed_hash: sha256:58ee1fb682ee644f6cfe9bc6eb7858bfd6d2b4bf0d0d8475a373efcd997f17f0
   runtime-budget:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part XIV — Runtime policy and replay, 91. Budget failure]
-    reviewed_hash: sha256:2ca78ad09dfa909af6d1ad6e2685bbeea97ea77dc45df56832e4f27c3be4d879
+    reviewed_hash: sha256:5f16cb266773145af56c9658ba364365f6707e4a87ae57c535c34fe8c1105d2d
   runtime-policy:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part XIV — Runtime policy and replay, 89. Runtime policy]

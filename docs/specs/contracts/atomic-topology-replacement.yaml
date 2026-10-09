@@ -5,16 +5,12 @@ kind: lifecycle
 status: reviewed
 
 source_baseline:
-  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
+  commit: 2100fc027ead42e5526c81eda611443af2de8f83
   working_tree: dirty
   modified_spec_paths:
-    - docs/specs/api_and_semantics_spec.md
-    - docs/specs/concrete_rust_api_surface.md
-    - docs/specs/exhaustive_diagnostic_code_catalogue.md
-    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     - docs/specs/processor_and_runtime_architecture.md
     - docs/specs/reconfiguration_and_topology_patch_spec.md
-    - docs/testing_and_verification_policy.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   A prepared patch commits only through one ordinary transaction. At the
@@ -205,6 +201,26 @@ requirements:
       ordinary result.
     sources: [revision, installation, provenance-migration, episode-migration, episode-behavior, processor-provenance, processor-episode, api-commitment, identity-test]
 
+  - id: current-source-topology-supporters
+    kind: semantic
+    statement: >-
+      Capture the current source retention-root manifest after strictly earlier
+      deadlines and before source removal/reset, target input or target settlement.
+      TopologyChange supporters are exactly those deduplicated roots represented
+      by source-qualified checkpoint/fact wrappers, not every closure node or
+      historical allocation. Canonical supporter membership is a set of
+      cause-content identities independent of private allocation or canonical
+      coalescing; distinct role associations, pulse contributions and logical
+      growth accounting remain intact. Retain the complete selected source closure,
+      including removed/reset subject facts. Initialization has no runtime source
+      roots. Earlier source events required only by the outer result remain owned
+      independently and do not enlarge patch supporters. External results,
+      inspections and forecasts are never source-manifest inputs. Preserve original
+      pending ancestry and explicit migration/checkpoint boundaries. This changed
+      causal meaning uses the current root-directed provenance version profile;
+      physical patch-state semantics do not change.
+    sources: [provenance-migration, runtime-root-migration, current-root-profile]
+
   - id: atomic-failure
     kind: prohibition
     statement: >-
@@ -306,6 +322,17 @@ implementation_freedom:
 open_questions: []
 
 sources:
+  runtime-root-migration:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 70. Migration provenance]
+    reviewed_hash: sha256:e503eb4c42ba3532df7674ed54a369c2f202c34dcb1229a58d13727f6a051a72
+  current-root-profile:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part III — Version and compatibility model
+      - 16. Version responsibilities
+      - 16.10 Current root-directed machine and replay version profile
+    reviewed_hash: sha256:985b1ecd9b17c7391e75d0ce92727c4fc769146c27d19a398c7df952fb42e290
   effective-time:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part VIII — Transaction-time finalization and commitment, 63. Effective-time ordering]
@@ -365,7 +392,7 @@ sources:
   provenance-migration:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part VI — Other semantic state, 56. Provenance migration]
-    reviewed_hash: sha256:29303c619f120768317850583361ad6b8316f024e83b026d3cbb6a1f90791ea3
+    reviewed_hash: sha256:25e59bd1c0e84897d4317b131f42dca4f491a645b368b713a1e51ca7818d21f7
   loss-policy:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part IX — Semantic loss and migration reporting, 76. Reconfiguration policy]
@@ -489,7 +516,7 @@ sources:
   processor-provenance:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part X — Causal provenance, 70. Migration provenance]
-    reviewed_hash: sha256:e090b5b9b751307adc8bf8984b771885479c6ee96b7f4338f13560ad3efb714b
+    reviewed_hash: sha256:e503eb4c42ba3532df7674ed54a369c2f202c34dcb1229a58d13727f6a051a72
   processor-episode:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part XI — Persistent diagnostics, 74. Reconfiguration]

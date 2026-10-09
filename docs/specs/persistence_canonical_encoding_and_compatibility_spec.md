@@ -383,6 +383,79 @@ Defines stable diagnostic codes, structured evidence forms, episode identity, an
 
 Rendered diagnostic wording is not versioned semantic data.
 
+### 16.10 Current root-directed machine and replay version profile
+
+Root-directed `TopologyChange` supporters use the current source retention
+manifest defined in Processor and Runtime Architecture sections 68.1 and 70.
+This changes provenance interpretation. The current machine snapshot and
+implemented replay/input/transaction artifact families use this component vector:
+
+| Component | Current value |
+| --- | --- |
+| EnvelopeSchemaVersion | 2 |
+| CanonicalEncodingVersion | 2 |
+| DigestSuiteVersion | 2 |
+| ArtifactSchemaVersion (`machine_snapshot`) | 3 |
+| ArtifactSchemaVersion (implemented replay/input/transaction kinds) | 2 |
+| CoreSemanticsVersion | 2 |
+| BuiltInNodeSemanticsVersion | 2 |
+| TopologyPatchSemanticsVersion | 2 |
+| ProvenanceSemanticsVersion | 3 |
+| DiagnosticSchemaVersion | 2 |
+
+The unchanged current digest suite uses unkeyed BLAKE3-256 and the existing
+canonical domain/payload/version construction. This is a provenance and digest
+namespace change, not a new algorithm or suite. Every canonical provenance record
+contains `provenance_semantics_version = 3` and uses domain label
+`mossignal/provenance_record/v3` with domain version 3. Execution and observable
+digest inputs contain `projection_version = 3`, with respectively
+`mossignal/execution_state_digest/v3` and
+`mossignal/observable_state_digest/v3`, each at domain version 3.
+
+Snapshot, artifact-integrity and replay-log-content digest labels and domain
+versions remain their current `/v2` and 2 values. Network, input-schema, module
+and runtime-policy identities remain under their existing projections and
+versions. The snapshot schema adds explicit current-root role bindings under
+section 97; replay/input/transaction field shapes remain unchanged. Envelope
+shape, canonical grammar, core/node/diagnostic meanings and physical patch-state
+semantics are unchanged. The initial-version
+descriptions elsewhere in this specification describe the original foundation;
+this subsection specifies the current supported machine and replay profile.
+
+Every envelope component is checked independently. Corresponding payload
+components equal their envelope components, including embedded replay frames,
+transaction records and input artifacts. Current decode/restore/replay accepts
+the exact mixed vector for its artifact kind and rejects unsupported components
+with the existing structured version failure. Artifact schema is kind-specific,
+not a shared semantic component required to match between snapshots and replay.
+A blanket all-2 or all-3 vector is unsupported; no
+numeric adjacency, historical decoder, implicit upgrade or downgrade is implied.
+Every provenance record, including the source fact inside a checkpoint wrapper,
+is validated under the current provenance meaning and domain. Recomputed hashes
+and complete closure validation remain required; changing only version claims
+does not make old causal bytes valid current records.
+
+Ordinary canonical projection roots remain governed by sections 57, 58 and 97.
+The required observable causal closure and snapshot roots must preserve the
+current source manifest sufficiently to restore the same causal meaning for a
+subsequent patch. This includes current operation/port roots and the latest
+module reset/toggle/capture roots even when the corresponding raw inspection
+cache is excluded. Restore must recover their stable subject/role and original
+canonical cause content, rather than substitute a generic transaction or
+snapshot-state cause that changes later patch supporters. This is additional
+required current provenance under semantics 3, not a pulse valuation or an
+optional historical archive. An unordered digest set does not identify the
+owner of each current role. Section 97 records missing role associations explicitly
+in snapshot artifact schema 3. A different separately changed schema or semantic
+component requires explicit review of that delta; it must not be silently assigned
+the unchanged component version.
+
+The source migration manifest is not all allocations or external artifact roots.
+Private collection cannot change the projection of a fixed semantic state.
+Versioned vectors must compare complete canonical inputs and artifact bytes with
+the independent root-directed reference; unacknowledged golden replacement is
+not evidence. This profile is not a cross-revision compatibility freeze.
+
 ## 17. Compatibility levels
 
 The persistence layer distinguishes:
@@ -1571,13 +1644,14 @@ pending event calendar
 active diagnostic episodes and current material evidence
 next public pending-event serial
 other future public-identity allocation state, if introduced
+current causal-role binding identities required by future migration and freshness
 ```
 
 It excludes:
 
 ```text
 runtime policy identity
-current required provenance derivations
+full current provenance derivation records and graph payloads
 optional history
 presentation metadata
 subscriber state
@@ -1585,6 +1659,20 @@ private allocation and cache state
 ```
 
 `RuntimePolicyId` remains a separate component of exact operational replay identity.
+
+Under the root-directed profile, the execution projection also records the
+stable subject/role-to-CauseDigest bindings needed to determine future source
+manifests that are not already represented or uniquely derivable from its other
+fields. Replacing a module's latest cause can change a later patch's source roots;
+that patch changes the cause content of migrated pending events or active
+diagnostics, which contributes to execution identity and later freshness failure.
+Equal unlabeled root unions are therefore insufficient execution state.
+
+This addition contains only current binding identities. It does not put causal
+record payloads, a whole derivation graph, raw last-reaction caches or optional
+history into execution projection. Pending/episode bindings already represented
+in their execution entries are not repeated. Observable projection adds the
+required closure and other observation without duplicating these execution facts.
 
 ## 58. Observable-state digest
 
@@ -1601,6 +1689,28 @@ required current inspection facts not derivable from the execution projection
 ```
 
 Optional history outside the required current closure remains excluded.
+
+For the current root-directed profile, this closure also retains the current
+causal roots needed to reproduce the source manifest of a later patch after
+snapshot restoration. Raw inspection caches remain excluded; their required
+current cause identities and ancestry are not optional merely because those
+caches once supplied them. This does not add pulse counts to current signal state.
+
+Execution and observable digests remain distinct types and domain-separated
+canonical projections. Execution commits the necessary cause-content identities;
+observable projection additionally emits the required causal records and current
+observation. This distinction does not require two coherent states to have equal
+execution identity and different observable identity when all supported required
+observation is determined by execution state and its cause-content commitments.
+
+For every supported independently variable required-observation facet, tests must
+retain a coherent pair with equal execution identity and different observable
+identity. If the supported profile has no such facet, record that limitation;
+do not fabricate inconsistent settled facts, optional history or hash collisions
+as a witness. Tests still require checkpoint observable sensitivity, optional-history
+execution invariance, distinct domains, complete canonical inputs, semantic
+inclusion/exclusion and failure/inspection purity. A future independent observation
+facet requires its own separation witness.
 
 ## 59. Snapshot digest
 
@@ -2090,6 +2200,11 @@ Optional retained recent pulse history may appear only in `optional_history`, wi
 
 It does not contribute to execution-state or observable-state digest unless a future public inspection contract reclassifies it as required current observation.
 
+Current causal last-reaction evidence required by inspection or the root-directed
+migration manifest is required provenance under section 16.10. Its retained
+derivation may contain grouped pulse contributions. That evidence is distinct
+from a persistent current pulse value and from an optional recent-pulse archive.
+
 ## 91. Built-in state schemas
 
 The snapshot schema provides closed variants for every built-in state family.
@@ -2272,6 +2387,38 @@ checkpoint records and retention boundary
 ```
 
 The complete backward closure of every required root must be present.
+
+These artifact roots are selected by required current snapshot/observable facts,
+not by the ownership of external results, inspections or forecasts. Machine
+retention and artifact root inventories remain distinct, but a cause needed by
+the current source migration manifest must be present and recoverable with its
+stable role under section 16.10. Excluding a raw last-reaction cache does not permit
+dropping that required cause. Required current inspection facts that cannot be
+derived from execution state and the required causal closure remain governed by
+section 58; collection cannot turn them into missing snapshot facts.
+Migration source wrappers retain every predecessor selected by the root-directed
+`TopologyChange` rule under section 16.10, with the existing declared boundary.
+
+Snapshot artifact schema 3 adds `current_roots` to the provenance record. It is a
+canonical array of explicit cause associations for current operation/port and
+last-reaction roles and qualified-module latest reset/toggle/capture roles that
+the existing state, event, baseline, input and episode facts do not uniquely
+identify. Each association contains a stable typed subject, its semantic role,
+and a 32-byte CauseDigest. Subjects use full module qualification and stable
+endpoint/port keys where applicable, never dense operation indices. Associations
+are ordered by canonical subject and role; each subject/role occurs once.
+Absent optional module causes are absent associations. Uninitialized snapshots
+have an empty array, not fabricated runtime roles.
+
+The existing root groups and state/event/baseline/episode entries remain the
+authority for roles they already identify uniquely. Topology-derived aliases do
+not need a second authoritative binding. Validation requires exact coverage of
+the remaining required roles, compatible subject/role kinds, resolvable causes,
+complete closure and agreement with the existing facts. Recovery uses those
+associations, never latest-by-storage-order or an invented substitute cause.
+Multiple historical records for one subject and source checkpoint wrappers do
+not make an explicit association optional. After restoration, the same future
+input and patch sequence reproduces the original manifest roles and causal meaning.
 
 ## 98. Optional history section
 

@@ -5,8 +5,10 @@ kind: lifecycle
 status: reviewed
 
 source_baseline:
-  commit: c4e7625a8a86d8d0491d81728d6f2ed5a247d6eb
-  working_tree: clean
+  commit: 2100fc027ead42e5526c81eda611443af2de8f83
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   Strict validation of one machine_snapshot artifact and all-or-nothing
@@ -117,6 +119,24 @@ requirements:
       an accepted version. A disagreement is not a second numbering.
     sources: [version-vector, snapshot-common, support-table]
     basis: derived
+
+  - id: current-root-version-validation
+    kind: compatibility
+    statement: >-
+      Current snapshot acceptance checks each component of the exact mixed
+      root-directed version profile independently, with matching envelope and
+      payload components. All-2, all-3 and any unsupported component reject
+      through the structured version failure. Every provenance record and source
+      fact inside a checkpoint wrapper is validated under the current provenance
+      meaning and domain, with independently recomputed content and complete
+      closure. Changed version claims or cached hashes cannot validate old bytes.
+      There is no historical decoder, implicit upgrade or downgrade.
+      Restore the same current source-root meaning for later patch continuation,
+      including stable operation/port and module reset/toggle/capture roles and
+      original cause content. Generic transaction/snapshot-state substitutes must
+      not change later TopologyChange supporters. Raw caches and persistent pulse
+      state are not required to represent those causal roots.
+    sources: [current-root-profile, required-provenance, support-table]
 
   - id: identity-and-policy
     kind: compatibility
@@ -345,6 +365,13 @@ implementation_freedom:
 open_questions: []
 
 sources:
+  current-root-profile:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part III — Version and compatibility model
+      - 16. Version responsibilities
+      - 16.10 Current root-directed machine and replay version profile
+    reviewed_hash: sha256:985b1ecd9b17c7391e75d0ce92727c4fc769146c27d19a398c7df952fb42e290
   axioms:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part I — Persistence model and boundaries, 3. Persistence axioms]
@@ -428,7 +455,7 @@ sources:
   uninitialized-snapshot:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 86. Uninitialized snapshot]
-    reviewed_hash: sha256:7abb034905f2987801e35f284dfcdcc5ef2a2a9fcaa65a38be9cef59927d1123
+    reviewed_hash: sha256:0f6f1ad074cd10beecf3998268b923f4e65c9d338e1b6b473cdc16ab595f3886
   ready-snapshot:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 87. Ready snapshot]
@@ -448,7 +475,7 @@ sources:
   required-provenance:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 97. Required provenance section]
-    reviewed_hash: sha256:962c85fd921d5c05531f5c2b61f2c99c3c6ad3701899bc5c20ca168580be361f
+    reviewed_hash: sha256:b97ee7ab430840975f17dc5440f1894db09f9dcfd3073cae05ffa0ba5b75fbd2
   optional-history:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 98. Optional history section]

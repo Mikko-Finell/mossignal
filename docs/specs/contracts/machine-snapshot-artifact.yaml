@@ -5,8 +5,10 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: b3940ebbeb2783f1827f91d08b6ec5c95772a04a
-  working_tree: clean
+  commit: 2100fc027ead42e5526c81eda611443af2de8f83
+  working_tree: dirty
+  modified_spec_paths:
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   A machine snapshot is one standalone, versioned, self-contained artifact for
@@ -37,7 +39,7 @@ known_uncovered:
   - A retention policy that produces optional history; absence remains representable
   - Provenance checkpoint compaction and externally resolved checkpoint dependencies
   - Payloads for artifact kinds other than machine_snapshot
-  - Compatibility support tables, schema upgraders, and semantic migration reports
+  - Historical compatibility support, schema upgraders, and semantic migration reports
 
 aliases:
   - MachineSnapshot<D>
@@ -80,13 +82,14 @@ requirements:
       canonical encoding, digest suite, artifact schema, core semantics,
       built-in node semantics, topology-patch semantics, provenance semantics,
       and diagnostic schema. Each component is an unsigned 32-bit identifier.
-      Numeric adjacency has no compatibility meaning. DigestSuiteVersion,
-      CoreSemanticsVersion, and BuiltInNodeSemanticsVersion are 1. The payload
+      Numeric adjacency has no compatibility meaning. The current root-directed
+      profile emits snapshot artifact schema 3, provenance semantics 3,
+      and unchanged other components 2. The payload
       carries the same semantic components, which are core, built-in node,
       topology-patch, provenance, and diagnostic schema versions, and does not
-      invent a second numbering. This encoder emits that initial vector only
+      invent a second numbering. This encoder emits that exact mixed vector only
       and must not implicitly downgrade or upgrade.
-    sources: [version-vector, version-representation, version-responsibilities, no-downgrade, snapshot-common]
+    sources: [version-vector, version-representation, version-responsibilities, no-downgrade, snapshot-common, current-root-profile]
 
   - id: snapshot-digest-identity
     kind: semantic
@@ -94,9 +97,9 @@ requirements:
       SnapshotDigest is a public opaque 32-byte identity, distinct from
       ExecutionStateDigest, ObservableStateDigest, NetworkFingerprint,
       ModuleFingerprint, InputSchemaFingerprint, RuntimePolicyId, and
-      NetworkRevision. DigestSuiteVersion 1 computes it as unkeyed BLAKE3-256
-      over the canonical domain record with label mossignal/snapshot_digest/v1,
-      domain version 1, and payload equal to the canonical envelope record
+      NetworkRevision. The unchanged current suite computes it as unkeyed BLAKE3-256
+      over the canonical domain record with label mossignal/snapshot_digest/v2,
+      domain version 2, and payload equal to the canonical envelope record
       with integrity_digest omitted. The prefix is not an input. The snapshot
       payload does not contain a second digest field. The in-memory snapshot
       exposes that envelope digest as SnapshotDigest. It covers execution
@@ -104,7 +107,7 @@ requirements:
       metadata, persistence metadata, presentation extensions, and the
       artifact and semantic version vector, and it excludes only its own
       digest field. It is not authenticity.
-    sources: [digest-suite, domain-separation, envelope-integrity, digest-placement, snapshot-digest, fixed-digests, api-digest-scopes, concrete-identities, authenticity]
+    sources: [digest-suite, domain-separation, envelope-integrity, digest-placement, snapshot-digest, fixed-digests, api-digest-scopes, concrete-identities, authenticity, current-root-profile]
 
   - id: payload-identity
     kind: persistence
@@ -204,7 +207,23 @@ requirements:
       give one cause a second spelling. Records are ordered by
       CauseDigest. A persisted cause reference is a 32-byte CauseDigest.
       Private CauseRef values and arena positions are not persisted.
-    sources: [required-provenance, provenance-order, cause-references]
+      External artifact ownership does not select snapshot roots; additional
+      machine retention of explicit last-reaction evidence is not automatically
+      canonical state. Preserve any current inspection fact required by the
+      observable projection and the complete source closure selected by a
+      root-directed TopologyChange, under its existing declared boundary.
+      The current source manifest must be recoverable for a later patch, including
+      operation/port and latest module cause roles and original canonical content;
+      excluded raw caches cannot be their sole representation.
+      The schema's current_roots records only associations not uniquely
+      represented by existing input/state/event/baseline/episode facts, with
+      stable typed subjects, semantic roles and CauseDigests. Subject/role pairs
+      are canonical, unique, fully qualified and never dense indices; optional
+      absent roles are omitted and uninitialized roles are empty. Exact coverage,
+      kind coherence and complete closure are validated. Topology-derived aliases
+      need no duplicate authoritative binding, and arbitrary latest-by-storage
+      reconstruction is insufficient.
+    sources: [required-provenance, provenance-order, cause-references, current-root-profile]
 
   - id: history-and-metadata
     kind: persistence
@@ -298,7 +317,6 @@ recommendations:
     sources: [encoder-independence]
 
 implementation_freedom:
-  - EnvelopeSchemaVersion, CanonicalEncodingVersion, ArtifactSchemaVersion, TopologyPatchSemanticsVersion, ProvenanceSemanticsVersion, and DiagnosticSchemaVersion have no specified initial integer. Use 1 for each, lock those integers in the golden vectors, and do not treat that choice or the resulting bytes as a named compatibility freeze.
   - Sections 85 and 91 name payload facts and state families, not a closed nested CBOR spelling. Use the simplest deterministic spelling. Where section 54.2 already names a state or temporal schema, use that name, including edge_observation, stored_level, pending_pulse_group, remembered_input_output, pending_transport_transition, pending_inertial_candidate, periodic_anchor_previous_enable, and pending_periodic_boundary. Use the section 92 event-kind names rather than any different digest-projection tag. Reuse the existing execution-projection spelling only where it already matches those names and facts. Record the spelling in the goldens and the close-out.
   - Do not duplicate a common payload fact inside the lifecycle variant. The uninitialized variant may be payloadless when every fact it would carry is already a common field and no ready fact is fabricated.
   - Omit optional_history, persistence metadata, migration metadata, and presentation extensions when the committed machine has none. Do not add a history-retention producer. A test-only or narrowly explicit metadata input is enough to prove the snapshot-digest distinction.
@@ -310,6 +328,13 @@ implementation_freedom:
 open_questions: []
 
 sources:
+  current-root-profile:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part III — Version and compatibility model
+      - 16. Version responsibilities
+      - 16.10 Current root-directed machine and replay version profile
+    reviewed_hash: sha256:985b1ecd9b17c7391e75d0ce92727c4fc769146c27d19a398c7df952fb42e290
   canonical-bytes:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part I — Persistence model and boundaries, 3. Persistence axioms]
@@ -339,7 +364,7 @@ sources:
   version-responsibilities:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part III — Version and compatibility model, 16. Version responsibilities]
-    reviewed_hash: sha256:7b26fab45a31212f07cdde33a42bc7bc5b0378741b9a45d5f623badd66e9f264
+    reviewed_hash: sha256:cf21fa1a8e42625f80561cc86fbea5911cedcfac232be5a84032ff5dadbe4812
   no-downgrade:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part III — Version and compatibility model, 26. No implicit downgrade]
@@ -437,7 +462,7 @@ sources:
   uninitialized-snapshot:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 86. Uninitialized snapshot]
-    reviewed_hash: sha256:7abb034905f2987801e35f284dfcdcc5ef2a2a9fcaa65a38be9cef59927d1123
+    reviewed_hash: sha256:0f6f1ad074cd10beecf3998268b923f4e65c9d338e1b6b473cdc16ab595f3886
   ready-snapshot:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 87. Ready snapshot]
@@ -453,7 +478,7 @@ sources:
   pulse-state:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 90. Pulse state]
-    reviewed_hash: sha256:32074050a50af076d231984bf492df80330c217a4dddda4230bcdb023e2d033c
+    reviewed_hash: sha256:9f28efbd330141b38a9d4bc632e0df9c0da92ff1a8fdb6d9a460945de70c9121
   state-schemas:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 91. Built-in state schemas]
@@ -461,7 +486,7 @@ sources:
   pending-events:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 92. Pending event records]
-    reviewed_hash: sha256:9d40b747e57c3e3392c351477272393b2c91536672b112fd87c2df41889d7c20
+    reviewed_hash: sha256:c32440d9553e34de6bc542bd26957d55e4ca5c7e5e4cb8522ea531f727b316b5
   event-identity:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 93. Public pending-event identity]
@@ -477,7 +502,7 @@ sources:
   required-provenance:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 97. Required provenance section]
-    reviewed_hash: sha256:962c85fd921d5c05531f5c2b61f2c99c3c6ad3701899bc5c20ca168580be361f
+    reviewed_hash: sha256:b97ee7ab430840975f17dc5440f1894db09f9dcfd3073cae05ffa0ba5b75fbd2
   optional-history:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part X — Machine snapshot schema, 98. Optional history section]

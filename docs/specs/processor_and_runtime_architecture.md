@@ -1474,6 +1474,53 @@ Unreachable optional provenance may be collected.
 
 Pruned explanations must terminate at explicit checkpoint or retention boundaries.
 
+### 68.1 Current machine and artifact ownership
+
+The current machine retention-root manifest contains every retained cause needed
+by its current facts or explicitly represented last-reaction inspection facts:
+
+* authoritative external level origins;
+* current operation and port support, including the explicitly represented last
+  reaction of pulse operations rather than a fabricated persistent pulse value;
+* stored-state establishment and latest-transition facts;
+* edge observations and remembered temporal input/output facts;
+* output baselines and their establishment or latest-transition causes;
+* pending scheduling origins and obligations;
+* inertial qualification, periodic anchor/phase, and required cancellation facts;
+* active diagnostic beginning and current material evidence;
+* current qualified module facts, including retained reset, toggle and capture
+  evidence that the current module inspection exposes.
+
+The manifest is deduplicated by cause identity. Its backward closure remains
+complete. It is not an allocation inventory, completed-reaction archive, or the
+union of externally retained artifacts. An uninitialized machine has no runtime
+causal roots. A snapshot-restored machine owns the validated or reconstructed
+current facts under the snapshot's declared explanation boundary.
+
+Every owned result, inspection, explanation, episode and forecast independently
+owns sufficient closure for every cause it exposes. A transaction result covers
+its entire change set and event stream, including intermediate-deadline reactions
+and pre-patch source events. An active episode owns its required evidence, not an
+old complete machine view. Holding or dropping an external artifact cannot change
+the machine manifest, migration, admission outcome, either state digest, or its
+snapshot projection. Replacing a machine root releases only that ownership;
+other current or artifact roots still own their complete shared ancestry.
+
+Automatic collection removes only nodes outside required closure and any
+deliberately retained artifact closure. It never truncates an ancestor to achieve
+a memory target. Required stateful or phase ancestry and deliberately retained
+artifacts may grow. There is no bounded-total-history guarantee. Collection,
+sharing and lookup metadata are private choices; dead lookup entries must not
+accumulate solely because obsolete artifacts or rejected candidates once existed.
+
+Retention roots and canonical projection roots are distinct inventories. The
+snapshot and digest specifications decide which current facts and closures enter
+their projections. Under the root-directed version profile, current causal roots
+used by a later migration must be recoverable from a snapshot; an excluded raw
+inspection cache cannot be the sole owner of such source truth. Raw last-reaction
+cache fields do not become persistent signal state. This manifest introduces no public historical
+retention selector, checkpoint command or history-disable mode.
+
 ## 69. Pulse provenance
 
 Pulse provenance records grouped contribution counts rather than inventing ordered pulse identities.
@@ -1506,6 +1553,28 @@ old state fact
 Reset state receives an explicit reset or initialization cause.
 
 Pending events preserved across revisions retain their original scheduling ancestry plus migration facts.
+
+At a ready patch boundary, first execute deadlines strictly earlier than the
+effective time. Before source facts are removed, reset or transformed, and before
+same-time target input or target settlement, capture the current SOURCE retention
+manifest from section 68.1. The `TopologyChange` supporters are exactly those
+deduplicated source roots, represented by their source-qualified checkpoint/fact
+wrappers. Supporters are roots, not every node in their backward closure. Facts
+explaining a removed or reset source subject remain in that selected source
+closure. For initialization there are no runtime source roots.
+Canonical topology supporters form a set of cause-content identities: two
+current roles referring to the same canonical fact do not duplicate a supporter,
+and distinct private allocations of equal content cannot change that set.
+Role associations remain distinct. This root-set rule does not merge grouped
+pulse contributions or change logical provenance-growth accounting.
+
+Preserve source-qualified canonical meaning and every predecessor required by
+the selected roots. Additional earlier-deadline event or diagnostic causes needed
+only by the outer transaction's result are independently owned result roots;
+they do not enlarge the `TopologyChange` supporter manifest. External results,
+inspections and forecasts are never source-root inputs. Selecting these roots is
+not an authoritative checkpoint that permits unrelated truncation: the existing
+migration/checkpoint boundary and original pending ancestry remain explicit.
 
 ---
 
@@ -1917,6 +1986,17 @@ Exceeding a budget:
 Optional historical provenance retention should not cause semantic failure where it can instead be pruned.
 
 Limits on required current provenance do affect operational behavior and belong to runtime policy identity.
+
+Required-provenance growth is charged from newly required logical records at the
+existing outer-transaction accounting boundary. Reclamation of old records cannot
+offset current growth. Sharing, canonical coalescing, cache hits, physical
+allocations and external artifact ownership do not change that consumed amount.
+Replacing selected source records by equivalent migration checkpoint wrappers
+does not charge each replacement as a new append; newly introduced patch,
+migration and reaction records retain their ordinary growth charge. Earlier
+internal reactions are included even if their records cease to be current roots
+before publication. Every budget check precedes publication; rejected candidates
+release only their own ownership and leave the predecessor complete.
 
 ---
 

@@ -5,15 +5,10 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: c808ff7017d86a2b7a51a17ab9bcbc70554ec3f7
+  commit: 2100fc027ead42e5526c81eda611443af2de8f83
   working_tree: dirty
   modified_spec_paths:
-    - docs/specs/api_and_semantics_spec.md
-    - docs/specs/concrete_rust_api_surface.md
-    - docs/specs/exhaustive_diagnostic_code_catalogue.md
     - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
-    - docs/specs/processor_and_runtime_architecture.md
-    - docs/testing_and_verification_policy.md
 
 summary: >-
   Replay is the ordered fold of the ordinary machine transition from an exact
@@ -154,7 +149,8 @@ requirements:
       envelope of kind mossignal_artifact. Each envelope carries the complete
       version vector. Semantic version components stored in a payload agree
       with the corresponding envelope components. Integrity uses
-      mossignal/artifact_integrity/v1 over the envelope with the digest field
+      the current unchanged mossignal/artifact_integrity/v2 domain at version 2
+      over the envelope with the digest field
       omitted, and it is not a SnapshotDigest and not authenticity. For one
       supported value and version vector there is one canonical byte sequence.
       Decode rejects a noncanonical alternate rather than normalizing it.
@@ -166,7 +162,24 @@ requirements:
       this implementation emits is not a replay-format freeze. The encoder
       must not upgrade, downgrade, or migrate, and must not claim continuity
       across an unacknowledged version change.
-    sources: [artifact-classes, artifact-kinds, encoding-foundation, artifact-prefix, envelope-shape, envelope-integrity, content-identity, domain-separation, version-vector, exact-round-trip, no-downgrade, semantic-migrations, prohibited-outcomes, axioms]
+    sources: [artifact-classes, artifact-kinds, encoding-foundation, artifact-prefix, envelope-shape, envelope-integrity, content-identity, domain-separation, version-vector, exact-round-trip, no-downgrade, semantic-migrations, prohibited-outcomes, axioms, current-root-profile]
+
+  - id: current-root-version-validation
+    kind: compatibility
+    statement: >-
+      Implemented replay, transaction and input artifacts carry the current
+      root-directed mixed component vector. Check components independently at
+      every envelope and corresponding payload, including embedded frames,
+      transaction records and inputs. Unsupported or mismatched components are
+      structured version failures, without old-version support or implicit
+      translation. Snapshot and replay agree on shared semantic components and
+      current execution/observable identities. Artifact schema is kind-specific:
+      the snapshot schema is 3 and implemented replay/input/transaction
+      schemas remain 2. They do not require artifact-schema equality. Replay
+      still folds ordinary apply.
+      Artifact-integrity and replay-log-content domains remain their current v2
+      labels and version 2 values, and unrelated schemas or semantics do not advance.
+    sources: [current-root-profile, version-vector, support-table]
 
   - id: embedded-transaction
     kind: persistence
@@ -311,7 +324,7 @@ implementation_freedom:
   - Choose snake_case payload keys for the log and for fields whose specification text is conceptual rather than a literal key. Required spellings that the persistence text already writes in snake_case stay as written, including frame_index, expected_previous_execution_digest, expected_revision, runtime_policy_id, resulting_execution_digest, and resulting_observable_digest. Sort record fields by the canonical profile. Test the round trip and record the chosen keys. Those keys are not a format freeze.
   - Number frame_index from zero by position in that log and treat it as the non-semantic display index. Concatenation may renumber it and does not keep a second audit index. Renumbering changes embedded frame bytes and their integrity digests. Exact replay identity remains the ordered transaction sequence.
   - Detect replay.frame_missing and replay.frame_duplicated from the declared frame_index sequence: a gap is missing and a repeat is duplicated. Emit one replay code for each log or frame checkpoint. Do not also emit the restoration persistence code of the same general name for that same checkpoint.
-  - Compute ReplayLogContentDigest under mossignal/replay_log_content/v1 over starting identities, each embedded frame's artifact integrity digest in order, any final identities, and the semantic version vector. The digest suite defines no separate frame-content domain, so the frame's artifact integrity digest is the frame content digest. Exclude presentation metadata from that content digest and include it in the envelope integrity digest when present. Omit presentation metadata from the encoder unless a test needs it. Do not invent a new domain label.
+  - Compute ReplayLogContentDigest under the unchanged current mossignal/replay_log_content/v2 domain at version 2 over starting identities, each embedded frame's artifact integrity digest in order, any final identities, and the semantic version vector. The frame's artifact integrity digest is the frame content digest. Exclude presentation metadata from that content digest and include it in the envelope integrity digest when present. Omit presentation metadata from the encoder unless a test needs it.
   - Omit the optional recorded transaction result and any patch attachment from the encoder. A decoded frame that contains either child fails closed before apply and without mutation. Map a transaction_result child to persistence.unsupported_version of that child's artifact schema version, with kind transaction_result and no upgrader. Map a patch attachment to replay.patch_preparation_diverged. Do not implement result comparison or patch preparation in order to produce those failures. Test the mapping and record it. It is not a promise that a later implementation must keep the rejection.
   - Accept only the version vector the current machine_snapshot encoder emits for the shared version components. Every other component is persistence.unsupported_version and has no upgrader. Do not treat that table as a maintainer freeze.
   - Replay failures use the existing Operation subject for persistence together with ReplayEvidence. Do not add ReplayLog, ReplayFrame, or ReplayChunk subject variants.
@@ -320,6 +333,13 @@ implementation_freedom:
 open_questions: []
 
 sources:
+  current-root-profile:
+    document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+    heading_path:
+      - Part III — Version and compatibility model
+      - 16. Version responsibilities
+      - 16.10 Current root-directed machine and replay version profile
+    reviewed_hash: sha256:985b1ecd9b17c7391e75d0ce92727c4fc769146c27d19a398c7df952fb42e290
   axioms:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part I — Persistence model and boundaries, 3. Persistence axioms]
