@@ -151,6 +151,10 @@ impl<D> Transaction<D> {
         self.patch.is_some()
     }
 
+    pub(crate) fn prepared_patch(&self) -> Option<&PreparedPatch<D>> {
+        self.patch.as_ref().map(|(prepared, _)| prepared)
+    }
+
     /// Returns the requested logical time.
     #[must_use]
     pub const fn requested_time(&self) -> Time<D> {
@@ -2167,9 +2171,48 @@ impl<D> fmt::Debug for ForecastResult<D> {
     }
 }
 
+/// One evaluated successor, owned privately until every adapter check succeeds.
+pub(crate) struct StagedTransaction<D> {
+    successor: Machine<D>,
+    result: TransactionResult<D>,
+}
+
+impl<D> StagedTransaction<D> {
+    pub(crate) fn result(&self) -> &TransactionResult<D> {
+        &self.result
+    }
+
+    pub(crate) fn publish(self, machine: &mut Machine<D>) -> TransactionResult<D> {
+        *machine = self.successor;
+        self.result
+    }
+
+    pub(crate) fn into_parts(self) -> (Machine<D>, TransactionResult<D>) {
+        (self.successor, self.result)
+    }
+}
+
 impl<D> Machine<D> {
     /// Applies an owned transaction atomically.
     pub fn apply(
+        &mut self,
+        transaction: Transaction<D>,
+    ) -> Result<TransactionResult<D>, RuntimeFailure<D>> {
+        Ok(self.stage(transaction)?.publish(self))
+    }
+
+    pub(crate) fn stage(
+        &self,
+        transaction: Transaction<D>,
+    ) -> Result<StagedTransaction<D>, RuntimeFailure<D>> {
+        // SPEC: docs/specs/contracts/live-bindings.yaml "prepublication-projection"
+        // Core apply, forecast and bound apply evaluate once on the same private successor.
+        let mut successor = self.duplicate_for_staging();
+        let result = successor.evaluate_transaction(transaction)?;
+        Ok(StagedTransaction { successor, result })
+    }
+
+    fn evaluate_transaction(
         &mut self,
         transaction: Transaction<D>,
     ) -> Result<TransactionResult<D>, RuntimeFailure<D>> {
@@ -2207,11 +2250,10 @@ impl<D> Machine<D> {
             requested_time: transaction.requested_time(),
             runtime_policy_id: self.runtime_policy_id(),
         };
-        let mut candidate = self.duplicate_for_forecast();
-        let result = candidate.apply(transaction)?;
+        let staged = self.stage(transaction)?;
         Ok(ForecastResult {
-            result,
-            state: ForecastState::from_candidate(candidate),
+            result: staged.result,
+            state: ForecastState::from_candidate(staged.successor),
             basis,
         })
     }
@@ -4352,11 +4394,11 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
         revision,
     } = published;
     // SPEC: docs/specs/processor_and_runtime_architecture.md §50 "Reference execution strategy"
-    // Every fallible step precedes replacement of the complete private candidate.
+    // Fallible effects are complete; finish only the privately owned successor here.
     if let Some(compiled) = installed_network {
         machine.compiled = compiled;
     }
-    let mut candidate = machine.store.clone();
+    let candidate = &mut machine.store;
     candidate.revision = revision;
     candidate.standard_history = standard_history;
     candidate.status = MachineStatus::Ready { now: at };
@@ -4384,7 +4426,6 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     candidate.active_episodes = active_episodes;
     candidate.pending_events = pending_events;
     candidate.next_pending_event_serial = next_pending_event_serial;
-    machine.store = candidate;
 }
 
 fn count_as_u64(count: usize) -> u64 {
@@ -6299,6 +6340,117 @@ mod tests {
         RuntimeFailureEvidence, RuntimePolicy, RuntimePolicyLimit, TimeDomainId, Transaction,
     };
     use std::collections::BTreeSet;
+
+    #[test]
+    fn bound_runtime_rechecks_new_level_values_before_processing_any_deadline() {
+        use crate::time::{NonZeroSpan, Time};
+        use crate::{
+            BindingSet, BoundMachine, InputObservation, NetworkBuilder, PulseDelayConfig,
+            ReconfigurationPolicy,
+        };
+        let mut builder =
+            NetworkBuilder::<()>::with_key(NetworkKey::from_u128(91), TimeDomainId::from_u128(2));
+        let (input, pulse) = builder.pulse_input("trip");
+        let delayed = builder
+            .pulse_delay(
+                pulse,
+                PulseDelayConfig::new(NonZeroSpan::from_ticks(5).unwrap()),
+            )
+            .unwrap();
+        let output = builder.pulse_output("delayed", delayed).unwrap();
+        let compiled = builder
+            .finish()
+            .require_artifact()
+            .unwrap()
+            .compile()
+            .require_artifact()
+            .unwrap();
+        let bindings = BindingSet::builder(&compiled)
+            .bind_input(input, "trip")
+            .unwrap()
+            .bind_output(output, "delayed")
+            .unwrap()
+            .finish()
+            .unwrap();
+        let mut bound = BoundMachine::spawn(
+            &compiled,
+            policy_with([100, 1000, 100, 100, 1000]),
+            bindings,
+        )
+        .unwrap();
+        bound
+            .initialize(
+                Time::from_ticks(0),
+                [InputObservation::Pulse {
+                    input: "trip",
+                    count: PulseCount::new(u64::MAX),
+                }],
+            )
+            .unwrap();
+        bound
+            .advance(
+                Time::from_ticks(0),
+                [InputObservation::Pulse {
+                    input: "trip",
+                    count: PulseCount::ONE,
+                }],
+            )
+            .unwrap();
+        let extra = ExternalInputKey::<Level>::from_u128(100);
+        let prepared = bound
+            .prepare_patch(
+                bound
+                    .machine()
+                    .patch()
+                    .add_external_input(ExternalInputDef::new(
+                        extra.into(),
+                        DiagnosticMeta::default(),
+                    ))
+                    .unwrap()
+                    .finish(),
+            )
+            .require_artifact()
+            .unwrap();
+        let target = BindingSet::builder(prepared.resulting_compiled())
+            .bind_input(input, "trip")
+            .unwrap()
+            .bind_input(extra, "extra")
+            .unwrap()
+            .bind_output(output, "delayed")
+            .unwrap()
+            .finish()
+            .unwrap();
+        let delta = prepared
+            .input_delta()
+            .set(extra, LogicLevel::High)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let mut tx = Transaction::advance(Time::from_ticks(6), bound.machine().revision(), delta)
+            .with_patch(prepared, ReconfigurationPolicy::RejectStateLoss)
+            .unwrap();
+        // Model a malformed artifact after the public construction check; runtime
+        // must independently enforce target establishment before the due tick 5.
+        let super::TransactionKind::Advance(input) = &mut tx.kind else {
+            unreachable!()
+        };
+        input.levels.remove(&extra);
+        let before = observe(bound.machine());
+        let failure = bound.apply_reconfigured(tx, target).err().unwrap();
+        assert_eq!(
+            failure.code(),
+            DiagnosticCode::ReconfigurationTargetInputSchemaMismatch
+        );
+        assert_eq!(observe(bound.machine()), before);
+        assert_eq!(bound.bindings().input_identifier(extra), None);
+        assert_eq!(bound.bindings().output_identifier(output), Some(&"delayed"));
+        // The due batch would itself reject. Target admission must take precedence.
+        assert_eq!(
+            bound.advance(Time::from_ticks(6), []).err().unwrap().code(),
+            DiagnosticCode::RuntimePulseCountOverflow
+        );
+        assert_eq!(observe(bound.machine()), before);
+    }
 
     fn compiled(network_key: u128, output_key: u128) -> crate::CompiledNetwork<()> {
         compiled_with_input(network_key, 1, output_key)

@@ -88,6 +88,7 @@ BindingFailure(binding.ambiguous_external_key)|binding.ambiguous_external_key
 BindingFailure(binding.missing_required_binding)|binding.missing_required_binding
 BindingFailure(binding.wrong_network)|binding.wrong_network
 BindingFailure(binding.stale_schema)|binding.stale_schema
+BindingFailure(binding.invalid_reconfiguration_context)|binding.invalid_reconfiguration_context
 InputProjectionFailure::UnknownExternalKey|input.unknown_endpoint
 InputProjectionFailure::WrongSignalKind|input.wrong_signal_kind
 InputProjectionFailure::InputBuild|delegate

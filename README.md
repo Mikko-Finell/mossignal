@@ -63,6 +63,20 @@ indices are private, revision-local execution machinery.
 
 ## Runnable walkthroughs
 
+The [live bindings example](crates/mossignal/examples/live_bindings.rs) keeps one
+bound circuit through same-time Pulse observations, map-only label replacement,
+and an atomic topology edit. Bindings match the exact network definition,
+independently of runtime revision. `apply` accepts ordinary transactions;
+`apply_reconfigured` requires a prepared patch and complete target bindings.
+Earlier deadlines capture source labels, the target reaction captures target
+labels, and owned results retain their endpoints and provenance after later
+edits. Read-only `machine()` exposes inspection, forecasting and snapshots;
+`into_parts()` explicitly releases the machine and maps.
+
+```bash
+cargo run -p mossignal --example live_bindings
+```
+
 The [lifecycle example](crates/mossignal/examples/lifecycle.rs) authors a button
 pulse that toggles a lamp after five logical ticks. It initializes the machine,
 advances to tick 2, inspects pending work, encodes and restores a saved machine,

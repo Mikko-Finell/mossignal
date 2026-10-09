@@ -302,6 +302,7 @@ pub enum DiagnosticCode {
     BindingMissingRequiredBinding,
     BindingWrongNetwork,
     BindingStaleSchema,
+    BindingInvalidReconfigurationContext,
     LifecycleNotInitialized,
     LifecycleAlreadyInitialized,
     LifecycleDeltaBeforeInitialization,
@@ -589,7 +590,6 @@ pub enum Suggestion {}
 pub struct BindingEvidence {
     pub network: NetworkKey,
     pub fingerprint: NetworkFingerprint,
-    pub revision: NetworkRevision,
     pub endpoint: Option<BindingSubjectRef>,
     pub conflicting: Vec<BindingSubjectRef>,
     pub missing: Vec<BindingSubjectRef>,
@@ -1230,6 +1230,10 @@ pub enum ProblemEvidence<D> {
         marker: PhantomData<fn() -> D>,
     },
     BindingStaleSchema {
+        evidence: BindingEvidence,
+        marker: PhantomData<fn() -> D>,
+    },
+    BindingInvalidReconfigurationContext {
         evidence: BindingEvidence,
         marker: PhantomData<fn() -> D>,
     },
@@ -2221,6 +2225,7 @@ opening_diagnostic_registry! {
     BindingMissingRequiredBinding, Self::BindingMissingRequiredBinding { .. }, "binding.missing_required_binding", Error, CallerInput, Binding, true, true, false;
     BindingWrongNetwork, Self::BindingWrongNetwork { .. }, "binding.wrong_network", Error, Compatibility, Binding, false, true, false;
     BindingStaleSchema, Self::BindingStaleSchema { .. }, "binding.stale_schema", Error, Compatibility, Binding, false, true, false;
+    BindingInvalidReconfigurationContext, Self::BindingInvalidReconfigurationContext { .. }, "binding.invalid_reconfiguration_context", Error, CallerInput, Binding, false, true, false;
     LifecycleNotInitialized, Self::LifecycleNotInitialized { .. }, "lifecycle.not_initialized", Error, CallerInput, Lifecycle, false, true, false;
     LifecycleAlreadyInitialized, Self::LifecycleAlreadyInitialized { .. }, "lifecycle.already_initialized", Error, CallerInput, Lifecycle, false, true, false;
     LifecycleDeltaBeforeInitialization, Self::LifecycleDeltaBeforeInitialization { .. }, "lifecycle.delta_before_initialization", Error, CallerInput, Lifecycle, false, true, false;
@@ -2824,6 +2829,12 @@ fn condition_discriminator<D>(evidence: &ProblemEvidence<D>) -> ConditionDiscrim
         ProblemEvidence::BindingStaleSchema { evidence, .. } => {
             ConditionDiscriminator::Binding(DiagnosticCode::BindingStaleSchema, evidence.endpoint)
         }
+        ProblemEvidence::BindingInvalidReconfigurationContext { evidence, .. } => {
+            ConditionDiscriminator::Binding(
+                DiagnosticCode::BindingInvalidReconfigurationContext,
+                evidence.endpoint,
+            )
+        }
         ProblemEvidence::LifecycleNotInitialized { .. } => {
             ConditionDiscriminator::Operation(DiagnosticCode::LifecycleNotInitialized)
         }
@@ -3381,7 +3392,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 194);
+        assert_eq!(leaves.len(), 195);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {

@@ -40,6 +40,7 @@ binding.ambiguous_external_key|Error|CallerInput|Binding|true|true|false|false|f
 binding.missing_required_binding|Error|CallerInput|Binding|true|true|false|false|false
 binding.wrong_network|Error|Compatibility|Binding|false|true|false|false|false
 binding.stale_schema|Error|Compatibility|Binding|false|true|false|false|false
+binding.invalid_reconfiguration_context|Error|CallerInput|Binding|false|true|false|false|false
 lifecycle.not_initialized|Error|CallerInput|Lifecycle|false|true|false|false|false
 lifecycle.already_initialized|Error|CallerInput|Lifecycle|false|true|false|false|false
 lifecycle.delta_before_initialization|Error|CallerInput|Lifecycle|false|true|false|false|false

@@ -523,6 +523,7 @@ fn bound_machine_delegates_and_projects_level_and_pulse_events_losslessly() {
                     revision,
                 },
                 ProjectedOutputEvent::LevelEstablished {
+                    endpoint,
                     output: OutputId::Level,
                     value: projected_value,
                     stamp: projected_at,
@@ -531,6 +532,7 @@ fn bound_machine_delegates_and_projects_level_and_pulse_events_losslessly() {
                 },
             ) => {
                 assert_eq!(*output, fixture.level_output);
+                assert_eq!(endpoint, output);
                 assert_eq!(projected_value, value);
                 assert_eq!(projected_at, at);
                 assert_eq!(projected_cause, cause);
@@ -545,6 +547,7 @@ fn bound_machine_delegates_and_projects_level_and_pulse_events_losslessly() {
                     revision,
                 },
                 ProjectedOutputEvent::Pulsed {
+                    endpoint,
                     output: OutputId::Pulse,
                     count: projected_count,
                     stamp: projected_at,
@@ -553,6 +556,7 @@ fn bound_machine_delegates_and_projects_level_and_pulse_events_losslessly() {
                 },
             ) => {
                 assert_eq!(*output, fixture.pulse_output);
+                assert_eq!(endpoint, output);
                 assert_eq!(projected_count, count);
                 assert_eq!(projected_at, at);
                 assert_eq!(projected_cause, cause);
@@ -810,7 +814,7 @@ fn bound_and_direct_budget_failures_are_equivalent_and_atomic() {
 }
 
 #[test]
-fn bound_current_output_rejects_a_replaced_network_or_schema() {
+fn rebind_rejects_a_different_network_or_schema_atomically() {
     let original = fixture(1, false);
     for (replacement, expected) in [
         (fixture(2, false), DiagnosticCode::BindingWrongNetwork),
@@ -818,59 +822,57 @@ fn bound_current_output_rejects_a_replaced_network_or_schema() {
     ] {
         let mut bound =
             BoundMachine::spawn(&original.compiled, policy(), bindings(&original, false)).unwrap();
-        let mut machine = replacement.compiled.spawn(policy());
-        let mut input = replacement
-            .compiled
-            .input_snapshot()
-            .set(replacement.level_input, LogicLevel::High)
-            .unwrap();
-        if expected == DiagnosticCode::BindingStaleSchema {
-            input = input
-                .set(ExternalInputKey::from_u128(12), LogicLevel::Low)
-                .unwrap();
-        }
-        machine
-            .apply(Transaction::initialize(
+        bound
+            .initialize(
                 Time::from_ticks(0),
-                machine.revision(),
-                input.finish().unwrap(),
-            ))
+                [InputObservation::Level {
+                    input: InputId::Level,
+                    value: LogicLevel::High,
+                }],
+            )
             .unwrap();
-        *bound.machine_mut() = machine;
         let before = bound.machine().snapshot();
-        let failure = bound.output_level(&OutputId::Level).unwrap_err();
+        let failure = bound.rebind(bindings(&replacement, false)).unwrap_err();
         assert_eq!(failure.code(), expected);
-        let BoundOutputFailure::Binding(binding) = &failure else {
-            panic!("compatibility must retain its binding failure");
-        };
-        assert_eq!(failure.problem::<Domain>(), binding.problem::<Domain>());
-        assert_eq!(failure.severity(), binding.severity());
-        assert_eq!(failure.responsibility(), binding.responsibility());
-        assert_eq!(binding.evidence().network, original.compiled.network_key());
+        assert_eq!(failure.problem::<Domain>().code(), expected);
         assert_eq!(
-            binding.evidence().fingerprint,
-            original.compiled.fingerprint()
+            failure.evidence().network,
+            replacement.compiled.network_key()
+        );
+        assert_eq!(
+            failure.evidence().fingerprint,
+            replacement.compiled.fingerprint()
         );
         assert_eq!(bound.machine().snapshot(), before);
+        assert_eq!(
+            bound.output_level(&OutputId::Level).unwrap(),
+            LogicLevel::High
+        );
+        assert_eq!(
+            bound.bindings().network_fingerprint(),
+            original.compiled.fingerprint()
+        );
     }
 }
 
 #[test]
-fn bound_current_output_rejects_a_stale_revision_with_unchanged_schema() {
+fn bindings_attach_after_a_patch_with_unchanged_definition() {
     let fixture = fixture(1, false);
-    let mut bound =
-        BoundMachine::spawn(&fixture.compiled, policy(), bindings(&fixture, false)).unwrap();
-    bound
-        .initialize(
+    let mut machine = fixture.compiled.spawn(policy());
+    machine
+        .apply(Transaction::initialize(
             Time::from_ticks(0),
-            [InputObservation::Level {
-                input: InputId::Level,
-                value: LogicLevel::High,
-            }],
-        )
+            machine.revision(),
+            fixture
+                .compiled
+                .input_snapshot()
+                .set(fixture.level_input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        ))
         .unwrap();
-    let fingerprint = bound.machine().fingerprint();
-    let machine = bound.machine_mut();
+    let fingerprint = machine.fingerprint();
     let prepared = machine
         .prepare_patch(
             machine
@@ -898,15 +900,15 @@ fn bound_current_output_rejects_a_stale_revision_with_unchanged_schema() {
             .unwrap(),
         )
         .unwrap();
-    assert_eq!(bound.machine().fingerprint(), fingerprint);
-    let before = bound.machine().snapshot();
-    let failure = bound.output_level(&OutputId::Level).unwrap_err();
-    assert_eq!(failure.code(), DiagnosticCode::BindingStaleSchema);
-    let BoundOutputFailure::Binding(binding) = &failure else {
-        panic!("stale revision must retain its binding failure");
-    };
-    assert_eq!(failure.problem::<Domain>(), binding.problem::<Domain>());
-    assert_ne!(binding.evidence().revision, bound.machine().revision());
+    assert_eq!(machine.fingerprint(), fingerprint);
+    let before = machine.snapshot();
+    let bound = BoundMachine::new(machine, bindings(&fixture, false)).unwrap_or_else(|failure| {
+        panic!("exact bindings must survive runtime revision: {failure}")
+    });
+    assert_eq!(
+        bound.output_level(&OutputId::Level).unwrap(),
+        LogicLevel::High
+    );
     assert_eq!(bound.machine().snapshot(), before);
 }
 

@@ -2764,7 +2764,7 @@ impl<D> Machine<D> {
                 standard_history: BTreeMap::new(),
                 status: MachineStatus::AwaitingInitialization,
                 last_reaction: None,
-                revision: NetworkRevision::INITIAL,
+                revision: NetworkRevision::initial(),
                 external_levels: BTreeMap::new(),
                 settled_levels: Vec::new(),
                 operation_levels: Vec::new(),
@@ -2790,9 +2790,9 @@ impl<D> Machine<D> {
         }
     }
 
-    pub(crate) fn duplicate_for_forecast(&self) -> Self {
+    pub(crate) fn duplicate_for_staging(&self) -> Self {
         // SPEC: docs/specs/contracts/transaction-forecast.yaml "shared-transition"
-        // Forecast calls ordinary apply on this private copy. Machine stays uncloneable.
+        // Every transaction evaluates on a private copy. Machine stays uncloneable.
         Self {
             compiled: self.compiled.clone(),
             policy: self.policy.clone(),

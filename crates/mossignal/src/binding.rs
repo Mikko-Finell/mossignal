@@ -4,7 +4,8 @@ use crate::CompiledNetwork;
 use crate::diagnostics::{
     BindingEvidence, BindingSubjectRef, DiagnosticCode, InputObservationEvidence,
     InspectionEvidence, InspectionSubjectKind, LifecycleEvidence, OperationSubjectRef, Problem,
-    ProblemEvidence, RelatedSubject, RelatedSubjectRole, Responsibility, Severity, SubjectRef,
+    ProblemEvidence, RelatedSubject, RelatedSubjectRole, Report, Responsibility, Severity,
+    SubjectRef,
 };
 use crate::identity::{InputSchemaFingerprint, NetworkFingerprint};
 use crate::input::{InputBuildFailure, InputDelta, InputSnapshot};
@@ -12,6 +13,7 @@ use crate::key::{
     AnyExternalInputKey, AnyExternalOutputKey, ExternalInputKey, ExternalOutputKey, NetworkKey,
 };
 use crate::machine::{Machine, NetworkRevision};
+use crate::patch::{NetworkPatch, PreparedPatch};
 use crate::policy::RuntimePolicy;
 use crate::signal::{Level, LogicLevel, Pulse, PulseCount, SignalKind, SignalType};
 use crate::time::Time;
@@ -24,7 +26,6 @@ struct BindingContext {
     network: NetworkKey,
     fingerprint: NetworkFingerprint,
     input_schema: InputSchemaFingerprint,
-    revision: NetworkRevision,
 }
 
 /// A structured catalogue-backed application-binding failure.
@@ -133,6 +134,12 @@ impl BindingFailure {
                 evidence: (*self.evidence).clone(),
                 marker: PhantomData,
             },
+            DiagnosticCode::BindingInvalidReconfigurationContext => {
+                ProblemEvidence::BindingInvalidReconfigurationContext {
+                    evidence: (*self.evidence).clone(),
+                    marker: PhantomData,
+                }
+            }
             _ => panic!("BindingFailure must contain a binding catalogue code"),
         };
         Problem::new(primary, related, evidence)
@@ -182,12 +189,6 @@ impl<I, O> BindingSet<I, O> {
     #[must_use]
     pub const fn input_schema_fingerprint(&self) -> InputSchemaFingerprint {
         self.context.input_schema
-    }
-
-    /// Returns the topology revision retained by this adapter.
-    #[must_use]
-    pub const fn revision(&self) -> NetworkRevision {
-        self.context.revision
     }
 }
 
@@ -263,6 +264,53 @@ impl<I: Clone + Eq, O> BindingSet<I, O> {
             compiled: compiled.clone(),
             inputs: self.inputs.clone(),
         })
+    }
+}
+
+impl<I, O> BindingSet<I, O> {
+    fn validate_complete<D>(&self, compiled: &CompiledNetwork<D>) -> Result<(), BindingFailure> {
+        validate_compiled(&self.context, compiled)?;
+        // Builder validation already establishes uniqueness and kind correctness;
+        // private immutable mappings cannot acquire new endpoints after construction.
+        let mut missing = compiled
+            .graph()
+            .external_inputs()
+            .iter()
+            .filter_map(|definition| {
+                let endpoint = definition.key();
+                (!self
+                    .inputs
+                    .iter()
+                    .any(|(candidate, _)| *candidate == endpoint))
+                .then_some(input_subject(&self.context, endpoint))
+            })
+            .collect::<Vec<_>>();
+        missing.extend(
+            compiled
+                .graph()
+                .external_outputs()
+                .iter()
+                .filter_map(|definition| {
+                    let endpoint = definition.key();
+                    (!self
+                        .outputs
+                        .iter()
+                        .any(|(candidate, _)| *candidate == endpoint))
+                    .then_some(output_subject(&self.context, endpoint))
+                }),
+        );
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(binding_failure(
+                &self.context,
+                DiagnosticCode::BindingMissingRequiredBinding,
+                None,
+                Vec::new(),
+                missing,
+                None,
+            ))
+        }
     }
 }
 
@@ -550,6 +598,7 @@ impl<D, I: Eq + Clone> InputProjector<D, I> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectedOutputEvent<D, O> {
     LevelEstablished {
+        endpoint: ExternalOutputKey<Level>,
         output: O,
         value: LogicLevel,
         stamp: crate::ReactionStamp<D>,
@@ -557,6 +606,7 @@ pub enum ProjectedOutputEvent<D, O> {
         revision: NetworkRevision,
     },
     LevelChanged {
+        endpoint: ExternalOutputKey<Level>,
         output: O,
         from: LogicLevel,
         to: LogicLevel,
@@ -565,6 +615,7 @@ pub enum ProjectedOutputEvent<D, O> {
         revision: NetworkRevision,
     },
     Pulsed {
+        endpoint: ExternalOutputKey<Pulse>,
         output: O,
         count: PulseCount,
         stamp: crate::ReactionStamp<D>,
@@ -573,8 +624,41 @@ pub enum ProjectedOutputEvent<D, O> {
     },
 }
 
+impl<D, O> ProjectedOutputEvent<D, O> {
+    /// Returns the stable endpoint in the producing core definition.
+    #[must_use]
+    pub fn endpoint(&self) -> AnyExternalOutputKey {
+        match self {
+            Self::LevelEstablished { endpoint, .. } | Self::LevelChanged { endpoint, .. } => {
+                (*endpoint).into()
+            }
+            Self::Pulsed { endpoint, .. } => (*endpoint).into(),
+        }
+    }
+
+    /// Returns the producing reaction occurrence.
+    #[must_use]
+    pub const fn stamp(&self) -> crate::ReactionStamp<D> {
+        match self {
+            Self::LevelEstablished { stamp, .. }
+            | Self::LevelChanged { stamp, .. }
+            | Self::Pulsed { stamp, .. } => *stamp,
+        }
+    }
+
+    /// Returns the physical logical time of the producing occurrence.
+    #[must_use]
+    pub const fn at(&self) -> Time<D> {
+        self.stamp().time()
+    }
+}
+
 impl<I, O: Eq + Clone> BindingSet<I, O> {
     /// Projects one ordinary output event without altering any semantic field.
+    ///
+    /// The caller must select the bindings for the event's producing definition.
+    /// An endpoint alone does not authenticate that definition. Bound operations
+    /// select the source or target map automatically before publication.
     pub fn project_output_event<D>(
         &self,
         event: &OutputEvent<D>,
@@ -587,6 +671,7 @@ impl<I, O: Eq + Clone> BindingSet<I, O> {
                 cause,
                 revision,
             } => Ok(ProjectedOutputEvent::LevelEstablished {
+                endpoint: *output,
                 output: self.required_output((*output).into())?,
                 value: *value,
                 stamp: *at,
@@ -601,6 +686,7 @@ impl<I, O: Eq + Clone> BindingSet<I, O> {
                 cause,
                 revision,
             } => Ok(ProjectedOutputEvent::LevelChanged {
+                endpoint: *output,
                 output: self.required_output((*output).into())?,
                 from: *from,
                 to: *to,
@@ -615,6 +701,7 @@ impl<I, O: Eq + Clone> BindingSet<I, O> {
                 cause,
                 revision,
             } => Ok(ProjectedOutputEvent::Pulsed {
+                endpoint: *output,
                 output: self.required_output((*output).into())?,
                 count: *count,
                 stamp: *at,
@@ -706,34 +793,10 @@ pub struct BoundMachine<D, I, O> {
 }
 
 impl<D, I: Eq + Clone, O: Eq + Clone> BoundMachine<D, I, O> {
-    /// Combines a machine with complete compatible input and output bindings.
+    /// Combines a machine with complete bindings for its exact installed definition.
+    /// Runtime revision and progress do not change binding compatibility.
     pub fn new(machine: Machine<D>, bindings: BindingSet<I, O>) -> Result<Self, BindingFailure> {
-        validate_machine(&bindings.context, &machine)?;
-        bindings.input_projector(machine.compiled())?;
-        let missing = machine
-            .compiled()
-            .graph()
-            .external_outputs()
-            .iter()
-            .filter_map(|definition| {
-                let endpoint = definition.key();
-                (!bindings
-                    .outputs
-                    .iter()
-                    .any(|(candidate, _)| *candidate == endpoint))
-                .then_some(output_subject(&bindings.context, endpoint))
-            })
-            .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            return Err(binding_failure(
-                &bindings.context,
-                DiagnosticCode::BindingMissingRequiredBinding,
-                None,
-                Vec::new(),
-                missing,
-                None,
-            ));
-        }
+        bindings.validate_complete(machine.compiled())?;
         Ok(Self { machine, bindings })
     }
 
@@ -746,20 +809,39 @@ impl<D, I: Eq + Clone, O: Eq + Clone> BoundMachine<D, I, O> {
         Self::new(compiled.spawn(policy), bindings)
     }
 
+    /// Inspects the machine without bypassing coherent mapping publication.
     #[must_use]
     pub const fn machine(&self) -> &Machine<D> {
         &self.machine
-    }
-    #[must_use]
-    pub fn machine_mut(&mut self) -> &mut Machine<D> {
-        &mut self.machine
     }
     #[must_use]
     pub const fn bindings(&self) -> &BindingSet<I, O> {
         &self.bindings
     }
 
-    /// Projects a complete caller snapshot and delegates initialization to `Machine::apply`.
+    /// Releases ownership of the machine and mappings for an explicit host transition.
+    #[must_use]
+    pub fn into_parts(self) -> (Machine<D>, BindingSet<I, O>) {
+        (self.machine, self.bindings)
+    }
+
+    /// Replaces complete caller mappings for the exact installed definition.
+    /// This produces no reaction and leaves every core freshness value unchanged.
+    pub fn rebind(&mut self, bindings: BindingSet<I, O>) -> Result<(), BindingFailure> {
+        bindings.validate_complete(self.machine.compiled())?;
+        self.bindings = bindings;
+        Ok(())
+    }
+
+    /// Prepares a topology replacement using the ordinary core validation path.
+    pub fn prepare_patch(&self, patch: NetworkPatch<D>) -> Report<PreparedPatch<D>, D>
+    where
+        D: PartialEq,
+    {
+        self.machine.prepare_patch(patch)
+    }
+
+    /// Projects a complete caller snapshot and executes ordinary core initialization.
     pub fn initialize(
         &mut self,
         at: Time<D>,
@@ -774,7 +856,7 @@ impl<D, I: Eq + Clone, O: Eq + Clone> BoundMachine<D, I, O> {
         self.apply(Transaction::initialize(at, self.machine.revision(), input))
     }
 
-    /// Projects a caller delta and delegates ready advancement to `Machine::apply`.
+    /// Projects a caller delta and executes ordinary core ready advancement.
     pub fn advance(
         &mut self,
         at: Time<D>,
@@ -789,24 +871,87 @@ impl<D, I: Eq + Clone, O: Eq + Clone> BoundMachine<D, I, O> {
         self.apply(Transaction::advance(at, self.machine.revision(), input))
     }
 
-    fn apply(
+    /// Applies an ordinary transaction without a topology replacement.
+    /// Expected revision, execution digest and lifecycle checks remain core controls.
+    pub fn apply(
         &mut self,
         transaction: Transaction<D>,
     ) -> Result<BoundTransactionResult<D, O>, BoundApplyFailure<D, I>> {
+        self.apply_projecting(transaction, None, BindingSet::project_output_event)
+    }
+
+    /// Applies a patch-bearing transaction and complete target bindings atomically.
+    /// Earlier deadlines retain source labels; the target reaction captures target labels.
+    /// All structured failures leave both machine and mappings unchanged.
+    pub fn apply_reconfigured(
+        &mut self,
+        transaction: Transaction<D>,
+        target: BindingSet<I, O>,
+    ) -> Result<BoundTransactionResult<D, O>, BoundApplyFailure<D, I>> {
+        self.apply_projecting(transaction, Some(target), BindingSet::project_output_event)
+    }
+
+    // The private projection parameter provides a focused fallible-publication test seam.
+    // It is never exposed to hosts and is only called after core evaluation completes.
+    fn apply_projecting(
+        &mut self,
+        transaction: Transaction<D>,
+        target: Option<BindingSet<I, O>>,
+        mut project: impl FnMut(
+            &BindingSet<I, O>,
+            &OutputEvent<D>,
+        ) -> Result<ProjectedOutputEvent<D, O>, BindingFailure>,
+    ) -> Result<BoundTransactionResult<D, O>, BoundApplyFailure<D, I>> {
+        if transaction.carries_patch() != target.is_some() {
+            return Err(BoundApplyFailure::Binding(binding_failure(
+                &self.bindings.context,
+                DiagnosticCode::BindingInvalidReconfigurationContext,
+                None,
+                Vec::new(),
+                Vec::new(),
+                None,
+            )));
+        }
         validate_machine(&self.bindings.context, &self.machine)
             .map_err(BoundApplyFailure::Binding)?;
-        // SPEC: docs/specs/contracts/application-bindings.yaml
-        // "bound-machine-is-equivalent-delegation" — the façade never evaluates independently.
-        let ordinary = self
+        if let (Some(bindings), Some(prepared)) = (&target, transaction.prepared_patch()) {
+            bindings
+                .validate_complete(prepared.resulting_compiled())
+                .map_err(BoundApplyFailure::Binding)?;
+        }
+        let staged = self
             .machine
-            .apply(transaction)
+            .stage(transaction)
             .map_err(BoundApplyFailure::Runtime)?;
-        let projected = ordinary
+        let result = staged.result();
+        // SPEC: docs/specs/contracts/live-bindings.yaml "historical-producing-map"
+        // A removed endpoint may still emit at an earlier source deadline in this result.
+        let projected = result
             .output_events()
             .iter()
-            .map(|event| self.bindings.project_output_event(event))
+            .map(|event| {
+                let revision = match event {
+                    OutputEvent::LevelEstablished { revision, .. }
+                    | OutputEvent::LevelChanged { revision, .. }
+                    | OutputEvent::Pulsed { revision, .. } => *revision,
+                };
+                let bindings = target
+                    .as_ref()
+                    .filter(|_| revision == result.after_revision())
+                    .unwrap_or(&self.bindings);
+                project(bindings, event)
+            })
             .collect::<Result<Vec<_>, _>>()
             .map_err(BoundApplyFailure::Binding)?;
+        // SPEC: docs/specs/contracts/live-bindings.yaml "prepublication-projection"
+        // Caller work finishes before the joint replacement, including before old maps drop.
+        let ordinary = if let Some(bindings) = target {
+            let (machine, result) = staged.into_parts();
+            let _predecessor = core::mem::replace(self, Self { machine, bindings });
+            result
+        } else {
+            staged.publish(&mut self.machine)
+        };
         Ok(BoundTransactionResult {
             ordinary,
             projected,
@@ -814,7 +959,7 @@ impl<D, I: Eq + Clone, O: Eq + Clone> BoundMachine<D, I, O> {
     }
 
     /// Returns one ready external Level output by caller identifier.
-    /// Rejects bindings made stale by machine replacement or a topology patch.
+    /// The exact installed definition is checked independently of runtime revision.
     pub fn output_level(&self, external: &O) -> Result<LogicLevel, BoundOutputFailure> {
         // SPEC: docs/specs/contracts/application-bindings.yaml "immutable-compiled-schema-adapter"
         // Reads enforce the same topology binding as bound transactions.
@@ -837,7 +982,7 @@ pub enum BoundOutputFailure {
     UnknownExternalKey,
     WrongSignalKind,
     NotInitialized,
-    /// The binding set is incompatible with the machine's network, schema, or revision.
+    /// The binding set is incompatible with the machine's exact network definition.
     Binding(BindingFailure),
 }
 
@@ -894,7 +1039,6 @@ fn context<D>(compiled: &CompiledNetwork<D>) -> BindingContext {
         network: compiled.network_key(),
         fingerprint: compiled.fingerprint(),
         input_schema: compiled.input_schema_fingerprint(),
-        revision: NetworkRevision::initial(),
     }
 }
 
@@ -1026,18 +1170,7 @@ fn validate_machine<D>(
     context: &BindingContext,
     machine: &Machine<D>,
 ) -> Result<(), BindingFailure> {
-    validate_compiled(context, machine.compiled())?;
-    if context.revision != machine.revision() {
-        return Err(binding_failure(
-            context,
-            DiagnosticCode::BindingStaleSchema,
-            None,
-            Vec::new(),
-            Vec::new(),
-            None,
-        ));
-    }
-    Ok(())
+    validate_compiled(context, machine.compiled())
 }
 
 fn input_subject(context: &BindingContext, endpoint: AnyExternalInputKey) -> BindingSubjectRef {
@@ -1087,11 +1220,186 @@ fn binding_failure(
         BindingEvidence {
             network: context.network,
             fingerprint: context.fingerprint,
-            revision: context.revision,
             endpoint,
             conflicting,
             missing,
             expected_kind,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::authored::ExternalOutputDef;
+    use crate::metadata::DiagnosticMeta;
+    use crate::time::NonZeroSpan;
+    use crate::{NetworkBuilder, PulseDelayConfig, ReconfigurationPolicy, TimeDomainId};
+
+    #[test]
+    fn late_projection_rejection_discards_the_complete_successor_and_target_maps() {
+        let mut builder =
+            NetworkBuilder::<()>::with_key(NetworkKey::from_u128(1), TimeDomainId::from_u128(2));
+        let (input, pulse) = builder.pulse_input("trip");
+        let delayed = builder
+            .pulse_delay(
+                pulse,
+                PulseDelayConfig::new(NonZeroSpan::from_ticks(5).unwrap()),
+            )
+            .unwrap();
+        let delay = builder.pulse_output("delayed", delayed).unwrap();
+        let direct = builder.pulse_output("direct", pulse).unwrap();
+        let compiled = builder
+            .finish()
+            .require_artifact()
+            .unwrap()
+            .compile()
+            .require_artifact()
+            .unwrap();
+        let policy = RuntimePolicy::builder()
+            .max_internal_reactions(100)
+            .max_evaluated_operations(1000)
+            .max_pending_events(100)
+            .max_events_created_per_transaction(100)
+            .max_required_provenance_growth(1000)
+            .build()
+            .unwrap();
+        let bindings = BindingSet::builder(&compiled)
+            .bind_input(input, "trip")
+            .unwrap()
+            .bind_output(delay, "old-delay")
+            .unwrap()
+            .bind_output(direct, "old-direct")
+            .unwrap()
+            .finish()
+            .unwrap();
+        let mut bound = BoundMachine::spawn(&compiled, policy, bindings).unwrap();
+        bound
+            .initialize(
+                Time::from_ticks(0),
+                [InputObservation::Pulse {
+                    input: "trip",
+                    count: PulseCount::ONE,
+                }],
+            )
+            .unwrap();
+        let new_delay = ExternalOutputKey::<Pulse>::from_u128(100);
+        let source = compiled
+            .graph()
+            .external_outputs()
+            .iter()
+            .find(|o| o.key() == delay.into())
+            .unwrap()
+            .source();
+        let prepared = bound
+            .prepare_patch(
+                bound
+                    .machine()
+                    .patch()
+                    .remove_external_output(delay.into())
+                    .unwrap()
+                    .add_external_output(ExternalOutputDef::new(
+                        new_delay.into(),
+                        source,
+                        DiagnosticMeta::default(),
+                    ))
+                    .unwrap()
+                    .finish(),
+            )
+            .require_artifact()
+            .unwrap();
+        let target = BindingSet::builder(prepared.resulting_compiled())
+            .bind_input(input, "new-trip")
+            .unwrap()
+            .bind_output(new_delay, "new-delay")
+            .unwrap()
+            .bind_output(direct, "new-direct")
+            .unwrap()
+            .finish()
+            .unwrap();
+        let patched_input = prepared
+            .input_delta()
+            .pulse(input, PulseCount::ONE)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let patched = Transaction::advance(
+            Time::from_ticks(6),
+            bound.machine().revision(),
+            patched_input,
+        )
+        .with_patch(prepared, ReconfigurationPolicy::RejectStateLoss)
+        .unwrap();
+        let ordinary_input = compiled
+            .input_delta()
+            .pulse(input, PulseCount::ONE)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let ordinary = Transaction::advance(
+            Time::from_ticks(6),
+            bound.machine().revision(),
+            ordinary_input,
+        );
+        let before = bound.machine().snapshot();
+        let digest = bound.machine().execution_state_digest();
+        for (transaction, target) in [(ordinary, None), (patched.clone(), Some(target.clone()))] {
+            for reject_at in [1, 2] {
+                let mut attempts = 0;
+                let failure = bound
+                    .apply_projecting(transaction.clone(), target.clone(), |bindings, event| {
+                        attempts += 1;
+                        // Core evaluation has completed both deadlines and the requested reaction.
+                        // In patch mode the second event already uses the new producing map/revision.
+                        if event.at().ticks() == 5 {
+                            assert_eq!(bindings.output_identifier(delay), Some(&"old-delay"));
+                        } else if target.is_some() {
+                            assert_eq!(bindings.output_identifier(direct), Some(&"new-direct"));
+                        }
+                        if attempts == reject_at {
+                            let endpoint = match event {
+                                OutputEvent::Pulsed { output, .. } => (*output).into(),
+                                _ => panic!("fixture emits only pulses"),
+                            };
+                            let subject = output_subject(&bindings.context, endpoint);
+                            Err(binding_failure(
+                                &bindings.context,
+                                DiagnosticCode::BindingMissingRequiredBinding,
+                                Some(subject),
+                                Vec::new(),
+                                vec![subject],
+                                Some(SignalKind::Pulse),
+                            ))
+                        } else {
+                            bindings.project_output_event(event)
+                        }
+                    })
+                    .err()
+                    .unwrap();
+                assert_eq!(
+                    failure.code(),
+                    DiagnosticCode::BindingMissingRequiredBinding
+                );
+                assert_eq!(attempts, reject_at);
+                assert_eq!(bound.machine().snapshot(), before);
+                assert_eq!(bound.machine().execution_state_digest(), digest);
+                assert_eq!(bound.bindings().input_identifier(input), Some(&"trip"));
+                assert_eq!(
+                    bound.bindings().output_identifier(delay),
+                    Some(&"old-delay")
+                );
+                assert_eq!(
+                    bound.bindings().output_identifier(direct),
+                    Some(&"old-direct")
+                );
+                assert_eq!(bound.bindings().output_identifier(new_delay), None);
+            }
+        }
+        let result = bound.apply_reconfigured(patched, target).unwrap();
+        assert_eq!(result.projected_output_events().len(), 2);
+        assert_eq!(
+            bound.bindings().output_identifier(direct),
+            Some(&"new-direct")
+        );
+    }
 }
