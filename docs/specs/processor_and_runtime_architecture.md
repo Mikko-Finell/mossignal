@@ -1487,9 +1487,15 @@ by its current facts or explicitly represented last-reaction inspection facts:
 * output baselines and their establishment or latest-transition causes;
 * pending scheduling origins and obligations;
 * inertial qualification, periodic anchor/phase, and required cancellation facts;
-* active diagnostic beginning and current material evidence;
+* active diagnostic current material evidence causes;
 * current qualified module facts, including retained reset, toggle and capture
   evidence that the current module inspection exposes.
+
+An active diagnostic episode preserves its beginning reaction stamp and episode
+identity as ordinary episode state. Its causal roots cover current material
+evidence, not a separately archived beginning cause after that evidence changes.
+A retained beginning-event result owns its original cause independently; ancestors
+required by current evidence remain in that evidence's closure.
 
 The manifest is deduplicated by cause identity. Its backward closure remains
 complete. It is not an allocation inventory, completed-reaction archive, or the

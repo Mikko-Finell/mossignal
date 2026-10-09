@@ -4,7 +4,7 @@ title: Root-directed causal retention and optional collection
 kind: lifecycle
 status: reviewed
 source_baseline:
-  commit: 2100fc027ead42e5526c81eda611443af2de8f83
+  commit: fd5076544bbd2d55384f66217765f706c7cc2e22
   working_tree: dirty
   modified_spec_paths:
     - docs/specs/processor_and_runtime_architecture.md
@@ -46,8 +46,11 @@ requirements:
       and port support and explicit last-reaction evidence, state establishment
       and latest transition, edge and temporal facts, output baselines, pending
       scheduling, inertial qualification, periodic phase and required cancellation,
-      active diagnostic beginning/current evidence, and current qualified module
-      reset/toggle/capture evidence. The manifest deduplicates cause identities;
+      active diagnostic current material evidence, and current qualified module
+      reset/toggle/capture evidence. Beginning reaction stamps and episode identities
+      remain ordinary episode state; the manifest introduces no separate initial
+      cause root after material evidence changes. A retained beginning-event result
+      independently owns its cause. The manifest deduplicates cause identities;
       uninitialized machines have no runtime causal roots. Restoration owns its
       validated or reconstructed current facts under the declared boundary.
       Retention and canonical projection roots are distinct inventories.
@@ -96,11 +99,11 @@ sources:
       - Part X — Causal provenance
       - 68. Retention
       - 68.1 Current machine and artifact ownership
-    reviewed_hash: sha256:9ee699344be66ad0d759faa2ec76b214cbd49400582761084ccbd4d12b658ec2
+    reviewed_hash: sha256:095ed22af1d8e4d7d490066b5e93f0d5442c46adde8f0997c8be7db268cf50e1
   runtime-retention:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part X — Causal provenance, 68. Retention]
-    reviewed_hash: sha256:58ee1fb682ee644f6cfe9bc6eb7858bfd6d2b4bf0d0d8475a373efcd997f17f0
+    reviewed_hash: sha256:4fab4c093322ac643cd64db232a4dee0b2fc062709e13a6eb3f942665f900239
   runtime-budget:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part XIV — Runtime policy and replay, 91. Budget failure]

@@ -111,7 +111,7 @@ No table row proposes putting full record payloads or derivation graphs in E.
 | Periodic anchor/phase/cancellation | phase determines deadlines; causes feed M and future boundary ancestry; later guard | phase state/pending entries plus typed primary/cancellation roots | E needs identities not already in pending; S reuses existing roles |
 | Output establishment/latest baseline | comparison determines change publication; cause feeds M; later guard | explicit output baseline keyed cause in S/O | E needs baseline identity not already derivable; S reuses keyed entry |
 | Pending scheduling/obligation | payload determines firing; cause feeds M and migration; identity already affects E/freshness | explicit event-keyed CauseDigest | E/S already identify it; no duplicated binding |
-| Active diagnostic beginning/current evidence | evidence controls episode publication; feeds M and migration; identity already affects E/freshness | explicit episode/evidence root identities | reuse existing identities; add only if a current role is not uniquely represented |
+| Active diagnostic identity/beginning stamp and current evidence | evidence controls episode publication; feeds M and migration; identity already affects E/freshness | explicit episode beginning stamp/identity and current evidence cause | reuse existing fields; no separate initial-cause root |
 | Qualified module latest reset/toggle/capture | reset/capture/toggle values evaluate in their reaction; latest association feeds future M; guard via migration | latest-role map absent; cause subject can be a shared external input | E needs qualified role identities; S adds only missing associations; derivable capture/state aliases reuse existing facts |
 | External result/inspection/explanation/forecast; transient outer-result event roots | own sufficient closure for every exposed cause; no effect on machine evaluation, M, admission, digest guards or S | separate owned artifact | no machine E/S additions; independent lifetimes and membership |
 
@@ -215,8 +215,8 @@ growing Toggle establishment and periodic phase ancestry, which must remain
 complete and may grow. Holding/dropping old results, inspections, explanations,
 episodes and forecasts changes only their own owned closure; test machine drop,
 cross-view membership isolation, source removal/reset, earlier-deadline result
-causes, effective-time target events, active diagnostic beginnings and forecast
-rejection/publication. Count actual closure visits/emitted bytes without claiming
+causes, effective-time target events, stable episode beginning stamps/current
+evidence and forecast rejection/publication. Count actual closure visits/emitted bytes without claiming
 bounded canonical output for growing required ancestry.
 
 Verify logical growth below/exactly/above the same independently counted boundary,

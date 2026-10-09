@@ -5,11 +5,10 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: 2100fc027ead42e5526c81eda611443af2de8f83
+  commit: fd5076544bbd2d55384f66217765f706c7cc2e22
   working_tree: dirty
   modified_spec_paths:
     - docs/specs/processor_and_runtime_architecture.md
-    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   ExecutionStateDigest and ObservableStateDigest are distinct domain-separated
@@ -482,7 +481,7 @@ sources:
   provenance-retention:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part X — Causal provenance, 68. Retention]
-    reviewed_hash: sha256:58ee1fb682ee644f6cfe9bc6eb7858bfd6d2b4bf0d0d8475a373efcd997f17f0
+    reviewed_hash: sha256:4fab4c093322ac643cd64db232a4dee0b2fc062709e13a6eb3f942665f900239
   client-state:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part XII — Inspection and observer state, 81. Cursors and resynchronization]
