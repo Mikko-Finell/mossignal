@@ -622,6 +622,8 @@ fn restore_checked<D>(
     )?;
     check_reencoded_provenance(&machine, &artifact)?;
     check_digests(&machine, &artifact)?;
+    #[cfg(test)]
+    crate::state_digest_reference::assert_machine(&machine);
     Ok(machine)
 }
 
@@ -4235,7 +4237,7 @@ fn build_view<D>(
             });
         }
     }
-    let view = ProvenanceView::restored(compiled.network_key(), compiled.fingerprint(), built);
+    let view = ProvenanceView::restored(compiled, built);
     Ok((view, ordinals))
 }
 
@@ -5450,7 +5452,7 @@ fn check_reencoded_provenance<D>(
     let index = cause_digest_index(machine);
     for record in &artifact.provenance.records {
         match index.records().get(&record.digest) {
-            Some(payload) if payload == &record.bytes => {}
+            Some(payload) if payload.as_ref() == &record.bytes => {}
             _ => {
                 return Err(fail_graph(
                     GraphFault::Digest,

@@ -36,8 +36,8 @@ use core::marker::PhantomData;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-const PROVENANCE_VIEW_SCOPE_DOMAIN: &[u8] = b"mossignal/provenance_view_scope/v1";
 type ProvenanceScope = [u8; 32];
+#[cfg(test)]
 const UNFINALIZED_PROVENANCE_SCOPE: ProvenanceScope = [0; 32];
 pub(crate) const MIGRATED_CANCELLATION_RULE: &str = "retained_cancellation";
 
@@ -1009,7 +1009,7 @@ impl<D> std::error::Error for RuntimeFailure<D> {}
 /// An opaque result-scoped reference to one immutable provenance record.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CauseRef {
-    scope: ProvenanceScope,
+    pub(crate) scope: ProvenanceScope,
     ordinal: u32,
 }
 
@@ -1191,6 +1191,43 @@ pub(crate) enum ProvenanceRecord<D> {
 }
 
 impl<D> ProvenanceRecord<D> {
+    fn translate_causes(&mut self, translate: impl Fn(CauseRef) -> CauseRef) {
+        match self {
+            Self::TopologyChange { supporters, .. }
+            | Self::Migration { supporters, .. }
+            | Self::Checkpoint { supporters, .. }
+            | Self::PendingPulseDelay { supporters, .. }
+            | Self::PendingTransportDelay { supporters, .. }
+            | Self::PendingInertialDelay { supporters, .. }
+            | Self::PendingPeriodicBoundary { supporters, .. }
+            | Self::Derived { supporters, .. } => {
+                for cause in supporters {
+                    *cause = translate(*cause);
+                }
+            }
+            Self::PulseDerived {
+                supporters,
+                contributions,
+                ..
+            }
+            | Self::PulseControlledLevel {
+                supporters,
+                contributions,
+                ..
+            } => {
+                for cause in supporters {
+                    *cause = translate(*cause);
+                }
+                for contribution in contributions {
+                    contribution.cause = translate(contribution.cause);
+                }
+            }
+            Self::InitializationTransaction { .. }
+            | Self::ReadyTransaction { .. }
+            | Self::ExternalObservation { .. }
+            | Self::ExternalPulseObservation { .. } => {}
+        }
+    }
     pub(crate) fn supporters(&self) -> &[CauseRef] {
         match self {
             Self::PendingPulseDelay { supporters, .. }
@@ -1430,7 +1467,7 @@ impl std::error::Error for CauseLookupFailure {}
 /// An immutable result-owned view of initialization derivations.
 pub struct ProvenanceView<D> {
     scope: ProvenanceScope,
-    records: Arc<Vec<ProvenanceRecord<D>>>,
+    records: Arc<crate::causal_store::Records<D>>,
 }
 
 impl<D> fmt::Debug for ProvenanceView<D> {
@@ -1445,6 +1482,11 @@ impl<D> fmt::Debug for ProvenanceView<D> {
 impl<D> PartialEq for ProvenanceView<D> {
     fn eq(&self, other: &Self) -> bool {
         self.scope == other.scope
+            && (Arc::ptr_eq(&self.records, &other.records)
+                || (self.len() == other.len()
+                    && (0..self.len()).all(|position| {
+                        self.records.cause(position) == other.records.cause(position)
+                    })))
     }
 }
 impl<D> Eq for ProvenanceView<D> {}
@@ -1501,19 +1543,21 @@ impl<D> Clone for ProvenanceView<D> {
 impl<D> ProvenanceView<D> {
     /// Resolves one result-scoped reference to structured immutable evidence.
     pub fn inspect(&self, cause: CauseRef) -> Result<CauseInspection<'_, D>, CauseLookupFailure> {
-        if cause.scope != self.scope {
-            return Err(CauseLookupFailure::ForeignCause {
-                expected_scope: self.scope,
-                actual_scope: cause.scope,
-                ordinal: cause.ordinal,
-            });
-        }
-        let Some(record) = self.records.get(cause.ordinal as usize) else {
-            return Err(CauseLookupFailure::InvalidCause {
-                scope: self.scope,
-                ordinal: cause.ordinal,
+        let Some(position) = self.records.position(cause) else {
+            return Err(if cause.scope == self.scope {
+                CauseLookupFailure::InvalidCause {
+                    scope: self.scope,
+                    ordinal: cause.ordinal,
+                }
+            } else {
+                CauseLookupFailure::ForeignCause {
+                    expected_scope: self.scope,
+                    actual_scope: cause.scope,
+                    ordinal: cause.ordinal,
+                }
             });
         };
+        let record = &self.records[position];
         Ok(match record {
             ProvenanceRecord::TopologyChange {
                 at,
@@ -1696,7 +1740,7 @@ impl<D> ProvenanceView<D> {
         self.records.is_empty()
     }
 
-    pub(crate) fn records(&self) -> &[ProvenanceRecord<D>] {
+    pub(crate) fn records(&self) -> &crate::causal_store::Records<D> {
         &self.records
     }
 
@@ -1705,30 +1749,34 @@ impl<D> ProvenanceView<D> {
     }
 
     pub(crate) fn restored(
-        network_key: crate::key::NetworkKey,
-        fingerprint: crate::NetworkFingerprint,
-        records: Vec<ProvenanceRecord<D>>,
+        compiled: &crate::CompiledNetwork<D>,
+        input: Vec<ProvenanceRecord<D>>,
     ) -> Self {
-        let scope = provenance_view_scope(network_key, fingerprint, &records);
-        let records = records
-            .iter()
-            .map(|record| remap_record(record, scope))
-            .collect();
-        Self {
+        let scope = crate::causal_store::fresh_scope(None);
+        let mut records = crate::causal_store::Records::new(scope);
+        for record in &input {
+            records.push(remap_record(record, scope));
+        }
+        let view = Self {
             scope,
             records: Arc::new(records),
-        }
+        };
+        crate::state_digest::freeze_provenance(compiled, &view);
+        view
     }
 
     pub(crate) fn resolve_ordinal(&self, cause: CauseRef) -> usize {
-        if cause.scope != self.scope {
-            panic!("committed cause must belong to its provenance view");
+        match self.records.position(cause) {
+            Some(position) => position,
+            None => panic!("committed cause must resolve in its owning provenance view"),
         }
-        let ordinal = cause.ordinal as usize;
-        if ordinal >= self.records.len() {
-            panic!("committed cause ordinal must resolve in its provenance view");
+    }
+
+    pub(crate) fn owned_roots(&self, roots: &[CauseRef]) -> Self {
+        Self {
+            scope: self.scope,
+            records: Arc::new(self.records.owned_closure(roots)),
         }
-        ordinal
     }
 
     #[cfg(test)]
@@ -1736,11 +1784,7 @@ impl<D> ProvenanceView<D> {
     where
         D: Clone,
     {
-        // Episodes retain their own view of the same records. Cloning the
-        // shared vector reverses only this view's storage order.
-        for record in Arc::make_mut(&mut self.records) {
-            record.reverse_unordered_supporters();
-        }
+        Arc::make_mut(&mut self.records).reverse_supporters();
     }
 
     #[cfg(test)]
@@ -2209,6 +2253,12 @@ impl<D> Machine<D> {
         // Core apply, forecast and bound apply evaluate once on the same private successor.
         let mut successor = self.duplicate_for_staging();
         let result = successor.evaluate_transaction(transaction)?;
+        #[cfg(test)]
+        causal_preparation_fault(&self.policy, crate::causal_work::Fault::Result)?;
+        #[cfg(test)]
+        causal_preparation_fault(&self.policy, crate::causal_work::Fault::Projection)?;
+        #[cfg(test)]
+        crate::state_digest_reference::assert_machine(&successor);
         Ok(StagedTransaction { successor, result })
     }
 
@@ -2360,7 +2410,10 @@ impl<D> Machine<D> {
             &self.policy,
         )
         .map_err(|failure| reconfiguration_phase(failure, patched))?;
-        finalize_provenance_build(&mut built, network.network_key(), network.fingerprint());
+        finalize_provenance_build(&mut built, network);
+        #[cfg(test)]
+        causal_preparation_fault(&self.policy, crate::causal_work::Fault::Provenance)
+            .map_err(|failure| reconfiguration_phase(failure, patched))?;
         let standard_history = crate::standard::stateful::observe_reaction(
             network,
             &evaluation,
@@ -2606,11 +2659,9 @@ impl<D> Machine<D> {
                 &mut built.provenance,
                 &self.policy,
             )?;
-            finalize_provenance_build(
-                &mut built,
-                self.compiled.network_key(),
-                self.compiled.fingerprint(),
-            );
+            finalize_provenance_build(&mut built, &self.compiled);
+            #[cfg(test)]
+            causal_preparation_fault(&self.policy, crate::causal_work::Fault::Provenance)?;
             standard_history = crate::standard::stateful::observe_reaction(
                 &self.compiled,
                 &internal,
@@ -2686,6 +2737,12 @@ impl<D> Machine<D> {
             let mut finalized = finalize(&prepared, policy, stamp, &source, &self.policy)
                 .map_err(migration_failure)?;
             provenance = checkpoint_migration(&self.compiled, &provenance, stamp, &mut finalized);
+            // Earlier source events now name their corresponding checkpoint wrappers.
+            remap_output_event_causes(&mut output_events, provenance.scope);
+            remap_episode_changes(&mut diagnostic_episode_changes, provenance.scope);
+            for history in standard_history.values_mut() {
+                history.translate_causes(|cause| remap_cause(cause, provenance.scope));
+            }
             let patch_cause =
                 provenance
                     .records
@@ -2693,12 +2750,8 @@ impl<D> Machine<D> {
                     .enumerate()
                     .rev()
                     .find_map(|(index, record)| {
-                        matches!(record, ProvenanceRecord::TopologyChange { .. }).then_some(
-                            CauseRef {
-                                scope: provenance.scope,
-                                ordinal: index as u32,
-                            },
-                        )
+                        matches!(record, ProvenanceRecord::TopologyChange { .. })
+                            .then_some(provenance.records.cause(index))
                     });
             if let Some(patch_cause) = patch_cause {
                 for (condition, episode) in &active_episodes {
@@ -2886,7 +2939,10 @@ impl<D> Machine<D> {
             &self.policy,
         )
         .map_err(|failure| reconfiguration_phase(failure, patched))?;
-        finalize_provenance_build(&mut built, network.network_key(), network.fingerprint());
+        finalize_provenance_build(&mut built, network);
+        #[cfg(test)]
+        causal_preparation_fault(&self.policy, crate::causal_work::Fault::Provenance)
+            .map_err(|failure| reconfiguration_phase(failure, patched))?;
         standard_history = crate::standard::stateful::observe_reaction(
             network,
             &evaluation,
@@ -4350,6 +4406,49 @@ fn publish_success<D>(
     report: PublicationReport<D>,
     candidate: PublishedCandidate<D>,
 ) -> TransactionResult<D> {
+    let mut roots: Vec<_> = report
+        .output_events
+        .iter()
+        .map(|event| match event {
+            OutputEvent::LevelEstablished { cause, .. }
+            | OutputEvent::LevelChanged { cause, .. }
+            | OutputEvent::Pulsed { cause, .. } => *cause,
+        })
+        .chain(
+            report
+                .diagnostic_episode_changes
+                .iter()
+                .map(crate::DiagnosticEpisodeChange::cause),
+        )
+        .collect();
+    roots.extend(candidate.operation_causes.iter().copied());
+    roots.extend(candidate.input_causes.values().copied());
+    roots.extend(candidate.output_causes.values().copied());
+    roots.extend(
+        candidate
+            .standard_history
+            .values()
+            .flat_map(|history| history.retained_causes()),
+    );
+    for causes in [
+        &candidate.edge_observation_causes,
+        &candidate.toggle_inversion_causes,
+        &candidate.establishment_causes,
+        &candidate.transport_transition_causes,
+        &candidate.inertial_cancellation_causes,
+        &candidate.periodic_anchor_causes,
+        &candidate.periodic_cancellation_causes,
+    ] {
+        roots.extend(causes.values().copied());
+    }
+    roots.extend(
+        candidate
+            .pending_events
+            .values()
+            .flatten()
+            .map(|event| event.identity().5),
+    );
+    let provenance = report.provenance.owned_roots(&roots);
     publish_candidate(machine, candidate);
     TransactionResult {
         requested_time: report.requested_time,
@@ -4363,7 +4462,7 @@ fn publish_success<D>(
         occurrences: report.occurrences,
         diagnostic_episode_changes: report.diagnostic_episode_changes,
         schedule: report.schedule,
-        provenance: report.provenance,
+        provenance,
         migration: report.migration,
     }
 }
@@ -4458,312 +4557,6 @@ fn enforce_budget<D>(
     Ok(())
 }
 
-fn hash_cause(hasher: &mut blake3::Hasher, cause: CauseRef) {
-    hasher.update(&cause.ordinal.to_be_bytes());
-}
-
-fn hash_causes(hasher: &mut blake3::Hasher, causes: &[CauseRef]) {
-    hasher.update(&count_as_u64(causes.len()).to_be_bytes());
-    for cause in causes {
-        hash_cause(hasher, *cause);
-    }
-}
-
-fn hash_node_subject(hasher: &mut blake3::Hasher, subject: &NodeSubject) {
-    match subject {
-        NodeSubject::Node(node) => {
-            hasher.update(&[0]);
-            hasher.update(&node.as_u128().to_be_bytes());
-        }
-        NodeSubject::Qualified(node) => {
-            hasher.update(&[1]);
-            hasher.update(&count_as_u64(node.instances().len()).to_be_bytes());
-            for instance in node.instances() {
-                hasher.update(&instance.as_u128().to_be_bytes());
-            }
-            hasher.update(&node.node().as_u128().to_be_bytes());
-        }
-    }
-}
-
-fn hash_provenance_subject(hasher: &mut blake3::Hasher, subject: &ProvenanceSubject) {
-    match subject {
-        ProvenanceSubject::Node(node) => {
-            hasher.update(&[0]);
-            hasher.update(&node.as_u128().to_be_bytes());
-        }
-        ProvenanceSubject::QualifiedNode(node) => {
-            hasher.update(&[1]);
-            hasher.update(&count_as_u64(node.instances().len()).to_be_bytes());
-            for instance in node.instances() {
-                hasher.update(&instance.as_u128().to_be_bytes());
-            }
-            hasher.update(&node.node().as_u128().to_be_bytes());
-        }
-        ProvenanceSubject::ExternalOutput(output) => {
-            hasher.update(&[2]);
-            hasher.update(&output.as_u128().to_be_bytes());
-        }
-        ProvenanceSubject::PulseExternalOutput(output) => {
-            hasher.update(&[3]);
-            hasher.update(&output.as_u128().to_be_bytes());
-        }
-    }
-}
-
-fn hash_pulse_port_subject(hasher: &mut blake3::Hasher, subject: &PulsePortSubject) {
-    match subject {
-        PulsePortSubject::Port(port) => {
-            hasher.update(&[0]);
-            hasher.update(&port.as_u128().to_be_bytes());
-        }
-        PulsePortSubject::Qualified(port) => {
-            hasher.update(&[1]);
-            hasher.update(&count_as_u64(port.instances().len()).to_be_bytes());
-            for instance in port.instances() {
-                hasher.update(&instance.as_u128().to_be_bytes());
-            }
-            match port.port() {
-                crate::key::AnyInPortKey::Level(key) => {
-                    hasher.update(&[0]);
-                    hasher.update(&key.as_u128().to_be_bytes());
-                }
-                crate::key::AnyInPortKey::Pulse(key) => {
-                    hasher.update(&[1]);
-                    hasher.update(&key.as_u128().to_be_bytes());
-                }
-            }
-        }
-    }
-}
-
-fn hash_provenance_record<D>(hasher: &mut blake3::Hasher, record: &ProvenanceRecord<D>) {
-    match record {
-        ProvenanceRecord::TopologyChange {
-            at,
-            revision,
-            base,
-            target,
-            supporters,
-        } => {
-            hasher.update(&[11]);
-            hasher.update(&at.time().ticks().to_be_bytes());
-            hasher.update(&at.order().to_be_bytes());
-            hasher.update(&revision.value().to_be_bytes());
-            hasher.update(&base.as_bytes());
-            hasher.update(&target.as_bytes());
-            hash_causes(hasher, supporters);
-        }
-        ProvenanceRecord::Migration {
-            subject,
-            rule,
-            supporters,
-        } => {
-            hasher.update(&[12]);
-            hash_provenance_subject(hasher, subject);
-            hasher.update(&count_as_u64(rule.len()).to_be_bytes());
-            hasher.update(rule.as_bytes());
-            hash_causes(hasher, supporters);
-        }
-        ProvenanceRecord::Checkpoint { fact, supporters } => {
-            hasher.update(&[13]);
-            hasher.update(&count_as_u64(fact.len()).to_be_bytes());
-            hasher.update(fact);
-            hash_causes(hasher, supporters);
-        }
-        ProvenanceRecord::InitializationTransaction { at, revision } => {
-            hasher.update(&[0]);
-            hasher.update(&at.time().ticks().to_be_bytes());
-            hasher.update(&at.order().to_be_bytes());
-            hasher.update(&revision.value().to_be_bytes());
-        }
-        ProvenanceRecord::ReadyTransaction { at, revision } => {
-            hasher.update(&[1]);
-            hasher.update(&at.time().ticks().to_be_bytes());
-            hasher.update(&at.order().to_be_bytes());
-            hasher.update(&revision.value().to_be_bytes());
-        }
-        ProvenanceRecord::ExternalObservation {
-            input,
-            value,
-            stamp,
-        } => {
-            hasher.update(&[2]);
-            hasher.update(&stamp.time().ticks().to_be_bytes());
-            hasher.update(&stamp.order().to_be_bytes());
-            hasher.update(&input.as_u128().to_be_bytes());
-            hasher.update(&[u8::from(value.is_high())]);
-        }
-        ProvenanceRecord::ExternalPulseObservation {
-            input,
-            count,
-            stamp,
-        } => {
-            hasher.update(&[3]);
-            hasher.update(&stamp.time().ticks().to_be_bytes());
-            hasher.update(&stamp.order().to_be_bytes());
-            hasher.update(&input.as_u128().to_be_bytes());
-            hasher.update(&count.get().to_be_bytes());
-        }
-        ProvenanceRecord::PendingPulseDelay {
-            event,
-            owner,
-            stimulus,
-            origin,
-            deadline,
-            count,
-            revision,
-            supporters,
-        } => {
-            hasher.update(&[4]);
-            hasher.update(&event.value().to_be_bytes());
-            hash_node_subject(hasher, owner);
-            hasher.update(&origin.ticks().to_be_bytes());
-            hasher.update(&stimulus.time().ticks().to_be_bytes());
-            hasher.update(&stimulus.order().to_be_bytes());
-            hasher.update(&deadline.ticks().to_be_bytes());
-            hasher.update(&count.get().to_be_bytes());
-            hasher.update(&revision.value().to_be_bytes());
-            hash_causes(hasher, supporters);
-        }
-        ProvenanceRecord::PendingTransportDelay {
-            event,
-            owner,
-            stimulus,
-            origin,
-            deadline,
-            target,
-            revision,
-            supporters,
-        } => {
-            hasher.update(&[8]);
-            hasher.update(&event.value().to_be_bytes());
-            hash_node_subject(hasher, owner);
-            hasher.update(&origin.ticks().to_be_bytes());
-            hasher.update(&stimulus.time().ticks().to_be_bytes());
-            hasher.update(&stimulus.order().to_be_bytes());
-            hasher.update(&deadline.ticks().to_be_bytes());
-            hasher.update(&[u8::from(target.is_high())]);
-            hasher.update(&revision.value().to_be_bytes());
-            hash_causes(hasher, supporters);
-        }
-        ProvenanceRecord::PendingInertialDelay {
-            event,
-            owner,
-            stimulus,
-            origin,
-            deadline,
-            target,
-            revision,
-            supporters,
-        } => {
-            hasher.update(&[9]);
-            hasher.update(&event.value().to_be_bytes());
-            hash_node_subject(hasher, owner);
-            hasher.update(&origin.ticks().to_be_bytes());
-            hasher.update(&stimulus.time().ticks().to_be_bytes());
-            hasher.update(&stimulus.order().to_be_bytes());
-            hasher.update(&deadline.ticks().to_be_bytes());
-            hasher.update(&[u8::from(target.is_high())]);
-            hasher.update(&revision.value().to_be_bytes());
-            hash_causes(hasher, supporters);
-        }
-        ProvenanceRecord::PendingPeriodicBoundary {
-            event,
-            owner,
-            stimulus,
-            origin,
-            deadline,
-            anchor,
-            ordinal,
-            first_emission,
-            reenable_phase,
-            revision,
-            supporters,
-        } => {
-            hasher.update(&[10]);
-            hasher.update(&event.value().to_be_bytes());
-            hash_node_subject(hasher, owner);
-            hasher.update(&origin.ticks().to_be_bytes());
-            hasher.update(&stimulus.time().ticks().to_be_bytes());
-            hasher.update(&stimulus.order().to_be_bytes());
-            hasher.update(&deadline.ticks().to_be_bytes());
-            hasher.update(&anchor.ticks().to_be_bytes());
-            hasher.update(&ordinal.to_be_bytes());
-            hasher.update(&[match first_emission {
-                crate::authored::FirstEmissionPolicy::Immediate => 0,
-                crate::authored::FirstEmissionPolicy::AfterFirstPeriod => 1,
-            }]);
-            hasher.update(&[match reenable_phase {
-                crate::authored::ReenablePhasePolicy::RestartPhase => 0,
-                crate::authored::ReenablePhasePolicy::PreservePhase => 1,
-            }]);
-            hasher.update(&revision.value().to_be_bytes());
-            hash_causes(hasher, supporters);
-        }
-        ProvenanceRecord::Derived {
-            subject,
-            supporters,
-        } => {
-            hasher.update(&[5]);
-            hash_provenance_subject(hasher, subject);
-            hash_causes(hasher, supporters);
-        }
-        ProvenanceRecord::PulseDerived {
-            subject,
-            contributions,
-            result,
-            supporters,
-        } => {
-            hasher.update(&[6]);
-            hash_provenance_subject(hasher, subject);
-            hasher.update(&count_as_u64(contributions.len()).to_be_bytes());
-            for contribution in contributions {
-                hash_pulse_port_subject(hasher, &contribution.port);
-                hasher.update(&contribution.count.get().to_be_bytes());
-                hash_cause(hasher, contribution.cause);
-            }
-            hasher.update(&result.get().to_be_bytes());
-            hash_causes(hasher, supporters);
-        }
-        ProvenanceRecord::PulseControlledLevel {
-            subject,
-            contributions,
-            result,
-            supporters,
-        } => {
-            hasher.update(&[7]);
-            hash_provenance_subject(hasher, subject);
-            hasher.update(&count_as_u64(contributions.len()).to_be_bytes());
-            for contribution in contributions {
-                hash_pulse_port_subject(hasher, &contribution.port);
-                hasher.update(&contribution.count.get().to_be_bytes());
-                hash_cause(hasher, contribution.cause);
-            }
-            hasher.update(&[u8::from(result.is_high())]);
-            hash_causes(hasher, supporters);
-        }
-    }
-}
-
-fn provenance_view_scope<D>(
-    network_key: NetworkKey,
-    fingerprint: NetworkFingerprint,
-    records: &[ProvenanceRecord<D>],
-) -> ProvenanceScope {
-    // SPEC: docs/specs/contracts/ready-level-transaction.yaml "resolvable-ready-causes"
-    // The lookup authority commits to scope-neutral graph content, not transaction coordinates.
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(PROVENANCE_VIEW_SCOPE_DOMAIN);
-    hasher.update(&network_key.as_u128().to_be_bytes());
-    hasher.update(&fingerprint.as_bytes());
-    hasher.update(&count_as_u64(records.len()).to_be_bytes());
-    for record in records {
-        hash_provenance_record(&mut hasher, record);
-    }
-    *hasher.finalize().as_bytes()
-}
-
 fn build_initialization_provenance<D>(
     compiled: &crate::CompiledNetwork<D>,
     revision: NetworkRevision,
@@ -4773,8 +4566,8 @@ fn build_initialization_provenance<D>(
     evaluation: &FullEvaluation,
     migration: Option<(&MigrationReport<D>, Vec<u8>)>,
 ) -> ProvenanceBuild<D> {
-    let scope = UNFINALIZED_PROVENANCE_SCOPE;
-    let mut records = Vec::new();
+    let scope = crate::causal_store::fresh_scope(None);
+    let mut records = crate::causal_store::Records::new(scope);
     let ordinary_transaction = push_record(
         scope,
         &mut records,
@@ -4880,25 +4673,21 @@ fn checkpoint_migration<D>(
     // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "revision-provenance-and-episodes"
     // Historical facts use their source canonical encoding, so removed subjects and
     // module slots cannot be interpreted against the target topology on restoration.
-    let scope = previous.scope;
+    let scope = crate::causal_store::fresh_scope(None);
     let facts = crate::state_digest::checkpoint_facts(source, previous);
-    let mut records = previous
-        .records
-        .iter()
-        .zip(facts)
-        .map(|(record, fact)| match record {
+    let mut records = crate::causal_store::Records::new(scope);
+    for (record, fact) in previous.records.iter().zip(facts) {
+        let record = match record {
             ProvenanceRecord::Checkpoint { .. } => remap_record(record, scope),
             _ => ProvenanceRecord::Checkpoint {
                 fact,
                 supporters: record.predecessor_causes(),
             },
-        })
-        .collect::<Vec<_>>();
+        };
+        push_record(scope, &mut records, record);
+    }
     let supporters = (0..records.len())
-        .map(|ordinal| CauseRef {
-            scope,
-            ordinal: ordinal as u32,
-        })
+        .map(|position| records.cause(position))
         .collect();
     let patch = push_record(
         scope,
@@ -5102,12 +4891,8 @@ fn build_ready_provenance<D>(
     due_periodic_boundaries: &BTreeMap<NodeKey, Vec<CauseRef>>,
     declared_edges: &BTreeSet<NodeKey>,
 ) -> ProvenanceBuild<D> {
-    let scope = UNFINALIZED_PROVENANCE_SCOPE;
-    let mut records = previous
-        .records
-        .iter()
-        .map(|record| remap_record(record, scope))
-        .collect::<Vec<_>>();
+    let scope = crate::causal_store::fresh_scope(Some(previous.scope));
+    let mut records = previous.records.fork(scope);
     let ordinary_transaction_cause = push_record(
         scope,
         &mut records,
@@ -5122,10 +4907,7 @@ fn build_ready_provenance<D>(
                 at: patch_at,
                 revision: patch_revision,
                 ..
-            } if *patch_at == at && *patch_revision == revision => Some(CauseRef {
-                scope,
-                ordinal: index as u32,
-            }),
+            } if *patch_at == at && *patch_revision == revision => Some(records.cause(index)),
             _ => None,
         })
         .unwrap_or(ordinary_transaction_cause);
@@ -5250,7 +5032,7 @@ fn retained_edge_cause(
 
 fn append_evaluation_provenance<D>(
     scope: ProvenanceScope,
-    records: &mut Vec<ProvenanceRecord<D>>,
+    records: &mut crate::causal_store::Records<D>,
     transaction_cause: CauseRef,
     evaluation: &FullEvaluation,
     input_causes: EvaluationProvenanceInputs<'_, D>,
@@ -5870,64 +5652,29 @@ fn provenance_subject<D>(compiled: &crate::CompiledNetwork<D>, node: NodeKey) ->
 }
 
 fn remap_cause(cause: CauseRef, scope: ProvenanceScope) -> CauseRef {
-    CauseRef {
-        scope,
-        ordinal: cause.ordinal,
+    if crate::causal_store::same_lineage(cause.scope, scope) {
+        cause
+    } else {
+        CauseRef {
+            scope,
+            ordinal: cause.ordinal,
+        }
     }
 }
 
 fn finalize_provenance_build<D>(
     build: &mut ProvenanceBuild<D>,
-    network_key: NetworkKey,
-    fingerprint: NetworkFingerprint,
+    compiled: &crate::CompiledNetwork<D>,
 ) {
-    let scope = provenance_view_scope(network_key, fingerprint, build.provenance.records.as_ref());
-    let Some(records) = Arc::get_mut(&mut build.provenance.records) else {
-        panic!("unpublished transaction provenance must be uniquely owned during finalization");
-    };
-    for record in records {
-        *record = remap_record(record, scope);
-    }
-    build.provenance.scope = scope;
-    for cause in &mut build.operation_causes {
-        *cause = remap_cause(*cause, scope);
-    }
-    for cause in build.input_causes.values_mut() {
-        *cause = remap_cause(*cause, scope);
-    }
-    for cause in build.output_causes.values_mut() {
-        *cause = remap_cause(*cause, scope);
-    }
-    for cause in build.pulse_output_causes.values_mut() {
-        *cause = remap_cause(*cause, scope);
-    }
-    for cause in build.edge_observation_causes.values_mut() {
-        *cause = remap_cause(*cause, scope);
-    }
-    for cause in build.toggle_inversion_causes.values_mut() {
-        *cause = remap_cause(*cause, scope);
-    }
-    for cause in build.establishment_causes.values_mut() {
-        *cause = remap_cause(*cause, scope);
-    }
-    for cause in build.transport_output_transitions.values_mut() {
-        *cause = remap_cause(*cause, scope);
-    }
-    for cause in build.pulse_delay_schedules.values_mut() {
-        *cause = remap_cause(*cause, scope);
-    }
-    for cause in build.transport_delay_schedules.values_mut() {
-        *cause = remap_cause(*cause, scope);
-    }
-    for cause in build.inertial_delay_schedules.values_mut() {
-        *cause = remap_cause(*cause, scope);
-    }
-    for cause in build.periodic_schedules.values_mut() {
-        *cause = remap_cause(*cause, scope);
-    }
+    crate::state_digest::freeze_provenance(compiled, &build.provenance);
 }
 
-fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> ProvenanceRecord<D> {
+pub(crate) fn remap_record<D>(
+    record: &ProvenanceRecord<D>,
+    scope: ProvenanceScope,
+) -> ProvenanceRecord<D> {
+    #[cfg(test)]
+    crate::causal_work::update(|work| work.old_record_rewrites += 1);
     match record {
         ProvenanceRecord::TopologyChange {
             at,
@@ -6143,15 +5890,11 @@ fn remap_record<D>(record: &ProvenanceRecord<D>, scope: ProvenanceScope) -> Prov
 
 fn push_record<D>(
     scope: ProvenanceScope,
-    records: &mut Vec<ProvenanceRecord<D>>,
-    record: ProvenanceRecord<D>,
+    records: &mut crate::causal_store::Records<D>,
+    mut record: ProvenanceRecord<D>,
 ) -> CauseRef {
-    let ordinal = match u32::try_from(records.len()) {
-        Ok(value) => value,
-        Err(_) => panic!("transaction provenance exceeds the supported reference space"),
-    };
-    records.push(record);
-    CauseRef { scope, ordinal }
+    record.translate_causes(|cause| remap_cause(cause, scope));
+    records.push(record)
 }
 
 fn operation_cause(causes: &[CauseRef], index: usize) -> CauseRef {
@@ -6317,6 +6060,24 @@ fn sort_output_events<D>(events: &mut [OutputEvent<D>]) {
         }
         OutputEvent::Pulsed { output, .. } => (1_u8, output.as_u128()),
     });
+}
+
+#[cfg(test)]
+fn causal_preparation_fault<D>(
+    policy: &RuntimePolicy,
+    fault: crate::causal_work::Fault,
+) -> Result<(), RuntimeFailure<D>> {
+    if crate::causal_work::take_fault(fault) {
+        Err(RuntimeFailure::new(
+            RuntimeFailureEvidence::BudgetExceeded {
+                budget: RuntimePolicyLimit::MaxRequiredProvenanceGrowth,
+                limit: policy.max_required_provenance_growth(),
+                consumed: u64::MAX,
+            },
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -6821,6 +6582,471 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_advance_shares_prior_records_and_hashes_only_new_nodes() {
+        for history in [4_u64, 40] {
+            let compiled = compiled(100, 200);
+            let mut machine = initialized_machine(&compiled, LogicLevel::Low);
+            for step in 1..=history {
+                let delta = compiled.input_delta().finish().unwrap();
+                machine
+                    .apply(Transaction::advance(
+                        crate::time::Time::from_ticks(10 + step),
+                        machine.revision(),
+                        delta,
+                    ))
+                    .unwrap();
+            }
+            let prior_len = machine.store.provenance.as_ref().unwrap().len();
+            crate::causal_work::reset();
+            let delta = compiled.input_delta().finish().unwrap();
+            machine
+                .apply(Transaction::advance(
+                    crate::time::Time::from_ticks(11 + history),
+                    machine.revision(),
+                    delta,
+                ))
+                .unwrap();
+            let new_nodes = machine.store.provenance.as_ref().unwrap().len() - prior_len;
+            let work = crate::causal_work::read();
+            assert_eq!(work.old_record_rewrites, 0, "history {history}: {work:?}");
+            assert_eq!(work.scope_records_hashed, 0, "history {history}: {work:?}");
+            assert_eq!(
+                work.canonical_encodes, new_nodes,
+                "history {history}: {work:?}"
+            );
+            assert_eq!(
+                work.canonical_hashes, new_nodes,
+                "history {history}: {work:?}"
+            );
+            assert_eq!(new_nodes, 1);
+            assert_eq!(work.namespace_allocations, 1);
+            assert_eq!(work.catalogue_handles_copied, prior_len);
+            assert_eq!(work.membership_entries_copied, prior_len);
+            crate::causal_work::reset();
+            let _ = machine.execution_state_digest();
+            let _ = machine.observable_state_digest();
+            let _ = machine.snapshot();
+            let work = crate::causal_work::read();
+            assert_eq!(work.old_record_rewrites, 0);
+            assert_eq!(work.scope_records_hashed, 0);
+            assert_eq!(work.canonical_encodes, 0);
+            assert_eq!(work.canonical_hashes, 0);
+            assert_eq!(work.namespace_allocations, 0);
+            assert_eq!(work.catalogue_handles_copied, 0);
+            assert_eq!(work.membership_entries_copied, 0);
+        }
+    }
+
+    #[test]
+    fn growing_stateful_ancestry_reuses_content_but_still_emits_required_closure() {
+        let mut smaller_closure = None;
+        for history in [4_u64, 40] {
+            let compiled = compiled_toggle(LogicLevel::Low, false);
+            let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+            machine
+                .apply(Transaction::initialize(
+                    crate::time::Time::from_ticks(0),
+                    machine.revision(),
+                    compiled.input_snapshot().finish().unwrap(),
+                ))
+                .unwrap();
+            let advance = |machine: &mut crate::Machine<()>, at| {
+                let delta = compiled
+                    .input_delta()
+                    .pulse(ExternalInputKey::from_u128(1), PulseCount::ONE)
+                    .unwrap()
+                    .finish()
+                    .unwrap();
+                machine
+                    .apply(Transaction::advance(
+                        crate::time::Time::from_ticks(at),
+                        machine.revision(),
+                        delta,
+                    ))
+                    .unwrap()
+            };
+            for at in 1..=history {
+                advance(&mut machine, at);
+            }
+            let old = machine.inspect_toggle(NodeKey::from_u128(10)).unwrap();
+            let ancestor = old.latest_inversion().unwrap();
+            let prior_len = machine.store.provenance.as_ref().unwrap().len();
+            crate::causal_work::reset();
+            let result = advance(&mut machine, history + 1);
+            let work = crate::causal_work::read();
+            let current = machine.store.provenance.as_ref().unwrap();
+            let added = current.len() - prior_len;
+            assert!(added > 1);
+            assert_eq!(work.old_record_rewrites, 0);
+            assert_eq!(work.scope_records_hashed, 0);
+            assert_eq!(work.canonical_encodes, added);
+            assert_eq!(work.canonical_hashes, added);
+            assert_eq!(work.namespace_allocations, 1);
+            assert_eq!(work.catalogue_handles_copied, prior_len);
+            assert_eq!(work.membership_entries_copied, prior_len);
+            assert!(
+                old.provenance()
+                    .records()
+                    .shared_node(current.records(), ancestor)
+            );
+            result.provenance().explain_cause(ancestor).unwrap();
+
+            let reference = crate::state_digest_reference::observable_digest_input(&machine, 2, 2);
+            crate::causal_work::reset();
+            let actual = crate::state_digest::observable_digest_input(&machine, 2, 2);
+            let work = crate::causal_work::read();
+            assert_eq!(actual, reference);
+            assert_eq!(work.canonical_encodes, 0);
+            assert_eq!(work.canonical_hashes, 0);
+            assert!(work.closure_records_visited > 0);
+            assert!(work.closure_records_emitted > 0);
+            assert!(work.closure_bytes_emitted > 0);
+            let closure = (
+                work.closure_records_visited,
+                work.closure_records_emitted,
+                work.closure_bytes_emitted,
+            );
+            if let Some((visited, emitted, bytes)) = smaller_closure {
+                assert!(closure.0 > visited);
+                assert!(closure.1 > emitted);
+                assert!(closure.2 > bytes);
+            }
+            smaller_closure = Some(closure);
+        }
+    }
+
+    #[test]
+    fn repeated_owned_inspection_preserves_value_equality() {
+        let compiled = compiled_toggle(LogicLevel::Low, false);
+        let mut machine = compiled.spawn(policy_with([10, 100, 0, 100, 1_000]));
+        let snapshot = compiled.input_snapshot().finish().unwrap();
+        machine
+            .apply(Transaction::initialize(
+                crate::time::Time::from_ticks(0),
+                machine.revision(),
+                snapshot,
+            ))
+            .unwrap();
+        assert_eq!(
+            machine.inspect_toggle(NodeKey::from_u128(10)).unwrap(),
+            machine.inspect_toggle(NodeKey::from_u128(10)).unwrap()
+        );
+        let delta = compiled
+            .input_delta()
+            .pulse(ExternalInputKey::from_u128(1), PulseCount::ONE)
+            .unwrap()
+            .finish()
+            .unwrap();
+        machine
+            .apply(Transaction::advance(
+                crate::time::Time::from_ticks(1),
+                machine.revision(),
+                delta,
+            ))
+            .unwrap();
+        assert_eq!(
+            machine.inspect_toggle(NodeKey::from_u128(10)).unwrap(),
+            machine.inspect_toggle(NodeKey::from_u128(10)).unwrap()
+        );
+    }
+
+    #[test]
+    fn shared_nodes_preserve_ancestors_and_isolate_forecast_branches() {
+        let compiled = compiled(100, 200);
+        let output = ExternalOutputKey::from_u128(200);
+        let mut machine = initialized_machine(&compiled, LogicLevel::Low);
+        let old = machine.inspect_output(output).unwrap();
+        let old_cause = old.latest_transition.unwrap();
+        let live_before = crate::causal_work::live_nodes();
+        let revision = machine.revision();
+        let transaction = || {
+            Transaction::advance(
+                crate::time::Time::from_ticks(11),
+                revision,
+                compiled
+                    .input_delta()
+                    .set(ExternalInputKey::from_u128(1), LogicLevel::High)
+                    .unwrap()
+                    .finish()
+                    .unwrap(),
+            )
+        };
+        let forecast = machine.forecast(transaction()).unwrap();
+        let branch = match forecast.result().output_events()[0] {
+            OutputEvent::LevelChanged { cause, .. } => cause,
+            _ => panic!("changed output"),
+        };
+        assert!(matches!(
+            old.provenance().inspect(branch),
+            Err(CauseLookupFailure::ForeignCause { .. })
+        ));
+        let result = machine.apply(transaction()).unwrap();
+        let committed = machine.output_cause(output).unwrap();
+        assert_ne!(branch, committed);
+        assert!(matches!(
+            result.provenance().inspect(branch),
+            Err(CauseLookupFailure::ForeignCause { .. })
+        ));
+        assert!(matches!(
+            forecast.result().provenance().inspect(committed),
+            Err(CauseLookupFailure::ForeignCause { .. })
+        ));
+        let current = machine.store.provenance.as_ref().unwrap();
+        assert_eq!(
+            crate::state_digest::cause_content(forecast.result().provenance(), branch),
+            crate::state_digest::cause_content(result.provenance(), committed)
+        );
+        assert!(
+            old.provenance()
+                .records()
+                .shared_node(current.records(), old_cause)
+        );
+        drop(forecast);
+        drop(result);
+        drop(machine);
+        recursively_assert_acyclic(old.provenance(), old_cause);
+        assert!(crate::causal_work::live_nodes() < live_before + 5);
+    }
+
+    #[test]
+    fn rejected_preparation_and_discarded_forecasts_release_new_nodes() {
+        let compiled = compiled(100, 200);
+        let mut machine = initialized_machine(&compiled, LogicLevel::Low);
+        let owned = machine
+            .inspect_output(ExternalOutputKey::from_u128(200))
+            .unwrap();
+        let before = observe(&machine);
+        let snapshot = machine.snapshot();
+        let live_before = crate::causal_work::live_nodes();
+        let transaction = || {
+            Transaction::advance(
+                crate::time::Time::from_ticks(11),
+                crate::NetworkRevision::from_value(0),
+                compiled
+                    .input_delta()
+                    .set(ExternalInputKey::from_u128(1), LogicLevel::High)
+                    .unwrap()
+                    .finish()
+                    .unwrap(),
+            )
+        };
+        for stage in [
+            crate::causal_work::Fault::Provenance,
+            crate::causal_work::Fault::Result,
+            crate::causal_work::Fault::Projection,
+        ] {
+            for forecast in [false, true] {
+                crate::causal_work::inject(stage);
+                let failure = if forecast {
+                    machine.forecast(transaction()).unwrap_err()
+                } else {
+                    machine.apply(transaction()).unwrap_err()
+                };
+                assert!(matches!(
+                    failure.evidence(),
+                    RuntimeFailureEvidence::BudgetExceeded { .. }
+                ));
+                assert_eq!(observe(&machine), before, "stage {stage:?}");
+                assert_eq!(machine.snapshot(), snapshot);
+                assert_eq!(
+                    crate::causal_work::live_nodes(),
+                    live_before,
+                    "stage {stage:?}"
+                );
+                recursively_assert_acyclic(owned.provenance(), owned.latest_transition.unwrap());
+            }
+        }
+        for _ in 0..32 {
+            drop(machine.forecast(transaction()).unwrap());
+            assert_eq!(crate::causal_work::live_nodes(), live_before);
+            assert_eq!(machine.snapshot(), snapshot);
+        }
+    }
+
+    #[test]
+    fn generated_counted_histories_match_uncached_projection_and_private_clone_apply() {
+        for seed in 0_u64..12 {
+            let compiled = compiled_merge();
+            let mut machine = compiled.spawn(policy_with([100, 10_000, 100, 1_000, 100_000]));
+            let mut reference = machine.duplicate_for_staging();
+            let init = Transaction::initialize(
+                crate::time::Time::from_ticks(0),
+                machine.revision(),
+                compiled
+                    .input_snapshot()
+                    .pulse(
+                        ExternalInputKey::from_u128(1),
+                        PulseCount::new(seed % 3 + 1),
+                    )
+                    .unwrap()
+                    .pulse(ExternalInputKey::from_u128(2), PulseCount::new(2))
+                    .unwrap()
+                    .finish()
+                    .unwrap(),
+            );
+            let mut retained = vec![machine.apply(init.clone()).unwrap()];
+            reference.apply(init).unwrap();
+            for step in 0..10 {
+                let first = PulseCount::new((seed + step * 3) % 5);
+                let second = PulseCount::new((seed * 7 + step) % 4 + 1);
+                let delta = if seed % 2 == 0 {
+                    compiled
+                        .input_delta()
+                        .pulse(ExternalInputKey::from_u128(1), first)
+                        .unwrap()
+                        .pulse(ExternalInputKey::from_u128(2), second)
+                        .unwrap()
+                } else {
+                    compiled
+                        .input_delta()
+                        .pulse(ExternalInputKey::from_u128(2), second)
+                        .unwrap()
+                        .pulse(ExternalInputKey::from_u128(1), first)
+                        .unwrap()
+                }
+                .finish()
+                .unwrap();
+                let tx = Transaction::advance(
+                    crate::time::Time::from_ticks(step / 2),
+                    machine.revision(),
+                    delta,
+                );
+                let forecast = machine.forecast(tx.clone()).unwrap();
+                let applied = machine.apply(tx.clone()).unwrap();
+                let ordinary = reference.apply(tx).unwrap();
+                assert_eq!(machine.snapshot(), reference.snapshot());
+                assert_eq!(forecast.state().snapshot(), machine.snapshot());
+                assert_eq!(
+                    applied.after_observable_digest(),
+                    ordinary.after_observable_digest()
+                );
+                let causes = |result: &crate::TransactionResult<()>| {
+                    result
+                        .output_events()
+                        .iter()
+                        .map(|event| match event {
+                            OutputEvent::Pulsed { cause, .. } => {
+                                crate::state_digest::cause_content(result.provenance(), *cause)
+                            }
+                            _ => panic!("counted fixture publishes only pulse events"),
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(causes(&applied), causes(forecast.result()));
+                assert_eq!(causes(&applied), causes(&ordinary));
+                retained.push(applied);
+            }
+            drop(reference);
+            drop(machine);
+            for result in retained {
+                for event in result.output_events() {
+                    if let OutputEvent::Pulsed { cause, .. } = event {
+                        recursively_assert_acyclic(result.provenance(), *cause);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn external_artifact_lifetimes_and_candidate_allocations_do_not_change_patches() {
+        use crate::time::Time;
+        let compiled = compiled(100, 200);
+        let mut held = initialized_machine(&compiled, LogicLevel::Low);
+        let mut dropped = initialized_machine(&compiled, LogicLevel::Low);
+        let mut results = Vec::new();
+        let mut inspections = Vec::new();
+        let mut forecasts = Vec::new();
+        for step in 1..=8 {
+            let tx = Transaction::advance(
+                Time::from_ticks(10 + step),
+                held.revision(),
+                compiled.input_delta().finish().unwrap(),
+            );
+            forecasts.push(held.forecast(tx.clone()).unwrap());
+            results.push(held.apply(tx.clone()).unwrap());
+            inspections.push(
+                held.inspect_output(ExternalOutputKey::from_u128(200))
+                    .unwrap(),
+            );
+            drop(dropped.forecast(tx.clone()).unwrap());
+            drop(dropped.apply(tx).unwrap());
+        }
+        assert_eq!(held.snapshot(), dropped.snapshot());
+        let prepared = held
+            .prepare_patch(
+                held.patch()
+                    .add_external_output(ExternalOutputDef::new(
+                        ExternalOutputKey::<Level>::from_u128(300).into(),
+                        SignalSourceKey::ExternalInput(ExternalInputKey::<Level>::from_u128(1))
+                            .into(),
+                        DiagnosticMeta::default(),
+                    ))
+                    .unwrap()
+                    .finish(),
+            )
+            .require_artifact()
+            .unwrap();
+        let tx = Transaction::advance(
+            Time::from_ticks(19),
+            held.revision(),
+            prepared
+                .resulting_compiled()
+                .input_delta()
+                .finish()
+                .unwrap(),
+        )
+        .with_patch(prepared, crate::ReconfigurationPolicy::RejectStateLoss)
+        .unwrap();
+        let first = held.apply(tx.clone()).unwrap();
+        let second = dropped.apply(tx).unwrap();
+        assert_eq!(held.snapshot(), dropped.snapshot());
+        assert_eq!(
+            first.after_execution_digest(),
+            second.after_execution_digest()
+        );
+        assert_eq!(
+            first.after_observable_digest(),
+            second.after_observable_digest()
+        );
+        let delta = held
+            .compiled()
+            .input_delta()
+            .set(ExternalInputKey::from_u128(1), LogicLevel::High)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let tx = Transaction::advance(Time::from_ticks(20), held.revision(), delta);
+        held.apply(tx.clone()).unwrap();
+        dropped.apply(tx).unwrap();
+        assert_eq!(held.snapshot(), dropped.snapshot());
+        drop(held);
+        drop(dropped);
+        for inspection in inspections {
+            recursively_assert_acyclic(
+                inspection.provenance(),
+                inspection.latest_transition.unwrap(),
+            );
+        }
+        for forecast in forecasts {
+            assert!(
+                forecast
+                    .state()
+                    .inspect_output(ExternalOutputKey::from_u128(200))
+                    .is_ok()
+            );
+        }
+        for result in results {
+            for position in 0..result.provenance().len() {
+                result
+                    .provenance()
+                    .inspect(result.provenance().records().cause(position))
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn every_runtime_leaf_projects_one_registry_backed_problem() {
         let first = compiled_with_input(1, 2, 3);
         let second = compiled_with_input(4, 5, 6);
@@ -7216,7 +7442,7 @@ mod tests {
         let mut probe = initialize(policy_with([100, 10_000, 100, 1_000, 10_000]));
         let initial_records = probe.store.provenance.as_ref().unwrap().len();
         let success = probe.apply(transaction(probe.revision())).unwrap();
-        let growth = (success.provenance().len() - initial_records) as u64;
+        let growth = (probe.store.provenance.as_ref().unwrap().len() - initial_records) as u64;
         for (index, limit, budget) in [
             (0, 3, RuntimePolicyLimit::MaxInternalReactions),
             (
@@ -8864,7 +9090,12 @@ mod tests {
                         to,
                         cause,
                         ..
-                    } => Some((*output, *from, *to, *cause)),
+                    } => Some((
+                        *output,
+                        *from,
+                        *to,
+                        crate::state_digest::cause_content(result.provenance(), *cause),
+                    )),
                     OutputEvent::LevelEstablished { .. } | OutputEvent::Pulsed { .. } => None,
                 })
                 .collect::<Vec<_>>();
@@ -9245,7 +9476,7 @@ mod tests {
                 .as_ref()
                 .map_or(0, ProvenanceView::len);
             let result = apply(&mut reference).unwrap();
-            let growth = (result.provenance().len() - previous) as u64;
+            let growth = (reference.store.provenance.as_ref().unwrap().len() - previous) as u64;
             assert!(growth > 0);
             let events = result.output_events().len() as u64;
             assert_eq!(events, 1);

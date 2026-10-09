@@ -255,6 +255,29 @@ fn project<D>(machine: &Machine<D>, label: Option<&str>) -> MachineSnapshot<D> {
         *blake3::hash(&domain_separated(SNAPSHOT_DIGEST_DOMAIN, 2, &bare)).as_bytes();
     let snapshot = SnapshotDigest::from_digest(digest_bytes);
     let full = envelope(time_domain, &payload, Some(digest_bytes));
+    #[cfg(test)]
+    {
+        let reference_index = crate::state_digest_reference::artifact_index(machine);
+        let reference_payload = payload_with_index(
+            machine,
+            crate::state_digest_reference::execution_state_digest(machine),
+            crate::state_digest_reference::observable_state_digest(machine),
+            label,
+            &reference_index,
+        );
+        let reference_bare = envelope(time_domain, &reference_payload, None);
+        let reference_digest = *blake3::hash(&domain_separated(
+            SNAPSHOT_DIGEST_DOMAIN,
+            2,
+            &reference_bare,
+        ))
+        .as_bytes();
+        assert_eq!(
+            full,
+            envelope(time_domain, &reference_payload, Some(reference_digest)),
+            "full snapshot bytes versus uncached graph projection"
+        );
+    }
     MachineSnapshot {
         status: machine.status(),
         revision: machine.revision(),
@@ -323,15 +346,26 @@ fn payload_bytes<D>(
     let kinds = node_kinds(&nodes);
     assert_event_kinds(machine, &kinds);
     let provenance = cause_digest_index(machine);
+    payload_with_index(machine, execution, observable, label, &provenance)
+}
+
+fn payload_with_index<D>(
+    machine: &Machine<D>,
+    execution: ExecutionStateDigest,
+    observable: ObservableStateDigest,
+    label: Option<&str>,
+    provenance: &CauseDigestIndex,
+) -> Vec<u8> {
+    let nodes = machine.compiled.snapshot_nodes();
     let mut record = Record::new();
     record.field("active_diagnostic_episodes", |writer| {
-        write_episodes(writer, machine, &provenance);
+        write_episodes(writer, machine, provenance);
     });
     record.field("execution_state_digest", |writer| {
         writer.bytes(&execution.as_bytes());
     });
     record.field("lifecycle", |writer| {
-        writer.nested(&lifecycle_bytes(machine, &provenance));
+        writer.nested(&lifecycle_bytes(machine, provenance));
     });
     record.field("network_fingerprint", |writer| {
         writer.bytes(&machine.fingerprint().as_bytes());
@@ -349,7 +383,7 @@ fn payload_bytes<D>(
         writer.bytes(&observable.as_bytes());
     });
     record.field("provenance", |writer| {
-        write_provenance(writer, machine, &provenance);
+        write_provenance(writer, machine, provenance);
     });
     record.field("runtime_policy_id", |writer| {
         writer.bytes(&machine.policy.id().as_bytes());

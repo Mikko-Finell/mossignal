@@ -3023,6 +3023,13 @@ impl<D> Machine<D> {
         Ok(PulseDelayDefinitionInspection { node, delay })
     }
 
+    fn owned_provenance(&self, roots: &[CauseRef]) -> ProvenanceView<D> {
+        let Some(view) = &self.store.provenance else {
+            panic!("ready inspections must retain committed provenance");
+        };
+        view.owned_roots(roots)
+    }
+
     /// Returns stable pending-group facts for one PulseDelay on a ready machine.
     pub fn inspect_pulse_delay(
         &self,
@@ -3057,10 +3064,7 @@ impl<D> Machine<D> {
         let next_deadline = pending.first().map(PendingPulseDelayInspection::deadline);
         Ok(PulseDelayInspection {
             provenance: self
-                .store
-                .provenance
-                .clone()
-                .unwrap_or_else(|| panic!("ready inspections must retain committed provenance")),
+                .owned_provenance(&pending.iter().map(|event| event.cause).collect::<Vec<_>>()),
             node,
             delay: definition.delay,
             revision: self.store.revision,
@@ -3147,6 +3151,11 @@ impl<D> Machine<D> {
         let next_deadline = pending
             .first()
             .map(PendingTransportDelayInspection::deadline);
+        let roots: Vec<_> = std::iter::once(current_support)
+            .chain(std::iter::once(latest_transition))
+            .chain(pending.iter().map(|event| event.cause))
+            .collect();
+        let provenance = self.store.provenance.as_ref()?.owned_roots(&roots);
         Some(TransportDelayInspection {
             node: self.compiled.node_subject(node),
             delay,
@@ -3165,7 +3174,7 @@ impl<D> Machine<D> {
             current_support,
             pending,
             next_deadline,
-            provenance: self.store.provenance.as_ref()?.clone(),
+            provenance,
         })
     }
 
@@ -3244,6 +3253,12 @@ impl<D> Machine<D> {
         let next_deadline = pending
             .as_ref()
             .map(PendingInertialDelayInspection::deadline);
+        let roots: Vec<_> = std::iter::once(current_support)
+            .chain(std::iter::once(latest_transition))
+            .chain(pending.iter().map(|event| event.cause))
+            .chain(self.store.inertial_cancellation_causes.get(&node).copied())
+            .collect();
+        let provenance = self.store.provenance.as_ref()?.owned_roots(&roots);
         Some(InertialDelayInspection {
             node: self.compiled.node_subject(node),
             delay,
@@ -3263,7 +3278,7 @@ impl<D> Machine<D> {
             pending,
             next_deadline,
             last_cancellation: self.store.inertial_cancellation_causes.get(&node).copied(),
-            provenance: self.store.provenance.as_ref()?.clone(),
+            provenance,
         })
     }
 
@@ -3338,6 +3353,12 @@ impl<D> Machine<D> {
         let next_deadline = pending
             .as_ref()
             .map(PendingPeriodicBoundaryInspection::deadline);
+        let roots: Vec<_> = std::iter::once(current_support)
+            .chain(self.store.periodic_anchor_causes.get(&node).copied())
+            .chain(pending.iter().map(|event| event.cause))
+            .chain(self.store.periodic_cancellation_causes.get(&node).copied())
+            .collect();
+        let provenance = self.store.provenance.as_ref()?.owned_roots(&roots);
         Some(PeriodicInspection {
             phase_origin: self
                 .store
@@ -3372,7 +3393,7 @@ impl<D> Machine<D> {
             pending,
             next_deadline,
             last_cancellation: self.store.periodic_cancellation_causes.get(&node).copied(),
-            provenance: self.store.provenance.as_ref()?.clone(),
+            provenance,
         })
     }
 
@@ -3601,12 +3622,36 @@ impl<D> Machine<D> {
             Some(AllEqualInspection::new(levels?.into_iter(), result))
         });
         let stateful_standard = crate::standard::stateful::inspect(self, &module);
+        let mut roots = Vec::new();
+        for node in &nodes {
+            roots.extend(node.cause);
+            roots.extend(node.edge_observation_cause);
+            roots.extend(node.toggle_inversion);
+            roots.extend(node.pulse_set_reset_cause);
+            roots.extend(node.level_set_reset_cause);
+            roots.extend(node.pending.iter().map(|event| event.cause));
+            for view in [
+                node.sample_hold.as_ref().map(|value| value.provenance()),
+                node.transport_delay
+                    .as_ref()
+                    .map(|value| value.provenance()),
+                node.inertial_delay.as_ref().map(|value| value.provenance()),
+                node.periodic.as_ref().map(|value| value.provenance()),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                roots.extend((0..view.len()).map(|position| view.records().cause(position)));
+            }
+        }
+        if let Some(standard) = &stateful_standard {
+            roots.extend(
+                (0..standard.provenance.len())
+                    .map(|position| standard.provenance.records().cause(position)),
+            );
+        }
         Ok(ModuleInspection {
-            provenance: self
-                .store
-                .provenance
-                .clone()
-                .unwrap_or_else(|| panic!("ready inspections must retain committed provenance")),
+            provenance: self.owned_provenance(&roots),
             stateful_standard,
             module,
             origin: definition.origin().clone(),
@@ -3711,11 +3756,7 @@ impl<D> Machine<D> {
             .copied()
             .ok_or(EdgeDetectorInspectionFailure::NotEdgeDetector(node))?;
         Ok(EdgeDetectorInspection {
-            provenance: self
-                .store
-                .provenance
-                .clone()
-                .unwrap_or_else(|| panic!("ready inspections must retain committed provenance")),
+            provenance: self.owned_provenance(&[observation_cause]),
             node,
             detector: definition.detector,
             initialization: definition.initialization,
@@ -3765,11 +3806,15 @@ impl<D> Machine<D> {
             .copied()
             .ok_or(ToggleInspectionFailure::NotToggle(node))?;
         Ok(ToggleInspection {
-            provenance: self
-                .store
-                .provenance
-                .clone()
-                .unwrap_or_else(|| panic!("ready inspections must retain committed provenance")),
+            provenance: self.owned_provenance(
+                &self
+                    .store
+                    .toggle_inversion_causes
+                    .get(&node)
+                    .copied()
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            ),
             node,
             initial: definition.initial,
             committed,
@@ -3820,11 +3865,7 @@ impl<D> Machine<D> {
             PulseSetResetLatchInspectionFailure::NotPulseSetResetLatch(node),
         )?;
         Ok(PulseSetResetLatchInspection {
-            provenance: self
-                .store
-                .provenance
-                .clone()
-                .unwrap_or_else(|| panic!("ready inspections must retain committed provenance")),
+            provenance: self.owned_provenance(&[latest_establishment]),
             node,
             initial: definition.initial,
             conflict: definition.conflict,
@@ -3881,11 +3922,7 @@ impl<D> Machine<D> {
                 node,
             ))?;
         Ok(LevelSetResetLatchInspection {
-            provenance: self
-                .store
-                .provenance
-                .clone()
-                .unwrap_or_else(|| panic!("ready inspections must retain committed provenance")),
+            provenance: self.owned_provenance(&[latest_establishment]),
             set,
             reset,
             node,
@@ -3935,6 +3972,14 @@ impl<D> Machine<D> {
         };
         let (slot, initial) = self.compiled.sample_hold_state_slot(node)?;
         let value_operation = self.compiled.sample_hold_value_operation(node)?;
+        let roots = [
+            *self.store.establishment_causes.get(&node)?,
+            *self
+                .store
+                .operation_causes
+                .get(self.compiled.node_operation(node)?)?,
+        ];
+        let provenance = self.store.provenance.as_ref()?.owned_roots(&roots);
         Some(SampleHoldInspection {
             node: self.compiled.node_subject(node),
             initial,
@@ -3952,7 +3997,7 @@ impl<D> Machine<D> {
                 .store
                 .operation_causes
                 .get(self.compiled.node_operation(node)?)?,
-            provenance: self.store.provenance.as_ref()?.clone(),
+            provenance,
         })
     }
 }

@@ -1852,6 +1852,15 @@ fn reassociated_latch_keeps_its_active_interval_on_the_successor_owner() {
         episodes.iter().any(|episode| episode.condition().owner()
             == &mossignal::NodeSubject::Node(second_successor))
     );
+    for node in [successor, second_successor] {
+        let inspection = machine.inspect_node(node).unwrap();
+        for episode in &inspection.active_diagnostics {
+            inspection.provenance().inspect(episode.cause()).unwrap();
+        }
+        machine
+            .explain(mossignal::Explain::CurrentNode(node))
+            .unwrap();
+    }
     // Report order follows source identity, even when successor keys reverse that order.
     assert_eq!(
         result

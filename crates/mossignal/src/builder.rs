@@ -5969,9 +5969,33 @@ mod tests {
             typed_machine.output_level(external_output),
             dynamic_machine.output_level(external_output)
         );
+        let typed = typed_machine.inspect_toggle(node).unwrap();
+        let dynamic = dynamic_machine.inspect_toggle(node).unwrap();
         assert_eq!(
-            typed_machine.inspect_toggle(node).unwrap(),
-            dynamic_machine.inspect_toggle(node).unwrap()
+            (
+                typed.node(),
+                typed.initial(),
+                typed.committed(),
+                typed.revision(),
+                typed.at()
+            ),
+            (
+                dynamic.node(),
+                dynamic.initial(),
+                dynamic.committed(),
+                dynamic.revision(),
+                dynamic.at()
+            )
+        );
+        assert_eq!(
+            crate::state_digest::cause_content(
+                typed.provenance(),
+                typed.latest_inversion().unwrap()
+            ),
+            crate::state_digest::cause_content(
+                dynamic.provenance(),
+                dynamic.latest_inversion().unwrap()
+            )
         );
     }
 

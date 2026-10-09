@@ -1,5 +1,7 @@
 //! Non-publishing forecast of one transaction.
 
+#[path = "support/causal.rs"]
+mod causal;
 use mossignal::key::{
     ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey, OutPortKey,
 };
@@ -137,7 +139,7 @@ fn assert_same_result(forecast: &TransactionResult<Domain>, applied: &Transactio
     assert_eq!(forecast.schedule(), applied.schedule());
     assert_eq!(forecast.provenance().len(), applied.provenance().len());
     assert_eq!(forecast.occurrences(), applied.occurrences());
-    assert_same_events(forecast.output_events(), applied.output_events());
+    assert_same_events(forecast, applied);
     assert_eq!(
         forecast.diagnostic_episode_changes().len(),
         applied.diagnostic_episode_changes().len()
@@ -148,10 +150,19 @@ fn assert_same_result(forecast: &TransactionResult<Domain>, applied: &Transactio
         .zip(applied.diagnostic_episode_changes())
     {
         assert_same_episode(left, right);
+        assert_eq!(
+            causal::semantic(forecast.provenance(), left.cause()),
+            causal::semantic(applied.provenance(), right.cause())
+        );
     }
 }
 
-fn assert_same_events(left: &[OutputEvent<Domain>], right: &[OutputEvent<Domain>]) {
+fn assert_same_events(
+    left_result: &TransactionResult<Domain>,
+    right_result: &TransactionResult<Domain>,
+) {
+    let left = left_result.output_events();
+    let right = right_result.output_events();
     assert_eq!(left.len(), right.len());
     for (left, right) in left.iter().zip(right) {
         match (left, right) {
@@ -174,7 +185,10 @@ fn assert_same_events(left: &[OutputEvent<Domain>], right: &[OutputEvent<Domain>
                 assert_eq!(left_output, right_output);
                 assert_eq!(left_value, right_value);
                 assert_eq!(left_at, right_at);
-                assert_eq!(left_cause, right_cause);
+                assert_eq!(
+                    causal::semantic(left_result.provenance(), *left_cause),
+                    causal::semantic(right_result.provenance(), *right_cause)
+                );
                 assert_eq!(left_revision, right_revision);
             }
             (
@@ -199,7 +213,10 @@ fn assert_same_events(left: &[OutputEvent<Domain>], right: &[OutputEvent<Domain>
                 assert_eq!(left_from, right_from);
                 assert_eq!(left_to, right_to);
                 assert_eq!(left_at, right_at);
-                assert_eq!(left_cause, right_cause);
+                assert_eq!(
+                    causal::semantic(left_result.provenance(), *left_cause),
+                    causal::semantic(right_result.provenance(), *right_cause)
+                );
                 assert_eq!(left_revision, right_revision);
             }
             (
@@ -221,7 +238,10 @@ fn assert_same_events(left: &[OutputEvent<Domain>], right: &[OutputEvent<Domain>
                 assert_eq!(left_output, right_output);
                 assert_eq!(left_count, right_count);
                 assert_eq!(left_at, right_at);
-                assert_eq!(left_cause, right_cause);
+                assert_eq!(
+                    causal::semantic(left_result.provenance(), *left_cause),
+                    causal::semantic(right_result.provenance(), *right_cause)
+                );
                 assert_eq!(left_revision, right_revision);
             }
             _ => panic!("forecast and apply emitted different output events"),
@@ -236,7 +256,8 @@ fn assert_same_episode(
     assert_eq!(left.identity(), right.identity());
     assert_eq!(left.kind(), right.kind());
     assert_eq!(left.at(), right.at());
-    assert_eq!(left.cause(), right.cause());
+    assert_eq!(left.before(), right.before());
+    assert_eq!(left.after(), right.after());
 }
 
 fn assert_basis(basis: &ForecastBasis<Domain>, machine: &Machine<Domain>, at: u64) {
@@ -458,6 +479,9 @@ fn pulse_delay_forecast_keeps_the_original_calendar_unchanged() {
         assert_eq!(left.event(), right.event());
         assert_eq!(left.deadline(), right.deadline());
         assert_eq!(left.count(), right.count());
-        assert_eq!(left.cause(), right.cause());
+        assert_eq!(
+            causal::semantic(inspected.provenance(), left.cause()),
+            causal::semantic(applied_inspection.provenance(), right.cause())
+        );
     }
 }

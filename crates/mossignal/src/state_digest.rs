@@ -20,6 +20,7 @@ use crate::transaction::{
     CauseRef, ProvenanceRecord, ProvenanceSubjectKind, ProvenanceView, PulseContribution,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 pub(crate) fn execution_state_digest<D>(machine: &Machine<D>) -> ExecutionStateDigest {
     let input = execution_digest_input(machine, 2, 2);
@@ -158,13 +159,28 @@ impl ProjectionContext {
 }
 
 pub(crate) struct CauseDigestIndex {
-    records: BTreeMap<[u8; 32], Vec<u8>>,
+    records: BTreeMap<[u8; 32], Arc<Vec<u8>>>,
     machine: Vec<[u8; 32]>,
     episodes: Vec<Vec<[u8; 32]>>,
 }
 
 impl CauseDigestIndex {
-    pub(crate) fn records(&self) -> &BTreeMap<[u8; 32], Vec<u8>> {
+    #[cfg(test)]
+    pub(crate) fn from_reference(
+        records: BTreeMap<[u8; 32], Vec<u8>>,
+        machine: Vec<[u8; 32]>,
+        episodes: Vec<Vec<[u8; 32]>>,
+    ) -> Self {
+        Self {
+            records: records
+                .into_iter()
+                .map(|(digest, payload)| (digest, Arc::new(payload)))
+                .collect(),
+            machine,
+            episodes,
+        }
+    }
+    pub(crate) fn records(&self) -> &BTreeMap<[u8; 32], Arc<Vec<u8>>> {
         &self.records
     }
 
@@ -230,11 +246,11 @@ fn machine_roots<D>(machine: &Machine<D>) -> Vec<CauseRef> {
 
 #[derive(Default)]
 struct ContentTable {
-    payloads: BTreeMap<[u8; 32], Vec<u8>>,
+    payloads: BTreeMap<[u8; 32], Arc<Vec<u8>>>,
 }
 
 impl ContentTable {
-    fn insert(&mut self, digest: [u8; 32], payload: Vec<u8>) {
+    fn insert(&mut self, digest: [u8; 32], payload: Arc<Vec<u8>>) {
         match self.payloads.get(&digest) {
             Some(existing) if existing != &payload => {
                 panic!(
@@ -267,17 +283,37 @@ fn index_view<D>(
         .collect()
 }
 
+/// Freeze creating-topology bytes before a prepared graph can be published.
+pub(crate) fn freeze_provenance<D>(compiled: &CompiledNetwork<D>, view: &ProvenanceView<D>) {
+    // SPEC: docs/specs/contracts/machine-state-digests.yaml "content-addressed-provenance"
+    // Old nodes keep their creating topology's canonical interpretation.
+    let mut table = ContentTable::default();
+    #[cfg(test)]
+    view.records().freeze_sources(compiled);
+    index_view(compiled, view, &mut table);
+}
+
+#[cfg(test)]
+pub(crate) fn cause_content<D>(view: &ProvenanceView<D>, cause: CauseRef) -> ([u8; 32], Vec<u8>) {
+    let Some(canonical) = view.records().canonical(view.resolve_ordinal(cause)).get() else {
+        panic!("published causes must retain frozen canonical content");
+    };
+    (canonical.digest, canonical.payload.as_ref().clone())
+}
+
 pub(crate) fn checkpoint_facts<D>(
     compiled: &CompiledNetwork<D>,
     view: &ProvenanceView<D>,
 ) -> Vec<Vec<u8>> {
+    #[cfg(test)]
+    crate::state_digest_reference::assert_view(compiled, view);
     let mut table = ContentTable {
         payloads: BTreeMap::new(),
     };
     let digests = index_view(compiled, view, &mut table);
     digests
         .iter()
-        .zip(view.records())
+        .zip(view.records().iter())
         .map(|(digest, record)| {
             let payload = match table.payloads.get(digest) {
                 Some(payload) => payload,
@@ -332,14 +368,42 @@ fn digest_record<D>(
     if let Some(digest) = memo[index] {
         return digest;
     }
+    if let Some(canonical) = view.records().canonical(index).get() {
+        table.insert(canonical.digest, Arc::clone(&canonical.payload));
+        memo[index] = Some(canonical.digest);
+        return canonical.digest;
+    }
     if stack[index] {
         panic!("provenance records must form an acyclic cause graph");
     }
     stack[index] = true;
     let relations = predecessor_relations(compiled, view, index, memo, stack, table);
-    let payload = provenance_payload(compiled, &view.records()[index], &relations);
+    let payload = Arc::new(provenance_payload(
+        compiled,
+        &view.records()[index],
+        &relations,
+    ));
+    #[cfg(test)]
+    crate::causal_work::update(|work| {
+        work.canonical_encodes += 1;
+        work.canonical_hashes += 1;
+    });
     let input = domain_separated(PROVENANCE_RECORD_DOMAIN, 2, &payload);
     let digest = *blake3::hash(&input).as_bytes();
+    let canonical = crate::causal_store::CanonicalRecord {
+        digest,
+        payload: Arc::clone(&payload),
+    };
+    if let Err(existing) = view.records().canonical(index).set(canonical) {
+        let Some(frozen) = view.records().canonical(index).get() else {
+            panic!("a concurrently frozen causal node must retain its canonical content");
+        };
+        if frozen.digest != existing.digest || frozen.payload != existing.payload {
+            panic!(
+                "an immutable causal node must have one source-qualified canonical interpretation"
+            );
+        }
+    }
     table.insert(digest, payload);
     memo[index] = Some(digest);
     stack[index] = false;
@@ -637,6 +701,8 @@ fn reachable_digests<D>(
             continue;
         }
         seen[index] = true;
+        #[cfg(test)]
+        crate::causal_work::update(|work| work.closure_records_visited += 1);
         reached.insert(digests[index]);
         for cause in view.records()[index].predecessor_causes() {
             pending.push(view.resolve_ordinal(cause));
@@ -653,7 +719,14 @@ fn write_provenance(writer: &mut Cbor, context: &ProjectionContext) {
     writer.array_start(digests.len());
     for digest in digests {
         match context.table.payloads.get(&digest) {
-            Some(payload) => writer.nested(payload),
+            Some(payload) => {
+                #[cfg(test)]
+                crate::causal_work::update(|work| {
+                    work.closure_records_emitted += 1;
+                    work.closure_bytes_emitted += payload.len();
+                });
+                writer.nested(payload);
+            }
             None => panic!("reachable provenance digest must retain its canonical record"),
         }
     }
@@ -2125,12 +2198,299 @@ mod tests {
     }
 
     #[test]
+    fn generated_mixed_graphs_and_histories_refine_the_uncached_encoder() {
+        use crate::{
+            FirstEmissionPolicy, InertialDelayConfig, PeriodicConfig, PulseDelayConfig,
+            ReenablePhasePolicy, SampleHoldConfig, TransportDelayConfig,
+        };
+        for seed in 0_u128..9 {
+            let mut builder = NetworkBuilder::<()>::with_key(
+                NetworkKey::from_u128(1000 + seed),
+                crate::TimeDomainId::from_u128(2),
+            );
+            let input = ExternalInputKey::from_u128(10);
+            let trip = ExternalInputKey::from_u128(11);
+            let value = builder
+                .add_level_input(input, DiagnosticMeta::default())
+                .unwrap();
+            let pulse = builder
+                .add_pulse_input(trip, DiagnosticMeta::default())
+                .unwrap();
+            let delayed = builder
+                .add_pulse_delay(
+                    NodeKey::from_u128(100),
+                    pulse,
+                    PulseDelayConfig::new(span(2)),
+                    DiagnosticMeta::default(),
+                )
+                .unwrap()
+                .into_outputs();
+            let timer = builder
+                .add_periodic(
+                    NodeKey::from_u128(101),
+                    value,
+                    PeriodicConfig::new(
+                        span(2 + seed as u64 % 3),
+                        FirstEmissionPolicy::AfterFirstPeriod,
+                        ReenablePhasePolicy::PreservePhase,
+                    ),
+                    DiagnosticMeta::default(),
+                )
+                .unwrap()
+                .into_outputs();
+            let merged = builder
+                .add_merge(
+                    NodeKey::from_u128(102),
+                    [pulse, delayed, timer],
+                    DiagnosticMeta::default(),
+                )
+                .unwrap()
+                .into_outputs();
+            let toggled = builder
+                .add_toggle(
+                    NodeKey::from_u128(103),
+                    merged,
+                    ToggleConfig::new(LogicLevel::Low),
+                    DiagnosticMeta::default(),
+                )
+                .unwrap()
+                .into_outputs();
+            let held = builder
+                .add_sample_hold(
+                    NodeKey::from_u128(104),
+                    value,
+                    delayed,
+                    SampleHoldConfig::new(LogicLevel::Low),
+                    DiagnosticMeta::default(),
+                )
+                .unwrap()
+                .into_outputs();
+            let transported = builder
+                .add_transport_delay(
+                    NodeKey::from_u128(105),
+                    value,
+                    TransportDelayConfig::new(span(2), LogicLevel::Low),
+                    DiagnosticMeta::default(),
+                )
+                .unwrap()
+                .into_outputs();
+            let inertial = builder
+                .add_inertial_delay(
+                    NodeKey::from_u128(106),
+                    value,
+                    InertialDelayConfig::new(span(3), LogicLevel::Low),
+                    DiagnosticMeta::default(),
+                )
+                .unwrap()
+                .into_outputs();
+            let instance = ModuleInstanceKey::from_u128(200);
+            let standard = match seed % 3 {
+                0 => builder
+                    .add_pulse_resettable_toggle(
+                        instance,
+                        merged,
+                        delayed,
+                        LogicLevel::Low,
+                        DiagnosticMeta::default(),
+                    )
+                    .unwrap()
+                    .into_outputs(),
+                1 => builder
+                    .add_level_resettable_toggle(
+                        instance,
+                        merged,
+                        value,
+                        LogicLevel::Low,
+                        DiagnosticMeta::default(),
+                    )
+                    .unwrap()
+                    .into_outputs(),
+                _ => builder
+                    .add_level_resettable_sample_hold(
+                        instance,
+                        toggled,
+                        delayed,
+                        value,
+                        LogicLevel::Low,
+                        LogicLevel::High,
+                        DiagnosticMeta::default(),
+                    )
+                    .unwrap()
+                    .into_outputs(),
+            };
+            let mut chain = value;
+            for _ in 0..seed % 4 {
+                chain = builder.not(chain).unwrap();
+            }
+            for (index, signal) in [chain, toggled, held, transported, inertial, standard]
+                .into_iter()
+                .enumerate()
+            {
+                builder
+                    .add_level_output(
+                        ExternalOutputKey::from_u128(300 + index as u128),
+                        signal,
+                        DiagnosticMeta::default(),
+                    )
+                    .unwrap();
+            }
+            let compiled = compile_builder(builder);
+            let mut machine = compiled.spawn(generous_policy());
+            let snapshot = compiled
+                .input_snapshot()
+                .set(input, LogicLevel::High)
+                .unwrap()
+                .pulse(trip, PulseCount::ONE)
+                .unwrap()
+                .finish()
+                .unwrap();
+            machine
+                .apply(Transaction::initialize(
+                    Time::from_ticks(0),
+                    machine.revision(),
+                    snapshot,
+                ))
+                .unwrap();
+            let owned = machine.inspect_module(instance).unwrap();
+            for (step, at) in [1, 2, 2, 5, 7, 11].into_iter().enumerate() {
+                let value = if (seed + step as u128) % 3 == 0 {
+                    LogicLevel::Low
+                } else {
+                    LogicLevel::High
+                };
+                let delta = compiled
+                    .input_delta()
+                    .set(input, value)
+                    .unwrap()
+                    .pulse(trip, PulseCount::new((seed as u64 + step as u64) % 4))
+                    .unwrap()
+                    .finish()
+                    .unwrap();
+                let transaction =
+                    Transaction::advance(Time::from_ticks(at), machine.revision(), delta);
+                let forecast = machine.forecast(transaction.clone()).unwrap();
+                machine.apply(transaction).unwrap();
+                assert_eq!(machine.snapshot(), forecast.state().snapshot());
+                for event in machine.inspect_pending_events().unwrap() {
+                    event.provenance().explain_cause(event.cause).unwrap();
+                }
+            }
+            let source = machine.compiled().graph().external_outputs()[0].source();
+            let prepared = machine
+                .prepare_patch(
+                    machine
+                        .patch()
+                        .add_external_output(ExternalOutputDef::new(
+                            ExternalOutputKey::<Level>::from_u128(400).into(),
+                            source,
+                            DiagnosticMeta::default(),
+                        ))
+                        .unwrap()
+                        .finish(),
+                )
+                .require_artifact()
+                .unwrap();
+            let delta = prepared
+                .resulting_compiled()
+                .input_delta()
+                .finish()
+                .unwrap();
+            machine
+                .apply(
+                    Transaction::advance(Time::from_ticks(12), machine.revision(), delta)
+                        .with_patch(prepared, crate::ReconfigurationPolicy::RejectStateLoss)
+                        .unwrap(),
+                )
+                .unwrap();
+            machine.inspect_module(instance).unwrap();
+            let snapshot = machine.snapshot();
+            let restored = machine
+                .compiled()
+                .restore(snapshot.clone(), generous_policy())
+                .unwrap();
+            assert_eq!(snapshot, restored.snapshot());
+            drop(machine);
+            for (_, cause) in &owned.stateful_standard().unwrap().internal_causes {
+                owned.provenance().explain_cause(*cause).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn version_two_migrated_graph_inputs_and_snapshot_match_goldens() {
+        let mut machine = spawn(
+            golden_toggle(DiagnosticMeta::default()),
+            [100, 10_000, 100, 100, 10_000],
+        );
+        initialize(&mut machine, 0);
+        let delta = machine
+            .compiled()
+            .input_delta()
+            .pulse(ExternalInputKey::from_u128(6), PulseCount::new(2))
+            .unwrap()
+            .finish()
+            .unwrap();
+        machine
+            .apply(Transaction::advance(
+                Time::from_ticks(2),
+                machine.revision(),
+                delta,
+            ))
+            .unwrap();
+        let source = machine.compiled().graph().external_outputs()[0].source();
+        let prepared = machine
+            .prepare_patch(
+                machine
+                    .patch()
+                    .add_external_output(ExternalOutputDef::new(
+                        ExternalOutputKey::<Level>::from_u128(99).into(),
+                        source,
+                        DiagnosticMeta::default(),
+                    ))
+                    .unwrap()
+                    .finish(),
+            )
+            .require_artifact()
+            .unwrap();
+        let delta = prepared
+            .resulting_compiled()
+            .input_delta()
+            .finish()
+            .unwrap();
+        machine
+            .apply(
+                Transaction::advance(Time::from_ticks(3), machine.revision(), delta)
+                    .with_patch(prepared, crate::ReconfigurationPolicy::RejectStateLoss)
+                    .unwrap(),
+            )
+            .unwrap();
+        crate::state_digest_reference::assert_machine(&machine);
+        let snapshot = machine.snapshot();
+        for (name, bytes) in [
+            (
+                "execution_state_migrated_v2.hex",
+                execution_digest_input(&machine, 2, 2),
+            ),
+            (
+                "observable_state_migrated_v2.hex",
+                observable_digest_input(&machine, 2, 2),
+            ),
+            (
+                "machine_snapshot_migrated_v2.hex",
+                snapshot.artifact_bytes().to_vec(),
+            ),
+        ] {
+            assert_golden(name, &bytes);
+        }
+    }
+
+    #[test]
     fn differing_records_with_one_digest_are_fatal() {
         let mut table = ContentTable::default();
-        table.insert([9; 32], vec![1, 2, 3]);
-        table.insert([9; 32], vec![1, 2, 3]);
+        table.insert([9; 32], Arc::new(vec![1, 2, 3]));
+        table.insert([9; 32], Arc::new(vec![1, 2, 3]));
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            table.insert([9; 32], vec![4]);
+            table.insert([9; 32], Arc::new(vec![4]));
         }));
         assert!(result.is_err());
     }

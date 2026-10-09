@@ -234,7 +234,7 @@ impl<D> ActiveDiagnosticEpisode<D> {
             began_at,
             last_material_change,
             cause,
-            provenance,
+            provenance: provenance.owned_roots(&[cause]),
         }
     }
 
@@ -443,7 +443,7 @@ pub(crate) fn reconcile<D>(
                         began_at: at,
                         last_material_change: at,
                         cause,
-                        provenance: provenance.clone(),
+                        provenance: provenance.owned_roots(&[cause]),
                     },
                 );
             }
@@ -467,7 +467,7 @@ pub(crate) fn reconcile<D>(
                         began_at,
                         last_material_change: at,
                         cause,
-                        provenance: provenance.clone(),
+                        provenance: provenance.owned_roots(&[cause]),
                     },
                 );
             }

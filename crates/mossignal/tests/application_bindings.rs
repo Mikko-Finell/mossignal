@@ -508,7 +508,16 @@ fn bound_machine_delegates_and_projects_level_and_pulse_events_losslessly() {
     );
     assert_eq!(bound_result.ordinary().schedule(), direct_result.schedule());
     assert_eq!(bound_result.projected_output_events().len(), 2);
-    for (ordinary, projected) in direct_result
+    assert_eq!(
+        bound.machine().execution_state_digest(),
+        direct.execution_state_digest()
+    );
+    assert_eq!(
+        bound.machine().observable_state_digest(),
+        direct.observable_state_digest()
+    );
+    for (ordinary, projected) in bound_result
+        .ordinary()
         .output_events()
         .iter()
         .zip(bound_result.projected_output_events())

@@ -42,6 +42,9 @@
 pub mod authored;
 pub mod binding;
 pub mod builder;
+mod causal_store;
+#[cfg(test)]
+mod causal_work;
 mod cbor_decode;
 mod compile;
 mod diagnostic_inspection;
@@ -65,6 +68,9 @@ pub mod signal;
 mod snapshot_restore;
 pub mod standard;
 mod state_digest;
+#[cfg(test)]
+#[allow(dead_code)] // The maintained reference exposes uncached inputs and graph facts to tests.
+mod state_digest_reference;
 pub mod time;
 mod transaction;
 

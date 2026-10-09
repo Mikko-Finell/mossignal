@@ -1,3 +1,5 @@
+#[path = "support/causal.rs"]
+mod causal;
 use mossignal::diagnostics::DiagnosticCode;
 use mossignal::key::{
     ExternalInputKey, ExternalOutputKey, InPortKey, NetworkKey, NodeKey, OutPortKey,
@@ -644,8 +646,14 @@ fn mixed_same_time_events_and_pulse_input_order_are_deterministic() {
             (pulse_output, PulseCount::ONE)
         );
         observations.push((
-            (*level_cause, *pulse_cause),
-            (*changed_cause, *advanced_pulse_cause),
+            (
+                causal::semantic(initialized.provenance(), *level_cause),
+                causal::semantic(initialized.provenance(), *pulse_cause),
+            ),
+            (
+                causal::semantic(advanced.provenance(), *changed_cause),
+                causal::semantic(advanced.provenance(), *advanced_pulse_cause),
+            ),
         ));
     }
     assert_eq!(observations[0], observations[1]);

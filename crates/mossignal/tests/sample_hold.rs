@@ -2,6 +2,8 @@
 //! output/successor law, unordered pulse presence, inspection and rooted capture causality.
 //! No SampleHold-owned due work, scheduling, conflicts or diagnostic episodes apply.
 //! Snapshot/replay and topology/migration conformance await those owning systems.
+#[path = "support/causal.rs"]
+mod causal;
 use mossignal::diagnostics::{DiagnosticCode, ProblemEvidence};
 use mossignal::key::*;
 use mossignal::metadata::DiagnosticMeta;
@@ -245,10 +247,13 @@ fn captures_same_values_and_retention_keep_distinct_owned_causal_facts() {
     let same = m.inspect_sample_hold(f.node).unwrap();
     assert_eq!(establishment_time(&same), 7);
     assert_eq!(
-        *facts(same.provenance(), m.output_cause(f.output).unwrap())
-            .times
-            .last()
-            .unwrap(),
+        *facts(
+            m.inspect_output(f.output).unwrap().provenance(),
+            m.output_cause(f.output).unwrap()
+        )
+        .times
+        .last()
+        .unwrap(),
         6
     );
     let r = advance(&f, &mut m, 8, LOW, 0);
@@ -834,7 +839,14 @@ fn composed_capture_histories_are_invariant_under_definition_and_input_permutati
                                     stamp: at,
                                     revision,
                                     cause,
-                                } => (*output, *from, *to, at.time().ticks(), *revision, *cause),
+                                } => (
+                                    *output,
+                                    *from,
+                                    *to,
+                                    at.time().ticks(),
+                                    *revision,
+                                    causal::semantic(result.provenance(), *cause),
+                                ),
                                 _ => panic!(
                                     "composed history must publish only actual Level transitions"
                                 ),

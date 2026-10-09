@@ -388,11 +388,12 @@ fn causal<D>(
     } else {
         RetentionStatus::CompleteFromCheckpoints { checkpoints }
     };
+    let owned = provenance.owned_roots(&roots);
     Ok(CausalExplanation {
         roots,
         edges,
         retention,
-        provenance: provenance.clone(),
+        provenance: owned,
     })
 }
 
@@ -617,7 +618,9 @@ impl<D> Machine<D> {
             &pending,
             &active_diagnostics,
         ));
-        let retention = causal(&provenance, &roots)?.retention;
+        let causal = causal(&provenance, &roots)?;
+        let retention = causal.retention;
+        let provenance = causal.provenance;
         Ok(NodeInspection {
             subject,
             definition,
@@ -668,7 +671,9 @@ impl<D> Machine<D> {
             .into_iter()
             .chain(latest_transition)
             .collect();
-        let retention = causal(&provenance, &roots)?.retention;
+        let causal = causal(&provenance, &roots)?;
+        let retention = causal.retention;
+        let provenance = causal.provenance;
         Ok(OutputInspection {
             output,
             at,
@@ -734,11 +739,9 @@ impl<D> Machine<D> {
         let remaining = deadline
             .checked_duration_since(at)
             .unwrap_or_else(|_| panic!("committed pending deadlines must be strictly future"));
-        let retention = causal(provenance, &[cause])
-            .unwrap_or_else(|_| {
-                panic!("committed pending causes must resolve in retained provenance")
-            })
-            .retention;
+        let explanation = causal(provenance, &[cause]).unwrap_or_else(|_| {
+            panic!("committed pending causes must resolve in retained provenance")
+        });
         PendingEventInspection {
             origin_stamp: event.stimulus(),
             event: key,
@@ -752,8 +755,8 @@ impl<D> Machine<D> {
             at,
             payload,
             cause,
-            retention,
-            provenance: provenance.clone(),
+            retention: explanation.retention,
+            provenance: explanation.provenance,
         }
     }
     /// Explains current committed facts through node laws and recorded support.

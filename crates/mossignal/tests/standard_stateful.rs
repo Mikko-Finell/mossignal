@@ -1493,3 +1493,59 @@ fn verify_reference_support(view: &ModuleInspection<()>, expected: StatefulStand
         }
     }
 }
+
+#[test]
+fn preserved_standard_history_resolves_through_a_quiet_patch() {
+    for kind in [Kind::Pulse, Kind::Level, Kind::Hold] {
+        let f = Fixture::new(kind, HIGH, LOW, false);
+        let mut machine = f.compiled.spawn(policy());
+        f.apply(&mut machine, 1, batch(HIGH, 2, 1)).unwrap();
+        let old = machine.inspect_module(f.instance).unwrap();
+        let source = f.compiled.graph().external_outputs()[0].source();
+        let prepared = machine
+            .prepare_patch(
+                machine
+                    .patch()
+                    .add_external_output(mossignal::authored::ExternalOutputDef::new(
+                        ExternalOutputKey::<Level>::from_u128(31).into(),
+                        source,
+                        DiagnosticMeta::default(),
+                    ))
+                    .unwrap()
+                    .finish(),
+            )
+            .require_artifact()
+            .unwrap();
+        let delta = prepared
+            .resulting_compiled()
+            .input_delta()
+            .finish()
+            .unwrap();
+        machine
+            .apply(
+                Transaction::advance(Time::from_ticks(2), machine.revision(), delta)
+                    .with_patch(prepared, ReconfigurationPolicy::RejectStateLoss)
+                    .unwrap(),
+            )
+            .unwrap();
+        let current = machine.inspect_module(f.instance).unwrap();
+        let standard = current.stateful_standard().unwrap();
+        for cause in [
+            standard.latest_reset_cause,
+            standard.latest_accepted_toggle_cause,
+            standard.latest_capture_cause,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            standard.provenance.inspect(cause).unwrap();
+            current.provenance().explain_cause(cause).unwrap();
+        }
+        machine.explain(Explain::CurrentModule(f.instance)).unwrap();
+        drop(machine);
+        let standard = old.stateful_standard().unwrap();
+        for (_, cause) in &standard.internal_causes {
+            standard.provenance.explain_cause(*cause).unwrap();
+        }
+    }
+}

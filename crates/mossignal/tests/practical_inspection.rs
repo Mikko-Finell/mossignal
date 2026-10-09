@@ -1,3 +1,5 @@
+#[path = "support/causal.rs"]
+mod causal;
 use mossignal::authored::{
     ConnectionDef, ConnectionEndpoint, ExternalInputDef, ExternalOutputDef, NodeDef, NodeKind,
     NodePorts, UncheckedNetwork,
@@ -684,24 +686,32 @@ fn temporal_state_and_forecast_inspection_match_committed_candidate() {
     assert_eq!(
         pending
             .iter()
-            .map(|event| (event.event, event.deadline, event.cause))
+            .map(|event| (
+                event.event,
+                event.deadline,
+                causal::semantic(event.provenance(), event.cause)
+            ))
             .collect::<Vec<_>>(),
         actual
             .iter()
-            .map(|event| (event.event, event.deadline, event.cause))
+            .map(|event| (
+                event.event,
+                event.deadline,
+                causal::semantic(event.provenance(), event.cause)
+            ))
             .collect::<Vec<_>>()
     );
+    let hypothetical = forecast
+        .state()
+        .explain(Explain::Pending(pending[0].event))
+        .unwrap();
+    let committed = m.explain(Explain::Pending(pending[0].event)).unwrap();
     assert_eq!(
-        forecast
-            .state()
-            .explain(Explain::Pending(pending[0].event))
-            .unwrap()
-            .causal
-            .edges,
-        m.explain(Explain::Pending(pending[0].event))
-            .unwrap()
-            .causal
-            .edges
+        causal::semantic(
+            hypothetical.causal.provenance(),
+            hypothetical.causal.roots[0]
+        ),
+        causal::semantic(committed.causal.provenance(), committed.causal.roots[0])
     );
 }
 

@@ -783,6 +783,20 @@ pub(crate) struct StandardHistory {
     reaction: StatefulStandardReaction,
 }
 
+impl StandardHistory {
+    pub(crate) fn retained_causes(&self) -> impl Iterator<Item = CauseRef> {
+        [self.latest_reset, self.latest_toggle, self.latest_capture]
+            .into_iter()
+            .flatten()
+    }
+
+    pub(crate) fn translate_causes(&mut self, translate: impl Fn(CauseRef) -> CauseRef) {
+        self.latest_reset = self.latest_reset.map(&translate);
+        self.latest_toggle = self.latest_toggle.map(&translate);
+        self.latest_capture = self.latest_capture.map(&translate);
+    }
+}
+
 fn required<T>(value: Option<T>) -> T {
     match value {
         Some(value) => value,
@@ -1010,7 +1024,7 @@ pub(crate) fn inspect<D>(
             _ => None,
         })
     };
-    let public_causes = kind
+    let public_causes: Vec<_> = kind
         .inputs()
         .into_iter()
         .map(|(_, key)| {
@@ -1021,7 +1035,7 @@ pub(crate) fn inspect<D>(
             )
         })
         .collect();
-    let internal_causes = machine
+    let internal_causes: Vec<_> = machine
         .compiled
         .qualified_nodes_under(path)
         .map(|(qualified, flat)| {
@@ -1030,6 +1044,14 @@ pub(crate) fn inspect<D>(
                 machine.store.operation_causes[required(machine.compiled.node_operation(flat))],
             )
         })
+        .collect();
+    let roots: Vec<_> = public_causes
+        .iter()
+        .map(|(_, cause)| *cause)
+        .chain(internal_causes.iter().map(|(_, cause)| *cause))
+        .chain(history.latest_reset)
+        .chain(history.latest_toggle)
+        .chain(history.latest_capture)
         .collect();
     Some(StatefulStandardInspection {
         module: path.clone(),
@@ -1047,6 +1069,6 @@ pub(crate) fn inspect<D>(
         last_reaction: history.reaction,
         public_causes,
         internal_causes,
-        provenance: machine.store.provenance.as_ref()?.clone(),
+        provenance: machine.store.provenance.as_ref()?.owned_roots(&roots),
     })
 }
