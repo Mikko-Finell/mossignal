@@ -1633,6 +1633,8 @@ impl<D> Eq for PeriodicPhase<D> {}
 
 pub(crate) struct MachineStore<D> {
     // Explicit last-reaction history, never input to network evaluation.
+    pub(crate) standard_causes:
+        BTreeMap<crate::QualifiedModuleRef, crate::standard::stateful::StandardCauses>,
     pub(crate) standard_history:
         BTreeMap<QualifiedModuleRef, crate::standard::stateful::StandardHistory>,
     pub(crate) status: MachineStatus<D>,
@@ -1664,6 +1666,7 @@ pub(crate) struct MachineStore<D> {
 impl<D> Clone for MachineStore<D> {
     fn clone(&self) -> Self {
         Self {
+            standard_causes: self.standard_causes.clone(),
             standard_history: self.standard_history.clone(),
             status: self.status,
             last_reaction: self.last_reaction,
@@ -2761,6 +2764,7 @@ impl<D> Machine<D> {
             compiled,
             policy,
             store: MachineStore {
+                standard_causes: BTreeMap::new(),
                 standard_history: BTreeMap::new(),
                 status: MachineStatus::AwaitingInitialization,
                 last_reaction: None,

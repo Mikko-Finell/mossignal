@@ -1779,6 +1779,28 @@ impl<D> ProvenanceView<D> {
         }
     }
 
+    pub(crate) fn include(&mut self, other: &Self) {
+        Arc::make_mut(&mut self.records).include(&other.records);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn duplicate_allocation_for_test(
+        &mut self,
+        compiled: &crate::CompiledNetwork<D>,
+        cause: CauseRef,
+    ) -> CauseRef {
+        let scope = crate::causal_store::fresh_scope(Some(self.scope));
+        let mut records = self.records.fork(scope);
+        let duplicate = records.push(remap_record(
+            &self.records[self.resolve_ordinal(cause)],
+            scope,
+        ));
+        self.scope = scope;
+        self.records = Arc::new(records);
+        crate::state_digest::freeze_provenance(compiled, self);
+        duplicate
+    }
+
     #[cfg(test)]
     pub(crate) fn reverse_unordered_supporters(&mut self)
     where
@@ -2421,6 +2443,10 @@ impl<D> Machine<D> {
             &BTreeMap::new(),
             |cause| remap_cause(cause, built.provenance.scope),
         );
+        let standard_causes = standard_history
+            .iter()
+            .map(|(module, history)| (module.clone(), history.causal_roles()))
+            .collect();
         remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
         remap_cause_map(&mut periodic_anchor_causes, built.provenance.scope);
         remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
@@ -2480,6 +2506,7 @@ impl<D> Machine<D> {
             PublishedCandidate {
                 stamp,
                 standard_history,
+                standard_causes,
                 at,
                 levels,
                 evaluation,
@@ -2526,12 +2553,14 @@ impl<D> Machine<D> {
         let mut revision = self.store.revision;
         let (explicit_levels, pulses) = input.into_parts();
         let mut standard_history = self.store.standard_history.clone();
+        let mut standard_causes = self.store.standard_causes.clone();
         let mut levels = self.store.external_levels.clone();
         let mut pending_events = self.store.pending_events.clone();
         let mut next_pending_event_serial = self.store.next_pending_event_serial;
         let mut edge_observations = self.store.edge_observations.clone();
         let mut stored_levels = self.store.stored_levels.clone();
         let mut operation_levels = self.store.operation_levels.clone();
+        let mut current_operation_causes = self.store.operation_causes.clone();
         let mut output_baselines = self.store.output_baselines.clone();
         let mut input_causes = self.store.input_causes.clone();
         let mut output_causes = self.store.output_causes.clone();
@@ -2547,7 +2576,7 @@ impl<D> Machine<D> {
             Some(provenance) => provenance.clone(),
             None => panic!("ready machine must retain committed provenance"),
         };
-        let previous_provenance_len = provenance.len();
+        let mut provenance_growth = 0_usize;
         let mut output_events = Vec::new();
         let mut occurrences = Vec::new();
         let mut active_episodes = self.store.active_episodes.clone();
@@ -2599,6 +2628,7 @@ impl<D> Machine<D> {
             reaction_count = reaction_count.saturating_add(1);
             enforce_outer_reaction_budgets::<D>(&self.policy, &self.compiled, reaction_count)?;
 
+            let before_reaction_records = provenance.len();
             let mut built = build_ready_provenance(
                 &self.compiled,
                 revision,
@@ -2620,6 +2650,7 @@ impl<D> Machine<D> {
                 &due.inertial_causes,
                 &due.periodic_causes,
                 &BTreeSet::new(),
+                None,
             );
             remap_pending_causes(&mut pending_events, built.provenance.scope);
             remap_output_event_causes(&mut output_events, built.provenance.scope);
@@ -2666,9 +2697,14 @@ impl<D> Machine<D> {
                 &self.compiled,
                 &internal,
                 &built.operation_causes,
-                &standard_history,
+                &standard_causes,
                 |cause| remap_cause(cause, built.provenance.scope),
             );
+            let updated_causes = standard_history
+                .iter()
+                .map(|(module, history)| (module.clone(), history.causal_roles()))
+                .collect();
+            standard_causes = updated_causes;
             remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
             remap_cause_map(&mut periodic_anchor_causes, built.provenance.scope);
             remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
@@ -2684,12 +2720,19 @@ impl<D> Machine<D> {
                 &mut diagnostic_episode_changes,
             );
             remap_episode_changes(&mut diagnostic_episode_changes, built.provenance.scope);
+            current_operation_causes = built.operation_causes.clone();
             input_causes = built.input_causes;
             output_causes = built.output_causes;
             edge_observation_causes = built.edge_observation_causes;
             toggle_inversion_causes = built.toggle_inversion_causes;
             establishment_causes = built.establishment_causes;
             transport_transition_causes = built.transport_output_transitions;
+            provenance_growth = provenance_growth.saturating_add(
+                built
+                    .provenance
+                    .len()
+                    .saturating_sub(before_reaction_records),
+            );
             provenance = built.provenance;
             enforce_created_event_budget::<D>(
                 &self.policy,
@@ -2699,11 +2742,7 @@ impl<D> Machine<D> {
                     .saturating_add(occurrences.len())
                     .saturating_add(diagnostic_episode_changes.len()),
             )?;
-            enforce_provenance_growth::<D>(
-                &self.policy,
-                provenance.len(),
-                previous_provenance_len,
-            )?;
+            enforce_provenance_growth::<D>(&self.policy, provenance_growth)?;
         }
 
         let stamp = allocate_reaction(&mut last_reaction, at)?;
@@ -2712,6 +2751,7 @@ impl<D> Machine<D> {
         let mut migration_report = None;
         let mut output_plans = BTreeMap::new();
         let mut declared_edges = BTreeSet::new();
+        let mut patch_cause = None;
         if let Some((prepared, policy)) = patch {
             let source = MigrationSource {
                 compiled: &self.compiled,
@@ -2736,46 +2776,101 @@ impl<D> Machine<D> {
             };
             let mut finalized = finalize(&prepared, policy, stamp, &source, &self.policy)
                 .map_err(migration_failure)?;
-            provenance = checkpoint_migration(&self.compiled, &provenance, stamp, &mut finalized);
-            // Earlier source events now name their corresponding checkpoint wrappers.
-            remap_output_event_causes(&mut output_events, provenance.scope);
-            remap_episode_changes(&mut diagnostic_episode_changes, provenance.scope);
-            for history in standard_history.values_mut() {
-                history.translate_causes(|cause| remap_cause(cause, provenance.scope));
+            let mut source_roots = current_operation_causes.clone();
+            source_roots.extend(input_causes.values().copied());
+            source_roots.extend(output_causes.values().copied());
+            for causes in [
+                &edge_observation_causes,
+                &toggle_inversion_causes,
+                &establishment_causes,
+                &transport_transition_causes,
+                &inertial_cancellation_causes,
+                &periodic_anchor_causes,
+                &periodic_cancellation_causes,
+            ] {
+                source_roots.extend(causes.values().copied());
             }
-            let patch_cause =
-                provenance
-                    .records
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find_map(|(index, record)| {
-                        matches!(record, ProvenanceRecord::TopologyChange { .. })
-                            .then_some(provenance.records.cause(index))
-                    });
-            if let Some(patch_cause) = patch_cause {
-                for (condition, episode) in &active_episodes {
-                    let owner = node_subject_ref(condition.owner());
-                    let preserved = finalized.report.episodes().iter().any(|record| {
-                        record.subject() == &owner
-                            && matches!(
-                                record.outcome(),
-                                crate::EpisodeOutcome::Preserved
-                                    | crate::EpisodeOutcome::Transformed
-                            )
-                    });
-                    if !preserved && !finalized.episodes.contains_key(condition) {
-                        diagnostic_episode_changes.push(
-                            crate::episode::DiagnosticEpisodeChange::migration_end(
-                                episode,
-                                crate::DiagnosticEpisodeChangeKind::Terminated,
-                                stamp,
-                                patch_cause,
-                            ),
-                        );
-                    }
+            source_roots.extend(
+                pending_events
+                    .values()
+                    .flatten()
+                    .map(|event| event.identity().5),
+            );
+            source_roots.extend(
+                standard_causes
+                    .values()
+                    .flat_map(|facts| facts.retained_causes()),
+            );
+            for episode in active_episodes.values() {
+                provenance.include(episode.provenance());
+                source_roots.push(episode.cause());
+            }
+            source_roots.sort();
+            source_roots.dedup();
+            #[cfg(test)]
+            assert_eq!(
+                source_roots,
+                crate::state_digest_reference::migration_source_roots(
+                    &source,
+                    &current_operation_causes,
+                    &standard_causes,
+                ),
+                "typed SOURCE roots after earlier deadlines, before target settlement"
+            );
+            let result_roots: Vec<_> = output_events
+                .iter()
+                .map(output_event_cause)
+                .chain(
+                    diagnostic_episode_changes
+                        .iter()
+                        .map(crate::DiagnosticEpisodeChange::cause),
+                )
+                .collect();
+            let migrated = checkpoint_migration(
+                &self.compiled,
+                &provenance,
+                stamp,
+                &mut finalized,
+                &source_roots,
+                &result_roots,
+            );
+            provenance_growth = provenance_growth.saturating_add(migrated.growth);
+            for event in &mut output_events {
+                translate_output_event(event, &migrated.translated);
+            }
+            for change in &mut diagnostic_episode_changes {
+                change.remap_cause(translated_cause(&migrated.translated, change.cause()));
+            }
+            for facts in standard_causes.values_mut() {
+                facts.translate_causes(|cause| translated_cause(&migrated.translated, cause));
+            }
+            for episode in finalized.episodes.values_mut() {
+                episode.translate_cause(&migrated.view, |cause| {
+                    translated_cause(&migrated.translated, cause)
+                });
+            }
+            patch_cause = Some(migrated.patch);
+            for (condition, episode) in &active_episodes {
+                let owner = node_subject_ref(condition.owner());
+                let preserved = finalized.report.episodes().iter().any(|record| {
+                    record.subject() == &owner
+                        && matches!(
+                            record.outcome(),
+                            crate::EpisodeOutcome::Preserved | crate::EpisodeOutcome::Transformed
+                        )
+                });
+                if !preserved && !finalized.episodes.contains_key(condition) {
+                    diagnostic_episode_changes.push(
+                        crate::episode::DiagnosticEpisodeChange::migration_end(
+                            episode,
+                            crate::DiagnosticEpisodeChangeKind::Terminated,
+                            stamp,
+                            migrated.patch,
+                        ),
+                    );
                 }
             }
+            provenance = migrated.view;
             edge_observations = finalized.edge_observations;
             stored_levels = finalized.stored_levels;
             levels = finalized.external_levels;
@@ -2868,6 +2963,7 @@ impl<D> Machine<D> {
         })
         .map_err(|failure| reconfiguration_phase(failure, patched))?;
 
+        let before_final_records = provenance.len();
         let mut built = build_ready_provenance(
             network,
             revision,
@@ -2889,6 +2985,7 @@ impl<D> Machine<D> {
             &due.inertial_causes,
             &due.periodic_causes,
             &declared_edges,
+            patch_cause,
         );
         remap_pending_causes(&mut pending_events, built.provenance.scope);
         remap_output_event_causes(&mut output_events, built.provenance.scope);
@@ -2947,9 +3044,14 @@ impl<D> Machine<D> {
             network,
             &evaluation,
             &built.operation_causes,
-            &standard_history,
+            &standard_causes,
             |cause| remap_cause(cause, built.provenance.scope),
         );
+        let updated_causes = standard_history
+            .iter()
+            .map(|(module, history)| (module.clone(), history.causal_roles()))
+            .collect();
+        standard_causes = updated_causes;
         remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
         remap_cause_map(&mut periodic_anchor_causes, built.provenance.scope);
         remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
@@ -2976,8 +3078,8 @@ impl<D> Machine<D> {
         .map_err(|failure| reconfiguration_phase(failure, patched))?;
         enforce_provenance_growth::<D>(
             &self.policy,
-            built.provenance.len(),
-            previous_provenance_len,
+            provenance_growth
+                .saturating_add(built.provenance.len().saturating_sub(before_final_records)),
         )
         .map_err(|failure| reconfiguration_phase(failure, patched))?;
         let schedule = schedule_from_pending(&pending_events);
@@ -3002,6 +3104,7 @@ impl<D> Machine<D> {
             PublishedCandidate {
                 stamp,
                 standard_history,
+                standard_causes,
                 at,
                 levels,
                 evaluation,
@@ -4313,13 +4416,12 @@ fn enforce_created_event_budget<D>(
 
 fn enforce_provenance_growth<D>(
     policy: &RuntimePolicy,
-    current_len: usize,
-    previous_len: usize,
+    logical_records_appended: usize,
 ) -> Result<(), RuntimeFailure<D>> {
     enforce_budget::<D>(
         policy,
         RuntimePolicyLimit::MaxRequiredProvenanceGrowth,
-        count_as_u64(current_len.saturating_sub(previous_len)),
+        count_as_u64(logical_records_appended),
     )
 }
 
@@ -4350,6 +4452,22 @@ fn remap_cause_map(causes: &mut BTreeMap<NodeKey, CauseRef>, scope: ProvenanceSc
     }
 }
 
+fn output_event_cause<D>(event: &OutputEvent<D>) -> CauseRef {
+    match event {
+        OutputEvent::LevelEstablished { cause, .. }
+        | OutputEvent::LevelChanged { cause, .. }
+        | OutputEvent::Pulsed { cause, .. } => *cause,
+    }
+}
+fn translate_output_event<D>(event: &mut OutputEvent<D>, mapping: &BTreeMap<CauseRef, CauseRef>) {
+    let cause = match event {
+        OutputEvent::LevelEstablished { cause, .. }
+        | OutputEvent::LevelChanged { cause, .. }
+        | OutputEvent::Pulsed { cause, .. } => cause,
+    };
+    *cause = translated_cause(mapping, *cause);
+}
+
 fn remap_output_event_causes<D>(events: &mut [OutputEvent<D>], scope: ProvenanceScope) {
     for event in events {
         let cause = match event {
@@ -4365,6 +4483,7 @@ struct PublishedCandidate<D> {
     stamp: ReactionStamp<D>,
     standard_history:
         BTreeMap<crate::QualifiedModuleRef, crate::standard::stateful::StandardHistory>,
+    standard_causes: BTreeMap<crate::QualifiedModuleRef, crate::standard::stateful::StandardCauses>,
     at: Time<D>,
     levels: BTreeMap<ExternalInputKey<Level>, LogicLevel>,
     evaluation: FullEvaluation,
@@ -4471,6 +4590,7 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     let PublishedCandidate {
         stamp,
         standard_history,
+        standard_causes,
         at,
         levels,
         evaluation,
@@ -4500,6 +4620,7 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     let candidate = &mut machine.store;
     candidate.revision = revision;
     candidate.standard_history = standard_history;
+    candidate.standard_causes = standard_causes;
     candidate.status = MachineStatus::Ready { now: at };
     candidate.last_reaction = Some(stamp);
     candidate.external_levels = levels;
@@ -4525,6 +4646,16 @@ fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<
     candidate.active_episodes = active_episodes;
     candidate.pending_events = pending_events;
     candidate.next_pending_event_serial = next_pending_event_serial;
+    // SPEC: docs/specs/contracts/provenance-retention.yaml "current-machine-root-manifest"
+    // Artifact owners are independent; collection never truncates required ancestry.
+    let roots = crate::causal_roots::machine(machine);
+    let Some(mut view) = machine.store.provenance.take() else {
+        panic!("published ready state must retain causal ownership");
+    };
+    for episode in machine.store.active_episodes.values() {
+        view.include(episode.provenance());
+    }
+    machine.store.provenance = Some(view.owned_roots(&roots));
 }
 
 fn count_as_u64(count: usize) -> u64 {
@@ -4536,6 +4667,10 @@ fn enforce_budget<D>(
     budget: RuntimePolicyLimit,
     consumed: u64,
 ) -> Result<(), RuntimeFailure<D>> {
+    #[cfg(test)]
+    if budget == RuntimePolicyLimit::MaxRequiredProvenanceGrowth {
+        crate::causal_work::update(|work| work.logical_growth = consumed);
+    }
     let limit = match budget {
         RuntimePolicyLimit::MaxInternalReactions => policy.max_internal_reactions(),
         RuntimePolicyLimit::MaxEvaluatedOperations => policy.max_evaluated_operations(),
@@ -4574,15 +4709,7 @@ fn build_initialization_provenance<D>(
         ProvenanceRecord::InitializationTransaction { at, revision },
     );
     let transaction_cause = if let Some((report, fact)) = migration {
-        let checkpoint = push_record(
-            scope,
-            &mut records,
-            ProvenanceRecord::Checkpoint {
-                fact,
-                supporters: vec![ordinary_transaction],
-            },
-        );
-        push_record(
+        let patch = push_record(
             scope,
             &mut records,
             ProvenanceRecord::TopologyChange {
@@ -4590,7 +4717,15 @@ fn build_initialization_provenance<D>(
                 revision,
                 base: report.base_fingerprint(),
                 target: report.target_fingerprint(),
-                supporters: vec![checkpoint],
+                supporters: Vec::new(),
+            },
+        );
+        push_record(
+            scope,
+            &mut records,
+            ProvenanceRecord::Checkpoint {
+                fact,
+                supporters: vec![ordinary_transaction, patch],
             },
         )
     } else {
@@ -4611,8 +4746,11 @@ fn build_initialization_provenance<D>(
             (*input, cause)
         })
         .collect::<BTreeMap<_, _>>();
+    // SPEC: docs/specs/contracts/replay-artifacts.yaml "embedded-transaction"
+    // Zero occurrences have no separate causal fact, matching persisted input omission.
     let pulse_input_causes = pulses
         .iter()
+        .filter(|(_, count)| count.is_positive())
         .map(|(input, count)| {
             let cause = push_record(
                 scope,
@@ -4664,31 +4802,67 @@ fn build_initialization_provenance<D>(
     }
 }
 
+struct MigrationProvenance<D> {
+    view: ProvenanceView<D>,
+    translated: BTreeMap<CauseRef, CauseRef>,
+    patch: CauseRef,
+    growth: usize,
+}
+fn translated_cause(mapping: &BTreeMap<CauseRef, CauseRef>, cause: CauseRef) -> CauseRef {
+    match mapping.get(&cause).copied() {
+        Some(cause) => cause,
+        None => panic!(
+            "every translated root and predecessor must belong to the selected source closure"
+        ),
+    }
+}
+
 fn checkpoint_migration<D>(
     source: &crate::CompiledNetwork<D>,
     previous: &ProvenanceView<D>,
     at: ReactionStamp<D>,
     finalized: &mut FinalizedPatch<D>,
-) -> ProvenanceView<D> {
+    source_roots: &[CauseRef],
+    result_roots: &[CauseRef],
+) -> MigrationProvenance<D> {
     // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "revision-provenance-and-episodes"
     // Historical facts use their source canonical encoding, so removed subjects and
     // module slots cannot be interpreted against the target topology on restoration.
     let scope = crate::causal_store::fresh_scope(None);
-    let facts = crate::state_digest::checkpoint_facts(source, previous);
+    let mut roots = source_roots.to_vec();
+    roots.extend_from_slice(result_roots);
+    let selected = previous.owned_roots(&roots);
+    let facts = crate::state_digest::checkpoint_facts(source, &selected);
     let mut records = crate::causal_store::Records::new(scope);
-    for (record, fact) in previous.records.iter().zip(facts) {
+    let mut translated = BTreeMap::new();
+    for (position, (record, fact)) in selected.records.iter().zip(facts).enumerate() {
+        let supporters = record
+            .predecessor_causes()
+            .into_iter()
+            .map(|cause| translated_cause(&translated, cause))
+            .collect();
         let record = match record {
-            ProvenanceRecord::Checkpoint { .. } => remap_record(record, scope),
-            _ => ProvenanceRecord::Checkpoint {
-                fact,
-                supporters: record.predecessor_causes(),
-            },
+            ProvenanceRecord::Checkpoint { .. } => {
+                translate_record(record, |cause| translated_cause(&translated, cause))
+            }
+            _ => ProvenanceRecord::Checkpoint { fact, supporters },
         };
-        push_record(scope, &mut records, record);
+        let cause = push_record(scope, &mut records, record);
+        translated.insert(selected.records.cause(position), cause);
     }
-    let supporters = (0..records.len())
-        .map(|position| records.cause(position))
-        .collect();
+    let replacement_count = records.len();
+    // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "current-source-topology-supporters"
+    // The supporter set uses canonical content, never private allocation multiplicity.
+    let mut supporter_content = BTreeMap::new();
+    for cause in source_roots {
+        let position = previous.resolve_ordinal(*cause);
+        let Some(content) = previous.records.canonical(position).get() else {
+            panic!("source facts must be frozen before migration");
+        };
+        supporter_content
+            .entry(content.digest)
+            .or_insert_with(|| translated_cause(&translated, *cause));
+    }
     let patch = push_record(
         scope,
         &mut records,
@@ -4697,8 +4871,18 @@ fn checkpoint_migration<D>(
             revision: finalized.revision,
             base: source.fingerprint(),
             target: finalized.compiled.fingerprint(),
-            supporters,
+            supporters: supporter_content.into_values().collect(),
         },
+    );
+    #[cfg(test)]
+    crate::state_digest_reference::assert_migration(
+        source,
+        previous,
+        source_roots,
+        result_roots,
+        &records,
+        &translated,
+        patch,
     );
     for (input, value) in &finalized.external_levels {
         let cause = push_record(
@@ -4719,7 +4903,7 @@ fn checkpoint_migration<D>(
             ProvenanceRecord::Migration {
                 subject: ProvenanceSubject::ExternalOutput(*output),
                 rule: "output_baseline".to_owned(),
-                supporters: vec![*cause, patch],
+                supporters: vec![translated_cause(&translated, *cause), patch],
             },
         );
     }
@@ -4763,7 +4947,7 @@ fn checkpoint_migration<D>(
                 ProvenanceRecord::Migration {
                     subject: provenance_subject(&finalized.compiled, *node),
                     rule: rule.to_owned(),
-                    supporters: vec![*cause, patch],
+                    supporters: vec![translated_cause(&translated, *cause), patch],
                 },
             );
         }
@@ -4805,7 +4989,7 @@ fn checkpoint_migration<D>(
             ProvenanceRecord::Migration {
                 subject: provenance_subject(&finalized.compiled, node),
                 rule: rule.to_owned(),
-                supporters: vec![previous_cause, patch],
+                supporters: vec![translated_cause(&translated, previous_cause), patch],
             },
         );
         let supporters = vec![migration];
@@ -4862,9 +5046,15 @@ fn checkpoint_migration<D>(
             PendingEvent::Periodic(event) => event.cause = cause,
         }
     }
-    ProvenanceView {
-        scope,
-        records: Arc::new(records),
+    let growth = records.len().saturating_sub(replacement_count);
+    MigrationProvenance {
+        view: ProvenanceView {
+            scope,
+            records: Arc::new(records),
+        },
+        translated,
+        patch,
+        growth,
     }
 }
 
@@ -4890,6 +5080,7 @@ fn build_ready_provenance<D>(
     due_inertial_delays: &BTreeMap<NodeKey, Vec<CauseRef>>,
     due_periodic_boundaries: &BTreeMap<NodeKey, Vec<CauseRef>>,
     declared_edges: &BTreeSet<NodeKey>,
+    patch_cause: Option<CauseRef>,
 ) -> ProvenanceBuild<D> {
     let scope = crate::causal_store::fresh_scope(Some(previous.scope));
     let mut records = previous.records.fork(scope);
@@ -4898,19 +5089,7 @@ fn build_ready_provenance<D>(
         &mut records,
         ProvenanceRecord::ReadyTransaction { at, revision },
     );
-    let transaction_cause = records
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(index, record)| match record {
-            ProvenanceRecord::TopologyChange {
-                at: patch_at,
-                revision: patch_revision,
-                ..
-            } if *patch_at == at && *patch_revision == revision => Some(records.cause(index)),
-            _ => None,
-        })
-        .unwrap_or(ordinary_transaction_cause);
+    let transaction_cause = patch_cause.unwrap_or(ordinary_transaction_cause);
     let mut input_causes = previous_input_causes
         .iter()
         .map(|(input, cause)| (*input, remap_cause(*cause, scope)))
@@ -4927,8 +5106,11 @@ fn build_ready_provenance<D>(
         );
         input_causes.insert(*input, cause);
     }
+    // SPEC: docs/specs/contracts/replay-artifacts.yaml "embedded-transaction"
+    // Zero occurrences have no separate causal fact, matching persisted input omission.
     let pulse_input_causes = pulses
         .iter()
+        .filter(|(_, count)| count.is_positive())
         .map(|(input, count)| {
             let cause = push_record(
                 scope,
@@ -5673,6 +5855,13 @@ pub(crate) fn remap_record<D>(
     record: &ProvenanceRecord<D>,
     scope: ProvenanceScope,
 ) -> ProvenanceRecord<D> {
+    translate_record(record, |cause| remap_cause(cause, scope))
+}
+
+fn translate_record<D>(
+    record: &ProvenanceRecord<D>,
+    translate: impl Fn(CauseRef) -> CauseRef,
+) -> ProvenanceRecord<D> {
     #[cfg(test)]
     crate::causal_work::update(|work| work.old_record_rewrites += 1);
     match record {
@@ -5687,10 +5876,7 @@ pub(crate) fn remap_record<D>(
             revision: *revision,
             base: *base,
             target: *target,
-            supporters: supporters
-                .iter()
-                .map(|cause| remap_cause(*cause, scope))
-                .collect(),
+            supporters: supporters.iter().map(|cause| translate(*cause)).collect(),
         },
         ProvenanceRecord::Migration {
             subject,
@@ -5699,17 +5885,11 @@ pub(crate) fn remap_record<D>(
         } => ProvenanceRecord::Migration {
             subject: subject.clone(),
             rule: rule.clone(),
-            supporters: supporters
-                .iter()
-                .map(|cause| remap_cause(*cause, scope))
-                .collect(),
+            supporters: supporters.iter().map(|cause| translate(*cause)).collect(),
         },
         ProvenanceRecord::Checkpoint { fact, supporters } => ProvenanceRecord::Checkpoint {
             fact: fact.clone(),
-            supporters: supporters
-                .iter()
-                .map(|cause| remap_cause(*cause, scope))
-                .collect(),
+            supporters: supporters.iter().map(|cause| translate(*cause)).collect(),
         },
         ProvenanceRecord::InitializationTransaction { at, revision } => {
             ProvenanceRecord::InitializationTransaction {
@@ -5756,10 +5936,7 @@ pub(crate) fn remap_record<D>(
             deadline: *deadline,
             count: *count,
             revision: *revision,
-            supporters: supporters
-                .iter()
-                .map(|cause| remap_cause(*cause, scope))
-                .collect(),
+            supporters: supporters.iter().map(|cause| translate(*cause)).collect(),
         },
         ProvenanceRecord::PendingPeriodicBoundary {
             event,
@@ -5784,10 +5961,7 @@ pub(crate) fn remap_record<D>(
             first_emission: *first_emission,
             reenable_phase: *reenable_phase,
             revision: *revision,
-            supporters: supporters
-                .iter()
-                .map(|cause| remap_cause(*cause, scope))
-                .collect(),
+            supporters: supporters.iter().map(|cause| translate(*cause)).collect(),
         },
         ProvenanceRecord::PendingInertialDelay {
             event,
@@ -5806,10 +5980,7 @@ pub(crate) fn remap_record<D>(
             deadline: *deadline,
             target: *target,
             revision: *revision,
-            supporters: supporters
-                .iter()
-                .map(|cause| remap_cause(*cause, scope))
-                .collect(),
+            supporters: supporters.iter().map(|cause| translate(*cause)).collect(),
         },
         ProvenanceRecord::PendingTransportDelay {
             event,
@@ -5828,20 +5999,14 @@ pub(crate) fn remap_record<D>(
             deadline: *deadline,
             target: *target,
             revision: *revision,
-            supporters: supporters
-                .iter()
-                .map(|cause| remap_cause(*cause, scope))
-                .collect(),
+            supporters: supporters.iter().map(|cause| translate(*cause)).collect(),
         },
         ProvenanceRecord::Derived {
             subject,
             supporters,
         } => ProvenanceRecord::Derived {
             subject: subject.clone(),
-            supporters: supporters
-                .iter()
-                .map(|cause| remap_cause(*cause, scope))
-                .collect(),
+            supporters: supporters.iter().map(|cause| translate(*cause)).collect(),
         },
         ProvenanceRecord::PulseDerived {
             subject,
@@ -5855,14 +6020,11 @@ pub(crate) fn remap_record<D>(
                 .map(|contribution| PulseContribution {
                     port: contribution.port.clone(),
                     count: contribution.count,
-                    cause: remap_cause(contribution.cause, scope),
+                    cause: translate(contribution.cause),
                 })
                 .collect(),
             result: *result,
-            supporters: supporters
-                .iter()
-                .map(|cause| remap_cause(*cause, scope))
-                .collect(),
+            supporters: supporters.iter().map(|cause| translate(*cause)).collect(),
         },
         ProvenanceRecord::PulseControlledLevel {
             subject,
@@ -5876,14 +6038,11 @@ pub(crate) fn remap_record<D>(
                 .map(|contribution| PulseContribution {
                     port: contribution.port.clone(),
                     count: contribution.count,
-                    cause: remap_cause(contribution.cause, scope),
+                    cause: translate(contribution.cause),
                 })
                 .collect(),
             result: *result,
-            supporters: supporters
-                .iter()
-                .map(|cause| remap_cause(*cause, scope))
-                .collect(),
+            supporters: supporters.iter().map(|cause| translate(*cause)).collect(),
         },
     }
 }
@@ -6582,6 +6741,167 @@ mod tests {
     }
 
     #[test]
+    fn dropped_quiet_reactions_reclaim_irrelevant_catalogue_and_membership() {
+        let compiled = compiled(100, 200);
+        let mut machine = initialized_machine(&compiled, LogicLevel::Low);
+        let bound = machine.store.provenance.as_ref().unwrap().len() + 2;
+        for step in 1..=40 {
+            drop(
+                machine
+                    .apply(Transaction::advance(
+                        crate::time::Time::from_ticks(10 + step),
+                        machine.revision(),
+                        compiled.input_delta().finish().unwrap(),
+                    ))
+                    .unwrap(),
+            );
+            let view = machine.store.provenance.as_ref().unwrap();
+            assert!(
+                view.len() <= bound,
+                "quiet history {step} retained {} records (bound {bound})",
+                view.len()
+            );
+            assert!(crate::causal_work::live_nodes() <= bound);
+        }
+    }
+
+    #[test]
+    fn quiet_growth_counts_appends_even_when_current_membership_does_not_grow() {
+        let compiled = compiled(100, 200);
+        let seed = initialized_machine(&compiled, LogicLevel::Low);
+        let retained = seed
+            .inspect_output(ExternalOutputKey::from_u128(200))
+            .unwrap();
+        let prior = seed.store.provenance.as_ref().unwrap().len();
+        for limit in [0, 1, 2] {
+            let mut machine = compiled.spawn(policy_with([100, 1000, 100, 100, limit]));
+            machine.store = seed.store.clone();
+            let before = machine.snapshot();
+            crate::causal_work::reset();
+            let result = machine.apply(Transaction::advance(
+                crate::time::Time::from_ticks(11),
+                machine.revision(),
+                compiled.input_delta().finish().unwrap(),
+            ));
+            // A level wire appends only a Ready fact. Its input origin and
+            // unchanged output baseline survive; the unused new fact is reclaimed.
+            let expected = 1;
+            assert_eq!(crate::causal_work::read().nodes_created, expected);
+            if limit < expected as u64 {
+                assert!(matches!(
+                    result.unwrap_err().evidence(),
+                    RuntimeFailureEvidence::BudgetExceeded {
+                        budget: RuntimePolicyLimit::MaxRequiredProvenanceGrowth,
+                        consumed: 1,
+                        ..
+                    }
+                ));
+                assert_eq!(machine.snapshot(), before);
+            } else {
+                result.unwrap();
+                assert!(machine.store.provenance.as_ref().unwrap().len() <= prior + 1);
+            }
+        }
+        retained
+            .provenance()
+            .explain_cause(retained.current_support.unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn zero_pulse_normalization_has_equal_forecast_and_apply_growth_boundaries() {
+        let compiled = compiled_merge();
+        let transaction = |machine: &crate::Machine<()>, initialize, counts: Option<(u64, u64)>| {
+            if initialize {
+                let mut input = compiled.input_snapshot();
+                if let Some((first, second)) = counts {
+                    for (key, count) in [(1, first), (2, second)] {
+                        input = input
+                            .pulse(ExternalInputKey::from_u128(key), PulseCount::new(count))
+                            .unwrap();
+                    }
+                }
+                Transaction::initialize(
+                    crate::time::Time::from_ticks(0),
+                    machine.revision(),
+                    input.finish().unwrap(),
+                )
+            } else {
+                let mut input = compiled.input_delta();
+                if let Some((first, second)) = counts {
+                    for (key, count) in [(1, first), (2, second)] {
+                        input = input
+                            .pulse(ExternalInputKey::from_u128(key), PulseCount::new(count))
+                            .unwrap();
+                    }
+                }
+                Transaction::advance(
+                    crate::time::Time::from_ticks(1),
+                    machine.revision(),
+                    input.finish().unwrap(),
+                )
+            }
+        };
+        let mut seed = compiled.spawn(policy_with([100, 1000, 100, 100, 100]));
+        seed.apply(transaction(&seed, true, None)).unwrap();
+        // No occurrences append transaction + Merge + output derivations.
+        // Positive batches additionally append both input observations.
+        for initialize in [true, false] {
+            for limit in [2, 3, 4] {
+                let mut snapshots = Vec::new();
+                for counts in [None, Some((0, 0))] {
+                    let mut machine = compiled.spawn(policy_with([100, 1000, 100, 100, limit]));
+                    if !initialize {
+                        machine.store = seed.store.clone();
+                    }
+                    let transaction = transaction(&machine, initialize, counts);
+                    let before = observe(&machine);
+                    crate::causal_work::reset();
+                    let forecast = machine.forecast(transaction.clone());
+                    assert_eq!(crate::causal_work::read().nodes_created, 3);
+                    assert_eq!(observe(&machine), before);
+                    crate::causal_work::reset();
+                    let applied = machine.apply(transaction);
+                    assert_eq!(crate::causal_work::read().nodes_created, 3);
+                    if limit < 3 {
+                        for failure in [forecast.unwrap_err(), applied.unwrap_err()] {
+                            assert!(matches!(
+                                failure.evidence(),
+                                RuntimeFailureEvidence::BudgetExceeded {
+                                    budget: RuntimePolicyLimit::MaxRequiredProvenanceGrowth,
+                                    consumed: 3,
+                                    ..
+                                }
+                            ));
+                        }
+                        assert_eq!(observe(&machine), before);
+                    } else {
+                        let forecast = forecast.unwrap();
+                        applied.unwrap();
+                        assert_eq!(crate::causal_work::read().logical_growth, 3);
+                        assert_eq!(forecast.state().snapshot(), machine.snapshot());
+                    }
+                    snapshots.push(machine.snapshot());
+                }
+                assert_eq!(snapshots[0], snapshots[1]);
+            }
+            let mut positive = compiled.spawn(policy_with([100, 1000, 100, 100, 100]));
+            if !initialize {
+                positive.store = seed.store.clone();
+            }
+            crate::causal_work::reset();
+            let result = positive
+                .apply(transaction(&positive, initialize, Some((1, 2))))
+                .unwrap();
+            assert_eq!(crate::causal_work::read().nodes_created, 5);
+            assert_eq!(crate::causal_work::read().logical_growth, 5);
+            assert!(
+                matches!(result.output_events(), [OutputEvent::Pulsed { count, .. }] if *count == PulseCount::new(3))
+            );
+        }
+    }
+
+    #[test]
     fn ordinary_advance_shares_prior_records_and_hashes_only_new_nodes() {
         for history in [4_u64, 40] {
             let compiled = compiled(100, 200);
@@ -6606,8 +6926,8 @@ mod tests {
                     delta,
                 ))
                 .unwrap();
-            let new_nodes = machine.store.provenance.as_ref().unwrap().len() - prior_len;
             let work = crate::causal_work::read();
+            let new_nodes = work.nodes_created;
             assert_eq!(work.old_record_rewrites, 0, "history {history}: {work:?}");
             assert_eq!(work.scope_records_hashed, 0, "history {history}: {work:?}");
             assert_eq!(
@@ -6675,7 +6995,7 @@ mod tests {
             let result = advance(&mut machine, history + 1);
             let work = crate::causal_work::read();
             let current = machine.store.provenance.as_ref().unwrap();
-            let added = current.len() - prior_len;
+            let added = work.nodes_created;
             assert!(added > 1);
             assert_eq!(work.old_record_rewrites, 0);
             assert_eq!(work.scope_records_hashed, 0);
@@ -6691,9 +7011,9 @@ mod tests {
             );
             result.provenance().explain_cause(ancestor).unwrap();
 
-            let reference = crate::state_digest_reference::observable_digest_input(&machine, 2, 2);
+            let reference = crate::state_digest_reference::observable_digest_input(&machine, 3, 3);
             crate::causal_work::reset();
-            let actual = crate::state_digest::observable_digest_input(&machine, 2, 2);
+            let actual = crate::state_digest::observable_digest_input(&machine, 3, 3);
             let work = crate::causal_work::read();
             assert_eq!(actual, reference);
             assert_eq!(work.canonical_encodes, 0);
@@ -6797,10 +7117,10 @@ mod tests {
             crate::state_digest::cause_content(result.provenance(), committed)
         );
         assert!(
-            old.provenance()
-                .records()
-                .shared_node(current.records(), old_cause)
+            current.records().position(old_cause).is_none(),
+            "replaced stateless fact is owned only by old artifacts"
         );
+        old.provenance().inspect(old_cause).unwrap();
         drop(forecast);
         drop(result);
         drop(machine);
@@ -7292,6 +7612,13 @@ mod tests {
         provenance: Option<([u8; 32], usize, usize)>,
         operation_levels: Vec<Option<LogicLevel>>,
         operation_causes: Vec<CauseRef>,
+        standard_causes: std::collections::BTreeMap<
+            crate::QualifiedModuleRef,
+            crate::standard::stateful::StandardCauses,
+        >,
+        execution: crate::ExecutionStateDigest,
+        observable: crate::ObservableStateDigest,
+        snapshot: Vec<u8>,
         edge_observations: Vec<crate::EdgeObservation>,
         edge_observation_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
         episodes: Vec<EpisodeObservation>,
@@ -7333,6 +7660,10 @@ mod tests {
             }),
             operation_levels: machine.store.operation_levels.clone(),
             operation_causes: machine.store.operation_causes.clone(),
+            standard_causes: machine.store.standard_causes.clone(),
+            execution: machine.execution_state_digest(),
+            observable: machine.observable_state_digest(),
+            snapshot: machine.snapshot().artifact_bytes().to_vec(),
             edge_observations: machine.store.edge_observations.clone(),
             edge_observation_causes: machine.store.edge_observation_causes.clone(),
             episodes: machine
@@ -7440,9 +7771,28 @@ mod tests {
             )
         };
         let mut probe = initialize(policy_with([100, 10_000, 100, 1_000, 10_000]));
-        let initial_records = probe.store.provenance.as_ref().unwrap().len();
+        crate::causal_work::reset();
         let success = probe.apply(transaction(probe.revision())).unwrap();
-        let growth = (probe.store.provenance.as_ref().unwrap().len() - initial_records) as u64;
+        // Each reaction appends one transaction, two node/output facts each,
+        // and two scheduling explanations. Each due reaction appends one pending
+        // boundary; the final reaction adds one input observation and boundary.
+        let growth = 3 * (1 + 2 + 2 + 2 + 1) + (1 + 2 + 2 + 2 + 1 + 1);
+        assert_eq!(crate::causal_work::read().nodes_created as u64, growth);
+        assert_eq!(crate::causal_work::read().logical_growth, growth);
+        for limit in [growth, growth + 1] {
+            let mut machine = initialize(policy_with([100, 10_000, 100, 1_000, limit]));
+            crate::causal_work::reset();
+            let admitted = machine.apply(transaction(machine.revision())).unwrap();
+            assert_eq!(crate::causal_work::read().logical_growth, growth);
+            assert_eq!(
+                admitted.after_execution_digest(),
+                success.after_execution_digest()
+            );
+            assert_eq!(
+                admitted.after_observable_digest(),
+                success.after_observable_digest()
+            );
+        }
         for (index, limit, budget) in [
             (0, 3, RuntimePolicyLimit::MaxInternalReactions),
             (
@@ -9470,13 +9820,9 @@ mod tests {
             };
             let mut reference = c.spawn(roomy.clone());
             reference.store = seed.store.clone();
-            let previous = reference
-                .store
-                .provenance
-                .as_ref()
-                .map_or(0, ProvenanceView::len);
+            crate::causal_work::reset();
             let result = apply(&mut reference).unwrap();
-            let growth = (reference.store.provenance.as_ref().unwrap().len() - previous) as u64;
+            let growth = crate::causal_work::read().nodes_created as u64;
             assert!(growth > 0);
             let events = result.output_events().len() as u64;
             assert_eq!(events, 1);
@@ -9592,8 +9938,17 @@ mod tests {
         .unwrap();
         m.store.last_reaction = Some(crate::ReactionStamp::from_parts(
             crate::time::Time::from_ticks(10),
-            u64::MAX,
+            u64::MAX - 1,
         ));
+        // Construct the final coherent occurrence through ordinary apply;
+        // only the synthetic precondition skips irrelevant quiet occurrences.
+        m.apply(Transaction::advance(
+            crate::time::Time::from_ticks(10),
+            m.revision(),
+            c.input_delta().finish().unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(m.last_reaction().unwrap().order(), u64::MAX);
         let mut restored = c
             .restore(m.snapshot(), policy_with([10, 100, 0, 100, 1_000]))
             .unwrap();

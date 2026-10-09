@@ -881,6 +881,151 @@ impl<D> CompiledNetwork<D> {
         self.inner.operations.len()
     }
 
+    /// Independent operations needing explicit current cause associations.
+    pub(crate) fn current_cause_slots(&self) -> Vec<(usize, Vec<u8>)> {
+        use crate::identity::Cbor;
+        let mut slots = Vec::new();
+        for (index, operation) in self.inner.operations.iter().enumerate() {
+            let mut subject = Cbor::default();
+            match operation {
+                OperationDescriptor::ExternalInput(input) => {
+                    let AnyExternalInputKey::Pulse(key) = self.inner.external_inputs[input.0].key
+                    else {
+                        continue;
+                    };
+                    subject.variant_start("external_pulse_input");
+                    subject.key(key.as_u128());
+                }
+                OperationDescriptor::Node(node) => {
+                    let owner = self.stable_owner(self.inner.nodes[node.0].key);
+                    subject.nested(&crate::state_digest::encode_stable_owner(&owner));
+                }
+                OperationDescriptor::NodeOutput(port) => {
+                    let node = &self.inner.nodes[self.inner.ports[port.0].owner.0];
+                    if !matches!(node.kind, CompiledNodeKind::PulseRoute { .. }) {
+                        continue;
+                    }
+                    let flat = self
+                        .inner
+                        .output_port_lookup
+                        .iter()
+                        .find_map(|(key, value)| (*value == *port).then_some(*key));
+                    let Some(AnyOutPortKey::Pulse(key)) = flat else {
+                        panic!("PulseRoute output must have a stable pulse port");
+                    };
+                    subject.variant_start("pulse_node_output");
+                    subject.array_start(2);
+                    subject.nested(&crate::state_digest::encode_stable_owner(
+                        &self.stable_owner(node.key),
+                    ));
+                    let local = local_out_port_key(
+                        key.into(),
+                        self.inner
+                            .qualified_output_reverse
+                            .get(&key.into())
+                            .copied(),
+                    );
+                    subject.key(local);
+                }
+                OperationDescriptor::ExternalOutput(output) => {
+                    let AnyExternalOutputKey::Pulse(key) =
+                        self.inner.external_outputs[output.0].key
+                    else {
+                        continue;
+                    };
+                    subject.variant_start("external_pulse_output");
+                    subject.key(key.as_u128());
+                }
+            }
+            slots.push((index, subject.finish()));
+        }
+        slots
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_cause_slots_reference(&self) -> Vec<(usize, Vec<u8>)> {
+        use crate::identity::Cbor;
+        let mut rows = Vec::new();
+        for (vertex, operation) in &self.inner.operation_lookup {
+            let mut subject = Cbor::default();
+            match vertex {
+                ReactionVertex::NodeOperation(key) => subject.nested(
+                    &crate::state_digest::encode_stable_owner(&self.stable_owner(*key)),
+                ),
+                ReactionVertex::ExternalInput(AnyExternalInputKey::Pulse(key)) => {
+                    subject.variant_start("external_pulse_input");
+                    subject.key(key.as_u128());
+                }
+                ReactionVertex::ExternalOutput(AnyExternalOutputKey::Pulse(key)) => {
+                    subject.variant_start("external_pulse_output");
+                    subject.key(key.as_u128());
+                }
+                ReactionVertex::NodeOutput(AnyOutPortKey::Pulse(key)) => {
+                    let port = self.inner.output_port_lookup[&(*key).into()];
+                    let node = &self.inner.nodes[self.inner.ports[port.0].owner.0];
+                    if !matches!(node.kind, CompiledNodeKind::PulseRoute { .. }) {
+                        continue;
+                    }
+                    subject.variant_start("pulse_node_output");
+                    subject.array_start(2);
+                    subject.nested(&crate::state_digest::encode_stable_owner(
+                        &self.stable_owner(node.key),
+                    ));
+                    subject.key(local_out_port_key(
+                        (*key).into(),
+                        self.inner
+                            .qualified_output_reverse
+                            .get(&(*key).into())
+                            .copied(),
+                    ));
+                }
+                _ => continue,
+            }
+            rows.push((operation.0, subject.finish()));
+        }
+        rows
+    }
+
+    pub(crate) fn restore_operation_causes(
+        &self,
+        explicit: &BTreeMap<usize, crate::CauseRef>,
+        inputs: &BTreeMap<ExternalInputKey<Level>, crate::CauseRef>,
+        outputs: &BTreeMap<ExternalOutputKey<Level>, crate::CauseRef>,
+    ) -> Option<Vec<crate::CauseRef>> {
+        let mut causes = Vec::new();
+        for (index, operation) in self.inner.operations.iter().enumerate() {
+            let cause = if let Some(cause) = explicit.get(&index) {
+                *cause
+            } else {
+                match operation {
+                    OperationDescriptor::ExternalInput(input) => {
+                        let AnyExternalInputKey::Level(key) =
+                            self.inner.external_inputs[input.0].key
+                        else {
+                            return None;
+                        };
+                        *inputs.get(&key)?
+                    }
+                    OperationDescriptor::ExternalOutput(output) => {
+                        let AnyExternalOutputKey::Level(key) =
+                            self.inner.external_outputs[output.0].key
+                        else {
+                            return None;
+                        };
+                        *outputs.get(&key)?
+                    }
+                    OperationDescriptor::NodeOutput(_) => {
+                        let predecessor = self.inner.predecessors[index].first()?;
+                        *causes.get(predecessor.0)?
+                    }
+                    OperationDescriptor::Node(_) => return None,
+                }
+            };
+            causes.push(cause);
+        }
+        Some(causes)
+    }
+
     pub(crate) fn initial_stored_levels(&self) -> Vec<LogicLevel> {
         self.inner.stored_level_initial_states.clone()
     }

@@ -441,7 +441,12 @@ fn semantic_versions() -> Vec<u8> {
 }
 
 fn version(record: &mut Record, name: &'static str) {
-    record.field(name, |writer| writer.uint(SEMANTIC_VERSION));
+    record.field(name, |writer| {
+        writer.uint(match name {
+            "artifact_schema_version" | "provenance_semantics_version" => 3,
+            _ => SEMANTIC_VERSION,
+        })
+    });
 }
 
 fn lifecycle_bytes<D>(machine: &Machine<D>, provenance: &CauseDigestIndex) -> Vec<u8> {
@@ -882,6 +887,18 @@ fn episode_cause<D>(
 
 fn write_provenance<D>(writer: &mut Cbor, machine: &Machine<D>, provenance: &CauseDigestIndex) {
     let mut record = Record::new();
+    record.field("current_roots", |writer| {
+        let rows = crate::causal_roots::bindings(machine, true);
+        writer.array_start(rows.len());
+        for (subject, role, cause) in rows {
+            let digest = cause_digest(machine, provenance, cause);
+            let mut row = Record::new();
+            row.field("cause", |writer| writer.bytes(&digest));
+            row.field("role", |writer| writer.text(role));
+            row.field("subject", |writer| writer.nested(&subject));
+            writer.nested(&row.finish());
+        }
+    });
     let episodes = episode_roots(machine, provenance);
     record.field("episodes", |writer| write_digests(writer, &episodes));
     let inputs = cause_set(machine, provenance, &machine.store.input_causes);
@@ -1104,7 +1121,7 @@ mod tests {
 
     const PREFIX: [u8; 8] = [0x4d, 0x53, 0x49, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
     const SNAPSHOT_DOMAIN: &str = "mossignal/snapshot_digest/v2";
-    const PROVENANCE_DOMAIN: &str = "mossignal/provenance_record/v2";
+    const PROVENANCE_DOMAIN: &str = "mossignal/provenance_record/v3";
     const ENVELOPE_FIELDS: &[&str] = &[
         "artifact_kind",
         "artifact_schema_version",
@@ -1600,7 +1617,18 @@ mod tests {
         let fields = record(envelope);
         assert_eq!(field_names(&fields), ENVELOPE_FIELDS);
         for name in VERSION_FIELDS {
-            assert_eq!(uint(field(&fields, name)), 2, "{name}");
+            assert_eq!(
+                uint(field(&fields, name)),
+                if matches!(
+                    *name,
+                    "artifact_schema_version" | "provenance_semantics_version"
+                ) {
+                    3
+                } else {
+                    2
+                },
+                "{name}"
+            );
         }
         assert_eq!(text(field(&fields, "artifact_kind")), "machine_snapshot");
         let integrity = byte_string(field(&fields, "integrity_digest"));
@@ -1643,13 +1671,22 @@ mod tests {
             "patch_semantics_version",
             "provenance_semantics_version",
         ] {
-            assert_eq!(uint(field(&versions, name)), 2, "{name}");
+            assert_eq!(
+                uint(field(&versions, name)),
+                if name == "provenance_semantics_version" {
+                    3
+                } else {
+                    2
+                },
+                "{name}"
+            );
         }
         let (lifecycle_name, lifecycle_body) = variant(field(&payload, "lifecycle"));
         let provenance = record(field(&payload, "provenance"));
         assert_eq!(
             field_names(&provenance),
             [
+                "current_roots",
                 "episodes",
                 "external_inputs",
                 "output_baselines",
@@ -1795,7 +1832,7 @@ mod tests {
 
     fn provenance_digest(record: &Value) -> Vec<u8> {
         let encoded = encode_value(record);
-        blake3::hash(&domain_record(PROVENANCE_DOMAIN, 2, &encoded))
+        blake3::hash(&domain_record(PROVENANCE_DOMAIN, 3, &encoded))
             .as_bytes()
             .to_vec()
     }

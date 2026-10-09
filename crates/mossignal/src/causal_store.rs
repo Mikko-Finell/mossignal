@@ -51,6 +51,8 @@ impl<D> Drop for Node<D> {
     fn drop(&mut self) {
         #[cfg(test)]
         self.tracker.fetch_sub(1, Ordering::Relaxed);
+        #[cfg(test)]
+        crate::causal_work::update(|work| work.nodes_released += 1);
         // SPEC: docs/specs/contracts/semantic-inspection.yaml "retained-cause-ownership"
         // Final-owner release must work even for a long, still-complete ancestry.
         let mut pending = std::mem::take(&mut self.predecessors);
@@ -103,6 +105,8 @@ impl<D> Records<D> {
     }
 
     pub(crate) fn push(&mut self, record: ProvenanceRecord<D>) -> CauseRef {
+        #[cfg(test)]
+        crate::causal_work::update(|work| work.nodes_created += 1);
         let ordinal = match u32::try_from(self.nodes.len()) {
             Ok(value) => value,
             Err(_) => panic!("transaction provenance exceeds the supported reference space"),
@@ -175,15 +179,18 @@ impl<D> Records<D> {
             pending.push(Arc::clone(&self.nodes[position]));
         }
         while let Some(node) = pending.pop() {
-            if selected.insert(node.cause) {
+            let position = match self.position(node.cause) {
+                Some(position) => position,
+                None => panic!("owned closure must contain every predecessor's membership"),
+            };
+            if selected.insert(position) {
                 pending.extend(node.predecessors.iter().map(Arc::clone));
             }
         }
-        let nodes: Vec<_> = self
-            .nodes
-            .iter()
-            .filter(|node| selected.contains(&node.cause))
-            .map(Arc::clone)
+        // Only the selected closure is visited; no full catalogue sweep.
+        let nodes: Vec<_> = selected
+            .into_iter()
+            .map(|position| Arc::clone(&self.nodes[position]))
             .collect();
         let positions = nodes
             .iter()
@@ -194,6 +201,15 @@ impl<D> Records<D> {
             scope: self.scope,
             nodes,
             positions,
+        }
+    }
+
+    pub(crate) fn include(&mut self, other: &Self) {
+        for node in &other.nodes {
+            if !self.positions.contains_key(&node.cause) {
+                self.positions.insert(node.cause, self.nodes.len());
+                self.nodes.push(Arc::clone(node));
+            }
         }
     }
 

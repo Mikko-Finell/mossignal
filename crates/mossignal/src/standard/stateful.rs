@@ -771,6 +771,26 @@ pub struct StatefulStandardInspection<D> {
     pub provenance: ProvenanceView<D>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StandardCauses {
+    pub(crate) latest_reset: Option<CauseRef>,
+    pub(crate) latest_toggle: Option<CauseRef>,
+    pub(crate) latest_capture: Option<CauseRef>,
+}
+
+impl StandardCauses {
+    pub(crate) fn retained_causes(&self) -> impl Iterator<Item = CauseRef> {
+        [self.latest_reset, self.latest_toggle, self.latest_capture]
+            .into_iter()
+            .flatten()
+    }
+    pub(crate) fn translate_causes(&mut self, translate: impl Fn(CauseRef) -> CauseRef) {
+        self.latest_reset = self.latest_reset.map(&translate);
+        self.latest_toggle = self.latest_toggle.map(&translate);
+        self.latest_capture = self.latest_capture.map(&translate);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct StandardHistory {
     state: LogicLevel,
@@ -784,16 +804,18 @@ pub(crate) struct StandardHistory {
 }
 
 impl StandardHistory {
+    pub(crate) fn causal_roles(&self) -> StandardCauses {
+        StandardCauses {
+            latest_reset: self.latest_reset,
+            latest_toggle: self.latest_toggle,
+            latest_capture: self.latest_capture,
+        }
+    }
+
     pub(crate) fn retained_causes(&self) -> impl Iterator<Item = CauseRef> {
         [self.latest_reset, self.latest_toggle, self.latest_capture]
             .into_iter()
             .flatten()
-    }
-
-    pub(crate) fn translate_causes(&mut self, translate: impl Fn(CauseRef) -> CauseRef) {
-        self.latest_reset = self.latest_reset.map(&translate);
-        self.latest_toggle = self.latest_toggle.map(&translate);
-        self.latest_capture = self.latest_capture.map(&translate);
     }
 }
 
@@ -806,11 +828,19 @@ fn required<T>(value: Option<T>) -> T {
     }
 }
 
+pub(crate) fn causal_role_names(reference: &StandardModuleRef) -> &'static [&'static str] {
+    match Kind::from_ref(reference) {
+        Some(Kind::PulseToggle | Kind::LevelToggle) => &["latest_reset", "latest_toggle"],
+        Some(Kind::SampleHold) => &["latest_reset", "latest_capture"],
+        None => &[],
+    }
+}
+
 pub(crate) fn observe_reaction<D>(
     compiled: &CompiledNetwork<D>,
     evaluation: &FullEvaluation,
     causes: &[CauseRef],
-    previous: &BTreeMap<QualifiedModuleRef, StandardHistory>,
+    previous: &BTreeMap<QualifiedModuleRef, StandardCauses>,
     rebase: impl Fn(CauseRef) -> CauseRef,
 ) -> BTreeMap<QualifiedModuleRef, StandardHistory> {
     compiled
@@ -871,8 +901,12 @@ pub(crate) fn observe_reaction<D>(
                 reset_baseline: None,
                 remembered_reset,
                 latest_reset: old.and_then(|h| h.latest_reset).map(&rebase),
-                latest_toggle: old.and_then(|h| h.latest_toggle).map(&rebase),
-                latest_capture: old.and_then(|h| h.latest_capture).map(&rebase),
+                latest_toggle: (kind != Kind::SampleHold)
+                    .then(|| old.and_then(|h| h.latest_toggle).map(&rebase))
+                    .flatten(),
+                latest_capture: (kind == Kind::SampleHold)
+                    .then(|| old.and_then(|h| h.latest_capture).map(&rebase))
+                    .flatten(),
                 reaction: StatefulStandardReaction::SampleHold {
                     previous: state,
                     value: state,

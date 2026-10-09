@@ -315,8 +315,8 @@ impl<D> fmt::Debug for RecordedTransaction<D> {
 
 /// Version vector stored with a replay log.
 ///
-/// Every component matches the machine-snapshot encoder's current vector.
-/// Accepting only that vector is not a replay-format freeze.
+/// Replay artifacts use schema 2 and the shared current semantic components,
+/// including provenance semantics 3. Snapshot schema 3 is kind-specific.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SemanticVersions {
     artifact_schema_version: u64,
@@ -340,7 +340,7 @@ impl SemanticVersions {
         envelope_schema_version: VERSION,
         node_semantics_version: VERSION,
         patch_semantics_version: VERSION,
-        provenance_semantics_version: VERSION,
+        provenance_semantics_version: 3,
     };
 
     fn component(self, name: &str) -> Option<u64> {
@@ -1588,7 +1588,7 @@ fn log_content_digest(
     // Each embedded frame contributes its artifact integrity digest.
     let digest = blake3::hash(&domain_separated(
         REPLAY_LOG_CONTENT_DOMAIN,
-        1,
+        2,
         &record.finish(),
     ));
     ReplayLogContentDigest::from_digest(*digest.as_bytes())
@@ -1624,7 +1624,15 @@ fn envelope_at(
     let mut record = Record::new();
     record.field("artifact_kind", |writer| writer.text(kind));
     for name in VERSION_FIELDS {
-        record.field(name, |writer| writer.uint(version));
+        record.field(name, |writer| {
+            writer.uint(
+                if *name == "provenance_semantics_version" && version == VERSION {
+                    3
+                } else {
+                    version
+                },
+            )
+        });
     }
     if let Some(digest) = integrity {
         record.field("integrity_digest", |writer| writer.bytes(&digest));
@@ -1821,13 +1829,14 @@ fn open_artifact<D>(
                 .ok_or_else(|| malformed(expected, "envelope", *name))?,
             &format!("envelope.{name}"),
         )?;
-        if version != VERSION {
+        let required = SemanticVersions::CURRENT.component(name).unwrap_or(VERSION);
+        if version != required {
             return Err(unsupported_version(
                 expected,
                 "envelope",
                 name,
                 version,
-                VERSION.to_string(),
+                required.to_string(),
             ));
         }
         set_version(&mut versions, name, version);

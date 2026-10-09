@@ -42,6 +42,7 @@
 pub mod authored;
 pub mod binding;
 pub mod builder;
+mod causal_roots;
 mod causal_store;
 #[cfg(test)]
 mod causal_work;

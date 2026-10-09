@@ -378,6 +378,10 @@ fn pulse_route_provenance_keeps_only_selected_pulse_support() {
             };
             let (low_count, low_cause) = event(low_output);
             let (high_count, high_cause) = event(high_output);
+            for cause in [low_cause, high_cause] {
+                let (levels, _) = reachable_observations(result.provenance(), cause);
+                assert!(levels.contains(&(selector_key, control)));
+            }
             let expected_count =
                 routed_count
                     .checked_add(PulseCount::ONE)
@@ -400,10 +404,16 @@ fn pulse_route_provenance_keeps_only_selected_pulse_support() {
                 } else {
                     (high_inputs, high_extra_key, low_inputs, low_extra_key)
                 };
-            assert!(selected_inputs.contains(&(pulses_key, routed_count)));
-            assert!(selected_inputs.contains(&(selected_extra, PulseCount::ONE)));
-            assert!(suppressed_inputs.contains(&(suppressed_extra, PulseCount::ONE)));
-            assert!(!suppressed_inputs.contains(&(pulses_key, routed_count)));
+            let mut expected_selected = BTreeSet::from([(selected_extra, PulseCount::ONE)]);
+            // Zero occurrences normalize to absence, including on the selected route.
+            if routed_count.is_positive() {
+                expected_selected.insert((pulses_key, routed_count));
+            }
+            assert_eq!(selected_inputs, expected_selected);
+            assert_eq!(
+                suppressed_inputs,
+                BTreeSet::from([(suppressed_extra, PulseCount::ONE)])
+            );
         }
     }
 }
@@ -470,12 +480,16 @@ fn pulse_gate_provenance_keeps_only_enabled_pulse_support() {
                 PulseCount::ONE
             };
             assert_eq!(*count, expected);
+            let (levels, _) = reachable_observations(result.provenance(), *cause);
+            assert!(levels.contains(&(enable_key, enable)));
             let observed = observed_pulse_inputs(result.provenance(), *cause);
-            assert!(observed.contains(&(extra_key, PulseCount::ONE)));
+            let mut expected_inputs = BTreeSet::from([(extra_key, PulseCount::ONE)]);
+            if enable.is_high() && gated_count.is_positive() {
+                expected_inputs.insert((gated_key, gated_count));
+            }
             assert_eq!(
-                observed.contains(&(gated_key, gated_count)),
-                enable.is_high(),
-                "gated input support must follow settled enable: {observed:?}"
+                observed, expected_inputs,
+                "positive support follows settled enable"
             );
         }
     }

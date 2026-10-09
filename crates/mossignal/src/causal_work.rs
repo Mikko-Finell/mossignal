@@ -15,6 +15,9 @@ pub(crate) enum Fault {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Work {
+    pub nodes_created: usize,
+    pub nodes_released: usize,
+    pub logical_growth: u64,
     pub old_record_rewrites: usize,
     pub scope_records_hashed: usize,
     pub canonical_encodes: usize,

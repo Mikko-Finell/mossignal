@@ -238,6 +238,15 @@ impl<D> ActiveDiagnosticEpisode<D> {
         }
     }
 
+    pub(crate) fn translate_cause(
+        &mut self,
+        provenance: &ProvenanceView<D>,
+        translate: impl Fn(CauseRef) -> CauseRef,
+    ) {
+        self.cause = translate(self.cause);
+        self.provenance = provenance.owned_roots(&[self.cause]);
+    }
+
     pub(crate) fn migrate_owner(&self, network: NetworkKey, owner: NodeSubject) -> Self {
         if self.condition.owner == owner {
             return self.clone();
@@ -498,6 +507,14 @@ mod tests {
     use core::marker::PhantomData;
 
     fn context() -> (crate::Machine<()>, ActiveDiagnosticEpisode<()>) {
+        let (machine, active, _) = context_with_beginning();
+        (machine, active)
+    }
+    fn context_with_beginning() -> (
+        crate::Machine<()>,
+        ActiveDiagnosticEpisode<()>,
+        crate::TransactionResult<()>,
+    ) {
         let mut builder =
             NetworkBuilder::with_key(NetworkKey::from_u128(1), TimeDomainId::from_u128(2));
         let control = builder.constant(LogicLevel::High);
@@ -526,7 +543,7 @@ mod tests {
             .build()
             .unwrap();
         let mut machine = compiled.spawn(policy);
-        machine
+        let began = machine
             .apply(Transaction::initialize(
                 Time::from_ticks(1),
                 machine.revision(),
@@ -534,7 +551,7 @@ mod tests {
             ))
             .unwrap();
         let active = machine.active_diagnostic_episodes().unwrap().remove(0);
-        (machine, active)
+        (machine, active, began)
     }
     fn problem(active: &ActiveDiagnosticEpisode<()>, at: u64, previous: LogicLevel) -> Problem<()> {
         let mut evidence = conflict_evidence(active.current()).unwrap().clone();
@@ -548,6 +565,70 @@ mod tests {
                 marker: PhantomData,
             },
         )
+    }
+
+    #[test]
+    fn preserving_patch_changes_material_evidence_and_keeps_beginning_and_owned_results() {
+        let (mut machine, first, began) = context_with_beginning();
+        let old_cause = began.diagnostic_episode_changes()[0].cause();
+        let owner = machine
+            .compiled()
+            .graph()
+            .nodes()
+            .iter()
+            .find(|node| node.key() == NodeKey::from_u128(3))
+            .unwrap();
+        let crate::key::AnyOutPortKey::Level(port) = owner.ports().outputs()[0] else {
+            panic!("level latch port");
+        };
+        let source = crate::key::SignalSourceKey::NodeOutput(port);
+        let prepared = machine
+            .prepare_patch(
+                machine
+                    .patch()
+                    .add_external_output(crate::authored::ExternalOutputDef::new(
+                        crate::key::ExternalOutputKey::<crate::signal::Level>::from_u128(99).into(),
+                        source.into(),
+                        DiagnosticMeta::default(),
+                    ))
+                    .unwrap()
+                    .finish(),
+            )
+            .require_artifact()
+            .unwrap();
+        let target = prepared.resulting_compiled().clone();
+        let result = machine
+            .apply(
+                Transaction::advance(
+                    Time::from_ticks(2),
+                    machine.revision(),
+                    target.input_delta().finish().unwrap(),
+                )
+                .with_patch(prepared, crate::ReconfigurationPolicy::RejectStateLoss)
+                .unwrap(),
+            )
+            .unwrap();
+        let current = machine.active_diagnostic_episodes().unwrap().remove(0);
+        assert_eq!(current.identity(), first.identity());
+        assert_eq!(current.began_stamp(), first.began_stamp());
+        assert_eq!(current.last_material_stamp().time(), Time::from_ticks(2));
+        assert!(
+            result
+                .diagnostic_episode_changes()
+                .iter()
+                .any(|change| change.kind() == DiagnosticEpisodeChangeKind::Changed)
+        );
+        assert_ne!(current.cause(), old_cause);
+        let snapshot = machine.snapshot();
+        let restored = target
+            .restore(snapshot.clone(), machine.policy.clone())
+            .unwrap();
+        assert_eq!(restored.snapshot(), snapshot);
+        drop((restored, machine, first));
+        current.provenance().explain_cause(current.cause()).unwrap();
+        began.provenance().explain_cause(old_cause).unwrap();
+        drop(began);
+        current.provenance().explain_cause(current.cause()).unwrap();
     }
 
     #[test]

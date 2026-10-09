@@ -1,8 +1,8 @@
-//! Uncached version-2 vector/recursive canonical reference, independent of node caches.
+//! Uncached version-3 vector/recursive canonical reference, independent of node caches.
 
 //! Canonical execution-state and observable-state projections.
 //!
-//! Projection version 2 is the record written here and locked by the golden
+//! Projection version 3 is the record written here and locked by the golden
 //! digest-input vectors. `standard_history` stays out of both digests: it is
 //! last-reaction inspection cache, and current explanation is the execution
 //! projection plus the required provenance closure.
@@ -24,12 +24,12 @@ use crate::transaction::{
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn execution_state_digest<D>(machine: &Machine<D>) -> ExecutionStateDigest {
-    let input = execution_digest_input(machine, 2, 2);
+    let input = execution_digest_input(machine, 3, 3);
     ExecutionStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
 pub(crate) fn observable_state_digest<D>(machine: &Machine<D>) -> ObservableStateDigest {
-    let input = observable_digest_input(machine, 2, 2);
+    let input = observable_digest_input(machine, 3, 3);
     ObservableStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
@@ -71,6 +71,20 @@ fn projection_payload<D>(
     if observable && ready {
         record.field("explanation_boundary", |writer| {
             writer.variant_null("complete_from_initialization");
+        });
+    }
+    if ready {
+        record.field("current_causes", |writer| {
+            let rows = reference_bindings(machine, false);
+            writer.array_start(rows.len());
+            for (subject, role, cause) in rows {
+                let digest = context.machine_cause(machine, cause);
+                let mut row = Record::new();
+                row.field("cause", |writer| writer.bytes(&digest));
+                row.field("role", |writer| writer.text(role));
+                row.field("subject", |writer| writer.nested(&subject));
+                writer.nested(&row.finish());
+            }
         });
     }
     record.field("lifecycle", |writer| write_lifecycle(writer, machine));
@@ -211,8 +225,26 @@ pub(crate) fn cause_digest_index<D>(machine: &Machine<D>) -> CauseDigestIndex {
     }
 }
 
-fn machine_roots<D>(machine: &Machine<D>) -> Vec<CauseRef> {
+pub(crate) fn machine_roots<D>(machine: &Machine<D>) -> Vec<CauseRef> {
     let mut roots = Vec::new();
+    roots.extend(machine.store.operation_causes.iter().copied());
+    roots.extend(machine.store.standard_causes.values().flat_map(|facts| {
+        [
+            facts.latest_reset,
+            facts.latest_toggle,
+            facts.latest_capture,
+        ]
+        .into_iter()
+        .flatten()
+    }));
+    roots.extend(
+        machine
+            .store
+            .active_episodes
+            .values()
+            .map(|episode| episode.cause()),
+    );
+
     roots.extend(machine.store.input_causes.values().copied());
     roots.extend(machine.store.output_causes.values().copied());
     roots.extend(machine.store.edge_observation_causes.values().copied());
@@ -227,6 +259,49 @@ fn machine_roots<D>(machine: &Machine<D>) -> Vec<CauseRef> {
             roots.push(event.identity().5);
         }
     }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+pub(crate) fn migration_source_roots<D>(
+    source: &crate::migration::MigrationSource<'_, D>,
+    operations: &[CauseRef],
+    modules: &BTreeMap<crate::QualifiedModuleRef, crate::standard::stateful::StandardCauses>,
+) -> Vec<CauseRef> {
+    // Read the actual source facts at the effective-time boundary, independently
+    // of production's manifest and wrapper-selection machinery.
+    let mut roots = operations.to_vec();
+    for facts in modules.values() {
+        if let Some(cause) = facts.latest_reset {
+            roots.push(cause);
+        }
+        if let Some(cause) = facts.latest_toggle {
+            roots.push(cause);
+        }
+        if let Some(cause) = facts.latest_capture {
+            roots.push(cause);
+        }
+    }
+    for episode in source.episodes.values() {
+        roots.push(episode.cause());
+    }
+    for batch in source.pending_events.values() {
+        for event in batch {
+            roots.push(event.identity().5);
+        }
+    }
+    roots.extend(source.periodic_cancellation_causes.values().copied());
+    roots.extend(source.periodic_anchor_causes.values().copied());
+    roots.extend(source.inertial_cancellation_causes.values().copied());
+    roots.extend(source.transport_transition_causes.values().copied());
+    roots.extend(source.establishment_causes.values().copied());
+    roots.extend(source.toggle_inversion_causes.values().copied());
+    roots.extend(source.edge_observation_causes.values().copied());
+    roots.extend(source.output_causes.values().copied());
+    roots.extend(source.input_causes.values().copied());
+    roots.sort();
+    roots.dedup();
     roots
 }
 
@@ -343,7 +418,7 @@ fn digest_record<D>(
     let compiled = view.sources[index].unwrap_or(compiled);
     let relations = predecessor_relations(compiled, view, index, memo, stack, table);
     let payload = provenance_payload(compiled, view.records()[index], &relations);
-    let input = domain_separated(PROVENANCE_RECORD_DOMAIN, 2, &payload);
+    let input = domain_separated(PROVENANCE_RECORD_DOMAIN, 3, &payload);
     let digest = *blake3::hash(&input).as_bytes();
     table.insert(digest, payload);
     memo[index] = Some(digest);
@@ -448,7 +523,7 @@ fn provenance_payload<D>(
             }
         });
     }
-    payload.field("provenance_semantics_version", |writer| writer.uint(2));
+    payload.field("provenance_semantics_version", |writer| writer.uint(3));
     match record {
         ProvenanceRecord::InitializationTransaction { revision, .. }
         | ProvenanceRecord::ReadyTransaction { revision, .. }
@@ -1311,6 +1386,18 @@ pub(crate) fn assert_view<D>(compiled: &CompiledNetwork<D>, view: &ProvenanceVie
 }
 
 pub(crate) fn assert_machine<D>(machine: &Machine<D>) {
+    for snapshot in [false, true] {
+        assert_eq!(
+            reference_bindings(machine, snapshot),
+            crate::causal_roots::bindings(machine, snapshot),
+            "independent stable current-role manifest"
+        );
+    }
+    assert_eq!(
+        machine_roots(machine),
+        crate::causal_roots::machine(machine),
+        "independent typed current roots"
+    );
     if let Some(view) = &machine.store.provenance {
         assert_view(&machine.compiled, view);
     }
@@ -1318,14 +1405,96 @@ pub(crate) fn assert_machine<D>(machine: &Machine<D>) {
         assert_view(&machine.compiled, episode.provenance());
     }
     assert_eq!(
-        execution_digest_input(machine, 2, 2),
-        crate::state_digest::execution_digest_input(machine, 2, 2),
+        execution_digest_input(machine, 3, 3),
+        crate::state_digest::execution_digest_input(machine, 3, 3),
         "execution canonical input"
     );
     assert_eq!(
-        observable_digest_input(machine, 2, 2),
-        crate::state_digest::observable_digest_input(machine, 2, 2),
+        observable_digest_input(machine, 3, 3),
+        crate::state_digest::observable_digest_input(machine, 3, 3),
         "observable canonical input"
+    );
+}
+
+pub(crate) fn assert_migration<D>(
+    source: &CompiledNetwork<D>,
+    previous: &ProvenanceView<D>,
+    source_roots: &[CauseRef],
+    result_roots: &[CauseRef],
+    actual: &crate::causal_store::Records<D>,
+    translated: &BTreeMap<CauseRef, CauseRef>,
+    patch: CauseRef,
+) {
+    let graph = VectorGraph::read(previous);
+    let mut work: Vec<_> = source_roots.iter().chain(result_roots).copied().collect();
+    let mut selected = BTreeSet::new();
+    while let Some(cause) = work.pop() {
+        let position = reference_ordinal(&graph, cause);
+        if selected.insert(position) {
+            work.extend(graph.records[position].predecessor_causes());
+        }
+    }
+    assert_eq!(
+        translated.len(),
+        selected.len(),
+        "selected source/result closure only"
+    );
+    let facts = checkpoint_facts(source, previous);
+    for position in selected {
+        let old = graph.causes[position];
+        let new = translated[&old];
+        let new_position = (0..actual.len())
+            .find(|index| actual.cause(*index) == new)
+            .unwrap_or_else(|| panic!("translated source cause must exist in the migration view"));
+        let ProvenanceRecord::Checkpoint { fact, supporters } = &actual[new_position] else {
+            panic!("source wrapper");
+        };
+        let expected = match &graph.records[position] {
+            ProvenanceRecord::Checkpoint { fact, .. } => fact,
+            _ => &facts[position],
+        };
+        assert_eq!(fact, expected, "uncached creating-topology source fact");
+        let expected_parents: Vec<_> = graph.records[position]
+            .predecessor_causes()
+            .into_iter()
+            .map(|cause| translated[&cause])
+            .collect();
+        assert_eq!(
+            *supporters, expected_parents,
+            "explicit sparse source ancestry translation"
+        );
+    }
+    let mut content = ContentTable::default();
+    let identities = index_view(source, previous, &mut content);
+    let expected: BTreeSet<_> = source_roots
+        .iter()
+        .map(|cause| identities[reference_ordinal(&graph, *cause)])
+        .collect();
+    let patch_position = (0..actual.len())
+        .find(|index| actual.cause(*index) == patch)
+        .unwrap_or_else(|| panic!("topology cause must exist in the migration view"));
+    let ProvenanceRecord::TopologyChange { supporters, .. } = &actual[patch_position] else {
+        panic!("topology fact");
+    };
+    let actual_identities: BTreeSet<_> = supporters
+        .iter()
+        .map(|cause| {
+            let old = translated
+                .iter()
+                .find(|(_, new)| **new == *cause)
+                .unwrap_or_else(|| panic!("every topology supporter must be a translated source"))
+                .0;
+            identities[reference_ordinal(&graph, *old)]
+        })
+        .collect();
+    assert_eq!(
+        supporters.len(),
+        actual_identities.len(),
+        "canonical supporter set"
+    );
+    assert_eq!(
+        actual_identities, expected,
+        "current source roots; result-only roots are not supporters"
     );
 }
 
@@ -1336,4 +1505,86 @@ pub(crate) fn artifact_index<D>(machine: &Machine<D>) -> crate::state_digest::Ca
         index.machine,
         index.episodes,
     )
+}
+
+pub(crate) fn reference_bindings<D>(
+    machine: &Machine<D>,
+    snapshot: bool,
+) -> Vec<(Vec<u8>, &'static str, CauseRef)> {
+    if !machine.is_initialized() {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    for (operation, subject) in machine.compiled.current_cause_slots_reference() {
+        rows.push((
+            subject,
+            "current",
+            machine.store.operation_causes[operation],
+        ));
+    }
+    for (module, facts) in &machine.store.standard_causes {
+        for (role, cause) in [
+            ("latest_reset", facts.latest_reset),
+            ("latest_toggle", facts.latest_toggle),
+            ("latest_capture", facts.latest_capture),
+        ] {
+            if let Some(cause) = cause {
+                rows.push((
+                    {
+                        let mut subject = Cbor::default();
+                        subject.variant_start("module");
+                        subject.array_start(module.instances().len());
+                        for key in module.instances() {
+                            subject.key(key.as_u128());
+                        }
+                        subject.finish()
+                    },
+                    role,
+                    cause,
+                ));
+            }
+        }
+    }
+    if !snapshot {
+        for (key, cause) in &machine.store.input_causes {
+            let mut subject = Cbor::default();
+            subject.variant_start("external_input");
+            subject.key(key.as_u128());
+            rows.push((subject.finish(), "origin", *cause));
+        }
+        for (key, cause) in &machine.store.output_causes {
+            let mut subject = Cbor::default();
+            subject.variant_start("external_output");
+            subject.key(key.as_u128());
+            rows.push((subject.finish(), "baseline", *cause));
+        }
+        for (role, causes) in [
+            ("edge_observation", &machine.store.edge_observation_causes),
+            ("toggle_inversion", &machine.store.toggle_inversion_causes),
+            ("establishment", &machine.store.establishment_causes),
+            (
+                "transport_transition",
+                &machine.store.transport_transition_causes,
+            ),
+            (
+                "inertial_cancellation",
+                &machine.store.inertial_cancellation_causes,
+            ),
+            ("periodic_anchor", &machine.store.periodic_anchor_causes),
+            (
+                "periodic_cancellation",
+                &machine.store.periodic_cancellation_causes,
+            ),
+        ] {
+            for (node, cause) in causes {
+                rows.push((
+                    owner_bytes(&machine.compiled.stable_owner(*node)),
+                    role,
+                    *cause,
+                ));
+            }
+        }
+    }
+    rows.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+    rows
 }

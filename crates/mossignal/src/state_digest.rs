@@ -1,6 +1,6 @@
 //! Canonical execution-state and observable-state projections.
 //!
-//! Projection version 2 is the record written here and locked by the golden
+//! Projection version 3 is the record written here and locked by the golden
 //! digest-input vectors. `standard_history` stays out of both digests: it is
 //! last-reaction inspection cache, and current explanation is the execution
 //! projection plus the required provenance closure.
@@ -23,12 +23,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub(crate) fn execution_state_digest<D>(machine: &Machine<D>) -> ExecutionStateDigest {
-    let input = execution_digest_input(machine, 2, 2);
+    let input = execution_digest_input(machine, 3, 3);
     ExecutionStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
 pub(crate) fn observable_state_digest<D>(machine: &Machine<D>) -> ObservableStateDigest {
-    let input = observable_digest_input(machine, 2, 2);
+    let input = observable_digest_input(machine, 3, 3);
     ObservableStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
@@ -70,6 +70,20 @@ fn projection_payload<D>(
     if observable && ready {
         record.field("explanation_boundary", |writer| {
             writer.variant_null("complete_from_initialization");
+        });
+    }
+    if ready {
+        record.field("current_causes", |writer| {
+            let rows = crate::causal_roots::bindings(machine, false);
+            writer.array_start(rows.len());
+            for (subject, role, cause) in rows {
+                let digest = context.machine_cause(machine, cause);
+                let mut row = Record::new();
+                row.field("cause", |writer| writer.bytes(&digest));
+                row.field("role", |writer| writer.text(role));
+                row.field("subject", |writer| writer.nested(&subject));
+                writer.nested(&row.finish());
+            }
         });
     }
     record.field("lifecycle", |writer| write_lifecycle(writer, machine));
@@ -227,6 +241,22 @@ pub(crate) fn cause_digest_index<D>(machine: &Machine<D>) -> CauseDigestIndex {
 
 fn machine_roots<D>(machine: &Machine<D>) -> Vec<CauseRef> {
     let mut roots = Vec::new();
+    roots.extend(machine.store.operation_causes.iter().copied());
+    roots.extend(
+        machine
+            .store
+            .standard_causes
+            .values()
+            .flat_map(|facts| facts.retained_causes()),
+    );
+    roots.extend(
+        machine
+            .store
+            .active_episodes
+            .values()
+            .map(|episode| episode.cause()),
+    );
+
     roots.extend(machine.store.input_causes.values().copied());
     roots.extend(machine.store.output_causes.values().copied());
     roots.extend(machine.store.edge_observation_causes.values().copied());
@@ -388,7 +418,7 @@ fn digest_record<D>(
         work.canonical_encodes += 1;
         work.canonical_hashes += 1;
     });
-    let input = domain_separated(PROVENANCE_RECORD_DOMAIN, 2, &payload);
+    let input = domain_separated(PROVENANCE_RECORD_DOMAIN, 3, &payload);
     let digest = *blake3::hash(&input).as_bytes();
     let canonical = crate::causal_store::CanonicalRecord {
         digest,
@@ -507,7 +537,7 @@ fn provenance_payload<D>(
             }
         });
     }
-    payload.field("provenance_semantics_version", |writer| writer.uint(2));
+    payload.field("provenance_semantics_version", |writer| writer.uint(3));
     match record {
         ProvenanceRecord::InitializationTransaction { revision, .. }
         | ProvenanceRecord::ReadyTransaction { revision, .. }
@@ -1476,11 +1506,11 @@ mod tests {
         assert_eq!(machine.revision().value(), 0);
         assert_golden(
             "execution_state_uninitialized.hex",
-            &execution_digest_input(&machine, 2, 2),
+            &execution_digest_input(&machine, 3, 3),
         );
         assert_golden(
             "observable_state_uninitialized.hex",
-            &observable_digest_input(&machine, 2, 2),
+            &observable_digest_input(&machine, 3, 3),
         );
         let uninitialized_execution = machine.execution_state_digest();
         let result = initialize(&mut machine, 1);
@@ -1499,11 +1529,11 @@ mod tests {
         );
         assert_golden(
             "execution_state_ready.hex",
-            &execution_digest_input(&machine, 2, 2),
+            &execution_digest_input(&machine, 3, 3),
         );
         assert_golden(
             "observable_state_ready.hex",
-            &observable_digest_input(&machine, 2, 2),
+            &observable_digest_input(&machine, 3, 3),
         );
         assert_golden(
             "execution_state_digest_ready.hex",
@@ -1531,8 +1561,8 @@ mod tests {
             golden_toggle(DiagnosticMeta::default()),
             [8, 100, 4, 8, 100],
         );
-        let execution = execution_digest_input(&machine, 2, 2);
-        let observable = observable_digest_input(&machine, 2, 2);
+        let execution = execution_digest_input(&machine, 3, 3);
+        let observable = observable_digest_input(&machine, 3, 3);
         assert!(
             execution
                 .windows(b"awaiting_initialization".len())
@@ -1586,7 +1616,7 @@ mod tests {
             golden_toggle(DiagnosticMeta::default()),
             [8, 100, 4, 8, 100],
         );
-        let current = execution_digest_input(&machine, 2, 2);
+        let current = execution_digest_input(&machine, 3, 3);
         assert_ne!(current, execution_digest_input(&machine, 2, 1));
         assert_ne!(current, execution_digest_input(&machine, 1, 2));
         assert_ne!(
@@ -1682,20 +1712,25 @@ mod tests {
     }
 
     #[test]
-    fn baseline_change_affects_only_the_observable_digest() {
+    fn inconsistent_baseline_tampering_changes_observation_and_fails_restoration() {
         let mut machine = spawn(
             golden_toggle(DiagnosticMeta::default()),
             [8, 100, 4, 8, 100],
         );
         initialize(&mut machine, 1);
-        let execution = machine.execution_state_digest();
         let observable = machine.observable_state_digest();
         machine.set_output_baseline_for_test(
             ExternalOutputKey::<Level>::from_u128(8),
             LogicLevel::High,
         );
-        assert_eq!(machine.execution_state_digest(), execution);
         assert_ne!(machine.observable_state_digest(), observable);
+        // A mutated baseline is invalid state, not a supported O-only witness.
+        assert!(
+            machine
+                .compiled()
+                .restore(machine.snapshot(), machine.policy.clone())
+                .is_err()
+        );
     }
 
     #[test]
@@ -1858,12 +1893,12 @@ mod tests {
             .unwrap_or_else(|failure| panic!("fixture initialization must commit: {failure}"));
         let before_keys = machine.pending_keys_in_storage_order();
         assert!(before_keys.len() >= 2);
-        let execution = execution_digest_input(&machine, 2, 2);
-        let observable = observable_digest_input(&machine, 2, 2);
+        let execution = execution_digest_input(&machine, 3, 3);
+        let observable = observable_digest_input(&machine, 3, 3);
         machine.reverse_pending_batches_for_test();
         assert_ne!(machine.pending_keys_in_storage_order(), before_keys);
-        assert_eq!(execution_digest_input(&machine, 2, 2), execution);
-        assert_eq!(observable_digest_input(&machine, 2, 2), observable);
+        assert_eq!(execution_digest_input(&machine, 3, 3), execution);
+        assert_eq!(observable_digest_input(&machine, 3, 3), observable);
     }
 
     fn pulse_delay_node(node: u128, input: InPortKey<Pulse>, output: u128) -> NodeDef<()> {
@@ -1907,12 +1942,12 @@ mod tests {
         initialize(&mut machine, 1);
         let ordinals = machine.supporter_ordinals_for_test();
         assert!(ordinals.len() >= 2);
-        let execution = execution_digest_input(&machine, 2, 2);
-        let observable = observable_digest_input(&machine, 2, 2);
+        let execution = execution_digest_input(&machine, 3, 3);
+        let observable = observable_digest_input(&machine, 3, 3);
         machine.reverse_provenance_supporters_for_test();
         assert_ne!(machine.supporter_ordinals_for_test(), ordinals);
-        assert_eq!(execution_digest_input(&machine, 2, 2), execution);
-        assert_eq!(observable_digest_input(&machine, 2, 2), observable);
+        assert_eq!(execution_digest_input(&machine, 3, 3), execution);
+        assert_eq!(observable_digest_input(&machine, 3, 3), observable);
 
         let identities: Vec<_> = machine
             .store
@@ -1930,8 +1965,8 @@ mod tests {
         resorted.sort();
         assert_eq!(sorted, resorted);
         machine.rebuild_episodes_reversed_for_test();
-        assert_eq!(execution_digest_input(&machine, 2, 2), execution);
-        let bytes = execution_digest_input(&machine, 2, 2);
+        assert_eq!(execution_digest_input(&machine, 3, 3), execution);
+        let bytes = execution_digest_input(&machine, 3, 3);
         let first = bytes.windows(32).position(|window| window == sorted[0]);
         let second = bytes.windows(32).position(|window| window == sorted[1]);
         match (first, second) {
@@ -2011,7 +2046,7 @@ mod tests {
         );
         let compiled = compile(network);
         let machine = compiled.clone().spawn(generous_policy());
-        let bytes = execution_digest_input(&machine, 2, 2);
+        let bytes = execution_digest_input(&machine, 3, 3);
         assert!(
             bytes
                 .windows(b"module_node".len())
@@ -2417,7 +2452,7 @@ mod tests {
     }
 
     #[test]
-    fn version_two_migrated_graph_inputs_and_snapshot_match_goldens() {
+    fn version_three_migrated_graph_inputs_and_snapshot_match_goldens() {
         let mut machine = spawn(
             golden_toggle(DiagnosticMeta::default()),
             [100, 10_000, 100, 100, 10_000],
@@ -2468,15 +2503,15 @@ mod tests {
         let snapshot = machine.snapshot();
         for (name, bytes) in [
             (
-                "execution_state_migrated_v2.hex",
-                execution_digest_input(&machine, 2, 2),
+                "execution_state_migrated_v3.hex",
+                execution_digest_input(&machine, 3, 3),
             ),
             (
-                "observable_state_migrated_v2.hex",
-                observable_digest_input(&machine, 2, 2),
+                "observable_state_migrated_v3.hex",
+                observable_digest_input(&machine, 3, 3),
             ),
             (
-                "machine_snapshot_migrated_v2.hex",
+                "machine_snapshot_migrated_v3.hex",
                 snapshot.artifact_bytes().to_vec(),
             ),
         ] {

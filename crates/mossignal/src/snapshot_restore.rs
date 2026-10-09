@@ -42,7 +42,12 @@ use core::marker::PhantomData;
 use std::collections::{BTreeMap, BTreeSet};
 
 const ARTIFACT_PREFIX: [u8; 8] = [0x4d, 0x53, 0x49, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-const SUPPORTED_VERSION: u64 = 2;
+fn supported_version(name: &str) -> u64 {
+    match name {
+        "artifact_schema_version" | "provenance_semantics_version" => 3,
+        _ => 2,
+    }
+}
 
 const ENVELOPE_FIELDS: &[&str] = &[
     "artifact_kind",
@@ -802,7 +807,7 @@ fn unsupported_version<D>(
                 stage,
                 component: component.to_owned(),
                 encountered: encountered.to_string(),
-                required: SUPPORTED_VERSION.to_string(),
+                required: supported_version(component).to_string(),
                 upgrader_exists: false,
             },
             marker: PhantomData,
@@ -1030,7 +1035,15 @@ struct EpisodeEvidence {
     revision: u64,
 }
 
+struct CurrentRoot {
+    subject: Vec<u8>,
+    subject_value: Value,
+    role: String,
+    cause: [u8; 32],
+}
+
 struct ProvenanceSection {
+    current_roots: Vec<CurrentRoot>,
     episodes: Vec<[u8; 32]>,
     external_inputs: Vec<[u8; 32]>,
     output_baselines: Vec<[u8; 32]>,
@@ -1259,7 +1272,7 @@ fn interpret_artifact<D>(
     for (name, value) in &fields {
         if name.ends_with("_version") {
             let version = expect_uint(value_ref(value), &format!("envelope.{name}"))?;
-            if version != SUPPORTED_VERSION {
+            if version != supported_version(name) {
                 return Err(unsupported_version("envelope", name, version));
             }
         }
@@ -1318,7 +1331,7 @@ fn parse_payload<D>(
             &take_required_owned(&versions, name, "payload.semantic_versions")?,
             &format!("payload.semantic_versions.{name}"),
         )?;
-        if version != SUPPORTED_VERSION {
+        if version != supported_version(name) {
             return Err(unsupported_version("payload", name, version));
         }
     }
@@ -2270,6 +2283,7 @@ fn parse_provenance<D>(
     reject_unknown_fields(
         &fields,
         &[
+            "current_roots",
             "episodes",
             "external_inputs",
             "output_baselines",
@@ -2279,6 +2293,7 @@ fn parse_provenance<D>(
         ],
         path,
     )?;
+    let current_roots = parse_current_roots(take_required(&mut fields, "current_roots", path)?)?;
     let episodes = parse_digest_list(
         take_required(&mut fields, "episodes", path)?,
         "payload.provenance.episodes",
@@ -2301,6 +2316,7 @@ fn parse_provenance<D>(
         "payload.provenance.state",
     )?;
     Ok(ProvenanceSection {
+        current_roots,
         episodes,
         external_inputs,
         output_baselines,
@@ -2308,6 +2324,37 @@ fn parse_provenance<D>(
         state,
         records,
     })
+}
+
+fn parse_current_roots<D>(value: Value) -> Result<Vec<CurrentRoot>, DecodeFailure<D>> {
+    let path = "payload.provenance.current_roots";
+    let items = expect_array(value, path)?;
+    let mut roots = Vec::with_capacity(items.len());
+    let mut previous = None;
+    for item in items {
+        let mut fields = into_fields(item, path)?;
+        reject_unknown_fields(&fields, &["cause", "role", "subject"], path)?;
+        let cause = expect_digest(take_required(&mut fields, "cause", path)?, path)?;
+        let role = expect_text(take_required(&mut fields, "role", path)?, path)?;
+        let subject_value = take_required(&mut fields, "subject", path)?;
+        let subject = cbor_decode::encode(&subject_value);
+        let key = (subject.clone(), role.clone());
+        if previous.as_ref().is_some_and(|before| before >= &key) {
+            return Err(noncanonical(
+                path,
+                "strictly ordered unique current roles",
+                "duplicate or unsorted current role",
+            ));
+        }
+        previous = Some(key);
+        roots.push(CurrentRoot {
+            subject,
+            subject_value,
+            role,
+            cause,
+        });
+    }
+    Ok(roots)
 }
 
 fn parse_digest_list<D>(value: Value, path: &str) -> Result<Vec<[u8; 32]>, DecodeFailure<D>> {
@@ -2338,10 +2385,103 @@ fn parse_records<D>(
             "provenance_records",
         )?;
         let record = parse_record(item, counters)?;
+        validate_checkpoint_facts(&record, counters, &mut consumed)?;
         nondecreasing(&mut previous, &record.digest, path)?;
         records.push(record);
     }
     Ok(records)
+}
+
+fn validate_checkpoint_facts<D>(
+    record: &ParsedRecord,
+    counters: &mut Counters,
+    consumed: &mut u64,
+) -> Result<(), DecodeFailure<D>> {
+    let RecordKind::Checkpoint { fact } = &record.kind else {
+        return Ok(());
+    };
+    let path = "payload.provenance.records.checkpoint";
+    let mut pending = vec![(fact.clone(), 1_u64)];
+    while let Some((bytes, depth)) = pending.pop() {
+        if depth > counters.policy.nesting() {
+            return Err(limit_failure("nesting", counters.policy.nesting(), depth));
+        }
+        let (value, used) = cbor_decode::parse(
+            &bytes,
+            Limits {
+                total_bytes: counters.policy.total_bytes(),
+                nesting: counters.policy.nesting().saturating_sub(depth),
+                text_bytes: counters.policy.text_bytes(),
+                byte_string_bytes: counters.policy.byte_string_bytes(),
+                collection_items: counters.policy.collection_items(),
+            },
+        )
+        .map_err(map_cbor)?;
+        if used != bytes.len() || cbor_decode::encode(&value) != bytes {
+            return Err(noncanonical(
+                path,
+                "canonical complete source fact",
+                "source fact bytes",
+            ));
+        }
+        let mut fields = into_fields(value, path)?;
+        if let Some(state) = take_optional(&mut fields, "declared_state") {
+            reject_unknown_fields(&fields, &[], path)?;
+            let mut previous = None;
+            for item in expect_array(state, path)? {
+                let mut entry = into_fields(item, path)?;
+                reject_unknown_fields(&entry, &["owner", "schema", "value"], path)?;
+                let owner = take_required(&mut entry, "owner", path)?;
+                let key = cbor_decode::encode(&owner);
+                strict_increase(&mut previous, &key, path)?;
+                parse_stable_name(owner, counters, path)?;
+                let (_, body) = named_variant(
+                    take_required(&mut entry, "schema", path)?,
+                    &[
+                        "edge_observation",
+                        "stored_level",
+                        "transport_level",
+                        "inertial_level",
+                        "periodic_enable",
+                    ],
+                    path,
+                )?;
+                require_null(body, path)?;
+                parse_state_value(take_required(&mut entry, "value", path)?, path)?;
+            }
+            continue;
+        }
+        reject_unknown_fields(&fields, &["record", "event", "origin", "deadline"], path)?;
+        charge(
+            consumed,
+            counters.policy.provenance_records(),
+            "provenance_records",
+        )?;
+        let source = parse_record(take_required(&mut fields, "record", path)?, counters)?;
+        if source.inapplicable {
+            return Err(malformed(path, "source record fields/roles"));
+        }
+        let temporal = matches!(
+            source.kind,
+            RecordKind::PendingPulse { .. }
+                | RecordKind::PendingTransport { .. }
+                | RecordKind::PendingInertial { .. }
+                | RecordKind::PendingPeriodic { .. }
+        );
+        if temporal {
+            expect_uint(&take_required(&mut fields, "event", path)?, path)?;
+            let origin = expect_uint(&take_required(&mut fields, "origin", path)?, path)?;
+            let deadline = expect_uint(&take_required(&mut fields, "deadline", path)?, path)?;
+            if source.time != Some(origin) || deadline <= origin {
+                return Err(malformed(path, "source event timing"));
+            }
+        }
+        reject_unknown_fields(&fields, &[], path)?;
+        if let RecordKind::Checkpoint { fact } = source.kind {
+            pending.push((fact, depth + 1));
+        }
+    }
+    Ok(())
 }
 
 fn parse_record<D>(
@@ -2350,7 +2490,7 @@ fn parse_record<D>(
 ) -> Result<ParsedRecord, DecodeFailure<D>> {
     let path = "payload.provenance.records";
     let bytes = cbor_decode::encode(&value);
-    let digest = *blake3::hash(&domain_separated(PROVENANCE_RECORD_DOMAIN, 2, &bytes)).as_bytes();
+    let digest = *blake3::hash(&domain_separated(PROVENANCE_RECORD_DOMAIN, 3, &bytes)).as_bytes();
     let mut fields = into_fields(value, path)?;
     reject_unknown_fields(
         &fields,
@@ -2370,7 +2510,7 @@ fn parse_record<D>(
         &take_required(&mut fields, "provenance_semantics_version", path)?,
         path,
     )?;
-    if version != SUPPORTED_VERSION {
+    if version != supported_version("provenance_semantics_version") {
         return Err(unsupported_version(
             "provenance_record",
             "provenance_semantics_version",
@@ -2797,7 +2937,8 @@ struct RestoredProvenance<D> {
     anchors: BTreeMap<NodeKey, CauseRef>,
     periodic_cancels: BTreeMap<NodeKey, CauseRef>,
     pending: BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
-    operation: Option<CauseRef>,
+    operations: Vec<CauseRef>,
+    standard_causes: BTreeMap<crate::QualifiedModuleRef, crate::standard::stateful::StandardCauses>,
 }
 
 #[derive(Clone, Copy)]
@@ -3124,7 +3265,9 @@ fn install_state<D>(
     artifact: &Artifact,
 ) -> Result<Installed, RestoreFailure<D>> {
     if matches!(artifact.lifecycle, Lifecycle::Awaiting)
-        && (!artifact.episodes.is_empty() || !artifact.provenance.records.is_empty())
+        && (!artifact.episodes.is_empty()
+            || !artifact.provenance.records.is_empty()
+            || !artifact.provenance.current_roots.is_empty())
     {
         return Err(fail_lifecycle());
     }
@@ -3809,6 +3952,7 @@ fn check_provenance<D>(
     reject_roles(&indexed)?;
     reject_unresolved_subjects(compiled, &indexed)?;
     reject_missing_predecessors(&indexed)?;
+    reject_checkpoint_ancestry(&indexed)?;
     let graph = predecessor_graph(&indexed);
     if kahn_order(&graph).is_none() {
         return Err(fail_graph(GraphFault::Cycle, "", "record", "cycle"));
@@ -3859,6 +4003,91 @@ fn index_records<D>(
     Ok(indexed)
 }
 
+fn checkpoint_source<D>(record: &ParsedRecord) -> Result<Option<ParsedRecord>, RestoreFailure<D>> {
+    let RecordKind::Checkpoint { fact } = &record.kind else {
+        return Ok(None);
+    };
+    let policy = DecodePolicy::for_recheck(fact.len() as u64);
+    let (value, _) = cbor_decode::parse(
+        fact,
+        Limits {
+            total_bytes: policy.total_bytes(),
+            nesting: policy.nesting(),
+            text_bytes: policy.text_bytes(),
+            byte_string_bytes: policy.byte_string_bytes(),
+            collection_items: policy.collection_items(),
+        },
+    )
+    .map_err(|error| RestoreFailure::Decode(map_cbor(error)))?;
+    let mut fields = into_fields(value, "checkpoint source").map_err(RestoreFailure::Decode)?;
+    let Some(value) = take_optional(&mut fields, "record") else {
+        return Ok(None);
+    };
+    let mut counters = Counters {
+        policy,
+        nodes: 0,
+        instances: BTreeSet::new(),
+        edges: 0,
+    };
+    parse_record(value, &mut counters)
+        .map(Some)
+        .map_err(RestoreFailure::Decode)
+}
+
+fn reject_checkpoint_ancestry<D>(
+    records: &BTreeMap<[u8; 32], &ParsedRecord>,
+) -> Result<(), RestoreFailure<D>> {
+    let mut sources = BTreeMap::new();
+    for (digest, record) in records {
+        if let Some(source) = checkpoint_source(record)? {
+            sources.insert(*digest, source);
+        }
+    }
+    for (digest, source) in &sources {
+        reject_roles(&BTreeMap::from([(source.digest, source)]))?;
+        let expected: BTreeSet<_> = source
+            .predecessors
+            .iter()
+            .map(|parent| parent.digest)
+            .collect();
+        let mut matched = BTreeSet::new();
+        for parent in &records[digest].predecessors {
+            let source_identity = sources.get(&parent.digest).map(|source| source.digest);
+            let identity = if expected.contains(&parent.digest) {
+                Some(parent.digest)
+            } else {
+                source_identity.filter(|identity| expected.contains(identity))
+            };
+            let Some(identity) = identity else {
+                return Err(fail_graph(
+                    GraphFault::Checkpoint,
+                    &hex(digest),
+                    "checkpoint",
+                    "source predecessor correspondence",
+                ));
+            };
+            if !matches!(records[&parent.digest].kind, RecordKind::Checkpoint { .. }) {
+                return Err(fail_graph(
+                    GraphFault::Checkpoint,
+                    &hex(digest),
+                    "checkpoint",
+                    "source wrapper kind",
+                ));
+            }
+            matched.insert(identity);
+        }
+        if matched != expected {
+            return Err(fail_graph(
+                GraphFault::Closure,
+                &hex(digest),
+                "checkpoint",
+                "source fact ancestry",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn reject_inapplicable<D>(
     records: &BTreeMap<[u8; 32], &ParsedRecord>,
 ) -> Result<(), RestoreFailure<D>> {
@@ -3895,6 +4124,22 @@ fn reject_record_revisions<D>(
 
 fn reject_roles<D>(records: &BTreeMap<[u8; 32], &ParsedRecord>) -> Result<(), RestoreFailure<D>> {
     for record in records.values() {
+        if matches!(record.kind, RecordKind::TopologyChange { .. })
+            && record
+                .predecessors
+                .iter()
+                .map(|parent| parent.digest)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != record.predecessors.len()
+        {
+            return Err(fail_graph(
+                GraphFault::Conflict,
+                &hex(&record.digest),
+                "topology_change",
+                "duplicate source supporter content",
+            ));
+        }
         for predecessor in &record.predecessors {
             let allowed = match &predecessor.role {
                 PredecessorRole::Supporter => true,
@@ -4073,6 +4318,7 @@ fn all_roots(provenance: &ProvenanceSection) -> Vec<[u8; 32]> {
         .chain(provenance.output_baselines.iter())
         .chain(provenance.pending_events.iter())
         .chain(provenance.state.iter())
+        .chain(provenance.current_roots.iter().map(|row| &row.cause))
         .copied()
         .collect()
 }
@@ -4115,7 +4361,8 @@ fn empty_provenance<D>() -> RestoredProvenance<D> {
         anchors: BTreeMap::new(),
         periodic_cancels: BTreeMap::new(),
         pending: BTreeMap::new(),
-        operation: None,
+        operations: Vec::new(),
+        standard_causes: BTreeMap::new(),
     }
 }
 
@@ -4130,23 +4377,8 @@ fn restore_ready_provenance<D>(
     let machine_roots = machine_root_list(&artifact.provenance);
     let machine_members = reachable(&machine_roots, records)
         .ok_or_else(|| fail_graph(GraphFault::Closure, "", "record", "machine"))?;
-    let inspection_fact = cbor_decode::encode(&Value::Array(vec![
-        Value::Text("restored_execution_state".to_owned()),
-        Value::Bytes(artifact.execution.as_bytes().to_vec()),
-    ]));
-    let (view, ordinals) = build_view(
-        compiled,
-        records,
-        graph,
-        &machine_members,
-        installed,
-        Some(&inspection_fact),
-    )?;
+    let (view, ordinals) = build_view(compiled, records, graph, &machine_members, installed)?;
     let scope = view.scope();
-    let inspection_checkpoint = (view.len() > ordinals.len()).then_some(CauseRef::from_parts(
-        scope,
-        u32::try_from(ordinals.len()).unwrap_or(u32::MAX),
-    ));
     let mut restored = empty_provenance();
     restored.view = Some(view);
     assign_inputs(
@@ -4176,10 +4408,241 @@ fn restore_ready_provenance<D>(
     )?;
     assign_state(compiled, artifact, records, &ordinals, scope, &mut restored)?;
     require_edge_observation_causes(compiled, &restored)?;
-    restored.operation =
-        latest_transaction(records, &machine_members, &ordinals, scope)?.or(inspection_checkpoint);
+    assign_current_roles(compiled, artifact, records, &ordinals, scope, &mut restored)?;
     restored.episodes = episode_views(compiled, artifact, episodes, records, graph)?;
     Ok(restored)
+}
+
+fn assign_current_roles<D>(
+    compiled: &CompiledNetwork<D>,
+    artifact: &Artifact,
+    records: &BTreeMap<[u8; 32], &ParsedRecord>,
+    ordinals: &BTreeMap<[u8; 32], u32>,
+    scope: [u8; 32],
+    restored: &mut RestoredProvenance<D>,
+) -> Result<(), RestoreFailure<D>> {
+    let mut required: BTreeMap<Vec<u8>, usize> = compiled
+        .current_cause_slots()
+        .into_iter()
+        .map(|(operation, subject)| (subject, operation))
+        .collect();
+    let mut optional = BTreeMap::new();
+    for (module, definition) in compiled.standard_modules() {
+        let Some(declaration) = definition.standard_declaration() else {
+            continue;
+        };
+        for role in crate::standard::stateful::causal_role_names(declaration.module_ref()) {
+            optional.insert(
+                (
+                    crate::causal_roots::module_subject(module),
+                    (*role).to_owned(),
+                ),
+                module.clone(),
+            );
+        }
+    }
+    let mut explicit = BTreeMap::new();
+    for row in &artifact.provenance.current_roots {
+        let record = records
+            .get(&row.cause)
+            .ok_or_else(|| fail_graph(GraphFault::Missing, &hex(&row.cause), "current", "root"))?;
+        let cause = scoped_cause(ordinals, row.cause, scope)?;
+        if row.role == "current" {
+            let Some(operation) = required.remove(&row.subject) else {
+                return Err(fail_graph(
+                    GraphFault::Conflict,
+                    &hex(&row.cause),
+                    "current",
+                    "subject/role",
+                ));
+            };
+            if !current_record_matches(compiled, artifact, records, row, record) {
+                return Err(fail_graph(
+                    GraphFault::Conflict,
+                    &hex(&row.cause),
+                    "current",
+                    "cause kind/owner",
+                ));
+            }
+            explicit.insert(operation, cause);
+        } else {
+            let Some(module) = optional.remove(&(row.subject.clone(), row.role.clone())) else {
+                return Err(fail_graph(
+                    GraphFault::Conflict,
+                    &hex(&row.cause),
+                    "module",
+                    "subject/role",
+                ));
+            };
+            let source = checkpoint_source(record)?;
+            let effective = source.as_ref().unwrap_or(record);
+            let valid = match row.role.as_str() {
+                "latest_capture" => {
+                    matches!(effective.kind, RecordKind::PulseControlled { .. })
+                        && matches!(&effective.subject, Some(ParsedSubject::Node(name)) if name.instances == module.instances().iter().map(|key| key.as_u128()).collect::<Vec<_>>())
+                }
+                "latest_toggle" => {
+                    matches!(effective.kind, RecordKind::ExternalPulse { count } if count > 0)
+                        || matches!(effective.kind, RecordKind::PulseDerived { result } if result > 0)
+                        || matches!(effective.kind, RecordKind::Derived)
+                            && matches!(&effective.subject, Some(ParsedSubject::Node(_)))
+                }
+                "latest_reset" => {
+                    matches!(effective.kind, RecordKind::ExternalPulse { count } if count > 0)
+                        || matches!(effective.kind, RecordKind::PulseDerived { result } if result > 0)
+                        || matches!(effective.kind, RecordKind::Derived)
+                            && matches!(&effective.subject, Some(ParsedSubject::Node(_)))
+                }
+                _ => false,
+            };
+            if !valid {
+                return Err(fail_graph(
+                    GraphFault::Conflict,
+                    &hex(&row.cause),
+                    "module",
+                    "latest cause kind",
+                ));
+            }
+            let facts = restored.standard_causes.entry(module).or_default();
+            match row.role.as_str() {
+                "latest_reset" => facts.latest_reset = Some(cause),
+                "latest_toggle" => facts.latest_toggle = Some(cause),
+                "latest_capture" => facts.latest_capture = Some(cause),
+                _ => {
+                    return Err(fail_graph(
+                        GraphFault::Conflict,
+                        &hex(&row.cause),
+                        "module",
+                        "role",
+                    ));
+                }
+            }
+        }
+    }
+    if !required.is_empty() {
+        return Err(fail_graph(
+            GraphFault::Closure,
+            "",
+            "current",
+            "missing roles",
+        ));
+    }
+    restored.operations = compiled
+        .restore_operation_causes(&explicit, &restored.inputs, &restored.outputs)
+        .ok_or_else(|| fail_graph(GraphFault::Closure, "", "current", "aliases"))?;
+    Ok(())
+}
+
+fn current_record_matches<D>(
+    compiled: &CompiledNetwork<D>,
+    artifact: &Artifact,
+    records: &BTreeMap<[u8; 32], &ParsedRecord>,
+    row: &CurrentRoot,
+    record: &ParsedRecord,
+) -> bool {
+    let Lifecycle::Ready(ready) = &artifact.lifecycle else {
+        return false;
+    };
+    let current_stamp = |record: &ParsedRecord| {
+        record.time == Some(ready.time) && record.order == Some(ready.order)
+    };
+    let reaction_fact = |record: &ParsedRecord| {
+        current_stamp(record)
+            && record.revision == Some(artifact.revision.value())
+            && matches!(
+                record.kind,
+                RecordKind::Initialization | RecordKind::Ready | RecordKind::TopologyChange { .. }
+            )
+    };
+    let current_support = reaction_fact(record)
+        || record.predecessors.iter().any(|parent| {
+            records
+                .get(&parent.digest)
+                .is_some_and(|record| reaction_fact(record))
+        })
+        || matches!(&record.kind, RecordKind::Checkpoint { fact } if checkpoint_declares_state(fact));
+    if !current_stamp(record) && !current_support {
+        return false;
+    }
+    let Value::Array(subject) = &row.subject_value else {
+        return false;
+    };
+    let Some(Value::Text(tag)) = subject.first() else {
+        return false;
+    };
+    let expected = if tag == "pulse_node_output" {
+        let Some(Value::Array(body)) = subject.get(1) else {
+            return false;
+        };
+        let Some(owner) = body.first() else {
+            return false;
+        };
+        cbor_decode::encode(owner)
+    } else {
+        row.subject.clone()
+    };
+    let mut actual = crate::identity::Cbor::default();
+    match record.subject.as_ref() {
+        Some(ParsedSubject::Node(name)) => {
+            if !matches!(
+                record.kind,
+                RecordKind::Derived
+                    | RecordKind::PulseDerived { .. }
+                    | RecordKind::PulseControlled { .. }
+            ) || !current_support
+            {
+                return false;
+            }
+            let Some(node) = compiled.resolve_stable_node(
+                &instance_keys(&name.instances),
+                NodeKey::from_u128(name.node),
+            ) else {
+                return false;
+            };
+            actual.nested(&crate::state_digest::encode_stable_owner(
+                &compiled.stable_owner(node),
+            ));
+        }
+        Some(ParsedSubject::ExternalPulseInput(key)) => {
+            if !matches!(record.kind, RecordKind::ExternalPulse { .. }) {
+                return false;
+            }
+            actual.variant_start("external_pulse_input");
+            actual.key(*key);
+        }
+        Some(ParsedSubject::ExternalPulseOutput(key)) => {
+            if !matches!(record.kind, RecordKind::Derived) {
+                return false;
+            }
+            actual.variant_start("external_pulse_output");
+            actual.key(*key);
+        }
+        None if tag == "external_pulse_input" => {
+            // Zero pulse values are reaction-local transaction aliases, not stored pulse state.
+            return reaction_fact(record)
+                || matches!(&record.kind, RecordKind::Checkpoint { fact } if checkpoint_declares_state(fact));
+        }
+        _ => return false,
+    }
+    expected == actual.finish()
+}
+
+fn checkpoint_declares_state(fact: &[u8]) -> bool {
+    let Ok((Value::Array(fields), consumed)) = cbor_decode::parse(
+        fact,
+        Limits {
+            total_bytes: fact.len() as u64,
+            nesting: 64,
+            text_bytes: fact.len() as u64,
+            byte_string_bytes: fact.len() as u64,
+            collection_items: fact.len() as u64,
+        },
+    ) else {
+        return false;
+    };
+    consumed == fact.len()
+        && fields.len() == 1
+        && matches!(&fields[0], Value::Array(pair) if matches!(pair.first(), Some(Value::Text(name)) if name == "declared_state"))
 }
 
 fn machine_root_list(provenance: &ProvenanceSection) -> Vec<[u8; 32]> {
@@ -4189,6 +4652,7 @@ fn machine_root_list(provenance: &ProvenanceSection) -> Vec<[u8; 32]> {
         .chain(provenance.output_baselines.iter())
         .chain(provenance.pending_events.iter())
         .chain(provenance.state.iter())
+        .chain(provenance.current_roots.iter().map(|row| &row.cause))
         .copied()
         .collect()
 }
@@ -4201,7 +4665,6 @@ fn build_view<D>(
     graph: &BTreeMap<[u8; 32], Vec<[u8; 32]>>,
     members: &BTreeSet<[u8; 32]>,
     installed: &Installed,
-    inspection_checkpoint: Option<&[u8]>,
 ) -> Result<BuiltView<D>, RestoreFailure<D>> {
     let order = match kahn_order(&subgraph(graph, members)) {
         Some(order) => order,
@@ -4218,24 +4681,6 @@ fn build_view<D>(
             .get(digest)
             .ok_or_else(|| fail_graph(GraphFault::Digest, &hex(digest), "record", "missing"))?;
         built.push(materialize_record(compiled, record, &ordinals, installed)?);
-    }
-    // SPEC: docs/specs/contracts/machine-snapshot-restoration.yaml "events-episodes-and-provenance"
-    // A valid ready snapshot can retain no transaction ancestry; its checked state
-    // still provides an inspection cause without changing any persisted semantic root.
-    if !built.iter().any(|record| {
-        matches!(
-            record,
-            ProvenanceRecord::InitializationTransaction { .. }
-                | ProvenanceRecord::ReadyTransaction { .. }
-                | ProvenanceRecord::TopologyChange { .. }
-        )
-    }) {
-        if let Some(fact) = inspection_checkpoint {
-            built.push(ProvenanceRecord::Checkpoint {
-                fact: fact.to_vec(),
-                supporters: Vec::new(),
-            });
-        }
     }
     let view = ProvenanceView::restored(compiled, built);
     Ok((view, ordinals))
@@ -5214,40 +5659,6 @@ fn insert_primary<D>(
     }
 }
 
-fn latest_transaction<D>(
-    records: &BTreeMap<[u8; 32], &ParsedRecord>,
-    members: &BTreeSet<[u8; 32]>,
-    ordinals: &BTreeMap<[u8; 32], u32>,
-    scope: [u8; 32],
-) -> Result<Option<CauseRef>, RestoreFailure<D>> {
-    let mut selected: Option<((u64, u64), [u8; 32])> = None;
-    for digest in members {
-        let Some(record) = records.get(digest) else {
-            continue;
-        };
-        if !matches!(
-            record.kind,
-            RecordKind::Initialization | RecordKind::Ready | RecordKind::TopologyChange { .. }
-        ) {
-            continue;
-        }
-        let time = (record.time.unwrap_or(0), record.order.unwrap_or(0));
-        let replace = match selected {
-            Some((selected_time, selected_digest)) => {
-                (time, *digest) > (selected_time, selected_digest)
-            }
-            None => true,
-        };
-        if replace {
-            selected = Some((time, *digest));
-        }
-    }
-    match selected {
-        Some((_, digest)) => Ok(Some(scoped_cause(ordinals, digest, scope)?)),
-        None => Ok(None),
-    }
-}
-
 fn episode_views<D>(
     compiled: &CompiledNetwork<D>,
     artifact: &Artifact,
@@ -5270,8 +5681,7 @@ fn episode_views<D>(
                 "cause",
             )
         })?;
-        let (view, ordinals) =
-            build_view(compiled, records, graph, &members, &empty_installed(), None)?;
+        let (view, ordinals) = build_view(compiled, records, graph, &members, &empty_installed())?;
         let cause = scoped_cause(&ordinals, episode.cause, view.scope())?;
         restored.insert(
             episode.condition.clone(),
@@ -5431,11 +5841,16 @@ fn publish_machine<D>(
             machine.store.periodic_cancellation_causes = provenance.periodic_cancels;
             machine.store.active_episodes = provenance.episodes;
             machine.store.pending_events = provenance.pending;
-            if let Some(cause) = provenance.operation {
-                // Inspection reads operation causes before the next transaction replaces them.
-                // Required roots retain transaction ancestry or a checked snapshot-state checkpoint.
-                machine.store.operation_causes = vec![cause; compiled.operation_count()];
+            machine.store.operation_causes = provenance.operations;
+            machine.store.standard_causes = provenance.standard_causes;
+            let roots = crate::causal_roots::machine(&machine);
+            if let Some(mut view) = machine.store.provenance.take() {
+                for episode in machine.store.active_episodes.values() {
+                    view.include(episode.provenance());
+                }
+                machine.store.provenance = Some(view.owned_roots(&roots));
             }
+
             Ok(machine)
         }
         _ => Err(fail_lifecycle()),
@@ -6091,7 +6506,7 @@ mod tests {
 
     fn record_digest(record: &Value) -> [u8; 32] {
         let bytes = cbor_decode::encode(record);
-        *blake3::hash(&domain_separated(PROVENANCE_RECORD_DOMAIN, 2, &bytes)).as_bytes()
+        *blake3::hash(&domain_separated(PROVENANCE_RECORD_DOMAIN, 3, &bytes)).as_bytes()
     }
 
     fn provenance_items<'a>(artifact: &'a mut Value, name: &str) -> &'a mut Vec<Value> {
@@ -6117,6 +6532,7 @@ mod tests {
 
     fn sort_provenance(artifact: &mut Value) {
         for name in [
+            "current_roots",
             "episodes",
             "external_inputs",
             "output_baselines",
@@ -6401,18 +6817,18 @@ mod tests {
     }
 
     #[test]
-    fn resigned_version_three_is_unsupported_and_payload_disagreement_matches() {
+    fn resigned_version_four_is_unsupported_and_payload_disagreement_matches() {
         let (compiled, machine) = toggle(2);
         let bytes = encoded(&machine);
         let versioned = edited(&bytes, |artifact| {
-            set_uint(envelope_mut(artifact), "artifact_schema_version", 3);
+            set_uint(envelope_mut(artifact), "artifact_schema_version", 4);
         });
         let failure = decode_with(&compiled, &versioned, &decode_policy()).expect_err("version");
         assert_eq!(failure.code().as_str(), "persistence.unsupported_version");
         assert!(matches!(failure, DecodeFailure::UnsupportedVersion(_)));
         let (component, required, upgrader) = version_evidence(&failure);
         assert_eq!(component, "artifact_schema_version");
-        assert_eq!(required, "2");
+        assert_eq!(required, "3");
         assert!(!upgrader);
         let disagreed = edited(&bytes, |artifact| {
             let versions = record_field_mut(payload_mut(artifact), "semantic_versions");
@@ -6574,6 +6990,397 @@ mod tests {
             policy(),
             "persistence.diagnostic_episode_invalid",
         );
+    }
+
+    #[test]
+    fn current_node_role_rejects_a_transaction_cause_before_digest_validation() {
+        let (compiled, machine) = families();
+        let before = encoded(&machine);
+        let invalid = edited(&before, |artifact| {
+            let record = provenance_items(artifact, "records")
+                .iter()
+                .find(|record| {
+                    contains_text(record_field(record, "kind"), "initialization_transaction")
+                })
+                .unwrap()
+                .clone();
+            let cause = record_digest(&record);
+            let row = provenance_items(artifact, "current_roots")
+                .iter_mut()
+                .find(|row| contains_text(record_field(row, "subject"), "node"))
+                .unwrap();
+            *record_field_mut(row, "cause") = Value::Bytes(cause.to_vec());
+        });
+        expect_restore(
+            &compiled,
+            &invalid,
+            policy(),
+            "persistence.provenance_conflicting_record",
+        );
+        assert_eq!(encoded(&machine), before);
+    }
+
+    #[test]
+    fn zero_pulse_role_rejects_wrong_transaction_revision_before_digest_validation() {
+        let (_, mut machine) = families();
+        let source = machine.compiled().graph().external_outputs()[0].source();
+        let prepared = machine
+            .prepare_patch(
+                machine
+                    .patch()
+                    .add_external_output(crate::authored::ExternalOutputDef::new(
+                        ExternalOutputKey::<Level>::from_u128(99).into(),
+                        source,
+                        DiagnosticMeta::default(),
+                    ))
+                    .unwrap()
+                    .finish(),
+            )
+            .require_artifact()
+            .unwrap();
+        let target = prepared.resulting_compiled().clone();
+        machine
+            .apply(
+                Transaction::advance(
+                    Time::from_ticks(2),
+                    machine.revision(),
+                    target.input_delta().finish().unwrap(),
+                )
+                .with_patch(prepared, crate::ReconfigurationPolicy::RejectStateLoss)
+                .unwrap(),
+            )
+            .unwrap();
+        machine
+            .apply(Transaction::advance(
+                Time::from_ticks(3),
+                machine.revision(),
+                target.input_delta().finish().unwrap(),
+            ))
+            .unwrap();
+        let before = encoded(&machine);
+        let invalid = edited(&before, |artifact| {
+            let mut record = provenance_items(artifact, "records")
+                .iter()
+                .find(|record| contains_text(record_field(record, "kind"), "ready_transaction"))
+                .unwrap()
+                .clone();
+            set_uint(&mut record, "revision", 0);
+            let cause = record_digest(&record);
+            provenance_items(artifact, "records").push(record);
+            let row = provenance_items(artifact, "current_roots")
+                .iter_mut()
+                .find(|row| contains_text(record_field(row, "subject"), "external_pulse_input"))
+                .unwrap();
+            *record_field_mut(row, "cause") = Value::Bytes(cause.to_vec());
+            sort_provenance(artifact);
+        });
+        expect_restore(
+            &target,
+            &invalid,
+            policy(),
+            "persistence.provenance_conflicting_record",
+        );
+        assert_eq!(encoded(&machine), before);
+    }
+
+    #[test]
+    fn current_roles_reject_missing_duplicate_unsorted_wrong_owner_and_contradiction() {
+        let (compiled, machine) = families();
+        let bytes = encoded(&machine);
+        let missing_field = edited(&bytes, |artifact| {
+            remove_named(
+                record_field_mut(payload_mut(artifact), "provenance"),
+                "current_roots",
+            );
+        });
+        assert!(matches!(
+            decode_with(&compiled, &missing_field, &decode_policy()),
+            Err(DecodeFailure::MalformedEnvelope(_))
+        ));
+        for duplicate in [true, false] {
+            let invalid = edited(&bytes, |artifact| {
+                let rows = provenance_items(artifact, "current_roots");
+                assert!(rows.len() > 1);
+                if duplicate {
+                    rows.insert(0, rows[0].clone());
+                } else {
+                    rows.swap(0, 1);
+                }
+            });
+            assert!(matches!(
+                decode_with(&compiled, &invalid, &decode_policy()),
+                Err(DecodeFailure::NoncanonicalEncoding(_))
+            ));
+        }
+        let missing_role = edited(&bytes, |artifact| {
+            provenance_items(artifact, "current_roots").remove(0);
+        });
+        expect_restore(
+            &compiled,
+            &missing_role,
+            policy(),
+            "persistence.provenance_incomplete_root_closure",
+        );
+        let wrong_owner = edited(&bytes, |artifact| {
+            let rows = provenance_items(artifact, "current_roots");
+            *record_field_mut(&mut rows[0], "role") = Value::Text("foreign_role".to_owned());
+        });
+        expect_restore(
+            &compiled,
+            &wrong_owner,
+            policy(),
+            "persistence.provenance_conflicting_record",
+        );
+        let contradictory = edited(&bytes, |artifact| {
+            let rows = provenance_items(artifact, "current_roots");
+            let nodes: Vec<_> = rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| contains_text(record_field(row, "subject"), "node"))
+                .map(|(index, _)| index)
+                .collect();
+            let cause = record_field(&rows[nodes[1]], "cause").clone();
+            *record_field_mut(&mut rows[nodes[0]], "cause") = cause;
+        });
+        expect_restore(
+            &compiled,
+            &contradictory,
+            policy(),
+            "persistence.provenance_conflicting_record",
+        );
+        assert_eq!(encoded(&machine), bytes);
+    }
+
+    #[test]
+    fn source_checkpoint_records_reject_old_provenance_versions() {
+        let (_, mut machine) = families();
+        let source = machine.compiled().graph().external_outputs()[0].source();
+        let prepared = machine
+            .prepare_patch(
+                machine
+                    .patch()
+                    .add_external_output(crate::authored::ExternalOutputDef::new(
+                        ExternalOutputKey::<Level>::from_u128(99).into(),
+                        source,
+                        DiagnosticMeta::default(),
+                    ))
+                    .unwrap()
+                    .finish(),
+            )
+            .require_artifact()
+            .unwrap();
+        let target = prepared.resulting_compiled().clone();
+        machine
+            .apply(
+                Transaction::advance(
+                    Time::from_ticks(2),
+                    machine.revision(),
+                    target.input_delta().finish().unwrap(),
+                )
+                .with_patch(prepared, crate::ReconfigurationPolicy::RejectStateLoss)
+                .unwrap(),
+            )
+            .unwrap();
+        let original = encoded(&machine);
+        let bad = edited(&original, |artifact| {
+            let records = provenance_items(artifact, "records");
+            let record = records
+                .iter_mut()
+                .find(|record| contains_text(record_field(record, "kind"), "checkpoint"))
+                .unwrap();
+            let Value::Array(kind) = record_field_mut(record, "kind") else {
+                panic!("kind");
+            };
+            let Value::Bytes(bytes) = &mut kind[1] else {
+                panic!("fact");
+            };
+            let (mut fact, _) = cbor_decode::parse(
+                bytes,
+                cbor_decode::Limits {
+                    total_bytes: 2_000_000,
+                    nesting: 64,
+                    text_bytes: 1_000_000,
+                    byte_string_bytes: 1_000_000,
+                    collection_items: 100_000,
+                },
+            )
+            .unwrap();
+            set_uint(
+                record_field_mut(&mut fact, "record"),
+                "provenance_semantics_version",
+                2,
+            );
+            *bytes = cbor_decode::encode(&fact);
+            records.sort_by_key(record_digest);
+        });
+        assert!(matches!(
+            decode_with(&target, &bad, &decode_policy()),
+            Err(DecodeFailure::UnsupportedVersion(_))
+        ));
+        let forged = edited(&original, |artifact| {
+            let records = provenance_items(artifact, "records");
+            let mut known: Vec<_> = records.iter().map(record_digest).collect();
+            let mut changed = false;
+            for record in records.iter_mut() {
+                let Value::Array(kind) = record_field_mut(record, "kind") else {
+                    panic!("kind");
+                };
+                if !matches!(&kind[0], Value::Text(name) if name == "checkpoint") {
+                    continue;
+                }
+                let Value::Bytes(bytes) = &mut kind[1] else {
+                    panic!("fact");
+                };
+                let (mut fact, _) = cbor_decode::parse(
+                    bytes,
+                    cbor_decode::Limits {
+                        total_bytes: 2_000_000,
+                        nesting: 64,
+                        text_bytes: 1_000_000,
+                        byte_string_bytes: 1_000_000,
+                        collection_items: 100_000,
+                    },
+                )
+                .unwrap();
+                let source = record_field_mut(&mut fact, "record");
+                let Value::Array(fields) = source else {
+                    panic!("record");
+                };
+                if !fields.iter().any(|pair| pair_name(pair) == "predecessors") {
+                    continue;
+                }
+                let Value::Array(parents) = record_field_mut(source, "predecessors") else {
+                    panic!("parents");
+                };
+                *record_field_mut(&mut parents[0], "predecessor") = Value::Bytes(vec![0xff; 32]);
+                *bytes = cbor_decode::encode(&fact);
+                changed = true;
+                break;
+            }
+            assert!(changed);
+            let count = known.len();
+            for wave in 0..=count {
+                let actual: Vec<_> = provenance_items(artifact, "records")
+                    .iter()
+                    .map(record_digest)
+                    .collect();
+                let changes: Vec<_> = known
+                    .iter()
+                    .copied()
+                    .zip(actual.iter().copied())
+                    .filter(|(old, new)| old != new)
+                    .collect();
+                if changes.is_empty() {
+                    break;
+                }
+                assert!(wave < count, "acyclic resigning must terminate");
+                for (old, new) in changes {
+                    replace_digest(payload_mut(artifact), &old, &new);
+                }
+                known = actual;
+            }
+            sort_provenance(artifact);
+        });
+        expect_restore(
+            &target,
+            &forged,
+            policy(),
+            "persistence.provenance_false_checkpoint",
+        );
+        assert_eq!(encoded(&machine), original);
+    }
+
+    #[test]
+    fn canonically_coalesced_source_roles_keep_two_patch_continuations_and_growth_equal() {
+        let (compiled, mut direct) = families();
+        let semantic_before = direct.snapshot();
+        let node = crate::key::NodeKey::from_u128(29);
+        let original = direct.store.periodic_anchor_causes[&node];
+        let duplicate = direct
+            .store
+            .provenance
+            .as_mut()
+            .unwrap()
+            .duplicate_allocation_for_test(&compiled, original);
+        direct.store.periodic_anchor_causes.insert(node, duplicate);
+        // A lawful private-layout variant: a duplicate allocation with identical
+        // canonical content replaces one role, while pending ancestry keeps the original.
+        assert_eq!(direct.snapshot(), semantic_before);
+        let mut restored = must_restore(&compiled, &encoded(&direct), policy());
+        let identity = crate::state_digest::cause_content(
+            direct.store.provenance.as_ref().unwrap(),
+            duplicate,
+        )
+        .0;
+        let allocations = |machine: &Machine<()>| {
+            let view = machine.store.provenance.as_ref().unwrap();
+            (0..view.len())
+                .filter(|index| {
+                    crate::state_digest::cause_content(view, view.records().cause(*index)).0
+                        == identity
+                })
+                .count()
+        };
+        assert_eq!(
+            allocations(&direct),
+            3,
+            "three lawful private source allocations"
+        );
+        assert_eq!(
+            allocations(&restored),
+            1,
+            "strict restoration coalesces their content"
+        );
+        let retained_source = direct.store.provenance.clone().unwrap();
+        for (at, output) in [(2, 99), (3, 100)] {
+            let patch = |machine: &mut Machine<()>| {
+                let source = machine.compiled().graph().external_outputs()[0].source();
+                let prepared = machine
+                    .prepare_patch(
+                        machine
+                            .patch()
+                            .add_external_output(crate::authored::ExternalOutputDef::new(
+                                ExternalOutputKey::<Level>::from_u128(output).into(),
+                                source,
+                                DiagnosticMeta::default(),
+                            ))
+                            .unwrap()
+                            .finish(),
+                    )
+                    .require_artifact()
+                    .unwrap();
+                let target = prepared.resulting_compiled().clone();
+                crate::causal_work::reset();
+                let result = machine
+                    .apply(
+                        Transaction::advance(
+                            Time::from_ticks(at),
+                            machine.revision(),
+                            target.input_delta().finish().unwrap(),
+                        )
+                        .with_patch(prepared, crate::ReconfigurationPolicy::RejectStateLoss)
+                        .unwrap(),
+                    )
+                    .unwrap();
+                let growth = crate::causal_work::read().logical_growth;
+                (result, growth)
+            };
+            let (direct_result, direct_growth) = patch(&mut direct);
+            let (restored_result, restored_growth) = patch(&mut restored);
+            assert_eq!(
+                direct_growth, restored_growth,
+                "wrappers replace source facts without an allocation-dependent charge"
+            );
+            assert_eq!(
+                direct_result.after_execution_digest(),
+                restored_result.after_execution_digest()
+            );
+            assert_same(&direct, &restored);
+            restored = must_restore(direct.compiled(), &encoded(&direct), policy());
+        }
+        drop((direct, restored));
+        let cause = retained_source.records().cause(retained_source.len() - 1);
+        retained_source.explain_cause(cause).unwrap();
     }
 
     #[test]
@@ -7000,6 +7807,7 @@ mod tests {
         observable: [u8; 32],
     ) {
         for name in [
+            "current_roots",
             "episodes",
             "external_inputs",
             "output_baselines",
