@@ -1,0 +1,121 @@
+schema_version: "0.1"
+id: mossignal.verification.optimized_paths
+title: Verification of optimized runtime and projection paths
+kind: concept
+status: reviewed
+source_baseline:
+  commit: 207cd9758682f49ad6457776560972512c669a56
+  working_tree: clean
+summary: >-
+  Optimizations refine maintained, executable correctness references. Their
+  evidence identifies semantic normalization, exercised inputs, assumptions,
+  rollback observations, and independent debug recomputation.
+scope:
+  includes:
+    - refinement and reference availability for runtime and projection optimizations
+    - optimization-specific evidence and failure-atomicity verification
+  excludes:
+    - individual node laws and artifact schemas
+    - storage choices, work-counter targets, and benchmark thresholds
+requirements:
+  - id: executable-refinement
+    kind: verification
+    statement: >-
+      Candidate and reference agree after semantic normalization for their valid
+      shared input domain. Relevant references are clone-and-swap transaction
+      execution, stable-keyed canonical encoding and digest generation, fresh
+      inspection projection, applying a forecast transaction to an unpublished
+      clone, and replay through repeated ordinary application. A production
+      replacement requires continuous enforcement of its applicable refinement
+      obligation in tests.
+    sources: [refinement, reference-paths]
+  - id: maintained-independent-references
+    kind: verification
+    statement: >-
+      References exist in ordinary test configuration, are callable by property
+      and differential tests, and remain maintained as semantics evolve. They
+      share semantic definitions without sharing the optimized algorithm under
+      verification and are simple enough to audit. Public exposure and production
+      performance are unnecessary.
+    sources: [reference-availability]
+  - id: optimization-evidence
+    kind: verification
+    statement: >-
+      Each optimization identifies its reference, semantic normalization,
+      exercised generator domain, assumptions and exclusions, and retained debug
+      checks. Without an executable equivalence strategy it requires explicit
+      architectural justification and stronger alternative verification.
+    sources: [new-optimized-paths]
+  - id: complete-rejection-observation
+    kind: verification
+    statement: >-
+      For each structured failure category, capture complete semantic observation
+      before execution and compare it after rejection: lifecycle, topology,
+      revision, time, external and settled levels, node and temporal state,
+      pending events, output baselines, provenance roots, active episodes, and
+      execution and observable digests. Candidate-versus-clone comparisons cover
+      both success and structured failure.
+    sources: [failure-observation, candidate-equivalence]
+  - id: limited-reference-independence
+    kind: verification
+    statement: >-
+      Where full reference/candidate independence is impractical, the limitation
+      must be documented and supplemented by another verification method.
+    sources: [reference-independence]
+recommendations:
+  - id: independent-algorithms
+    statement: >-
+      Reference and candidate should avoid sharing the exact logic under
+      comparison.
+    sources: [reference-independence]
+  - id: recompute-dynamic-invariants
+    statement: >-
+      Debug and test configurations should independently recompute affected
+      invariants, including provenance acyclicity and authoritative-root
+      reachability, calendar membership, episode ownership, canonical digests,
+      and snapshot round trips at meaningful semantic boundaries.
+    sources: [debug-invariants]
+  - id: preparation-fault-injection
+    statement: >-
+      Test-only injection should cover applicable fallible preparation stages
+      through the ordinary rollback boundary, including evaluation, migration,
+      provenance, result construction, encoding, digest calculation, and budgets.
+    sources: [fault-injection]
+open_questions: []
+sources:
+  refinement:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part I — Verification model, 6. Refinement obligations]
+    reviewed_hash: sha256:c54ff7cdad4f949836d7e93a652560816ca5335e8ff08e666fce68a5c9d68057
+  reference-paths:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part III — Reference implementations, 9. Required reference paths]
+    reviewed_hash: sha256:ce655097c0526f0de7947e3dcebc37980cb8377d7b638bb8359e511e7d606fe7
+  reference-availability:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part III — Reference implementations, 10. Availability of reference paths]
+    reviewed_hash: sha256:42615d1210c169ea0d3df70b2c9593ee95ef2670350025c4375ad58a3fabc6fa
+  reference-independence:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part III — Reference implementations, 11. Reference path independence]
+    reviewed_hash: sha256:887b013e1eafe3a96bb99127f75fda6c5ccb28a059d0a12c2d11e8236e530a9d
+  candidate-equivalence:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 53. Candidate-versus-clone equivalence]
+    reviewed_hash: sha256:9dc17269cf7c9067ef1fedd26757f1c4a5e4e3fa0fa5c42b8c19cbbf6d76ef94
+  failure-observation:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 54. Failure atomicity]
+    reviewed_hash: sha256:ad0cf446afed7165b5d1e969ef8e1cefb67264954f24a53252f8f19514639ae6
+  fault-injection:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part X — Transaction and failure-atomicity verification, 55. Fault injection]
+    reviewed_hash: sha256:2d18efa92d4ce9c9f713019a78ff9d6ea4f9735ad0d68c2bcff168c9b594130c
+  debug-invariants:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XX — Debug verification and implementation safety, 106. Debug invariant checks]
+    reviewed_hash: sha256:6e685fd4017f487dd2985e4b4a3f5eef95802c7ef023bba77b9ad9f09dea0dae
+  new-optimized-paths:
+    document: docs/testing_and_verification_policy.md
+    heading_path: [Part XXIII — Requirements for future features, 121. New optimized paths]
+    reviewed_hash: sha256:18511c94b90300d7bc995d09cecd003bdefb223b3d05945fad4d47a1f24c6d21

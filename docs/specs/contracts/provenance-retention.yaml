@@ -1,0 +1,67 @@
+schema_version: "0.1"
+id: mossignal.provenance.retention
+title: Root-directed causal retention and optional collection
+kind: lifecycle
+status: reviewed
+source_baseline:
+  commit: 207cd9758682f49ad6457776560972512c669a56
+  working_tree: clean
+summary: >-
+  Required causal storage is selected by current and policy-selected historical
+  roots. Collection can release unrelated optional records while the explanation,
+  owned-artifact, persistence, and budget contracts remain in force.
+scope:
+  includes:
+    - root-directed retention and collection of optional causal records
+    - the distinction between optional retention and required-provenance budgets
+  excludes:
+    - authoritative roots and checkpoint completeness represented by causal-explanations
+    - owned cause-reference lifetimes represented by semantic-inspection
+    - canonical cause content and digest projections represented by machine-state-digests
+    - exact collection algorithms, checkpoint APIs, and application history policy
+requirements:
+  - id: retained-root-closure
+    kind: lifecycle
+    statement: >-
+      Required retained provenance is the backward-reachable closure of required
+      current roots and policy-selected historical roots. Unreachable optional
+      provenance may be collected. If an explanation is pruned, it terminates at
+      an explicit checkpoint or retention boundary.
+    sources: [runtime-retention]
+  - id: required-limits-are-operational
+    kind: semantic
+    statement: >-
+      Limits on required current provenance affect operational behavior and
+      belong to runtime policy identity. Performance-only tuning that cannot
+      affect semantic results is excluded from that policy.
+    sources: [runtime-budget, runtime-policy]
+recommendations:
+  - id: prune-optional-before-failure
+    statement: >-
+      Optional historical provenance retention should not cause semantic failure
+      where it can instead be pruned.
+    sources: [runtime-budget]
+implementation_freedom:
+  - >-
+    Storage, sharing, interning, and collection strategy are private choices when
+    they preserve the governing architectural invariants and reference equivalences.
+known_uncovered:
+  - An explicit public checkpoint or historical-retention configuration surface.
+open_questions: []
+sources:
+  runtime-retention:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part X — Causal provenance, 68. Retention]
+    reviewed_hash: sha256:90b0e7ad7ff19307fc6fc71d15ae62390c46d47083721153c2911c151e27af94
+  runtime-budget:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XIV — Runtime policy and replay, 91. Budget failure]
+    reviewed_hash: sha256:2ca78ad09dfa909af6d1ad6e2685bbeea97ea77dc45df56832e4f27c3be4d879
+  runtime-policy:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XIV — Runtime policy and replay, 89. Runtime policy]
+    reviewed_hash: sha256:8f8c51a64e8b106269bde9516f9b69ae73f33813854efb7ad6a8664a872eed21
+  storage-freedom:
+    document: docs/specs/processor_and_runtime_architecture.md
+    heading_path: [Part XIX — Deliberately unspecified choices, 105. Open implementation freedom]
+    reviewed_hash: sha256:7073cdb9562f644f47abf469ac32fc7d20c2b1cc996eb9258d094a5dc08874a9
