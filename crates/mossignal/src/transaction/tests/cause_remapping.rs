@@ -14,7 +14,7 @@ const PULSE: ExternalInputKey<Pulse> = ExternalInputKey::from_u128(4);
 const RESET_PULSE: ExternalInputKey<Pulse> = ExternalInputKey::from_u128(5);
 const LATCH: NodeKey = NodeKey::from_u128(12);
 
-fn policy() -> RuntimePolicy {
+pub(super) fn policy() -> RuntimePolicy {
     RuntimePolicy::builder()
         .max_internal_reactions(100)
         .max_evaluated_operations(100_000)
@@ -29,7 +29,7 @@ fn span(ticks: u64) -> NonZeroSpan<()> {
     NonZeroSpan::from_ticks(ticks).unwrap()
 }
 
-fn fixture(groups: u64) -> CompiledNetwork<()> {
+pub(super) fn fixture(groups: u64) -> CompiledNetwork<()> {
     let mut b = NetworkBuilder::with_key(
         crate::key::NetworkKey::from_u128(1),
         TimeDomainId::from_u128(2),
@@ -171,7 +171,7 @@ fn advance(m: &Machine<()>, at: u64) -> Transaction<()> {
     )
 }
 
-fn seeded(c: &CompiledNetwork<()>) -> Machine<()> {
+pub(super) fn seeded(c: &CompiledNetwork<()>) -> Machine<()> {
     let mut m = c.spawn(policy());
     drop(m.apply(initialization(&m)).unwrap());
     let tx = Transaction::advance(
@@ -217,6 +217,12 @@ fn seeded(c: &CompiledNetwork<()>) -> Machine<()> {
 fn no_obsolete(work: Work) {
     assert_eq!(work.obsolete_remaps, ObsoleteRemaps::default(), "{work:?}");
     assert_eq!(work.different_lineage_remaps, 0);
+    assert_eq!(work.freeze.old_records_indexed, 0);
+    assert_eq!(work.freeze.scratch_slots, 0);
+    assert_eq!(work.freeze.cached_payload_visits, 0);
+    assert_eq!(work.freeze.cached_payload_insertions, 0);
+    assert_eq!(work.freeze.old_source_visits, 0);
+    assert_eq!(work.freeze.new_nodes, work.nodes_created);
 }
 
 fn check_jump(r: &TransactionResult<()>) {
@@ -336,7 +342,7 @@ fn ordinary_remap_deadlines_and_future_groups_have_zero_identity_work() {
     }
 }
 
-fn round_trip(m: &Machine<()>) -> Machine<()> {
+pub(super) fn round_trip(m: &Machine<()>) -> Machine<()> {
     let context = PersistenceContext::new(m.compiled.time_domain_id());
     let encoded = encode_snapshot(&context, &m.snapshot()).unwrap();
     let snapshot = decode_snapshot(
@@ -485,6 +491,9 @@ fn ordinary_remap_restore_and_qualified_source_translations_remain_real() {
     let mut restored = round_trip(&direct);
     let restore_work = causal_work::read();
     assert!(restore_work.different_lineage_remaps > 0);
+    assert_eq!(restore_work.freeze.new_nodes, restore_work.nodes_created);
+    assert!(restore_work.freeze.new_nodes > 0);
+    assert_eq!(restore_work.freeze.scratch_slots, 0);
     assert_eq!(restore_work.obsolete_remaps, ObsoleteRemaps::default());
     assert!(!crate::causal_store::same_lineage(
         old_scope,
@@ -614,6 +623,7 @@ fn ordinary_remap_held_causes_outlive_machine_without_changing_work() {
         }
         drop(owned);
         assert_eq!(causal_work::live_nodes(), 0);
+        assert_eq!(causal_work::live_content_nodes(), 0);
         (snapshot, manifest, work, live)
     };
     let dropped = run(false);
@@ -648,6 +658,7 @@ fn ordinary_remap_preparation_faults_preserve_complete_warm_predecessor() {
             let view = m.store.provenance.as_ref().unwrap().clone();
             let before = super::tests::observe(&m);
             let live = causal_work::live_nodes();
+            let live_content = causal_work::live_content_nodes();
             let tx = if patch {
                 preserving_patch(&m, 5)
             } else {
@@ -677,6 +688,7 @@ fn ordinary_remap_preparation_faults_preserve_complete_warm_predecessor() {
             }
             assert_eq!(super::tests::observe(&m), before);
             assert_eq!(causal_work::live_nodes(), live);
+            assert_eq!(causal_work::live_content_nodes(), live_content);
             assert!(view.inspect(cause).is_ok());
             let history = held.stateful_standard().unwrap();
             assert!(

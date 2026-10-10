@@ -363,33 +363,23 @@ impl ContentTable {
 }
 
 fn index_view<D>(
-    compiled: &CompiledNetwork<D>,
+    _compiled: &CompiledNetwork<D>,
     view: &ProvenanceView<D>,
     table: &mut ContentTable,
 ) -> Vec<[u8; 32]> {
-    let mut memo = vec![None; view.records().len()];
-    let mut stack = vec![false; view.records().len()];
-    for index in 0..view.records().len() {
-        #[cfg(test)]
-        crate::projection_work::update(|work| work.records_indexed += 1);
-        digest_record(compiled, view, index, &mut memo, &mut stack, table);
-    }
-    memo.into_iter()
-        .map(|digest| match digest {
-            Some(digest) => digest,
-            None => panic!("provenance record digest must be computed"),
+    view.records()
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            #[cfg(test)]
+            crate::projection_work::update(|work| work.records_indexed += 1);
+            let Some(content) = view.records().canonical(index).get() else {
+                panic!("indexed causal nodes must have completed creating-topology content");
+            };
+            table.insert(content.digest, Arc::clone(&content.payload));
+            content.digest
         })
         .collect()
-}
-
-/// Freeze creating-topology bytes before a prepared graph can be published.
-pub(crate) fn freeze_provenance<D>(compiled: &CompiledNetwork<D>, view: &ProvenanceView<D>) {
-    // SPEC: docs/specs/contracts/machine-state-digests.yaml "content-addressed-provenance"
-    // Old nodes keep their creating topology's canonical interpretation.
-    let mut table = ContentTable::default();
-    #[cfg(test)]
-    view.records().freeze_sources(compiled);
-    index_view(compiled, view, &mut table);
 }
 
 #[cfg(test)]
@@ -456,57 +446,23 @@ pub(crate) fn checkpoint_facts<D>(
         .collect()
 }
 
-fn digest_record<D>(
+/// Complete one exclusively constructed record, without traversing its ancestry.
+pub(crate) fn freeze_record<D>(
     compiled: &CompiledNetwork<D>,
-    view: &ProvenanceView<D>,
-    index: usize,
-    memo: &mut [Option<[u8; 32]>],
-    stack: &mut [bool],
-    table: &mut ContentTable,
-) -> [u8; 32] {
-    if let Some(digest) = memo[index] {
-        return digest;
-    }
-    if let Some(canonical) = view.records().canonical(index).get() {
-        table.insert(canonical.digest, Arc::clone(&canonical.payload));
-        memo[index] = Some(canonical.digest);
-        return canonical.digest;
-    }
-    if stack[index] {
-        panic!("provenance records must form an acyclic cause graph");
-    }
-    stack[index] = true;
-    let relations = predecessor_relations(compiled, view, index, memo, stack, table);
-    let payload = Arc::new(provenance_payload(
-        compiled,
-        &view.records()[index],
-        &relations,
-    ));
+    record: &ProvenanceRecord<D>,
+    predecessor: impl FnMut(CauseRef) -> [u8; 32],
+) -> crate::causal_store::CanonicalRecord {
+    let relations = predecessor_relations(record, predecessor);
+    let payload = Arc::new(provenance_payload(compiled, record, &relations));
     #[cfg(test)]
     crate::causal_work::update(|work| {
+        work.freeze.new_nodes += 1;
         work.canonical_encodes += 1;
         work.canonical_hashes += 1;
     });
     let input = domain_separated(PROVENANCE_RECORD_DOMAIN, 4, &payload);
     let digest = *blake3::hash(&input).as_bytes();
-    let canonical = crate::causal_store::CanonicalRecord {
-        digest,
-        payload: Arc::clone(&payload),
-    };
-    if let Err(existing) = view.records().canonical(index).set(canonical) {
-        let Some(frozen) = view.records().canonical(index).get() else {
-            panic!("a concurrently frozen causal node must retain its canonical content");
-        };
-        if frozen.digest != existing.digest || frozen.payload != existing.payload {
-            panic!(
-                "an immutable causal node must have one source-qualified canonical interpretation"
-            );
-        }
-    }
-    table.insert(digest, payload);
-    memo[index] = Some(digest);
-    stack[index] = false;
-    digest
+    crate::causal_store::CanonicalRecord { digest, payload }
 }
 
 struct Relation {
@@ -517,19 +473,15 @@ struct Relation {
 }
 
 fn predecessor_relations<D>(
-    compiled: &CompiledNetwork<D>,
-    view: &ProvenanceView<D>,
-    index: usize,
-    memo: &mut [Option<[u8; 32]>],
-    stack: &mut [bool],
-    table: &mut ContentTable,
+    record: &ProvenanceRecord<D>,
+    mut predecessor: impl FnMut(CauseRef) -> [u8; 32],
 ) -> Vec<Relation> {
-    let record = &view.records()[index];
     let mut relations = Vec::new();
     if let Some(contributions) = contributions(record) {
         for (position, contribution) in contributions.iter().enumerate() {
-            let ordinal = view.resolve_ordinal(contribution.cause());
-            let digest = digest_record(compiled, view, ordinal, memo, stack, table);
+            #[cfg(test)]
+            crate::causal_work::update(|work| work.freeze.predecessor_reads += 1);
+            let digest = predecessor(contribution.cause());
             let mut port = Cbor::default();
             write_pulse_port(&mut port, contribution.port());
             let port_bytes = port.finish();
@@ -546,8 +498,9 @@ fn predecessor_relations<D>(
         }
     }
     for cause in record.supporters() {
-        let ordinal = view.resolve_ordinal(*cause);
-        let digest = digest_record(compiled, view, ordinal, memo, stack, table);
+        #[cfg(test)]
+        crate::causal_work::update(|work| work.freeze.predecessor_reads += 1);
+        let digest = predecessor(*cause);
         relations.push(Relation {
             role: "supporter",
             digest,

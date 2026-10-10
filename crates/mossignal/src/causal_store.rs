@@ -6,6 +6,9 @@ use std::ops::Index;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
+mod content_index;
+use content_index::ContentIndex;
+
 static NEXT_NAMESPACE: AtomicU64 = AtomicU64::new(1);
 
 /// The first half brands the lineage; the second brands an allocation batch.
@@ -70,6 +73,7 @@ pub(crate) struct Records<D> {
     scope: [u8; 32],
     nodes: Vec<Arc<Node<D>>>,
     positions: BTreeMap<CauseRef, usize>,
+    content: ContentIndex,
 }
 
 impl<D> Clone for Records<D> {
@@ -78,6 +82,7 @@ impl<D> Clone for Records<D> {
             scope: self.scope,
             nodes: self.nodes.clone(),
             positions: self.positions.clone(),
+            content: self.content.clone(),
         }
     }
 }
@@ -88,6 +93,7 @@ impl<D> Records<D> {
             scope,
             nodes: Vec::new(),
             positions: BTreeMap::new(),
+            content: ContentIndex::default(),
         }
     }
 
@@ -101,10 +107,15 @@ impl<D> Records<D> {
             scope,
             nodes: self.nodes.clone(),
             positions: self.positions.clone(),
+            content: self.content.clone(),
         }
     }
 
-    pub(crate) fn push(&mut self, record: ProvenanceRecord<D>) -> CauseRef {
+    pub(crate) fn push(
+        &mut self,
+        compiled: &crate::CompiledNetwork<D>,
+        record: ProvenanceRecord<D>,
+    ) -> CauseRef {
         #[cfg(test)]
         crate::causal_work::update(|work| work.nodes_created += 1);
         let ordinal = match u32::try_from(self.nodes.len()) {
@@ -126,14 +137,29 @@ impl<D> Records<D> {
                 Arc::clone(&self.nodes[*position])
             })
             .collect();
+        // SPEC: docs/specs/contracts/machine-state-digests.yaml "content-addressed-provenance"
+        // Complete creating-topology content while exclusive; shared nodes never need initialization.
+        let canonical = crate::state_digest::freeze_record(compiled, &record, |cause| {
+            let Some(position) = self.positions.get(&cause) else {
+                panic!("canonical predecessors must already belong to the prepared graph");
+            };
+            let Some(content) = self.nodes[*position].canonical.get() else {
+                panic!("admitted predecessor content must be complete before its consumer");
+            };
+            content.digest
+        });
+        #[cfg(test)]
+        crate::causal_work::with_freezing(|| self.content.insert(&canonical));
+        #[cfg(not(test))]
+        self.content.insert(&canonical);
         self.positions.insert(cause, self.nodes.len());
         self.nodes.push(Arc::new(Node {
             cause,
             record,
             predecessors,
-            canonical: OnceLock::new(),
+            canonical: OnceLock::from(canonical),
             #[cfg(test)]
-            source: OnceLock::new(),
+            source: OnceLock::from(compiled.clone()),
             #[cfg(test)]
             tracker: crate::causal_work::node_tracker(),
         }));
@@ -154,12 +180,6 @@ impl<D> Records<D> {
     }
     pub(crate) fn canonical(&self, position: usize) -> &OnceLock<CanonicalRecord> {
         &self.nodes[position].canonical
-    }
-    #[cfg(test)]
-    pub(crate) fn freeze_sources(&self, compiled: &crate::CompiledNetwork<D>) {
-        for node in &self.nodes {
-            node.source.get_or_init(|| compiled.clone());
-        }
     }
     #[cfg(test)]
     pub(crate) fn source(&self, position: usize) -> Option<&crate::CompiledNetwork<D>> {
@@ -192,9 +212,17 @@ impl<D> Records<D> {
             }
         }
         // Only the selected closure is visited; no full catalogue sweep.
+        let mut content = ContentIndex::default();
         let nodes: Vec<_> = selected
             .into_iter()
-            .map(|position| Arc::clone(&self.nodes[position]))
+            .map(|position| {
+                let node = &self.nodes[position];
+                let Some(canonical) = node.canonical.get() else {
+                    panic!("selected causal nodes must have complete canonical content");
+                };
+                content.insert(canonical);
+                Arc::clone(node)
+            })
             .collect();
         let positions = nodes
             .iter()
@@ -205,11 +233,16 @@ impl<D> Records<D> {
             scope: self.scope,
             nodes,
             positions,
+            content,
         }
     }
 
     pub(crate) fn include(&mut self, other: &Self) {
         for node in &other.nodes {
+            let Some(canonical) = node.canonical.get() else {
+                panic!("included causal nodes must have complete canonical content");
+            };
+            self.content.insert(canonical);
             if !self.positions.contains_key(&node.cause) {
                 self.positions.insert(node.cause, self.nodes.len());
                 self.nodes.push(Arc::clone(node));
@@ -230,13 +263,13 @@ impl<D> Records<D> {
         for node in &mut self.nodes {
             let mut record = crate::transaction::remap_record(&node.record, node.cause.scope);
             record.reverse_unordered_supporters();
-            let canonical = OnceLock::new();
-            if let Some(content) = node.canonical.get() {
-                let _ = canonical.set(CanonicalRecord {
-                    digest: content.digest,
-                    payload: Arc::clone(&content.payload),
-                });
-            }
+            let Some(content) = node.canonical.get() else {
+                panic!("reconstructed causal nodes must retain completed canonical content");
+            };
+            let canonical = OnceLock::from(CanonicalRecord {
+                digest: content.digest,
+                payload: Arc::clone(&content.payload),
+            });
             *node = Arc::new(Node {
                 cause: node.cause,
                 record,
@@ -260,21 +293,118 @@ impl<D> Index<usize> for Records<D> {
 mod tests {
     use super::*;
     #[test]
+    fn incremental_freezing_include_checks_result_only_content_and_selection_releases_lookup() {
+        let mut b = crate::NetworkBuilder::<()>::new(crate::TimeDomainId::from_u128(2));
+        let signal = b.constant(crate::signal::LogicLevel::High);
+        b.level_output("value", signal).unwrap();
+        let c = b
+            .finish()
+            .require_artifact()
+            .unwrap()
+            .compile()
+            .require_artifact()
+            .unwrap();
+        let mut records = Records::new(fresh_scope(None));
+        let old = records.push(
+            &c,
+            ProvenanceRecord::ReadyTransaction {
+                at: crate::ReactionStamp::from_parts(crate::time::Time::from_ticks(0), 0),
+                revision: crate::NetworkRevision::from_value(0),
+            },
+        );
+        let current = records.push(
+            &c,
+            ProvenanceRecord::ReadyTransaction {
+                at: crate::ReactionStamp::from_parts(crate::time::Time::from_ticks(1), 0),
+                revision: crate::NetworkRevision::from_value(0),
+            },
+        );
+        let content = records
+            .canonical(records.position(old).unwrap())
+            .get()
+            .unwrap();
+        let old_digest = content.digest;
+        let payload = Arc::downgrade(&content.payload);
+        let result = records.owned_closure(&[old]);
+        let selected = records.owned_closure(&[current]);
+        assert_eq!(selected.len(), 1);
+        let mut candidate = records.fork(fresh_scope(Some(records.scope)));
+        let mut foreign = Records::new(fresh_scope(None));
+        let bad = foreign.push(
+            &c,
+            ProvenanceRecord::ReadyTransaction {
+                at: crate::ReactionStamp::from_parts(crate::time::Time::from_ticks(2), 0),
+                revision: crate::NetworkRevision::from_value(0),
+            },
+        );
+        let position = foreign.position(bad).unwrap();
+        let node = &foreign.nodes[position];
+        // Inject corruption without changing production construction; include must check available bytes.
+        foreign.nodes[position] = Arc::new(Node {
+            cause: node.cause,
+            record: crate::transaction::remap_record(&node.record, node.cause.scope),
+            predecessors: node.predecessors.clone(),
+            canonical: OnceLock::from(CanonicalRecord {
+                digest: old_digest,
+                payload: Arc::new(vec![9]),
+            }),
+            source: node.source.clone(),
+            tracker: crate::causal_work::node_tracker(),
+        });
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| candidate.include(&foreign)))
+                .is_err()
+        );
+        assert_eq!(candidate.len(), 2);
+        assert_eq!(result.len(), 1);
+        drop(foreign);
+        drop(candidate);
+        drop(records);
+        drop(result);
+        assert!(payload.upgrade().is_none());
+        assert_eq!(crate::causal_work::live_nodes(), 1);
+        assert_eq!(crate::causal_work::live_content_nodes(), 1);
+        drop(selected);
+        assert_eq!(crate::causal_work::live_nodes(), 0);
+        assert_eq!(crate::causal_work::live_content_nodes(), 0);
+    }
+    #[test]
     fn deep_final_owner_release_is_iterative_and_frees_every_node() {
         std::thread::Builder::new()
             .stack_size(64 * 1024)
             .spawn(|| {
                 let scope = fresh_scope(None);
                 let mut records = Records::<()>::new(scope);
-                let mut parent = records.push(ProvenanceRecord::ReadyTransaction {
-                    at: crate::ReactionStamp::from_parts(crate::time::Time::from_ticks(0), 0),
-                    revision: crate::NetworkRevision::from_value(0),
-                });
+                let mut b = crate::NetworkBuilder::with_key(
+                    crate::key::NetworkKey::from_u128(1),
+                    crate::TimeDomainId::from_u128(2),
+                );
+                let signal = b.constant(crate::signal::LogicLevel::High);
+                b.level_output("value", signal).unwrap();
+                let c = b
+                    .finish()
+                    .require_artifact()
+                    .unwrap()
+                    .compile()
+                    .require_artifact()
+                    .unwrap();
+                let mut parent = records.push(
+                    &c,
+                    ProvenanceRecord::ReadyTransaction {
+                        at: crate::ReactionStamp::from_parts(crate::time::Time::from_ticks(0), 0),
+                        revision: crate::NetworkRevision::from_value(0),
+                    },
+                );
                 for _ in 0..30_000 {
-                    parent = records.push(ProvenanceRecord::Derived {
-                        subject: crate::ProvenanceSubject::Node(crate::key::NodeKey::from_u128(1)),
-                        supporters: vec![parent],
-                    });
+                    parent = records.push(
+                        &c,
+                        ProvenanceRecord::Derived {
+                            subject: crate::ProvenanceSubject::Node(
+                                crate::key::NodeKey::from_u128(1),
+                            ),
+                            supporters: vec![parent],
+                        },
+                    );
                 }
                 let owned = records.owned_closure(&[parent]);
                 drop(records);

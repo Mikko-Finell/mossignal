@@ -332,7 +332,14 @@ fn index_view<D>(
     table: &mut ContentTable,
 ) -> Vec<[u8; 32]> {
     let graph = VectorGraph::read(view);
-    let view = &graph;
+    index_graph(compiled, &graph, table)
+}
+
+fn index_graph<D>(
+    compiled: &CompiledNetwork<D>,
+    view: &VectorGraph<'_, D>,
+    table: &mut ContentTable,
+) -> Vec<[u8; 32]> {
     let mut memo = vec![None; view.records().len()];
     let mut stack = vec![false; view.records().len()];
     for index in 0..view.records().len() {
@@ -381,6 +388,21 @@ pub(crate) fn canonical_view<D>(
                 (cause, digest)
             })
             .collect(),
+    }
+}
+
+/// Recompute a homogeneous source view without consulting observed creating contexts.
+pub(crate) fn canonical_view_in_source<'a, D>(
+    compiled: &'a CompiledNetwork<D>,
+    view: &'a ProvenanceView<D>,
+) -> CanonicalView {
+    let mut graph = VectorGraph::read(view);
+    graph.sources.fill(None);
+    let mut table = ContentTable::default();
+    let digests = index_graph(compiled, &graph, &mut table);
+    CanonicalView {
+        records: table.payloads,
+        causes: graph.causes.into_iter().zip(digests).collect(),
     }
 }
 
