@@ -5,10 +5,8 @@ kind: family
 status: reviewed
 
 source_baseline:
-  commit: 5ffde87853fd17dc5e094bfd8f645d79db3ebda0
-  working_tree: dirty
-  modified_spec_paths:
-    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
+  commit: 69e26269c1279d0895a827cb167abffb103a49c9
+  working_tree: dirty # Planning files differ; governing specifications are unchanged.
 
 summary: >-
   RisingEdge, FallingEdge, and AnyEdge are fixed-shape Level-to-Pulse stateful
@@ -21,16 +19,16 @@ scope:
     - family port shape, initialization policy, observation state, and transition laws
     - typed and dynamic authoring, validation, compilation, and evaluation
     - current-reaction causality, committed-state inspection, provenance, and conformance
+    - preservation and reset of the family's remembered observation across topology changes
     - pre-stability network- and module-fingerprint extension boundary
   excludes:
     - debounce, temporal filtering, retained pulse history, and arbitrary callbacks
     - latches, Toggle, SampleHold, counters, and temporal primitives
     - general state-slot ownership and atomic successor commitment
-    - snapshot encoding, restoration, replay, and topology migration
+    - snapshot encoding, restoration, replay, and general topology migration machinery
 
 known_uncovered:
   - Canonical snapshot encoding and restoration validation for remembered observations
-  - Compatible same-kind and cross-kind topology migration of established observations
   - Complete current-support and why-not explanation rendering for non-emitting reactions
 
 aliases:
@@ -117,6 +115,32 @@ requirements:
     sources: [api-pulse, node-inspection, causal-provenance, runtime-derivation, runtime-causal-order, runtime-current-support]
     basis: derived
 
+  - id: comparison-and-successor-observation-support
+    kind: system_effect
+    statement: >-
+      Stateful explanations distinguish the previous observation, settled
+      current input, current comparison, and successor remembered observation.
+      The comparison and any emitted edge pulse are supported by the previous
+      and current observations, with declared initialization supplying the prior
+      premise when applicable. The successor law remembers the settled current
+      input; its causal justification establishes that observation rather than
+      treating an earlier comparison as a necessary successor-state premise.
+      Genuine historical support of the current input remains required ancestry.
+    sources: [edge-initialization, rising-edge, falling-edge, any-edge, node-explanations, runtime-derivation, runtime-current-support]
+    basis: derived
+
+  - id: preserved-and-reset-observation-migration
+    kind: reconfiguration
+    statement: >-
+      Same-kind and cross-kind changes within the edge-detector family preserve
+      an established remembered level or an unestablished baseline. Changing
+      EdgeInitialization does not retroactively change preserved state. Reset
+      re-enters the target initialization policy. The target reaction compares
+      that migrated or reset previous observation with its settled current input
+      under the target detector law; a topology-induced edge pulse requires a
+      genuine transition under that law.
+    sources: [edge-migration]
+
   - id: pre-stability-identity-extension
     kind: compatibility
     statement: >-
@@ -159,10 +183,19 @@ implementation_freedom:
   - Fixed-port key derivation, exact keyed argument grouping, shared private detector-kind representation, descriptor fields, and edge-family state-slot layout are free when stable identity and the complete laws are preserved.
   - Private canonical-encoder helper decomposition and reuse remain free; NetworkFingerprint follows its exact authoritative projection, while ModuleFingerprint follows its separately governed semantic inclusion and ordering rules.
   - A focused owned edge-detector inspection result may precede the broader generic inspection-query, subscription, snapshot, and migration systems.
+  - Comparison and successor-observation provenance record shapes, sharing and private cause-map organization remain free when the distinct laws, ownership and genuine causal support are preserved.
 
 open_questions: []
 
 sources:
+  node-explanations:
+    document: docs/specs/built_in_node_semantics.md
+    heading_path: [Part I — Shared semantic rules, 18. Explanations and causes]
+    reviewed_hash: sha256:af07465662f1f93e504301c409b8a58c05f1558940699e318face0445feec256
+  edge-migration:
+    document: docs/specs/reconfiguration_and_topology_patch_spec.md
+    heading_path: [Part V — State compatibility and migration, 44. Edge detectors]
+    reviewed_hash: sha256:931e9b793fa3d242771d3b117184d05392fe8c2872c4a8e02e141119b898976e
   transducer-model:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part I — Shared semantic rules, 5. Synchronous transducer model]
@@ -170,7 +203,7 @@ sources:
   glitch-freedom:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part I — Shared semantic rules, 6. Glitch-free semantics]
-    reviewed_hash: sha256:91f969dee3cc65b8a49880921c7d2edb26dd0a4cdfb73c6c7e09d4a3ddbf1c39
+    reviewed_hash: sha256:cfe7612ca2811c141deccd027eb34bc91874feda313ccf7e2438596527c6cfec
   dependency-signatures:
     document: docs/specs/built_in_node_semantics.md
     heading_path: [Part I — Shared semantic rules, 9. Current-reaction dependency signatures]
@@ -276,7 +309,7 @@ sources:
   runtime-causal-order:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part X — Causal provenance, 64. Causal order]
-    reviewed_hash: sha256:fe3199f5d66e4d27a982954372a012f701f5e39948fb997e88cc909638eda3d4
+    reviewed_hash: sha256:3847bcfe3fea5a94ebcb46c59559b49a4ec635885e61d76a1ec68d725eca92fa
   runtime-current-support:
     document: docs/specs/processor_and_runtime_architecture.md
     heading_path: [Part X — Causal provenance, 65. Current support and transition cause]
@@ -288,11 +321,11 @@ sources:
   restricted-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 54. Network and input-schema fingerprints, 54.2 Restricted network-fingerprint projection version 1]
-    reviewed_hash: sha256:8de603729bcf0b4382a357e08d48b35e12803f7165333f21113bfed49bce77f9
+    reviewed_hash: sha256:06674f6adf8b2b553c51d7338f44c4e98154f84ba9f93da713b7dac2864fe1ff
   module-fingerprint:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part VI — Digest and fingerprint suite, 55. Module fingerprint]
-    reviewed_hash: sha256:6b41a847681a35c84fbb36310dd608fd9d5342f48c02e14ee1681f01ec0380d0
+    reviewed_hash: sha256:338d9ba18943b76976a9509c3592017e9e17468925623b7afb0db536cf067a5d
   fingerprint-versions:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part III — Version and compatibility model, 15. Version representation]
