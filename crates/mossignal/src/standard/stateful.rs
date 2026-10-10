@@ -841,7 +841,6 @@ pub(crate) fn observe_reaction<D>(
     evaluation: &FullEvaluation,
     causes: &[CauseRef],
     previous: &BTreeMap<QualifiedModuleRef, StandardCauses>,
-    rebase: impl Fn(CauseRef) -> CauseRef,
 ) -> BTreeMap<QualifiedModuleRef, StandardHistory> {
     compiled
         .standard_modules()
@@ -900,12 +899,12 @@ pub(crate) fn observe_reaction<D>(
                 toggle_state: None,
                 reset_baseline: None,
                 remembered_reset,
-                latest_reset: old.and_then(|h| h.latest_reset).map(&rebase),
+                latest_reset: old.and_then(|h| h.latest_reset),
                 latest_toggle: (kind != Kind::SampleHold)
-                    .then(|| old.and_then(|h| h.latest_toggle).map(&rebase))
+                    .then(|| old.and_then(|h| h.latest_toggle))
                     .flatten(),
                 latest_capture: (kind == Kind::SampleHold)
-                    .then(|| old.and_then(|h| h.latest_capture).map(&rebase))
+                    .then(|| old.and_then(|h| h.latest_capture))
                     .flatten(),
                 reaction: StatefulStandardReaction::SampleHold {
                     previous: state,

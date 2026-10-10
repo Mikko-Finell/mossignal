@@ -1191,43 +1191,6 @@ pub(crate) enum ProvenanceRecord<D> {
 }
 
 impl<D> ProvenanceRecord<D> {
-    fn translate_causes(&mut self, translate: impl Fn(CauseRef) -> CauseRef) {
-        match self {
-            Self::TopologyChange { supporters, .. }
-            | Self::Migration { supporters, .. }
-            | Self::Checkpoint { supporters, .. }
-            | Self::PendingPulseDelay { supporters, .. }
-            | Self::PendingTransportDelay { supporters, .. }
-            | Self::PendingInertialDelay { supporters, .. }
-            | Self::PendingPeriodicBoundary { supporters, .. }
-            | Self::Derived { supporters, .. } => {
-                for cause in supporters {
-                    *cause = translate(*cause);
-                }
-            }
-            Self::PulseDerived {
-                supporters,
-                contributions,
-                ..
-            }
-            | Self::PulseControlledLevel {
-                supporters,
-                contributions,
-                ..
-            } => {
-                for cause in supporters {
-                    *cause = translate(*cause);
-                }
-                for contribution in contributions {
-                    contribution.cause = translate(contribution.cause);
-                }
-            }
-            Self::InitializationTransaction { .. }
-            | Self::ReadyTransaction { .. }
-            | Self::ExternalObservation { .. }
-            | Self::ExternalPulseObservation { .. } => {}
-        }
-    }
     pub(crate) fn supporters(&self) -> &[CauseRef] {
         match self {
             Self::PendingPulseDelay { supporters, .. }
@@ -1838,20 +1801,16 @@ impl<D> ProvenanceView<D> {
         let Some(records) = Arc::get_mut(&mut self.records) else {
             panic!("new transaction provenance must be uniquely owned before publication");
         };
-        push_record(
-            self.scope,
-            records,
-            ProvenanceRecord::PendingPulseDelay {
-                stimulus: pending.stimulus,
-                event: pending.key,
-                owner,
-                origin: pending.origin,
-                deadline: pending.deadline,
-                count: pending.count,
-                revision: pending.revision,
-                supporters: vec![scheduling_cause],
-            },
-        )
+        records.push(ProvenanceRecord::PendingPulseDelay {
+            stimulus: pending.stimulus,
+            event: pending.key,
+            owner,
+            origin: pending.origin,
+            deadline: pending.deadline,
+            count: pending.count,
+            revision: pending.revision,
+            supporters: vec![scheduling_cause],
+        })
     }
 
     fn append_pending_transport_delay(
@@ -1863,20 +1822,16 @@ impl<D> ProvenanceView<D> {
         let Some(records) = Arc::get_mut(&mut self.records) else {
             panic!("new transaction provenance must be uniquely owned before publication");
         };
-        push_record(
-            self.scope,
-            records,
-            ProvenanceRecord::PendingTransportDelay {
-                stimulus: pending.stimulus,
-                event: pending.key,
-                owner,
-                origin: pending.origin,
-                deadline: pending.deadline,
-                target: pending.target,
-                revision: pending.revision,
-                supporters: vec![scheduling_cause],
-            },
-        )
+        records.push(ProvenanceRecord::PendingTransportDelay {
+            stimulus: pending.stimulus,
+            event: pending.key,
+            owner,
+            origin: pending.origin,
+            deadline: pending.deadline,
+            target: pending.target,
+            revision: pending.revision,
+            supporters: vec![scheduling_cause],
+        })
     }
 
     fn append_pending_inertial_delay(
@@ -1888,20 +1843,16 @@ impl<D> ProvenanceView<D> {
         let Some(records) = Arc::get_mut(&mut self.records) else {
             panic!("new transaction provenance must be uniquely owned before publication");
         };
-        push_record(
-            self.scope,
-            records,
-            ProvenanceRecord::PendingInertialDelay {
-                stimulus: pending.stimulus,
-                event: pending.key,
-                owner,
-                origin: pending.origin,
-                deadline: pending.deadline,
-                target: pending.target,
-                revision: pending.revision,
-                supporters: vec![scheduling_cause],
-            },
-        )
+        records.push(ProvenanceRecord::PendingInertialDelay {
+            stimulus: pending.stimulus,
+            event: pending.key,
+            owner,
+            origin: pending.origin,
+            deadline: pending.deadline,
+            target: pending.target,
+            revision: pending.revision,
+            supporters: vec![scheduling_cause],
+        })
     }
 
     fn append_pending_periodic_boundary(
@@ -1913,23 +1864,19 @@ impl<D> ProvenanceView<D> {
         let Some(records) = Arc::get_mut(&mut self.records) else {
             panic!("new transaction provenance must be uniquely owned before publication");
         };
-        push_record(
-            self.scope,
-            records,
-            ProvenanceRecord::PendingPeriodicBoundary {
-                stimulus: pending.stimulus,
-                event: pending.key,
-                owner,
-                origin: pending.origin,
-                deadline: pending.deadline,
-                anchor: pending.anchor,
-                ordinal: pending.ordinal,
-                first_emission: pending.first_emission,
-                reenable_phase: pending.reenable_phase,
-                revision: pending.revision,
-                supporters: vec![scheduling_cause],
-            },
-        )
+        records.push(ProvenanceRecord::PendingPeriodicBoundary {
+            stimulus: pending.stimulus,
+            event: pending.key,
+            owner,
+            origin: pending.origin,
+            deadline: pending.deadline,
+            anchor: pending.anchor,
+            ordinal: pending.ordinal,
+            first_emission: pending.first_emission,
+            reenable_phase: pending.reenable_phase,
+            revision: pending.revision,
+            supporters: vec![scheduling_cause],
+        })
     }
 
     fn append_inertial_cancellation(
@@ -1945,17 +1892,13 @@ impl<D> ProvenanceView<D> {
             NodeSubject::Node(node) => ProvenanceSubject::Node(node),
             NodeSubject::Qualified(node) => ProvenanceSubject::QualifiedNode(node),
         };
-        let mut supporters = vec![remap_cause(canceled, self.scope), replacement];
+        let mut supporters = vec![canceled, replacement];
         supporters.sort();
         supporters.dedup();
-        push_record(
-            self.scope,
-            records,
-            ProvenanceRecord::Derived {
-                subject,
-                supporters,
-            },
-        )
+        records.push(ProvenanceRecord::Derived {
+            subject,
+            supporters,
+        })
     }
 }
 
@@ -2490,16 +2433,12 @@ impl<D> Machine<D> {
             &evaluation,
             &built.operation_causes,
             &BTreeMap::new(),
-            |cause| remap_cause(cause, built.provenance.scope),
         );
         let standard_causes = standard_history
             .iter()
             .map(|(module, history)| (module.clone(), history.causal_roles()))
             .collect();
-        remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
-        remap_cause_map(&mut periodic_anchor_causes, built.provenance.scope);
-        remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
-        remap_pending_causes(&mut pending_events, built.provenance.scope);
+
         reconcile_level_episodes(
             network,
             stamp,
@@ -2710,8 +2649,7 @@ impl<D> Machine<D> {
                 &BTreeSet::new(),
                 None,
             );
-            remap_pending_causes(&mut pending_events, built.provenance.scope);
-            remap_output_event_causes(&mut output_events, built.provenance.scope);
+
             let mut reaction_events = changed_events(
                 stamp,
                 revision,
@@ -2752,18 +2690,13 @@ impl<D> Machine<D> {
                 &internal,
                 &built.operation_causes,
                 &standard_causes,
-                |cause| remap_cause(cause, built.provenance.scope),
             );
             let updated_causes = standard_history
                 .iter()
                 .map(|(module, history)| (module.clone(), history.causal_roles()))
                 .collect();
             standard_causes = updated_causes;
-            remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
-            remap_cause_map(&mut periodic_anchor_causes, built.provenance.scope);
-            remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
-            remap_pending_causes(&mut pending_events, built.provenance.scope);
-            remap_output_event_causes(&mut output_events, built.provenance.scope);
+
             reconcile_level_episodes(
                 &self.compiled,
                 stamp,
@@ -2773,7 +2706,7 @@ impl<D> Machine<D> {
                 &mut active_episodes,
                 &mut diagnostic_episode_changes,
             );
-            remap_episode_changes(&mut diagnostic_episode_changes, built.provenance.scope);
+
             edge_observations = prepare_collection!(internal.proposed_edge_observations);
             stored_levels = prepare_collection!(internal.proposed_stored_levels);
             operation_levels = prepare_collection!(internal.operation_levels);
@@ -3045,8 +2978,7 @@ impl<D> Machine<D> {
             &declared_edges,
             patch_cause,
         );
-        remap_pending_causes(&mut pending_events, built.provenance.scope);
-        remap_output_event_causes(&mut output_events, built.provenance.scope);
+
         let mut final_events = if patched {
             planned_level_events(
                 stamp,
@@ -3103,18 +3035,13 @@ impl<D> Machine<D> {
             &evaluation,
             &built.operation_causes,
             &standard_causes,
-            |cause| remap_cause(cause, built.provenance.scope),
         );
         let updated_causes = standard_history
             .iter()
             .map(|(module, history)| (module.clone(), history.causal_roles()))
             .collect();
         standard_causes = updated_causes;
-        remap_cause_map(&mut inertial_cancellation_causes, built.provenance.scope);
-        remap_cause_map(&mut periodic_anchor_causes, built.provenance.scope);
-        remap_cause_map(&mut periodic_cancellation_causes, built.provenance.scope);
-        remap_pending_causes(&mut pending_events, built.provenance.scope);
-        remap_output_event_causes(&mut output_events, built.provenance.scope);
+
         reconcile_level_episodes(
             network,
             stamp,
@@ -3124,7 +3051,7 @@ impl<D> Machine<D> {
             &mut active_episodes,
             &mut diagnostic_episode_changes,
         );
-        remap_episode_changes(&mut diagnostic_episode_changes, built.provenance.scope);
+
         enforce_created_event_budget::<D>(
             &self.policy,
             created_pending_events,
@@ -3894,15 +3821,6 @@ fn reconcile_level_episodes<D>(
     );
 }
 
-fn remap_episode_changes<D>(
-    changes: &mut [crate::DiagnosticEpisodeChange<D>],
-    scope: ProvenanceScope,
-) {
-    for change in changes {
-        change.remap_cause(remap_cause(change.cause(), scope));
-    }
-}
-
 #[derive(Default)]
 struct DuePulseDelays {
     counts: BTreeMap<NodeKey, PulseCount>,
@@ -4488,26 +4406,6 @@ fn schedule_from_pending<D>(pending: &BTreeMap<Time<D>, Vec<PendingEvent<D>>>) -
     }
 }
 
-fn remap_pending_causes<D>(
-    pending: &mut BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
-    scope: ProvenanceScope,
-) {
-    for event in pending.values_mut().flatten() {
-        match event {
-            PendingEvent::PulseDelay(event) => event.cause = remap_cause(event.cause, scope),
-            PendingEvent::TransportDelay(event) => event.cause = remap_cause(event.cause, scope),
-            PendingEvent::Inertial(event) => event.cause = remap_cause(event.cause, scope),
-            PendingEvent::Periodic(event) => event.cause = remap_cause(event.cause, scope),
-        }
-    }
-}
-
-fn remap_cause_map(causes: &mut BTreeMap<NodeKey, CauseRef>, scope: ProvenanceScope) {
-    for cause in causes.values_mut() {
-        *cause = remap_cause(*cause, scope);
-    }
-}
-
 fn output_event_cause<D>(event: &OutputEvent<D>) -> CauseRef {
     match event {
         OutputEvent::LevelEstablished { cause, .. }
@@ -4522,17 +4420,6 @@ fn translate_output_event<D>(event: &mut OutputEvent<D>, mapping: &BTreeMap<Caus
         | OutputEvent::Pulsed { cause, .. } => cause,
     };
     *cause = translated_cause(mapping, *cause);
-}
-
-fn remap_output_event_causes<D>(events: &mut [OutputEvent<D>], scope: ProvenanceScope) {
-    for event in events {
-        let cause = match event {
-            OutputEvent::LevelEstablished { cause, .. }
-            | OutputEvent::LevelChanged { cause, .. }
-            | OutputEvent::Pulsed { cause, .. } => cause,
-        };
-        *cause = remap_cause(*cause, scope);
-    }
 }
 
 struct PublishedCandidate<D> {
@@ -4765,46 +4652,31 @@ fn build_initialization_provenance<D>(
 ) -> ProvenanceBuild<D> {
     let scope = crate::causal_store::fresh_scope(None);
     let mut records = crate::causal_store::Records::new(scope);
-    let ordinary_transaction = push_record(
-        scope,
-        &mut records,
-        ProvenanceRecord::InitializationTransaction { at, revision },
-    );
+    let ordinary_transaction =
+        records.push(ProvenanceRecord::InitializationTransaction { at, revision });
     let transaction_cause = if let Some((report, fact)) = migration {
-        let patch = push_record(
-            scope,
-            &mut records,
-            ProvenanceRecord::TopologyChange {
-                at,
-                revision,
-                base: report.base_fingerprint(),
-                target: report.target_fingerprint(),
-                supporters: Vec::new(),
-            },
-        );
-        push_record(
-            scope,
-            &mut records,
-            ProvenanceRecord::Checkpoint {
-                fact,
-                supporters: vec![ordinary_transaction, patch],
-            },
-        )
+        let patch = records.push(ProvenanceRecord::TopologyChange {
+            at,
+            revision,
+            base: report.base_fingerprint(),
+            target: report.target_fingerprint(),
+            supporters: Vec::new(),
+        });
+        records.push(ProvenanceRecord::Checkpoint {
+            fact,
+            supporters: vec![ordinary_transaction, patch],
+        })
     } else {
         ordinary_transaction
     };
     let input_causes = levels
         .iter()
         .map(|(input, value)| {
-            let cause = push_record(
-                scope,
-                &mut records,
-                ProvenanceRecord::ExternalObservation {
-                    stamp: at,
-                    input: *input,
-                    value: *value,
-                },
-            );
+            let cause = records.push(ProvenanceRecord::ExternalObservation {
+                stamp: at,
+                input: *input,
+                value: *value,
+            });
             (*input, cause)
         })
         .collect::<BTreeMap<_, _>>();
@@ -4814,20 +4686,15 @@ fn build_initialization_provenance<D>(
         .iter()
         .filter(|(_, count)| count.is_positive())
         .map(|(input, count)| {
-            let cause = push_record(
-                scope,
-                &mut records,
-                ProvenanceRecord::ExternalPulseObservation {
-                    stamp: at,
-                    input: *input,
-                    count: *count,
-                },
-            );
+            let cause = records.push(ProvenanceRecord::ExternalPulseObservation {
+                stamp: at,
+                input: *input,
+                count: *count,
+            });
             (*input, cause)
         })
         .collect::<BTreeMap<_, _>>();
     let evaluation_causes = append_evaluation_provenance(
-        scope,
         &mut records,
         transaction_cause,
         evaluation,
@@ -4871,6 +4738,8 @@ struct MigrationProvenance<D> {
     growth: usize,
 }
 fn translated_cause(mapping: &BTreeMap<CauseRef, CauseRef>, cause: CauseRef) -> CauseRef {
+    #[cfg(test)]
+    crate::causal_work::update(|work| work.source_translation_lookups += 1);
     match mapping.get(&cause).copied() {
         Some(cause) => cause,
         None => panic!(
@@ -4909,7 +4778,7 @@ fn checkpoint_migration<D>(
             }
             _ => ProvenanceRecord::Checkpoint { fact, supporters },
         };
-        let cause = push_record(scope, &mut records, record);
+        let cause = records.push(record);
         translated.insert(selected.records.cause(position), cause);
     }
     let replacement_count = records.len();
@@ -4925,17 +4794,13 @@ fn checkpoint_migration<D>(
             .entry(content.digest)
             .or_insert_with(|| translated_cause(&translated, *cause));
     }
-    let patch = push_record(
-        scope,
-        &mut records,
-        ProvenanceRecord::TopologyChange {
-            at,
-            revision: finalized.revision,
-            base: source.fingerprint(),
-            target: finalized.compiled.fingerprint(),
-            supporters: supporter_content.into_values().collect(),
-        },
-    );
+    let patch = records.push(ProvenanceRecord::TopologyChange {
+        at,
+        revision: finalized.revision,
+        base: source.fingerprint(),
+        target: finalized.compiled.fingerprint(),
+        supporters: supporter_content.into_values().collect(),
+    });
     #[cfg(test)]
     crate::state_digest_reference::assert_migration(
         source,
@@ -4947,27 +4812,19 @@ fn checkpoint_migration<D>(
         patch,
     );
     for (input, value) in &finalized.external_levels {
-        let cause = push_record(
-            scope,
-            &mut records,
-            ProvenanceRecord::ExternalObservation {
-                stamp: at,
-                input: *input,
-                value: *value,
-            },
-        );
+        let cause = records.push(ProvenanceRecord::ExternalObservation {
+            stamp: at,
+            input: *input,
+            value: *value,
+        });
         finalized.input_causes.insert(*input, cause);
     }
     for (output, cause) in &mut finalized.output_causes {
-        *cause = push_record(
-            scope,
-            &mut records,
-            ProvenanceRecord::Migration {
-                subject: ProvenanceSubject::ExternalOutput(*output),
-                rule: "output_baseline".to_owned(),
-                supporters: vec![translated_cause(&translated, *cause), patch],
-            },
-        );
+        *cause = records.push(ProvenanceRecord::Migration {
+            subject: ProvenanceSubject::ExternalOutput(*output),
+            rule: "output_baseline".to_owned(),
+            supporters: vec![translated_cause(&translated, *cause), patch],
+        });
     }
     for (causes, rule_override) in [
         (&mut finalized.edge_observation_causes, None),
@@ -5003,15 +4860,11 @@ fn checkpoint_migration<D>(
                     .map(|state| state.fact())
                     .unwrap_or("preserve")
             });
-            *cause = push_record(
-                scope,
-                &mut records,
-                ProvenanceRecord::Migration {
-                    subject: provenance_subject(&finalized.compiled, *node),
-                    rule: rule.to_owned(),
-                    supporters: vec![translated_cause(&translated, *cause), patch],
-                },
-            );
+            *cause = records.push(ProvenanceRecord::Migration {
+                subject: provenance_subject(&finalized.compiled, *node),
+                rule: rule.to_owned(),
+                supporters: vec![translated_cause(&translated, *cause), patch],
+            });
         }
     }
     // SPEC: docs/specs/contracts/periodic.yaml "focused-inspection-and-provenance"
@@ -5020,15 +4873,11 @@ fn checkpoint_migration<D>(
         if let std::collections::btree_map::Entry::Vacant(entry) =
             finalized.periodic_anchor_causes.entry(*node)
         {
-            entry.insert(push_record(
-                scope,
-                &mut records,
-                ProvenanceRecord::Migration {
-                    subject: provenance_subject(&finalized.compiled, *node),
-                    rule: "reanchor_at_patch_time".to_owned(),
-                    supporters: vec![patch],
-                },
-            ));
+            entry.insert(records.push(ProvenanceRecord::Migration {
+                subject: provenance_subject(&finalized.compiled, *node),
+                rule: "reanchor_at_patch_time".to_owned(),
+                supporters: vec![patch],
+            }));
         }
     }
     for event in finalized.pending_events.values_mut().flatten() {
@@ -5045,15 +4894,11 @@ fn checkpoint_migration<D>(
         };
         // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "revision-provenance-and-episodes"
         // The scheduling fact retains its source ancestry and names the rule changing timing.
-        let migration = push_record(
-            scope,
-            &mut records,
-            ProvenanceRecord::Migration {
-                subject: provenance_subject(&finalized.compiled, node),
-                rule: rule.to_owned(),
-                supporters: vec![translated_cause(&translated, previous_cause), patch],
-            },
-        );
+        let migration = records.push(ProvenanceRecord::Migration {
+            subject: provenance_subject(&finalized.compiled, node),
+            rule: rule.to_owned(),
+            supporters: vec![translated_cause(&translated, previous_cause), patch],
+        });
         let supporters = vec![migration];
         let record = match event {
             PendingEvent::PulseDelay(event) => ProvenanceRecord::PendingPulseDelay {
@@ -5100,7 +4945,7 @@ fn checkpoint_migration<D>(
                 supporters,
             },
         };
-        let cause = push_record(scope, &mut records, record);
+        let cause = records.push(record);
         match event {
             PendingEvent::PulseDelay(event) => event.cause = cause,
             PendingEvent::TransportDelay(event) => event.cause = cause,
@@ -5145,27 +4990,19 @@ fn build_ready_provenance<D>(
     patch_cause: Option<CauseRef>,
 ) -> ProvenanceBuild<D> {
     let scope = crate::causal_store::fresh_scope(Some(previous.scope));
+    // SPEC: docs/specs/contracts/provenance-retention.yaml "current-machine-root-manifest"
+    // Fork membership already owns retained roots; their handles carry forward unchanged.
     let mut records = previous.records.fork(scope);
-    let ordinary_transaction_cause = push_record(
-        scope,
-        &mut records,
-        ProvenanceRecord::ReadyTransaction { at, revision },
-    );
+    let ordinary_transaction_cause =
+        records.push(ProvenanceRecord::ReadyTransaction { at, revision });
     let transaction_cause = patch_cause.unwrap_or(ordinary_transaction_cause);
-    let mut input_causes = previous_input_causes
-        .iter()
-        .map(|(input, cause)| (*input, remap_cause(*cause, scope)))
-        .collect::<BTreeMap<_, _>>();
+    let mut input_causes = copy_cause_map(previous_input_causes);
     for (input, value) in explicit_levels {
-        let cause = push_record(
-            scope,
-            &mut records,
-            ProvenanceRecord::ExternalObservation {
-                stamp: at,
-                input: *input,
-                value: *value,
-            },
-        );
+        let cause = records.push(ProvenanceRecord::ExternalObservation {
+            stamp: at,
+            input: *input,
+            value: *value,
+        });
         input_causes.insert(*input, cause);
     }
     // SPEC: docs/specs/contracts/replay-artifacts.yaml "embedded-transaction"
@@ -5174,24 +5011,15 @@ fn build_ready_provenance<D>(
         .iter()
         .filter(|(_, count)| count.is_positive())
         .map(|(input, count)| {
-            let cause = push_record(
-                scope,
-                &mut records,
-                ProvenanceRecord::ExternalPulseObservation {
-                    stamp: at,
-                    input: *input,
-                    count: *count,
-                },
-            );
+            let cause = records.push(ProvenanceRecord::ExternalPulseObservation {
+                stamp: at,
+                input: *input,
+                count: *count,
+            });
             (*input, cause)
         })
         .collect::<BTreeMap<_, _>>();
-    let remapped_output_causes = previous_output_causes
-        .iter()
-        .map(|(output, cause)| (*output, remap_cause(*cause, scope)))
-        .collect::<BTreeMap<_, _>>();
     let evaluation_causes = append_evaluation_provenance(
-        scope,
         &mut records,
         transaction_cause,
         evaluation,
@@ -5205,7 +5033,7 @@ fn build_ready_provenance<D>(
             due_periodic_boundaries,
         },
         Some(PreviousLevelOutputs {
-            causes: &remapped_output_causes,
+            causes: previous_output_causes,
             baselines: previous_output_baselines,
         }),
         Some(PreviousStateCauses {
@@ -5236,6 +5064,12 @@ fn build_ready_provenance<D>(
         inertial_delay_schedules: evaluation_causes.inertial_delay_schedules,
         periodic_schedules: evaluation_causes.periodic_schedules,
     }
+}
+
+fn copy_cause_map<K: Clone + Ord>(causes: &BTreeMap<K, CauseRef>) -> BTreeMap<K, CauseRef> {
+    #[cfg(test)]
+    crate::causal_work::update(|work| work.successor_cause_entries_copied += causes.len());
+    causes.clone()
 }
 
 struct EvaluationCauseMaps {
@@ -5275,7 +5109,6 @@ fn retained_edge_cause(
 }
 
 fn append_evaluation_provenance<D>(
-    scope: ProvenanceScope,
     records: &mut crate::causal_store::Records<D>,
     transaction_cause: CauseRef,
     evaluation: &FullEvaluation,
@@ -5290,34 +5123,23 @@ fn append_evaluation_provenance<D>(
     let mut pulse_output_causes = BTreeMap::new();
     let mut edge_observation_causes = previous_state
         .as_ref()
-        .into_iter()
-        .flat_map(|previous| previous.edge_observations.iter())
-        .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
-        .collect::<BTreeMap<_, _>>();
+        .map(|previous| copy_cause_map(previous.edge_observations))
+        .unwrap_or_default();
     let mut toggle_inversion_causes = previous_state
         .as_ref()
-        .into_iter()
-        .flat_map(|previous| previous.toggle_inversions.iter())
-        .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
-        .collect::<BTreeMap<_, _>>();
+        .map(|previous| copy_cause_map(previous.toggle_inversions))
+        .unwrap_or_default();
     let mut establishment_causes = previous_state
         .as_ref()
-        .into_iter()
-        .flat_map(|previous| previous.establishments.iter())
-        .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
-        .collect::<BTreeMap<_, _>>();
+        .map(|previous| copy_cause_map(previous.establishments))
+        .unwrap_or_default();
     let mut transport_output_transitions = previous_state
         .as_ref()
-        .into_iter()
-        .flat_map(|previous| previous.transport_transitions.iter())
-        .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
-        .collect::<BTreeMap<_, _>>();
+        .map(|previous| copy_cause_map(previous.transport_transitions))
+        .unwrap_or_default();
     let periodic_anchor_causes = previous_state
         .as_ref()
-        .into_iter()
-        .flat_map(|previous| previous.periodic_anchors.iter())
-        .map(|(node, cause)| (*node, remap_cause(*cause, scope)))
-        .collect::<BTreeMap<_, _>>();
+        .map(|previous| previous.periodic_anchors);
     let mut transport_delay_schedules = BTreeMap::new();
 
     for cause in &evaluation.causes {
@@ -5333,14 +5155,10 @@ fn append_evaluation_provenance<D>(
                 .get(input)
                 .copied()
                 .unwrap_or(transaction_cause),
-            EvaluationCause::Constant(node) => push_record(
-                scope,
-                records,
-                ProvenanceRecord::Derived {
-                    subject: provenance_subject(input_causes.compiled, *node),
-                    supporters: vec![transaction_cause],
-                },
-            ),
+            EvaluationCause::Constant(node) => records.push(ProvenanceRecord::Derived {
+                subject: provenance_subject(input_causes.compiled, *node),
+                supporters: vec![transaction_cause],
+            }),
             EvaluationCause::Node { node, predecessors } => {
                 let mut supporters = vec![transaction_cause];
                 for predecessor in predecessors {
@@ -5348,14 +5166,10 @@ fn append_evaluation_provenance<D>(
                 }
                 supporters.sort();
                 supporters.dedup();
-                push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::Derived {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        supporters,
-                    },
-                )
+                records.push(ProvenanceRecord::Derived {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    supporters,
+                })
             }
             EvaluationCause::PulseCombinational {
                 node,
@@ -5381,16 +5195,12 @@ fn append_evaluation_provenance<D>(
                 );
                 supporters.sort();
                 supporters.dedup();
-                push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::PulseDerived {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        contributions: grouped,
-                        result: *result,
-                        supporters,
-                    },
-                )
+                records.push(ProvenanceRecord::PulseDerived {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    contributions: grouped,
+                    result: *result,
+                    supporters,
+                })
             }
             EvaluationCause::PulseRoute { node, control } => {
                 let mut supporters = vec![
@@ -5399,14 +5209,10 @@ fn append_evaluation_provenance<D>(
                 ];
                 supporters.sort();
                 supporters.dedup();
-                push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::Derived {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        supporters,
-                    },
-                )
+                records.push(ProvenanceRecord::Derived {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    supporters,
+                })
             }
             EvaluationCause::PulseRouteOutput {
                 node,
@@ -5434,16 +5240,12 @@ fn append_evaluation_provenance<D>(
                 }
                 supporters.sort();
                 supporters.dedup();
-                push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::PulseDerived {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        contributions: grouped,
-                        result: *result,
-                        supporters,
-                    },
-                )
+                records.push(ProvenanceRecord::PulseDerived {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    contributions: grouped,
+                    result: *result,
+                    supporters,
+                })
             }
             EvaluationCause::EdgeDetector {
                 node,
@@ -5469,26 +5271,18 @@ fn append_evaluation_provenance<D>(
                 }
                 supporters.sort();
                 supporters.dedup();
-                let reference = push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::Derived {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        supporters,
-                    },
-                );
+                let reference = records.push(ProvenanceRecord::Derived {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    supporters,
+                });
                 // SPEC: docs/specs/contracts/edge-detector-family.yaml
                 // "comparison-and-successor-observation-support": the successor
                 // establishes the current input, independently of the comparison.
                 // Both logical appends charge even when canonical facts coincide.
-                let observation = push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::Derived {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        supporters: observation_supporters,
-                    },
-                );
+                let observation = records.push(ProvenanceRecord::Derived {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    supporters: observation_supporters,
+                });
                 edge_observation_causes.insert(*node, observation);
                 reference
             }
@@ -5509,14 +5303,10 @@ fn append_evaluation_provenance<D>(
                 }
                 supporters.sort();
                 supporters.dedup();
-                let reference = push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::Derived {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        supporters,
-                    },
-                );
+                let reference = records.push(ProvenanceRecord::Derived {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    supporters,
+                });
                 if *inverted {
                     toggle_inversion_causes.insert(*node, reference);
                 }
@@ -5554,16 +5344,12 @@ fn append_evaluation_provenance<D>(
                 }
                 supporters.sort();
                 supporters.dedup();
-                let reference = push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::PulseControlledLevel {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        contributions,
-                        result: *result,
-                        supporters,
-                    },
-                );
+                let reference = records.push(ProvenanceRecord::PulseControlledLevel {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    contributions,
+                    result: *result,
+                    supporters,
+                });
                 if previous_state.is_none() || evaluation.stored_level_establishments.contains(node)
                 {
                     establishment_causes.insert(*node, reference);
@@ -5583,14 +5369,10 @@ fn append_evaluation_provenance<D>(
                 }
                 supporters.sort();
                 supporters.dedup();
-                let reference = push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::Derived {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        supporters,
-                    },
-                );
+                let reference = records.push(ProvenanceRecord::Derived {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    supporters,
+                });
                 if previous_state.is_none() || evaluation.stored_level_establishments.contains(node)
                 {
                     establishment_causes.insert(*node, reference);
@@ -5622,16 +5404,12 @@ fn append_evaluation_provenance<D>(
                 }
                 supporters.sort();
                 supporters.dedup();
-                let reference = push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::PulseControlledLevel {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        contributions,
-                        result: *result,
-                        supporters,
-                    },
-                );
+                let reference = records.push(ProvenanceRecord::PulseControlledLevel {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    contributions,
+                    result: *result,
+                    supporters,
+                });
                 // SPEC: docs/specs/contracts/sample-hold.yaml "held-state-inspection-and-causality"
                 // Retention keeps its authoritative history; captures remain explainable.
                 // We treat every positive sample, including equal values, as an establishment.
@@ -5649,18 +5427,14 @@ fn append_evaluation_provenance<D>(
                         .get(node)
                         .into_iter()
                         .flatten()
-                        .map(|cause| remap_cause(*cause, scope)),
+                        .copied(),
                 );
                 supporters.sort();
                 supporters.dedup();
-                push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::Derived {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        supporters,
-                    },
-                )
+                records.push(ProvenanceRecord::Derived {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    supporters,
+                })
             }
             EvaluationCause::TransportDelay { node } => {
                 let mut supporters = vec![transaction_cause];
@@ -5673,18 +5447,14 @@ fn append_evaluation_provenance<D>(
                         .get(node)
                         .into_iter()
                         .flatten()
-                        .map(|cause| remap_cause(*cause, scope)),
+                        .copied(),
                 );
                 supporters.sort();
                 supporters.dedup();
-                let reference = push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::Derived {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        supporters,
-                    },
-                );
+                let reference = records.push(ProvenanceRecord::Derived {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    supporters,
+                });
                 // SPEC: docs/specs/contracts/transport-delay.yaml "focused-temporal-state-and-causality"
                 // The latest output transition advances only when the output changes.
                 if previous_state.is_none() || evaluation.stored_level_establishments.contains(node)
@@ -5704,18 +5474,14 @@ fn append_evaluation_provenance<D>(
                         .get(node)
                         .into_iter()
                         .flatten()
-                        .map(|cause| remap_cause(*cause, scope)),
+                        .copied(),
                 );
                 supporters.sort();
                 supporters.dedup();
-                let reference = push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::Derived {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        supporters,
-                    },
-                );
+                let reference = records.push(ProvenanceRecord::Derived {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    supporters,
+                });
                 if previous_state.is_none() || evaluation.stored_level_establishments.contains(node)
                 {
                     transport_output_transitions.insert(*node, reference);
@@ -5738,21 +5504,20 @@ fn append_evaluation_provenance<D>(
                         .get(node)
                         .into_iter()
                         .flatten()
-                        .map(|cause| remap_cause(*cause, scope)),
+                        .copied(),
                 );
-                if let Some(anchor) = periodic_anchor_causes.get(node).copied() {
+                if let Some(anchor) = periodic_anchor_causes
+                    .and_then(|causes| causes.get(node))
+                    .copied()
+                {
                     supporters.push(anchor);
                 }
                 supporters.sort();
                 supporters.dedup();
-                push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::Derived {
-                        subject: provenance_subject(input_causes.compiled, *node),
-                        supporters,
-                    },
-                )
+                records.push(ProvenanceRecord::Derived {
+                    subject: provenance_subject(input_causes.compiled, *node),
+                    supporters,
+                })
             }
             EvaluationCause::Alias(source) => operation_cause(&operation_causes, *source),
             EvaluationCause::ExternalOutput { output, source } => {
@@ -5774,14 +5539,10 @@ fn append_evaluation_provenance<D>(
                 ];
                 supporters.sort();
                 supporters.dedup();
-                let reference = push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::Derived {
-                        subject: ProvenanceSubject::ExternalOutput(*output),
-                        supporters,
-                    },
-                );
+                let reference = records.push(ProvenanceRecord::Derived {
+                    subject: ProvenanceSubject::ExternalOutput(*output),
+                    supporters,
+                });
                 output_causes.insert(*output, reference);
                 reference
             }
@@ -5792,14 +5553,10 @@ fn append_evaluation_provenance<D>(
                 ];
                 supporters.sort();
                 supporters.dedup();
-                let reference = push_record(
-                    scope,
-                    records,
-                    ProvenanceRecord::Derived {
-                        subject: ProvenanceSubject::PulseExternalOutput(*output),
-                        supporters,
-                    },
-                );
+                let reference = records.push(ProvenanceRecord::Derived {
+                    subject: ProvenanceSubject::PulseExternalOutput(*output),
+                    supporters,
+                });
                 pulse_output_causes.insert(*output, reference);
                 reference
             }
@@ -5814,14 +5571,10 @@ fn append_evaluation_provenance<D>(
         ];
         supporters.sort();
         supporters.dedup();
-        let reference = push_record(
-            scope,
-            records,
-            ProvenanceRecord::Derived {
-                subject: provenance_subject(input_causes.compiled, proposal.node),
-                supporters,
-            },
-        );
+        let reference = records.push(ProvenanceRecord::Derived {
+            subject: provenance_subject(input_causes.compiled, proposal.node),
+            supporters,
+        });
         pulse_delay_schedules.insert(proposal.node, reference);
     }
     for proposal in &evaluation.transport_delay_proposals {
@@ -5831,14 +5584,10 @@ fn append_evaluation_provenance<D>(
         ];
         supporters.sort();
         supporters.dedup();
-        let reference = push_record(
-            scope,
-            records,
-            ProvenanceRecord::Derived {
-                subject: provenance_subject(input_causes.compiled, proposal.node),
-                supporters,
-            },
-        );
+        let reference = records.push(ProvenanceRecord::Derived {
+            subject: provenance_subject(input_causes.compiled, proposal.node),
+            supporters,
+        });
         transport_delay_schedules.insert(proposal.node, reference);
     }
     let mut inertial_delay_schedules = BTreeMap::new();
@@ -5849,14 +5598,10 @@ fn append_evaluation_provenance<D>(
         ];
         supporters.sort();
         supporters.dedup();
-        let reference = push_record(
-            scope,
-            records,
-            ProvenanceRecord::Derived {
-                subject: provenance_subject(input_causes.compiled, proposal.node),
-                supporters,
-            },
-        );
+        let reference = records.push(ProvenanceRecord::Derived {
+            subject: provenance_subject(input_causes.compiled, proposal.node),
+            supporters,
+        });
         inertial_delay_schedules.insert(proposal.node, reference);
     }
     let mut periodic_schedules = BTreeMap::new();
@@ -5871,21 +5616,20 @@ fn append_evaluation_provenance<D>(
                 .get(&proposal.node)
                 .into_iter()
                 .flatten()
-                .map(|cause| remap_cause(*cause, scope)),
+                .copied(),
         );
-        if let Some(anchor) = periodic_anchor_causes.get(&proposal.node).copied() {
+        if let Some(anchor) = periodic_anchor_causes
+            .and_then(|causes| causes.get(&proposal.node))
+            .copied()
+        {
             supporters.push(anchor);
         }
         supporters.sort();
         supporters.dedup();
-        let reference = push_record(
-            scope,
-            records,
-            ProvenanceRecord::Derived {
-                subject: provenance_subject(input_causes.compiled, proposal.node),
-                supporters,
-            },
-        );
+        let reference = records.push(ProvenanceRecord::Derived {
+            subject: provenance_subject(input_causes.compiled, proposal.node),
+            supporters,
+        });
         periodic_schedules.insert(proposal.node, reference);
     }
     EvaluationCauseMaps {
@@ -5912,8 +5656,12 @@ fn provenance_subject<D>(compiled: &crate::CompiledNetwork<D>, node: NodeKey) ->
 
 fn remap_cause(cause: CauseRef, scope: ProvenanceScope) -> CauseRef {
     if crate::causal_store::same_lineage(cause.scope, scope) {
+        #[cfg(test)]
+        crate::causal_work::update(|work| work.obsolete_remaps.same_lineage_attempts += 1);
         cause
     } else {
+        #[cfg(test)]
+        crate::causal_work::update(|work| work.different_lineage_remaps += 1);
         CauseRef {
             scope,
             ordinal: cause.ordinal,
@@ -6124,15 +5872,6 @@ fn translate_record<D>(
     }
 }
 
-fn push_record<D>(
-    scope: ProvenanceScope,
-    records: &mut crate::causal_store::Records<D>,
-    mut record: ProvenanceRecord<D>,
-) -> CauseRef {
-    record.translate_causes(|cause| remap_cause(cause, scope));
-    records.push(record)
-}
-
 fn operation_cause(causes: &[CauseRef], index: usize) -> CauseRef {
     let Some(cause) = causes.get(index).copied() else {
         panic!("evaluation provenance predecessor must precede its dependent operation");
@@ -6323,6 +6062,10 @@ mod preparation_tests;
 #[cfg(test)]
 #[path = "transaction/tests/edge_provenance.rs"]
 mod edge_provenance_tests;
+
+#[cfg(test)]
+#[path = "transaction/tests/cause_remapping.rs"]
+mod cause_remapping_tests;
 
 #[cfg(test)]
 mod tests {

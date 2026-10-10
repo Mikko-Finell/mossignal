@@ -121,6 +121,8 @@ impl<D> Records<D> {
                         "immutable causal predecessors must already belong to the prepared graph"
                     );
                 };
+                #[cfg(test)]
+                crate::causal_work::update(|work| work.predecessors_owned += 1);
                 Arc::clone(&self.nodes[*position])
             })
             .collect();

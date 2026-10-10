@@ -16,7 +16,25 @@ pub(crate) enum Fault {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ObsoleteRemaps {
+    pub same_lineage_attempts: usize,
+    pub pending_visits: usize,
+    pub output_visits: usize,
+    pub diagnostic_visits: usize,
+    pub cause_map_visits: usize,
+    pub carried_map_visits: usize,
+    pub read_only_map_visits: usize,
+    pub standard_role_visits: usize,
+    pub new_record_visits: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Work {
+    pub obsolete_remaps: ObsoleteRemaps,
+    pub different_lineage_remaps: usize,
+    pub source_translation_lookups: usize,
+    pub successor_cause_entries_copied: usize,
+    pub predecessors_owned: usize,
     pub nodes_created: usize,
     pub nodes_released: usize,
     pub logical_growth: u64,
