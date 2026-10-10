@@ -665,9 +665,48 @@ fn ordinary_remap_preparation_faults_preserve_complete_warm_predecessor() {
                 advance(&m, 5)
             };
             causal_work::reset();
+            crate::projection_work::reset();
             causal_work::inject(fault);
             assert!(m.apply(tx).is_err());
             let work = causal_work::read();
+            let digest_work = crate::projection_work::read();
+            if matches!(
+                fault,
+                causal_work::Fault::Result | causal_work::Fault::Projection
+            ) {
+                assert_eq!(
+                    (
+                        digest_work.execution_builds,
+                        digest_work.observable_builds,
+                        digest_work.execution_hashes,
+                        digest_work.observable_hashes
+                    ),
+                    (1, 1, 1, 1)
+                );
+                assert!(
+                    digest_work.execution_hash_bytes > 0 && digest_work.observable_hash_bytes > 0
+                );
+            } else if fault == causal_work::Fault::DigestPreparation {
+                assert_eq!(
+                    (
+                        digest_work.execution_builds,
+                        digest_work.observable_builds,
+                        digest_work.execution_hashes,
+                        digest_work.observable_hashes,
+                        digest_work.execution_hash_bytes,
+                        digest_work.observable_hash_bytes
+                    ),
+                    (0, 0, 0, 0, 0, 0)
+                );
+                // Patch SOURCE translation indexes creating-topology content before
+                // final machine digest preparation. This is real non-hash work.
+                if patch {
+                    assert!(digest_work.records_indexed > 0);
+                }
+            } else {
+                assert_eq!(digest_work, crate::projection_work::Work::default());
+            }
+            eprintln!("digest warm rollback: patch={patch} fault={fault:?} work={digest_work:?}");
             no_obsolete(work);
             // Extraction rejects before deadlines; provenance rejects during the
             // first deadline. Publication faults reach the completed patch, too.

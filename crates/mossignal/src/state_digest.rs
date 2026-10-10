@@ -31,14 +31,20 @@ pub(crate) struct CompletedDigests {
 pub(crate) fn execution_state_digest<D>(machine: &Machine<D>) -> ExecutionStateDigest {
     let input = execution_digest_input(machine, 4, 4);
     #[cfg(test)]
-    crate::projection_work::update(|work| work.execution_hashes += 1);
+    crate::projection_work::update(|work| {
+        work.execution_hashes += 1;
+        work.execution_hash_bytes += input.len();
+    });
     ExecutionStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
 pub(crate) fn observable_state_digest<D>(machine: &Machine<D>) -> ObservableStateDigest {
     let input = observable_digest_input(machine, 4, 4);
     #[cfg(test)]
-    crate::projection_work::update(|work| work.observable_hashes += 1);
+    crate::projection_work::update(|work| {
+        work.observable_hashes += 1;
+        work.observable_hash_bytes += input.len();
+    });
     ObservableStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
@@ -348,14 +354,21 @@ struct ContentTable {
 
 impl ContentTable {
     fn insert(&mut self, digest: [u8; 32], payload: Arc<Vec<u8>>) {
+        #[cfg(test)]
+        crate::projection_work::update(|work| work.content_inserts += 1);
         match self.payloads.get(&digest) {
             Some(existing) if existing != &payload => {
                 panic!(
                     "digest collision: two different canonical provenance records share one content digest"
                 );
             }
-            Some(_) => {}
+            Some(_) => {
+                #[cfg(test)]
+                crate::projection_work::update(|work| work.content_equal += 1);
+            }
             None => {
+                #[cfg(test)]
+                crate::projection_work::update(|work| work.content_new += 1);
                 self.payloads.insert(digest, payload);
             }
         }
@@ -745,10 +758,14 @@ fn reachable_digests<D>(
     let mut seen = vec![false; view.records().len()];
     let mut pending = Vec::new();
     for cause in roots {
+        #[cfg(test)]
+        crate::projection_work::update(|work| work.closure_roots += 1);
         pending.push(view.resolve_ordinal(*cause));
     }
     let mut reached = BTreeSet::new();
     while let Some(index) = pending.pop() {
+        #[cfg(test)]
+        crate::projection_work::update(|work| work.closure_pops += 1);
         if seen[index] {
             continue;
         }
@@ -756,9 +773,13 @@ fn reachable_digests<D>(
         #[cfg(test)]
         crate::projection_work::update(|work| work.closure_visits += 1);
         #[cfg(test)]
-        crate::causal_work::update(|work| work.closure_records_visited += 1);
+        if crate::projection_work::accounting() {
+            crate::causal_work::update(|work| work.closure_records_visited += 1);
+        }
         reached.insert(digests[index]);
         for cause in view.records()[index].predecessor_causes() {
+            #[cfg(test)]
+            crate::projection_work::update(|work| work.predecessor_entries += 1);
             pending.push(view.resolve_ordinal(cause));
         }
     }
@@ -780,10 +801,12 @@ fn write_provenance(writer: &mut Cbor, context: &ProjectionContext) {
                     work.bytes_emitted += payload.len();
                 });
                 #[cfg(test)]
-                crate::causal_work::update(|work| {
-                    work.closure_records_emitted += 1;
-                    work.closure_bytes_emitted += payload.len();
-                });
+                if crate::projection_work::accounting() {
+                    crate::causal_work::update(|work| {
+                        work.closure_records_emitted += 1;
+                        work.closure_bytes_emitted += payload.len();
+                    });
+                }
                 writer.nested(payload);
             }
             None => panic!("reachable provenance digest must retain its canonical record"),
@@ -1381,6 +1404,10 @@ impl Record {
 }
 
 #[cfg(test)]
+#[path = "state_digest/tests/cost_measurements.rs"]
+mod cost_measurements;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::authored::{
@@ -1523,6 +1550,26 @@ mod tests {
         let mut bytes = vec![0x50];
         bytes.extend(value.to_be_bytes());
         bytes
+    }
+
+    #[test]
+    fn digest_reference_observation_does_not_charge_real_work() {
+        let mut machine = spawn(
+            golden_toggle(DiagnosticMeta::default()),
+            [100, 10_000, 100, 100, 10_000],
+        );
+        initialize(&mut machine, 0);
+        crate::projection_work::reset();
+        crate::causal_work::reset();
+        crate::state_digest_reference::assert_machine(&machine);
+        assert_eq!(
+            crate::projection_work::read(),
+            crate::projection_work::Work::default()
+        );
+        assert_eq!(
+            crate::causal_work::read(),
+            crate::causal_work::Work::default()
+        );
     }
 
     #[test]

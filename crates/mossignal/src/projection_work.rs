@@ -8,9 +8,17 @@ pub(crate) struct Work {
     pub observable_builds: usize,
     pub execution_hashes: usize,
     pub observable_hashes: usize,
+    pub execution_hash_bytes: usize,
+    pub observable_hash_bytes: usize,
     pub contexts_built: usize,
     pub records_indexed: usize,
     pub closure_visits: usize,
+    pub closure_roots: usize,
+    pub closure_pops: usize,
+    pub predecessor_entries: usize,
+    pub content_inserts: usize,
+    pub content_new: usize,
+    pub content_equal: usize,
     pub direct_resolutions: usize,
     pub records_emitted: usize,
     pub bytes_emitted: usize,
@@ -29,6 +37,10 @@ pub(crate) fn update(change: impl FnOnce(&mut Work)) {
             cell.set(work);
         });
     }
+}
+
+pub(crate) fn accounting() -> bool {
+    ACCOUNT.with(Cell::get)
 }
 
 pub(crate) fn without_accounting<T>(check: impl FnOnce() -> T) -> T {
