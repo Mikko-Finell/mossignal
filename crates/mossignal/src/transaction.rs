@@ -2377,6 +2377,7 @@ impl<D> Machine<D> {
         // SPEC: docs/specs/contracts/machine-state-digests.yaml "pure-machine-and-result-exposure"
         // Capture the complete predecessor before taking any candidate-owned fields.
         let before_execution_digest = self.execution_state_digest();
+        self.store.digests = None;
         let before_revision = self.store.revision;
         let stamp = ReactionStamp::from_parts(at, 0);
         let mut installed_network = None;
@@ -2523,7 +2524,7 @@ impl<D> Machine<D> {
         .map_err(|failure| reconfiguration_phase(failure, patched))?;
         let schedule = schedule_from_pending(&pending_events);
         let provenance = built.provenance.clone();
-        Ok(publish_success(
+        publish_success(
             self,
             PublicationReport {
                 processed_reactions: vec![stamp],
@@ -2563,7 +2564,7 @@ impl<D> Machine<D> {
                 installed_network,
                 revision,
             },
-        ))
+        )
     }
 
     fn apply_advance(
@@ -2586,6 +2587,7 @@ impl<D> Machine<D> {
         // SPEC: docs/specs/contracts/machine-state-digests.yaml "pure-machine-and-result-exposure"
         // A drained private candidate cannot serve as the result's predecessor.
         let before_execution_digest = self.execution_state_digest();
+        self.store.digests = None;
         let before_revision = self.store.revision;
 
         let mut last_reaction = self.last_reaction();
@@ -3129,7 +3131,7 @@ impl<D> Machine<D> {
         .map_err(|failure| reconfiguration_phase(failure, patched))?;
         let schedule = schedule_from_pending(&pending_events);
         let provenance = built.provenance.clone();
-        Ok(publish_success(
+        publish_success(
             self,
             PublicationReport {
                 processed_reactions,
@@ -3169,7 +3171,7 @@ impl<D> Machine<D> {
                 installed_network,
                 revision,
             },
-        ))
+        )
     }
 }
 
@@ -4567,7 +4569,7 @@ fn publish_success<D>(
     machine: &mut Machine<D>,
     report: PublicationReport<D>,
     candidate: PublishedCandidate<D>,
-) -> TransactionResult<D> {
+) -> Result<TransactionResult<D>, RuntimeFailure<D>> {
     let mut roots: Vec<_> = report
         .output_events
         .iter()
@@ -4612,7 +4614,13 @@ fn publish_success<D>(
     );
     let provenance = report.provenance.owned_roots(&roots);
     publish_candidate(machine, candidate);
-    TransactionResult {
+    #[cfg(test)]
+    causal_preparation_fault(
+        &machine.policy,
+        crate::causal_work::Fault::DigestPreparation,
+    )?;
+    machine.prepare_digests();
+    Ok(TransactionResult {
         requested_time: report.requested_time,
         processed_reactions: report.processed_reactions,
         before_revision: report.before_revision,
@@ -4626,7 +4634,7 @@ fn publish_success<D>(
         schedule: report.schedule,
         provenance,
         migration: report.migration,
-    }
+    })
 }
 
 fn publish_candidate<D>(machine: &mut Machine<D>, published: PublishedCandidate<D>) {
@@ -7331,6 +7339,7 @@ mod tests {
                 for stage in [
                     crate::causal_work::Fault::StateExtraction,
                     crate::causal_work::Fault::Provenance,
+                    crate::causal_work::Fault::DigestPreparation,
                     crate::causal_work::Fault::Result,
                     crate::causal_work::Fault::Projection,
                 ] {
@@ -7389,6 +7398,7 @@ mod tests {
         for stage in [
             crate::causal_work::Fault::StateExtraction,
             crate::causal_work::Fault::Provenance,
+            crate::causal_work::Fault::DigestPreparation,
             crate::causal_work::Fault::Result,
             crate::causal_work::Fault::Projection,
         ] {
@@ -9068,6 +9078,7 @@ mod tests {
         let mut stale = local.spawn(policy());
         let expected = stale.revision();
         stale.store.revision = NetworkRevision::from_value(9);
+        stale.prepare_digests();
         let before = observe(&stale);
         let failure = stale
             .apply(Transaction::initialize(
@@ -9507,6 +9518,7 @@ mod tests {
         let mut stale_revision = initialized_machine(&local, LogicLevel::Low);
         let expected = stale_revision.revision();
         stale_revision.store.revision = NetworkRevision::from_value(7);
+        stale_revision.prepare_digests();
         let before = observe(&stale_revision);
         let failure = stale_revision
             .apply(Transaction::advance(
@@ -10202,6 +10214,7 @@ mod tests {
             crate::time::Time::from_ticks(10),
             u64::MAX - 1,
         ));
+        m.prepare_digests();
         // Construct the final coherent occurrence through ordinary apply;
         // only the synthetic precondition skips irrelevant quiet occurrences.
         m.apply(Transaction::advance(

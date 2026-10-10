@@ -256,7 +256,7 @@ fn project<D>(machine: &Machine<D>, label: Option<&str>) -> MachineSnapshot<D> {
     let snapshot = SnapshotDigest::from_digest(digest_bytes);
     let full = envelope(time_domain, &payload, Some(digest_bytes));
     #[cfg(test)]
-    {
+    crate::projection_work::without_accounting(|| {
         let reference_index = crate::state_digest_reference::artifact_index(machine);
         let reference_payload = payload_with_index(
             machine,
@@ -277,7 +277,7 @@ fn project<D>(machine: &Machine<D>, label: Option<&str>) -> MachineSnapshot<D> {
             envelope(time_domain, &reference_payload, Some(reference_digest)),
             "full snapshot bytes versus uncached graph projection"
         );
-    }
+    });
     MachineSnapshot {
         status: machine.status(),
         revision: machine.revision(),
@@ -914,6 +914,11 @@ fn write_provenance<D>(writer: &mut Cbor, machine: &Machine<D>, provenance: &Cau
     record.field("records", |writer| {
         writer.array_start(provenance.records().len());
         for payload in provenance.records().values() {
+            #[cfg(test)]
+            crate::projection_work::update(|work| {
+                work.records_emitted += 1;
+                work.bytes_emitted += payload.len();
+            });
             writer.nested(payload);
         }
     });

@@ -622,10 +622,13 @@ fn restore_checked<D>(
         Lifecycle::Ready(ready) => Some(check_settled(compiled, &installed, ready)?),
         Lifecycle::Awaiting => None,
     };
-    let machine = publish_machine(
+    let mut machine = publish_machine(
         compiled, policy, &artifact, installed, provenance, evaluation,
     )?;
     check_reencoded_provenance(&machine, &artifact)?;
+    // SPEC: docs/specs/contracts/machine-snapshot-restoration.yaml "settled-state-and-digests"
+    // Derive the pair from checked state/content; artifact claims are only comparisons.
+    machine.prepare_digests();
     check_digests(&machine, &artifact)?;
     #[cfg(test)]
     crate::state_digest_reference::assert_machine(&machine);
@@ -5801,7 +5804,7 @@ fn publish_machine<D>(
     provenance: RestoredProvenance<D>,
     evaluation: Option<FullEvaluation>,
 ) -> Result<Machine<D>, RestoreFailure<D>> {
-    let mut machine = Machine::new(compiled.clone(), policy);
+    let mut machine = Machine::new_unprepared(compiled.clone(), policy);
     machine.store.revision = artifact.revision;
     machine.store.next_pending_event_serial = artifact.next_serial;
     machine.store.edge_observations = installed.edges;
@@ -7303,6 +7306,7 @@ mod tests {
             .unwrap()
             .duplicate_allocation_for_test(&compiled, original);
         direct.store.periodic_anchor_causes.insert(node, duplicate);
+        direct.prepare_digests();
         // A lawful private-layout variant: a duplicate allocation with identical
         // canonical content replaces one role, while pending ancestry keeps the original.
         assert_eq!(direct.snapshot(), semantic_before);
@@ -7515,6 +7519,7 @@ mod tests {
             .unwrap();
         assert_eq!(phase.settled, Some(Time::from_ticks(5)));
         phase.settled = settled;
+        machine.prepare_digests();
         // Re-encode the mutated semantic store so every digest is correct for
         // the malformed continuation; rejection must come from validation.
         let bytes = encoded(&machine);
@@ -7926,6 +7931,7 @@ mod tests {
         let before = crate::state_digest::cause_digest_index(&damaged);
         let edge_digest = before.machine_digest(ordinal);
         damaged.store.edge_observation_causes.remove(&edge);
+        damaged.prepare_digests();
         let after = crate::state_digest::cause_digest_index(&damaged);
         let dropped = before
             .records()

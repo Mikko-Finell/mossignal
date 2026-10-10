@@ -1632,6 +1632,7 @@ impl<D> PartialEq for PeriodicPhase<D> {
 impl<D> Eq for PeriodicPhase<D> {}
 
 pub(crate) struct MachineStore<D> {
+    pub(crate) digests: Option<crate::state_digest::CompletedDigests>,
     // Explicit last-reaction history, never input to network evaluation.
     pub(crate) standard_causes:
         BTreeMap<crate::QualifiedModuleRef, crate::standard::stateful::StandardCauses>,
@@ -1668,6 +1669,7 @@ impl<D> Clone for MachineStore<D> {
         #[cfg(test)]
         crate::execution_work::update(|work| work.staged_stores_cloned += 1);
         Self {
+            digests: self.digests,
             standard_causes: self.standard_causes.clone(),
             standard_history: self.standard_history.clone(),
             status: self.status,
@@ -2760,12 +2762,20 @@ fn inspection_wrong_kind<D>(node: NodeKey, expected: InspectionSubjectKind) -> P
 
 impl<D> Machine<D> {
     pub(crate) fn new(compiled: CompiledNetwork<D>, policy: RuntimePolicy) -> Self {
+        let mut machine = Self::new_unprepared(compiled, policy);
+        machine.prepare_digests();
+        machine
+    }
+
+    /// Private restoration candidate; its checked state must be completed before queries.
+    pub(crate) fn new_unprepared(compiled: CompiledNetwork<D>, policy: RuntimePolicy) -> Self {
         let edge_observations = compiled.initial_edge_observations();
         let stored_levels = compiled.initial_stored_levels();
         Self {
             compiled,
             policy,
             store: MachineStore {
+                digests: None,
                 standard_causes: BTreeMap::new(),
                 standard_history: BTreeMap::new(),
                 status: MachineStatus::AwaitingInitialization,
@@ -2794,6 +2804,16 @@ impl<D> Machine<D> {
                 next_pending_event_serial: 0,
             },
         }
+    }
+
+    pub(crate) fn prepare_digests(&mut self) {
+        // SPEC: docs/specs/contracts/machine-state-digests.yaml "failure-leaves-digests-unchanged"
+        // Complete both values on the isolated semantic version before publication.
+        let digests = crate::state_digest::CompletedDigests {
+            execution: crate::state_digest::execution_state_digest(self),
+            observable: crate::state_digest::observable_state_digest(self),
+        };
+        self.store.digests = Some(digests);
     }
 
     pub(crate) fn duplicate_for_staging(&self) -> Self {
@@ -2858,7 +2878,12 @@ impl<D> Machine<D> {
     /// ```
     #[must_use]
     pub fn execution_state_digest(&self) -> ExecutionStateDigest {
-        crate::state_digest::execution_state_digest(self)
+        match self.store.digests {
+            Some(digests) => digests.execution,
+            None => {
+                panic!("published machine must have a completed execution/observable digest pair")
+            }
+        }
     }
 
     /// Returns the observable-state digest of the committed machine.
@@ -2866,7 +2891,12 @@ impl<D> Machine<D> {
     /// The query is a pure projection and does not change the machine.
     #[must_use]
     pub fn observable_state_digest(&self) -> ObservableStateDigest {
-        crate::state_digest::observable_state_digest(self)
+        match self.store.digests {
+            Some(digests) => digests.observable,
+            None => {
+                panic!("published machine must have a completed execution/observable digest pair")
+            }
+        }
     }
 
     /// Returns an owned snapshot of this committed machine.
@@ -2892,6 +2922,7 @@ impl<D> Machine<D> {
         for batch in self.store.pending_events.values_mut() {
             batch.reverse();
         }
+        self.prepare_digests();
     }
 
     #[cfg(test)]
@@ -2911,6 +2942,7 @@ impl<D> Machine<D> {
         if let Some(view) = &mut self.store.provenance {
             view.reverse_unordered_supporters();
         }
+        self.prepare_digests();
     }
 
     #[cfg(test)]
@@ -2924,6 +2956,7 @@ impl<D> Machine<D> {
     #[cfg(test)]
     pub(crate) fn clear_standard_history_for_test(&mut self) {
         self.store.standard_history.clear();
+        self.prepare_digests();
     }
 
     #[cfg(test)]
@@ -2938,6 +2971,7 @@ impl<D> Machine<D> {
         level: LogicLevel,
     ) {
         self.store.output_baselines.insert(output, level);
+        self.prepare_digests();
     }
 
     #[cfg(test)]
@@ -2946,6 +2980,7 @@ impl<D> Machine<D> {
         let mut pairs: Vec<_> = episodes.into_iter().collect();
         pairs.reverse();
         self.store.active_episodes = pairs.into_iter().collect();
+        self.prepare_digests();
     }
 
     /// Returns the immutable compiled topology installed in this machine.
@@ -4096,6 +4131,8 @@ mod tests {
             now: Time::from_ticks(17),
         };
         first.store.revision = NetworkRevision(7);
+        // This fixture only probes independent storage, not a settled ready machine.
+        first.store.digests = None;
 
         assert_eq!(
             first.status(),

@@ -66,6 +66,8 @@ mod node_schema;
 mod patch;
 mod persistence;
 mod policy;
+#[cfg(test)]
+mod projection_work;
 mod replay;
 pub mod signal;
 mod snapshot_restore;

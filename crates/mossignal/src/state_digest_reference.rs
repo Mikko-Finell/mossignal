@@ -1424,6 +1424,20 @@ pub(crate) fn assert_view<D>(compiled: &CompiledNetwork<D>, view: &ProvenanceVie
 }
 
 pub(crate) fn assert_machine<D>(machine: &Machine<D>) {
+    crate::projection_work::without_accounting(|| assert_machine_inner(machine));
+}
+
+fn assert_machine_inner<D>(machine: &Machine<D>) {
+    assert_eq!(
+        machine.execution_state_digest(),
+        execution_state_digest(machine),
+        "completed execution digest"
+    );
+    assert_eq!(
+        machine.observable_state_digest(),
+        observable_state_digest(machine),
+        "completed observable digest"
+    );
     for snapshot in [false, true] {
         assert_eq!(
             reference_bindings(machine, snapshot),

@@ -22,13 +22,23 @@ use crate::transaction::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+#[derive(Clone, Copy)]
+pub(crate) struct CompletedDigests {
+    pub execution: ExecutionStateDigest,
+    pub observable: ObservableStateDigest,
+}
+
 pub(crate) fn execution_state_digest<D>(machine: &Machine<D>) -> ExecutionStateDigest {
     let input = execution_digest_input(machine, 3, 3);
+    #[cfg(test)]
+    crate::projection_work::update(|work| work.execution_hashes += 1);
     ExecutionStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
 pub(crate) fn observable_state_digest<D>(machine: &Machine<D>) -> ObservableStateDigest {
     let input = observable_digest_input(machine, 3, 3);
+    #[cfg(test)]
+    crate::projection_work::update(|work| work.observable_hashes += 1);
     ObservableStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
@@ -61,7 +71,21 @@ fn projection_payload<D>(
     projection_version: u64,
     observable: bool,
 ) -> Vec<u8> {
-    let context = ProjectionContext::build(machine);
+    // SPEC: docs/specs/contracts/machine-state-digests.yaml "execution-projection"
+    // Execution commits current cause identities without enumerating their ancestry.
+    let context = if observable {
+        CauseProjection::Indexed(ProjectionContext::build(machine))
+    } else {
+        CauseProjection::Direct
+    };
+    #[cfg(test)]
+    crate::projection_work::update(|work| {
+        if observable {
+            work.observable_builds += 1;
+        } else {
+            work.execution_builds += 1;
+        }
+    });
     let ready = machine.is_initialized();
     let mut record = Record::new();
     record.field("active_episodes", |writer| {
@@ -104,8 +128,8 @@ fn projection_payload<D>(
     record.field("projection_version", |writer| {
         writer.uint(projection_version)
     });
-    if observable && ready {
-        record.field("provenance", |writer| write_provenance(writer, &context));
+    if ready && let CauseProjection::Indexed(context) = &context {
+        record.field("provenance", |writer| write_provenance(writer, context));
     }
     record.field("revision", |writer| {
         writer.uint(machine.revision().value());
@@ -122,6 +146,47 @@ fn projection_payload<D>(
     record.finish()
 }
 
+enum CauseProjection {
+    Direct,
+    Indexed(ProjectionContext),
+}
+
+impl CauseProjection {
+    fn machine_cause<D>(&self, machine: &Machine<D>, cause: CauseRef) -> [u8; 32] {
+        match self {
+            Self::Indexed(context) => context.machine_cause(machine, cause),
+            Self::Direct => {
+                let Some(view) = &machine.store.provenance else {
+                    panic!("committed cause must belong to the machine provenance view");
+                };
+                frozen_cause_digest(view, cause)
+            }
+        }
+    }
+
+    fn episode_cause<D>(
+        &self,
+        index: usize,
+        view: &ProvenanceView<D>,
+        cause: CauseRef,
+    ) -> [u8; 32] {
+        match self {
+            Self::Indexed(context) => context.episode_digests[index][view.resolve_ordinal(cause)],
+            Self::Direct => frozen_cause_digest(view, cause),
+        }
+    }
+}
+
+fn frozen_cause_digest<D>(view: &ProvenanceView<D>, cause: CauseRef) -> [u8; 32] {
+    #[cfg(test)]
+    crate::projection_work::update(|work| work.direct_resolutions += 1);
+    let ordinal = view.resolve_ordinal(cause);
+    let Some(canonical) = view.records().canonical(ordinal).get() else {
+        panic!("committed causal content must be frozen before machine digest preparation");
+    };
+    canonical.digest
+}
+
 struct ProjectionContext {
     table: ContentTable,
     machine_digests: Vec<[u8; 32]>,
@@ -132,6 +197,8 @@ struct ProjectionContext {
 
 impl ProjectionContext {
     fn build<D>(machine: &Machine<D>) -> Self {
+        #[cfg(test)]
+        crate::projection_work::update(|work| work.contexts_built += 1);
         let mut table = ContentTable::default();
         let (machine_digests, machine_reachable) = match &machine.store.provenance {
             Some(view) => {
@@ -303,6 +370,8 @@ fn index_view<D>(
     let mut memo = vec![None; view.records().len()];
     let mut stack = vec![false; view.records().len()];
     for index in 0..view.records().len() {
+        #[cfg(test)]
+        crate::projection_work::update(|work| work.records_indexed += 1);
         digest_record(compiled, view, index, &mut memo, &mut stack, table);
     }
     memo.into_iter()
@@ -732,6 +801,8 @@ fn reachable_digests<D>(
         }
         seen[index] = true;
         #[cfg(test)]
+        crate::projection_work::update(|work| work.closure_visits += 1);
+        #[cfg(test)]
         crate::causal_work::update(|work| work.closure_records_visited += 1);
         reached.insert(digests[index]);
         for cause in view.records()[index].predecessor_causes() {
@@ -750,6 +821,11 @@ fn write_provenance(writer: &mut Cbor, context: &ProjectionContext) {
     for digest in digests {
         match context.table.payloads.get(&digest) {
             Some(payload) => {
+                #[cfg(test)]
+                crate::projection_work::update(|work| {
+                    work.records_emitted += 1;
+                    work.bytes_emitted += payload.len();
+                });
                 #[cfg(test)]
                 crate::causal_work::update(|work| {
                     work.closure_records_emitted += 1;
@@ -893,7 +969,7 @@ fn singular_event<D>(machine: &Machine<D>, node: crate::key::NodeKey, kind: &str
     if keys.len() == 1 { keys.pop() } else { None }
 }
 
-fn write_pending_events<D>(writer: &mut Cbor, machine: &Machine<D>, context: &ProjectionContext) {
+fn write_pending_events<D>(writer: &mut Cbor, machine: &Machine<D>, context: &CauseProjection) {
     let mut events = Vec::new();
     for event in machine.store.pending_events.values().flatten().copied() {
         let (key, node, origin, deadline, revision, cause) = event.identity();
@@ -976,14 +1052,12 @@ fn pending_kind_bytes<D>(event: PendingEvent<D>) -> Vec<u8> {
     writer.finish()
 }
 
-fn write_episodes<D>(writer: &mut Cbor, machine: &Machine<D>, context: &ProjectionContext) {
+fn write_episodes<D>(writer: &mut Cbor, machine: &Machine<D>, context: &CauseProjection) {
     let mut episodes = Vec::new();
     for (index, episode) in machine.store.active_episodes.values().enumerate() {
         let identity = episode.identity().as_bytes();
-        let digests = &context.episode_digests[index];
         let view = episode.provenance();
-        let ordinal = view.resolve_ordinal(episode.cause());
-        let cause = digests[ordinal];
+        let cause = context.episode_cause(index, view, episode.cause());
         let mut record = Record::new();
         let began = episode.began_at().ticks();
         record.field("began_at", |writer| writer.uint(began));
@@ -1031,7 +1105,7 @@ fn evidence_bytes<D>(problem: &Problem<D>) -> Vec<u8> {
     record.finish()
 }
 
-fn write_baselines<D>(writer: &mut Cbor, machine: &Machine<D>, context: &ProjectionContext) {
+fn write_baselines<D>(writer: &mut Cbor, machine: &Machine<D>, context: &CauseProjection) {
     let mut baselines = Vec::new();
     for key in machine.compiled.external_level_outputs() {
         let level = match machine.store.output_baselines.get(&key).copied() {
@@ -1495,6 +1569,261 @@ mod tests {
         let mut bytes = vec![0x50];
         bytes.extend(value.to_be_bytes());
         bytes
+    }
+
+    #[test]
+    fn completed_digest_queries_do_no_projection_work() {
+        fn check(machine: &Machine<()>) {
+            let execution = crate::state_digest_reference::execution_state_digest(machine);
+            let observable = crate::state_digest_reference::observable_state_digest(machine);
+            crate::projection_work::reset();
+            for _ in 0..20 {
+                assert_eq!(machine.execution_state_digest(), execution);
+                assert_eq!(machine.observable_state_digest(), observable);
+            }
+            assert_eq!(
+                crate::projection_work::read(),
+                crate::projection_work::Work::default()
+            );
+        }
+        let mut machine = spawn(
+            golden_toggle(DiagnosticMeta::default()),
+            [100, 10_000, 100, 100, 10_000],
+        );
+        check(&machine);
+        let snapshot = machine.snapshot();
+        crate::projection_work::reset();
+        let restored_declared = machine
+            .compiled()
+            .restore(snapshot, machine.policy.clone())
+            .unwrap();
+        let work = crate::projection_work::read();
+        assert_eq!(
+            (
+                work.execution_builds,
+                work.observable_builds,
+                work.execution_hashes,
+                work.observable_hashes
+            ),
+            (1, 1, 1, 1)
+        );
+        check(&restored_declared);
+        crate::projection_work::reset();
+        initialize(&mut machine, 0);
+        let preparation = crate::projection_work::read();
+        assert_eq!(preparation.execution_builds, 1);
+        assert_eq!(preparation.observable_builds, 1);
+        assert_eq!(preparation.execution_hashes, 1);
+        assert_eq!(preparation.observable_hashes, 1);
+        check(&machine);
+        let transaction = Transaction::advance(
+            Time::from_ticks(1),
+            machine.revision(),
+            machine
+                .compiled()
+                .input_delta()
+                .pulse(ExternalInputKey::from_u128(6), PulseCount::ONE)
+                .unwrap()
+                .finish()
+                .unwrap(),
+        );
+        let forecast = machine.forecast(transaction.clone()).unwrap();
+        check(&forecast.state().machine);
+        machine.apply(transaction).unwrap();
+        check(&machine);
+        let snapshot = machine.snapshot();
+        crate::projection_work::reset();
+        let restored = machine
+            .compiled()
+            .restore(snapshot, machine.policy.clone())
+            .unwrap();
+        let work = crate::projection_work::read();
+        assert_eq!(
+            (
+                work.execution_builds,
+                work.observable_builds,
+                work.execution_hashes,
+                work.observable_hashes
+            ),
+            (1, 1, 1, 1)
+        );
+        check(&restored);
+        for (at, count) in [(1, 0), (1, 2), (2, 1)] {
+            let before = machine.execution_state_digest();
+            let input = machine
+                .compiled()
+                .input_delta()
+                .pulse(ExternalInputKey::from_u128(6), PulseCount::new(count))
+                .unwrap()
+                .finish()
+                .unwrap();
+            crate::projection_work::reset();
+            let result = machine
+                .apply(Transaction::advance(
+                    Time::from_ticks(at),
+                    machine.revision(),
+                    input,
+                ))
+                .unwrap();
+            assert_eq!(result.before_execution_digest(), before);
+            let work = crate::projection_work::read();
+            assert_eq!(
+                (
+                    work.execution_builds,
+                    work.observable_builds,
+                    work.execution_hashes,
+                    work.observable_hashes
+                ),
+                (1, 1, 1, 1)
+            );
+            check(&machine);
+        }
+        let patch = machine
+            .prepare_patch(
+                machine
+                    .patch()
+                    .set_diagnostic_meta(
+                        crate::StructuralSubjectRef::Network(machine.compiled().network_key()),
+                        DiagnosticMeta {
+                            name: Some("cached patch".to_owned()),
+                            ..DiagnosticMeta::default()
+                        },
+                    )
+                    .unwrap()
+                    .finish(),
+            )
+            .require_artifact()
+            .unwrap();
+        let input = patch.resulting_compiled().input_delta().finish().unwrap();
+        let before = machine.execution_state_digest();
+        let result = machine
+            .apply(
+                Transaction::advance(Time::from_ticks(3), machine.revision(), input)
+                    .with_patch(patch, crate::ReconfigurationPolicy::RejectStateLoss)
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(result.before_execution_digest(), before);
+        check(&machine);
+    }
+
+    #[test]
+    fn raw_execution_does_not_index_growing_ancestry() {
+        for periodic in [false, true] {
+            let mut previous = None;
+            for history in [4, 40] {
+                let compiled = if periodic {
+                    let mut builder = NetworkBuilder::new(TimeDomainId::from_u128(2));
+                    let enable = builder.constant(LogicLevel::High);
+                    let pulses = builder
+                        .periodic(
+                            enable,
+                            crate::PeriodicConfig::new(
+                                span(1),
+                                crate::FirstEmissionPolicy::AfterFirstPeriod,
+                                crate::ReenablePhasePolicy::PreservePhase,
+                            ),
+                        )
+                        .unwrap();
+                    let toggle = builder
+                        .toggle(pulses, ToggleConfig::new(LogicLevel::Low))
+                        .unwrap();
+                    builder.level_output("toggle", toggle).unwrap();
+                    compile_builder(builder)
+                } else {
+                    compile(golden_toggle(DiagnosticMeta::default()))
+                };
+                let mut machine = compiled.spawn(generous_policy());
+                let retained = initialize(&mut machine, 0);
+                for at in 1..=history {
+                    let mut input = machine.compiled().input_delta();
+                    if !periodic {
+                        input = input
+                            .pulse(ExternalInputKey::from_u128(6), PulseCount::ONE)
+                            .unwrap();
+                    }
+                    let transaction = Transaction::advance(
+                        Time::from_ticks(at),
+                        machine.revision(),
+                        input.finish().unwrap(),
+                    );
+                    machine.apply(transaction).unwrap();
+                }
+                let expected = crate::state_digest_reference::execution_state_digest(&machine);
+                crate::projection_work::reset();
+                crate::causal_work::reset();
+                assert_eq!(execution_state_digest(&machine), expected);
+                let work = crate::projection_work::read();
+                assert_eq!(work.records_indexed, 0, "history={history}: {work:?}");
+                assert_eq!(work.contexts_built, 0);
+                assert_eq!(work.closure_visits, 0);
+                assert!(work.direct_resolutions > 0);
+                assert_eq!(work.execution_builds, 1);
+                assert_eq!(work.execution_hashes, 1);
+                assert_eq!(crate::causal_work::read().closure_records_emitted, 0);
+                assert_eq!(work.records_emitted, 0);
+                let expected =
+                    crate::state_digest_reference::observable_digest_input(&machine, 3, 3);
+                crate::projection_work::reset();
+                assert_eq!(observable_digest_input(&machine, 3, 3), expected);
+                let observable = crate::projection_work::read();
+                assert!(observable.records_indexed > 0);
+                assert!(observable.closure_visits > 0);
+                assert!(observable.records_emitted > 0);
+                assert!(observable.bytes_emitted > 0);
+                crate::projection_work::reset();
+                let snapshot = machine.snapshot();
+                let snapshot_work = crate::projection_work::read();
+                assert_eq!(
+                    (
+                        snapshot_work.execution_builds,
+                        snapshot_work.observable_builds,
+                        snapshot_work.execution_hashes,
+                        snapshot_work.observable_hashes
+                    ),
+                    (0, 0, 0, 0)
+                );
+                assert_eq!(snapshot_work.contexts_built, 1);
+                assert_eq!(snapshot_work.records_emitted, observable.records_emitted);
+                assert_eq!(snapshot_work.bytes_emitted, observable.bytes_emitted);
+                if let Some((resolutions, records, bytes, artifact_bytes)) = previous {
+                    assert_eq!(work.direct_resolutions, resolutions);
+                    assert!(observable.records_emitted > records);
+                    assert!(observable.bytes_emitted > bytes);
+                    assert!(snapshot.artifact_bytes().len() > artifact_bytes);
+                }
+                eprintln!(
+                    "periodic={periodic} history={history}: raw E={work:?}; raw O={observable:?}; snapshot={snapshot_work:?}; artifact_bytes={}",
+                    snapshot.artifact_bytes().len()
+                );
+                previous = Some((
+                    work.direct_resolutions,
+                    observable.records_emitted,
+                    observable.bytes_emitted,
+                    snapshot.artifact_bytes().len(),
+                ));
+                drop(retained);
+            }
+        }
+    }
+
+    #[test]
+    fn independent_recomputation_detects_a_stale_completed_pair() {
+        let mut machine = spawn(
+            golden_toggle(DiagnosticMeta::default()),
+            [8, 100, 4, 8, 100],
+        );
+        let before = machine.execution_state_digest();
+        machine.store.next_pending_event_serial += 1;
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::state_digest_reference::assert_machine(&machine)
+            }))
+            .is_err()
+        );
+        machine.prepare_digests();
+        assert_ne!(machine.execution_state_digest(), before);
+        crate::state_digest_reference::assert_machine(&machine);
     }
 
     #[test]

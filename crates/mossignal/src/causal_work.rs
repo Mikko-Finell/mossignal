@@ -10,6 +10,7 @@ use std::sync::{
 pub(crate) enum Fault {
     StateExtraction,
     Provenance,
+    DigestPreparation,
     Result,
     Projection,
 }
