@@ -346,6 +346,44 @@ fn index_view<D>(
         .collect()
 }
 
+/// Full uncached record content and reference resolution for preparation comparisons.
+pub(crate) struct CanonicalView {
+    pub(crate) records: BTreeMap<[u8; 32], Vec<u8>>,
+    causes: BTreeMap<CauseRef, [u8; 32]>,
+}
+
+impl CanonicalView {
+    pub(crate) fn cause(&self, cause: CauseRef) -> [u8; 32] {
+        match self.causes.get(&cause) {
+            Some(digest) => *digest,
+            None => panic!("compared result cause must resolve in its canonical view"),
+        }
+    }
+}
+
+pub(crate) fn canonical_view<D>(
+    compiled: &CompiledNetwork<D>,
+    view: &ProvenanceView<D>,
+) -> CanonicalView {
+    let mut table = ContentTable::default();
+    let digests = index_view(compiled, view, &mut table);
+    CanonicalView {
+        records: table.payloads,
+        causes: digests
+            .into_iter()
+            .enumerate()
+            .map(|(position, digest)| {
+                let cause = view.records().cause(position);
+                assert!(
+                    view.inspect(cause).is_ok(),
+                    "indexed result cause must resolve in its owned view"
+                );
+                (cause, digest)
+            })
+            .collect(),
+    }
+}
+
 pub(crate) fn checkpoint_facts<D>(
     compiled: &CompiledNetwork<D>,
     view: &ProvenanceView<D>,

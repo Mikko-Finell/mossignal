@@ -1665,6 +1665,8 @@ pub(crate) struct MachineStore<D> {
 
 impl<D> Clone for MachineStore<D> {
     fn clone(&self) -> Self {
+        #[cfg(test)]
+        crate::execution_work::update(|work| work.staged_stores_cloned += 1);
         Self {
             standard_causes: self.standard_causes.clone(),
             standard_history: self.standard_history.clone(),

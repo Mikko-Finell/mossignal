@@ -242,6 +242,8 @@ impl<I: Clone + Eq, O> BindingSet<I, O> {
             .external_inputs()
             .iter()
             .filter_map(|definition| {
+                #[cfg(test)]
+                crate::execution_work::update(|work| work.binding_slots_checked += 1);
                 let endpoint = definition.key();
                 (!self
                     .inputs
@@ -277,6 +279,8 @@ impl<I, O> BindingSet<I, O> {
             .external_inputs()
             .iter()
             .filter_map(|definition| {
+                #[cfg(test)]
+                crate::execution_work::update(|work| work.binding_slots_checked += 1);
                 let endpoint = definition.key();
                 (!self
                     .inputs
@@ -291,6 +295,8 @@ impl<I, O> BindingSet<I, O> {
                 .external_outputs()
                 .iter()
                 .filter_map(|definition| {
+                    #[cfg(test)]
+                    crate::execution_work::update(|work| work.binding_slots_checked += 1);
                     let endpoint = definition.key();
                     (!self
                         .outputs
@@ -512,11 +518,41 @@ impl<D, I: Eq + Clone> InputProjector<D, I> {
         &self,
         observations: impl IntoIterator<Item = InputObservation<I>>,
     ) -> Result<InputSnapshot<D>, InputProjectionFailure<I>> {
+        BorrowedInputs {
+            compiled: &self.compiled,
+            inputs: &self.inputs,
+        }
+        .snapshot_from(observations)
+    }
+
+    /// Builds an ordinary partial input delta.
+    pub fn delta_from(
+        &self,
+        observations: impl IntoIterator<Item = InputObservation<I>>,
+    ) -> Result<InputDelta<D>, InputProjectionFailure<I>> {
+        BorrowedInputs {
+            compiled: &self.compiled,
+            inputs: &self.inputs,
+        }
+        .delta_from(observations)
+    }
+}
+
+struct BorrowedInputs<'a, D, I> {
+    compiled: &'a CompiledNetwork<D>,
+    inputs: &'a [(AnyExternalInputKey, I)],
+}
+
+impl<D, I: Eq + Clone> BorrowedInputs<'_, D, I> {
+    fn snapshot_from(
+        &self,
+        observations: impl IntoIterator<Item = InputObservation<I>>,
+    ) -> Result<InputSnapshot<D>, InputProjectionFailure<I>> {
         let mut builder = self.compiled.input_snapshot();
         for observation in observations {
             match observation {
                 InputObservation::Level { input, value } => {
-                    let endpoint = lookup_input(&self.inputs, &input).ok_or_else(|| {
+                    let endpoint = lookup_input(self.inputs, &input).ok_or_else(|| {
                         InputProjectionFailure::UnknownExternalKey {
                             external: input.clone(),
                         }
@@ -531,7 +567,7 @@ impl<D, I: Eq + Clone> InputProjector<D, I> {
                     builder = builder.set(endpoint, value)?;
                 }
                 InputObservation::Pulse { input, count } => {
-                    let endpoint = lookup_input(&self.inputs, &input).ok_or_else(|| {
+                    let endpoint = lookup_input(self.inputs, &input).ok_or_else(|| {
                         InputProjectionFailure::UnknownExternalKey {
                             external: input.clone(),
                         }
@@ -550,8 +586,7 @@ impl<D, I: Eq + Clone> InputProjector<D, I> {
         builder.finish().map_err(Into::into)
     }
 
-    /// Builds an ordinary partial input delta.
-    pub fn delta_from(
+    fn delta_from(
         &self,
         observations: impl IntoIterator<Item = InputObservation<I>>,
     ) -> Result<InputDelta<D>, InputProjectionFailure<I>> {
@@ -559,7 +594,7 @@ impl<D, I: Eq + Clone> InputProjector<D, I> {
         for observation in observations {
             match observation {
                 InputObservation::Level { input, value } => {
-                    let endpoint = lookup_input(&self.inputs, &input).ok_or_else(|| {
+                    let endpoint = lookup_input(self.inputs, &input).ok_or_else(|| {
                         InputProjectionFailure::UnknownExternalKey {
                             external: input.clone(),
                         }
@@ -574,7 +609,7 @@ impl<D, I: Eq + Clone> InputProjector<D, I> {
                     builder = builder.set(endpoint, value)?;
                 }
                 InputObservation::Pulse { input, count } => {
-                    let endpoint = lookup_input(&self.inputs, &input).ok_or_else(|| {
+                    let endpoint = lookup_input(self.inputs, &input).ok_or_else(|| {
                         InputProjectionFailure::UnknownExternalKey {
                             external: input.clone(),
                         }
@@ -819,6 +854,16 @@ impl<D, I: Eq + Clone, O: Eq + Clone> BoundMachine<D, I, O> {
         &self.bindings
     }
 
+    fn borrowed_inputs(&self) -> Result<BorrowedInputs<'_, D, I>, BindingFailure> {
+        validate_compiled(&self.bindings.context, self.machine.compiled())?;
+        // SPEC: docs/specs/contracts/live-bindings.yaml "coherent-complete-ownership"
+        // Construction/rebind/target publication prove this immutable mapping complete.
+        Ok(BorrowedInputs {
+            compiled: self.machine.compiled(),
+            inputs: &self.bindings.inputs,
+        })
+    }
+
     /// Releases ownership of the machine and mappings for an explicit host transition.
     #[must_use]
     pub fn into_parts(self) -> (Machine<D>, BindingSet<I, O>) {
@@ -848,8 +893,7 @@ impl<D, I: Eq + Clone, O: Eq + Clone> BoundMachine<D, I, O> {
         observations: impl IntoIterator<Item = InputObservation<I>>,
     ) -> Result<BoundTransactionResult<D, O>, BoundApplyFailure<D, I>> {
         let input = self
-            .bindings
-            .input_projector(self.machine.compiled())
+            .borrowed_inputs()
             .map_err(BoundApplyFailure::Binding)?
             .snapshot_from(observations)
             .map_err(BoundApplyFailure::Projection)?;
@@ -863,8 +907,7 @@ impl<D, I: Eq + Clone, O: Eq + Clone> BoundMachine<D, I, O> {
         observations: impl IntoIterator<Item = InputObservation<I>>,
     ) -> Result<BoundTransactionResult<D, O>, BoundApplyFailure<D, I>> {
         let input = self
-            .bindings
-            .input_projector(self.machine.compiled())
+            .borrowed_inputs()
             .map_err(BoundApplyFailure::Binding)?
             .delta_from(observations)
             .map_err(BoundApplyFailure::Projection)?;
@@ -1236,6 +1279,375 @@ mod tests {
     use crate::time::NonZeroSpan;
     use crate::{NetworkBuilder, PulseDelayConfig, ReconfigurationPolicy, TimeDomainId};
 
+    #[derive(Debug)]
+    struct CountedKey {
+        value: u64,
+        clones: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+    impl Clone for CountedKey {
+        fn clone(&self) -> Self {
+            self.clones.set(self.clones.get() + 1);
+            Self {
+                value: self.value,
+                clones: self.clones.clone(),
+            }
+        }
+    }
+    impl PartialEq for CountedKey {
+        fn eq(&self, other: &Self) -> bool {
+            self.value == other.value
+        }
+    }
+    impl Eq for CountedKey {}
+
+    #[test]
+    fn published_reactions_borrow_complete_bindings_without_mapping_key_clones() {
+        let clones = std::rc::Rc::new(std::cell::Cell::new(0));
+        let key = |value| CountedKey {
+            value,
+            clones: clones.clone(),
+        };
+        let mut builder = NetworkBuilder::<()>::new(TimeDomainId::from_u128(2));
+        let mut endpoints = Vec::new();
+        for value in 1..=32 {
+            let input = ExternalInputKey::<Level>::from_u128(value);
+            let signal = builder
+                .add_level_input(input, DiagnosticMeta::default())
+                .unwrap();
+            let output = ExternalOutputKey::<Level>::from_u128(100 + value);
+            builder
+                .add_level_output(output, signal, DiagnosticMeta::default())
+                .unwrap();
+            endpoints.push((input, output));
+        }
+        let compiled = builder
+            .finish()
+            .require_artifact()
+            .unwrap()
+            .compile()
+            .require_artifact()
+            .unwrap();
+        let mut bindings = BindingSet::builder(&compiled);
+        for (index, (input, output)) in endpoints.iter().copied().enumerate() {
+            bindings = bindings
+                .bind_input(input, key(index as u64))
+                .unwrap()
+                .bind_output(output, index as u64)
+                .unwrap();
+        }
+        let policy = RuntimePolicy::builder()
+            .max_internal_reactions(100)
+            .max_evaluated_operations(10_000)
+            .max_pending_events(100)
+            .max_events_created_per_transaction(100)
+            .max_required_provenance_growth(10_000)
+            .build()
+            .unwrap();
+        let bindings = bindings.finish().unwrap();
+        clones.set(0);
+        crate::execution_work::reset();
+        let owned = bindings.input_projector(&compiled).unwrap();
+        assert_eq!(
+            (
+                clones.get(),
+                crate::execution_work::read().binding_slots_checked
+            ),
+            (32, 32)
+        );
+        clones.set(0);
+        crate::execution_work::reset();
+        let mut bound = BoundMachine::spawn(&compiled, policy, bindings).unwrap();
+        assert_eq!(
+            (
+                clones.get(),
+                crate::execution_work::read().binding_slots_checked
+            ),
+            (0, 64)
+        );
+        clones.set(0);
+        crate::execution_work::reset();
+        bound
+            .initialize(
+                Time::from_ticks(0),
+                (0..32).map(|index| InputObservation::Level {
+                    input: key(index),
+                    value: LogicLevel::Low,
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                clones.get(),
+                crate::execution_work::read().binding_slots_checked
+            ),
+            (0, 0)
+        );
+        for at in [1, 2, 40] {
+            clones.set(0);
+            crate::execution_work::reset();
+            bound.advance(Time::from_ticks(at), []).unwrap();
+            assert_eq!(
+                (
+                    clones.get(),
+                    crate::execution_work::read().binding_slots_checked
+                ),
+                (0, 0)
+            );
+        }
+        let before = bound.machine().snapshot();
+        let mut replacement = BindingSet::builder(&compiled);
+        for (index, (input, output)) in endpoints.iter().copied().enumerate() {
+            replacement = replacement
+                .bind_input(input, key(64 + index as u64))
+                .unwrap()
+                .bind_output(output, 64 + index as u64)
+                .unwrap();
+        }
+        clones.set(0);
+        crate::execution_work::reset();
+        bound.rebind(replacement.finish().unwrap()).unwrap();
+        assert_eq!(
+            (
+                clones.get(),
+                crate::execution_work::read().binding_slots_checked
+            ),
+            (0, 64)
+        );
+        assert_eq!(bound.machine().snapshot(), before);
+        clones.set(0);
+        crate::execution_work::reset();
+        bound
+            .advance(
+                Time::from_ticks(41),
+                [InputObservation::Level {
+                    input: key(64),
+                    value: LogicLevel::High,
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                clones.get(),
+                crate::execution_work::read().binding_slots_checked
+            ),
+            (0, 0)
+        );
+        // The standalone projector keeps its independent original owned map.
+        let old = owned
+            .delta_from([InputObservation::Level {
+                input: key(0),
+                value: LogicLevel::High,
+            }])
+            .unwrap();
+        assert_eq!(
+            old,
+            compiled
+                .input_delta()
+                .set(endpoints[0].0, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap()
+        );
+        let prepared = bound
+            .prepare_patch(
+                bound
+                    .machine()
+                    .patch()
+                    .set_diagnostic_meta(
+                        crate::StructuralSubjectRef::Network(compiled.network_key()),
+                        DiagnosticMeta {
+                            name: Some("mapped".to_owned()),
+                            ..DiagnosticMeta::default()
+                        },
+                    )
+                    .unwrap()
+                    .finish(),
+            )
+            .require_artifact()
+            .unwrap();
+        let mut target = BindingSet::builder(prepared.resulting_compiled());
+        for (index, (input, output)) in endpoints.iter().copied().enumerate() {
+            target = target
+                .bind_input(input, key(128 + index as u64))
+                .unwrap()
+                .bind_output(output, 128 + index as u64)
+                .unwrap();
+        }
+        let target = target.finish().unwrap();
+        let tx = Transaction::advance(
+            Time::from_ticks(42),
+            bound.machine().revision(),
+            prepared.input_delta().finish().unwrap(),
+        )
+        .with_patch(prepared, ReconfigurationPolicy::RejectStateLoss)
+        .unwrap();
+        clones.set(0);
+        crate::execution_work::reset();
+        bound.apply_reconfigured(tx, target).unwrap();
+        assert_eq!(
+            (
+                clones.get(),
+                crate::execution_work::read().binding_slots_checked
+            ),
+            (0, 64)
+        );
+        clones.set(0);
+        crate::execution_work::reset();
+        let result = bound
+            .advance(
+                Time::from_ticks(43),
+                [InputObservation::Level {
+                    input: key(128),
+                    value: LogicLevel::Low,
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                clones.get(),
+                crate::execution_work::read().binding_slots_checked
+            ),
+            (0, 0)
+        );
+        assert!(matches!(
+            result.projected_output_events(),
+            [ProjectedOutputEvent::LevelChanged { output: 128, .. }]
+        ));
+    }
+
+    #[test]
+    fn borrowed_bound_inputs_preserve_owned_projector_rejections_without_mutation() {
+        let mut b = NetworkBuilder::<()>::new(TimeDomainId::from_u128(2));
+        let (level, signal) = b.level_input("level");
+        let (pulse, _) = b.pulse_input("pulse");
+        let output = b.level_output("level", signal).unwrap();
+        let c = b
+            .finish()
+            .require_artifact()
+            .unwrap()
+            .compile()
+            .require_artifact()
+            .unwrap();
+        let maps = BindingSet::builder(&c)
+            .bind_input(level, "level")
+            .unwrap()
+            .bind_input(pulse, "pulse")
+            .unwrap()
+            .bind_output(output, "out")
+            .unwrap()
+            .finish()
+            .unwrap();
+        let owned = maps.input_projector(&c).unwrap();
+        let policy = RuntimePolicy::builder()
+            .max_internal_reactions(100)
+            .max_evaluated_operations(1000)
+            .max_pending_events(100)
+            .max_events_created_per_transaction(100)
+            .max_required_provenance_growth(1000)
+            .build()
+            .unwrap();
+        for ready in [false, true] {
+            let mut bound = BoundMachine::spawn(&c, policy.clone(), maps.clone()).unwrap();
+            if ready {
+                bound
+                    .initialize(
+                        Time::from_ticks(0),
+                        [InputObservation::Level {
+                            input: "level",
+                            value: LogicLevel::Low,
+                        }],
+                    )
+                    .unwrap();
+            }
+            let before = bound.machine().snapshot();
+            let cases = [
+                vec![],
+                vec![InputObservation::Level {
+                    input: "absent",
+                    value: LogicLevel::Low,
+                }],
+                vec![InputObservation::Level {
+                    input: "pulse",
+                    value: LogicLevel::Low,
+                }],
+                vec![InputObservation::Pulse {
+                    input: "level",
+                    count: PulseCount::ONE,
+                }],
+                vec![
+                    InputObservation::Level {
+                        input: "level",
+                        value: LogicLevel::Low,
+                    },
+                    InputObservation::Level {
+                        input: "level",
+                        value: LogicLevel::Low,
+                    },
+                ],
+                vec![
+                    InputObservation::Level {
+                        input: "level",
+                        value: LogicLevel::Low,
+                    },
+                    InputObservation::Level {
+                        input: "level",
+                        value: LogicLevel::High,
+                    },
+                ],
+                vec![
+                    InputObservation::Pulse {
+                        input: "pulse",
+                        count: PulseCount::ONE,
+                    },
+                    InputObservation::Pulse {
+                        input: "pulse",
+                        count: PulseCount::ONE,
+                    },
+                ],
+                vec![
+                    InputObservation::Pulse {
+                        input: "pulse",
+                        count: PulseCount::ONE,
+                    },
+                    InputObservation::Pulse {
+                        input: "pulse",
+                        count: PulseCount::new(2),
+                    },
+                ],
+            ];
+            for observations in cases {
+                if ready && observations.is_empty() {
+                    continue;
+                }
+                let expected = if ready {
+                    owned.delta_from(observations.clone()).err().unwrap()
+                } else {
+                    owned.snapshot_from(observations.clone()).err().unwrap()
+                };
+                crate::execution_work::reset();
+                let failure = if ready {
+                    bound
+                        .advance(Time::from_ticks(1), observations)
+                        .err()
+                        .unwrap()
+                } else {
+                    bound
+                        .initialize(Time::from_ticks(0), observations)
+                        .err()
+                        .unwrap()
+                };
+                let BoundApplyFailure::Projection(actual) = failure else {
+                    panic!("projection must reject before staging")
+                };
+                assert_eq!(actual, expected);
+                let work = crate::execution_work::read();
+                assert_eq!(work.binding_slots_checked, 0);
+                assert_eq!(work.staged_stores_cloned, 0);
+                assert_eq!(bound.machine().snapshot(), before);
+            }
+        }
+    }
+
     #[test]
     fn late_projection_rejection_discards_the_complete_successor_and_target_maps() {
         let mut builder =
@@ -1346,6 +1758,7 @@ mod tests {
         for (transaction, target) in [(ordinary, None), (patched.clone(), Some(target.clone()))] {
             for reject_at in [1, 2] {
                 let mut attempts = 0;
+                crate::execution_work::reset();
                 let failure = bound
                     .apply_projecting(transaction.clone(), target.clone(), |bindings, event| {
                         attempts += 1;
@@ -1376,6 +1789,13 @@ mod tests {
                     })
                     .err()
                     .unwrap();
+                let work = crate::execution_work::read();
+                assert_eq!(work.staged_stores_cloned, 1);
+                assert_eq!(work.working_collections_cloned, 0);
+                assert_eq!(
+                    work.binding_slots_checked,
+                    if target.is_some() { 3 } else { 0 }
+                );
                 assert_eq!(
                     failure.code(),
                     DiagnosticCode::BindingMissingRequiredBinding

@@ -2258,6 +2258,27 @@ impl<D> StagedTransaction<D> {
     }
 }
 
+fn prepare_collection<T: Clone + Default>(collection: &mut T, _items: usize) -> T {
+    #[cfg(test)]
+    if crate::execution_work::clone_preparation() {
+        crate::execution_work::update(|work| {
+            work.working_collections_cloned += 1;
+            work.working_items_cloned += _items;
+        });
+        return collection.clone();
+    }
+    // SPEC: docs/specs/contracts/atomic-topology-replacement.yaml "atomic-failure"
+    // This is the isolated candidate's ownership, never the live predecessor's.
+    core::mem::take(collection)
+}
+
+macro_rules! prepare_collection {
+    ($collection:expr) => {{
+        let items = $collection.len();
+        prepare_collection(&mut $collection, items)
+    }};
+}
+
 impl<D> Machine<D> {
     /// Applies an owned transaction atomically.
     pub fn apply(
@@ -2282,6 +2303,14 @@ impl<D> Machine<D> {
         #[cfg(test)]
         crate::state_digest_reference::assert_machine(&successor);
         Ok(StagedTransaction { successor, result })
+    }
+
+    #[cfg(test)]
+    fn stage_clone_reference(
+        &self,
+        transaction: Transaction<D>,
+    ) -> Result<StagedTransaction<D>, RuntimeFailure<D>> {
+        crate::execution_work::with_clone_preparation(|| self.stage(transaction))
     }
 
     fn evaluate_transaction(
@@ -2345,6 +2374,10 @@ impl<D> Machine<D> {
             patch.as_ref(),
             expected_execution,
         )?;
+        // SPEC: docs/specs/contracts/machine-state-digests.yaml "pure-machine-and-result-exposure"
+        // Capture the complete predecessor before taking any candidate-owned fields.
+        let before_execution_digest = self.execution_state_digest();
+        let before_revision = self.store.revision;
         let stamp = ReactionStamp::from_parts(at, 0);
         let mut installed_network = None;
         let mut migration_report = None;
@@ -2390,7 +2423,13 @@ impl<D> Machine<D> {
             &BTreeMap::new(),
         )?;
         let occurrences = pulse_latch_occurrences(network, stamp, revision, &evaluation);
-        let mut active_episodes = self.store.active_episodes.clone();
+        let declared_checkpoint = migration_report
+            .as_ref()
+            .map(|_| crate::state_digest::declared_state_checkpoint(self));
+        let mut active_episodes = prepare_collection!(self.store.active_episodes);
+        #[cfg(test)]
+        causal_preparation_fault(&self.policy, crate::causal_work::Fault::StateExtraction)
+            .map_err(|failure| reconfiguration_phase(failure, patched))?;
         let mut diagnostic_episode_changes = Vec::new();
         let mut built = build_initialization_provenance(
             network,
@@ -2399,9 +2438,7 @@ impl<D> Machine<D> {
             &levels,
             &pulses,
             &evaluation,
-            migration_report
-                .as_ref()
-                .map(|report| (report, crate::state_digest::declared_state_checkpoint(self))),
+            migration_report.as_ref().zip(declared_checkpoint),
         );
         let mut created_pending_events = 0_u64;
         let mut pending_events = BTreeMap::new();
@@ -2485,8 +2522,6 @@ impl<D> Machine<D> {
         )
         .map_err(|failure| reconfiguration_phase(failure, patched))?;
         let schedule = schedule_from_pending(&pending_events);
-        let before_execution_digest = self.execution_state_digest();
-        let before_revision = self.store.revision;
         let provenance = built.provenance.clone();
         Ok(publish_success(
             self,
@@ -2548,38 +2583,48 @@ impl<D> Machine<D> {
             expected_execution,
         )?;
 
+        // SPEC: docs/specs/contracts/machine-state-digests.yaml "pure-machine-and-result-exposure"
+        // A drained private candidate cannot serve as the result's predecessor.
+        let before_execution_digest = self.execution_state_digest();
+        let before_revision = self.store.revision;
+
         let mut last_reaction = self.last_reaction();
         let mut processed_reactions = Vec::new();
         let mut revision = self.store.revision;
         let (explicit_levels, pulses) = input.into_parts();
-        let mut standard_history = self.store.standard_history.clone();
-        let mut standard_causes = self.store.standard_causes.clone();
-        let mut levels = self.store.external_levels.clone();
-        let mut pending_events = self.store.pending_events.clone();
+        let mut standard_history = prepare_collection!(self.store.standard_history);
+        let mut standard_causes = prepare_collection!(self.store.standard_causes);
+        let mut levels = prepare_collection!(self.store.external_levels);
+        let mut pending_events = prepare_collection!(self.store.pending_events);
         let mut next_pending_event_serial = self.store.next_pending_event_serial;
-        let mut edge_observations = self.store.edge_observations.clone();
-        let mut stored_levels = self.store.stored_levels.clone();
-        let mut operation_levels = self.store.operation_levels.clone();
-        let mut current_operation_causes = self.store.operation_causes.clone();
-        let mut output_baselines = self.store.output_baselines.clone();
-        let mut input_causes = self.store.input_causes.clone();
-        let mut output_causes = self.store.output_causes.clone();
-        let mut edge_observation_causes = self.store.edge_observation_causes.clone();
-        let mut toggle_inversion_causes = self.store.toggle_inversion_causes.clone();
-        let mut establishment_causes = self.store.establishment_causes.clone();
-        let mut transport_transition_causes = self.store.transport_transition_causes.clone();
-        let mut inertial_cancellation_causes = self.store.inertial_cancellation_causes.clone();
-        let mut periodic_anchors = self.store.periodic_anchors.clone();
-        let mut periodic_anchor_causes = self.store.periodic_anchor_causes.clone();
-        let mut periodic_cancellation_causes = self.store.periodic_cancellation_causes.clone();
-        let mut provenance = match self.store.provenance.as_ref() {
-            Some(provenance) => provenance.clone(),
+        let mut edge_observations = prepare_collection!(self.store.edge_observations);
+        let mut stored_levels = prepare_collection!(self.store.stored_levels);
+        let mut operation_levels = prepare_collection!(self.store.operation_levels);
+        let mut current_operation_causes = prepare_collection!(self.store.operation_causes);
+        let mut output_baselines = prepare_collection!(self.store.output_baselines);
+        let mut input_causes = prepare_collection!(self.store.input_causes);
+        let mut output_causes = prepare_collection!(self.store.output_causes);
+        let mut edge_observation_causes = prepare_collection!(self.store.edge_observation_causes);
+        let mut toggle_inversion_causes = prepare_collection!(self.store.toggle_inversion_causes);
+        let mut establishment_causes = prepare_collection!(self.store.establishment_causes);
+        let mut transport_transition_causes =
+            prepare_collection!(self.store.transport_transition_causes);
+        let mut inertial_cancellation_causes =
+            prepare_collection!(self.store.inertial_cancellation_causes);
+        let mut periodic_anchors = prepare_collection!(self.store.periodic_anchors);
+        let mut periodic_anchor_causes = prepare_collection!(self.store.periodic_anchor_causes);
+        let mut periodic_cancellation_causes =
+            prepare_collection!(self.store.periodic_cancellation_causes);
+        let mut provenance = match prepare_collection(&mut self.store.provenance, 1) {
+            Some(provenance) => provenance,
             None => panic!("ready machine must retain committed provenance"),
         };
         let mut provenance_growth = 0_usize;
         let mut output_events = Vec::new();
         let mut occurrences = Vec::new();
-        let mut active_episodes = self.store.active_episodes.clone();
+        let mut active_episodes = prepare_collection!(self.store.active_episodes);
+        #[cfg(test)]
+        causal_preparation_fault(&self.policy, crate::causal_work::Fault::StateExtraction)?;
         let mut diagnostic_episode_changes = Vec::new();
         let mut created_pending_events = 0_u64;
         let mut reaction_count = 0_u64;
@@ -2604,7 +2649,7 @@ impl<D> Machine<D> {
             let stamp = allocate_reaction(&mut last_reaction, deadline)?;
             processed_reactions.push(stamp);
             let due = aggregate_due::<D>(&self.compiled, batch)?;
-            let internal = self
+            let mut internal = self
                 .compiled
                 .evaluate_temporal_reaction(
                     &levels,
@@ -2665,10 +2710,6 @@ impl<D> Machine<D> {
             );
             output_events.append(&mut reaction_events);
 
-            edge_observations = internal.proposed_edge_observations.clone();
-            stored_levels = internal.proposed_stored_levels.clone();
-            operation_levels = internal.operation_levels.clone();
-            output_baselines = internal.external_outputs.clone();
             schedule_pulse_delays(
                 PulseDelayScheduling {
                     compiled: &self.compiled,
@@ -2720,7 +2761,11 @@ impl<D> Machine<D> {
                 &mut diagnostic_episode_changes,
             );
             remap_episode_changes(&mut diagnostic_episode_changes, built.provenance.scope);
-            current_operation_causes = built.operation_causes.clone();
+            edge_observations = prepare_collection!(internal.proposed_edge_observations);
+            stored_levels = prepare_collection!(internal.proposed_stored_levels);
+            operation_levels = prepare_collection!(internal.operation_levels);
+            output_baselines = prepare_collection!(internal.external_outputs);
+            current_operation_causes = prepare_collection!(built.operation_causes);
             input_causes = built.input_causes;
             output_causes = built.output_causes;
             edge_observation_causes = built.edge_observation_causes;
@@ -3083,8 +3128,6 @@ impl<D> Machine<D> {
         )
         .map_err(|failure| reconfiguration_phase(failure, patched))?;
         let schedule = schedule_from_pending(&pending_events);
-        let before_execution_digest = self.execution_state_digest();
-        let before_revision = self.store.revision;
         let provenance = built.provenance.clone();
         Ok(publish_success(
             self,
@@ -6240,6 +6283,10 @@ fn causal_preparation_fault<D>(
 }
 
 #[cfg(test)]
+#[path = "transaction/tests/execution_preparation.rs"]
+mod preparation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{UNFINALIZED_PROVENANCE_SCOPE, aggregate_due};
     use crate::authored::{
@@ -6766,6 +6813,91 @@ mod tests {
     }
 
     #[test]
+    fn temporal_state_uses_one_staged_store_without_working_collection_copies() {
+        use crate::time::{NonZeroSpan, Time};
+        use crate::{
+            FirstEmissionPolicy, NetworkBuilder, PeriodicConfig, PulseDelayConfig,
+            ReenablePhasePolicy,
+        };
+        let mut builder = NetworkBuilder::<()>::new(TimeDomainId::from_u128(2));
+        let (pulse_key, pulse) = builder.pulse_input("pulse");
+        let (enable_key, enable) = builder.level_input("enable");
+        let toggle = builder
+            .toggle(pulse, crate::ToggleConfig::new(LogicLevel::Low))
+            .unwrap();
+        builder.level_output("state", toggle).unwrap();
+        let periodic = builder
+            .periodic(
+                enable,
+                PeriodicConfig::new(
+                    NonZeroSpan::from_ticks(5).unwrap(),
+                    FirstEmissionPolicy::AfterFirstPeriod,
+                    ReenablePhasePolicy::PreservePhase,
+                ),
+            )
+            .unwrap();
+        builder.pulse_output("periodic", periodic).unwrap();
+        let delayed = builder
+            .pulse_delay(
+                pulse,
+                PulseDelayConfig::new(NonZeroSpan::from_ticks(7).unwrap()),
+            )
+            .unwrap();
+        builder.pulse_output("delayed", delayed).unwrap();
+        let compiled = builder
+            .finish()
+            .require_artifact()
+            .unwrap()
+            .compile()
+            .require_artifact()
+            .unwrap();
+        let mut machine = compiled.spawn(policy_with([100, 10_000, 100, 1000, 10_000]));
+        machine
+            .apply(Transaction::initialize(
+                Time::from_ticks(0),
+                machine.revision(),
+                compiled
+                    .input_snapshot()
+                    .set(enable_key, LogicLevel::High)
+                    .unwrap()
+                    .pulse(pulse_key, PulseCount::ONE)
+                    .unwrap()
+                    .finish()
+                    .unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(machine.inspect_pending_events().unwrap().len(), 2);
+        let mut reference = machine.duplicate_for_staging();
+        let tx = Transaction::advance(
+            Time::from_ticks(16),
+            machine.revision(),
+            compiled.input_delta().finish().unwrap(),
+        );
+        crate::execution_work::reset();
+        let result = machine.apply(tx.clone()).unwrap();
+        let work = crate::execution_work::read();
+        assert_eq!(work.staged_stores_cloned, 1, "{work:?}");
+        assert_eq!(work.working_items_cloned, 0, "{work:?}");
+        assert_eq!(work.working_collections_cloned, 0, "{work:?}");
+        assert_eq!(machine.inspect_pending_events().unwrap().len(), 1);
+        crate::execution_work::reset();
+        let copied = reference
+            .stage_clone_reference(tx)
+            .unwrap()
+            .publish(&mut reference);
+        let work = crate::execution_work::read();
+        assert_eq!(work.staged_stores_cloned, 1, "{work:?}");
+        // Includes the additional retained provenance handle now instrumented.
+        assert_eq!(work.working_items_cloned, 134, "{work:?}");
+        assert_eq!(work.working_collections_cloned, 41, "{work:?}");
+        assert_eq!(machine.snapshot(), reference.snapshot());
+        assert_eq!(
+            result.before_execution_digest(),
+            copied.before_execution_digest()
+        );
+    }
+
+    #[test]
     fn quiet_growth_counts_appends_even_when_current_membership_does_not_grow() {
         let compiled = compiled(100, 200);
         let seed = initialized_machine(&compiled, LogicLevel::Low);
@@ -7129,6 +7261,110 @@ mod tests {
     }
 
     #[test]
+    fn extraction_and_late_faults_preserve_complete_source_at_both_lifecycle_boundaries() {
+        use crate::time::Time;
+        let compiled = super::preparation_tests::fixture();
+        for ready in [false, true] {
+            let mut machine = compiled.spawn(policy_with([100, 100_000, 100, 1_000, 100_000]));
+            if ready {
+                let tx = super::preparation_tests::initialize(&machine);
+                machine.apply(tx).unwrap();
+            }
+            let retained = machine.store.provenance.clone();
+            let episodes = machine
+                .store
+                .active_episodes
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            let before = observe(&machine);
+            let live = crate::causal_work::live_nodes();
+            for patched in [false, true] {
+                let prepared = patched.then(|| {
+                    machine
+                        .prepare_patch(
+                            machine
+                                .patch()
+                                .set_diagnostic_meta(
+                                    crate::StructuralSubjectRef::Network(compiled.network_key()),
+                                    DiagnosticMeta {
+                                        name: Some("faulted".to_owned()),
+                                        ..DiagnosticMeta::default()
+                                    },
+                                )
+                                .unwrap()
+                                .finish(),
+                        )
+                        .require_artifact()
+                        .unwrap()
+                });
+                let network = prepared
+                    .as_ref()
+                    .map_or(&compiled, crate::PreparedPatch::resulting_compiled);
+                let mut tx = if ready {
+                    Transaction::advance(
+                        Time::from_ticks(16),
+                        machine.revision(),
+                        network.input_delta().finish().unwrap(),
+                    )
+                } else {
+                    Transaction::initialize(
+                        Time::from_ticks(0),
+                        machine.revision(),
+                        network
+                            .input_snapshot()
+                            .set(ExternalInputKey::from_u128(2), LogicLevel::High)
+                            .unwrap()
+                            .set(ExternalInputKey::from_u128(3), LogicLevel::High)
+                            .unwrap()
+                            .pulse(ExternalInputKey::from_u128(1), PulseCount::ONE)
+                            .unwrap()
+                            .finish()
+                            .unwrap(),
+                    )
+                };
+                if let Some(prepared) = prepared {
+                    tx = tx
+                        .with_patch(prepared, crate::ReconfigurationPolicy::RejectStateLoss)
+                        .unwrap();
+                }
+                for stage in [
+                    crate::causal_work::Fault::StateExtraction,
+                    crate::causal_work::Fault::Provenance,
+                    crate::causal_work::Fault::Result,
+                    crate::causal_work::Fault::Projection,
+                ] {
+                    for forecast in [false, true] {
+                        crate::causal_work::inject(stage);
+                        let failure = if forecast {
+                            machine.forecast(tx.clone()).err().unwrap()
+                        } else {
+                            machine.apply(tx.clone()).err().unwrap()
+                        };
+                        crate::causal_work::inject(stage);
+                        let copied = machine.stage_clone_reference(tx.clone()).err().unwrap();
+                        assert_eq!(failure.problem(), copied.problem());
+                        assert_eq!(
+                            observe(&machine),
+                            before,
+                            "ready={ready} patched={patched} stage={stage:?}"
+                        );
+                        assert_eq!(crate::causal_work::live_nodes(), live);
+                        if let Some(view) = &retained {
+                            for position in 0..view.len() {
+                                recursively_assert_acyclic(view, view.records().cause(position));
+                            }
+                        }
+                        for episode in &episodes {
+                            recursively_assert_acyclic(episode.provenance(), episode.cause());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn rejected_preparation_and_discarded_forecasts_release_new_nodes() {
         let compiled = compiled(100, 200);
         let mut machine = initialized_machine(&compiled, LogicLevel::Low);
@@ -7151,6 +7387,7 @@ mod tests {
             )
         };
         for stage in [
+            crate::causal_work::Fault::StateExtraction,
             crate::causal_work::Fault::Provenance,
             crate::causal_work::Fault::Result,
             crate::causal_work::Fault::Projection,
@@ -7166,6 +7403,9 @@ mod tests {
                     failure.evidence(),
                     RuntimeFailureEvidence::BudgetExceeded { .. }
                 ));
+                crate::causal_work::inject(stage);
+                let reference = machine.stage_clone_reference(transaction()).err().unwrap();
+                assert_eq!(failure.problem(), reference.problem());
                 assert_eq!(observe(&machine), before, "stage {stage:?}");
                 assert_eq!(machine.snapshot(), snapshot);
                 assert_eq!(
@@ -7205,7 +7445,10 @@ mod tests {
                     .unwrap(),
             );
             let mut retained = vec![machine.apply(init.clone()).unwrap()];
-            reference.apply(init).unwrap();
+            reference
+                .stage_clone_reference(init)
+                .unwrap()
+                .publish(&mut reference);
             for step in 0..10 {
                 let first = PulseCount::new((seed + step * 3) % 5);
                 let second = PulseCount::new((seed * 7 + step) % 4 + 1);
@@ -7233,7 +7476,10 @@ mod tests {
                 );
                 let forecast = machine.forecast(tx.clone()).unwrap();
                 let applied = machine.apply(tx.clone()).unwrap();
-                let ordinary = reference.apply(tx).unwrap();
+                let ordinary = reference
+                    .stage_clone_reference(tx)
+                    .unwrap()
+                    .publish(&mut reference);
                 assert_eq!(machine.snapshot(), reference.snapshot());
                 assert_eq!(forecast.state().snapshot(), machine.snapshot());
                 assert_eq!(
@@ -7813,6 +8059,11 @@ mod tests {
             let mut machine = initialize(policy_with(limits));
             let before = observe(&machine);
             let failure = machine.apply(transaction(machine.revision())).unwrap_err();
+            let copied = machine
+                .stage_clone_reference(transaction(machine.revision()))
+                .err()
+                .unwrap();
+            assert_eq!(failure.problem(), copied.problem());
             assert!(
                 matches!(failure.evidence(), RuntimeFailureEvidence::BudgetExceeded { budget: actual, .. } if *actual == budget)
             );
@@ -9841,8 +10092,13 @@ mod tests {
                     // Install the same Ready reference state to isolate this transaction's budget boundary.
                     m.store = seed.store.clone();
                     let before = observe(&m);
+                    let mut copied_machine = m.duplicate_for_staging();
+                    let copied = crate::execution_work::with_clone_preparation(|| {
+                        apply(&mut copied_machine)
+                    });
                     match apply(&mut m) {
                         Err(failure) => {
+                            assert_eq!(failure.problem(), copied.unwrap_err().problem());
                             assert!(limit < consumed);
                             assert_eq!(
                                 failure.evidence(),
@@ -9855,6 +10111,12 @@ mod tests {
                             assert_eq!(observe(&m), before);
                         }
                         Ok(result) => {
+                            let copied = copied.unwrap();
+                            assert_eq!(m.snapshot(), copied_machine.snapshot());
+                            assert_eq!(
+                                result.before_execution_digest(),
+                                copied.before_execution_digest()
+                            );
                             assert!(limit >= consumed);
                             assert_eq!(
                                 m.inspect_sample_hold(node).unwrap().committed(),

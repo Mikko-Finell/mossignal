@@ -51,6 +51,8 @@ mod compile;
 mod diagnostic_inspection;
 pub mod diagnostics;
 mod episode;
+#[cfg(test)]
+mod execution_work;
 mod graph;
 pub mod identity;
 mod input;

@@ -8,6 +8,7 @@ use std::sync::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Fault {
+    StateExtraction,
     Provenance,
     Result,
     Projection,
