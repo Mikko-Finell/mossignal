@@ -811,12 +811,6 @@ impl StandardHistory {
             latest_capture: self.latest_capture,
         }
     }
-
-    pub(crate) fn retained_causes(&self) -> impl Iterator<Item = CauseRef> {
-        [self.latest_reset, self.latest_toggle, self.latest_capture]
-            .into_iter()
-            .flatten()
-    }
 }
 
 fn required<T>(value: Option<T>) -> T {

@@ -43,7 +43,17 @@ pub(crate) struct FreezeWork {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ResultSelectionWork {
+    pub root_visits: usize,
+    pub handles_visited: usize,
+    pub records_selected: usize,
+    pub content_visits: usize,
+    pub content_nodes_created: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Work {
+    pub result_selection: ResultSelectionWork,
     pub freeze: FreezeWork,
     pub membership_content_visits: usize,
     pub membership_content_nodes_created: usize,
@@ -64,6 +74,7 @@ pub(crate) struct Work {
     pub catalogue_handles_copied: usize,
     pub membership_entries_copied: usize,
     pub owned_closure_records_visited: usize,
+    pub owned_closure_handles_visited: usize,
     pub closure_records_visited: usize,
     pub closure_records_emitted: usize,
     pub closure_bytes_emitted: usize,
@@ -143,4 +154,18 @@ pub(crate) fn reset() {
 
 pub(crate) fn read() -> Work {
     WORK.with(Cell::get)
+}
+
+pub(crate) fn record_result_selection(before: Work, roots: usize) {
+    update(|w| {
+        w.result_selection.root_visits += roots;
+        w.result_selection.handles_visited +=
+            w.owned_closure_handles_visited - before.owned_closure_handles_visited;
+        w.result_selection.records_selected +=
+            w.owned_closure_records_visited - before.owned_closure_records_visited;
+        w.result_selection.content_visits +=
+            w.membership_content_visits - before.membership_content_visits;
+        w.result_selection.content_nodes_created +=
+            w.membership_content_nodes_created - before.membership_content_nodes_created;
+    });
 }

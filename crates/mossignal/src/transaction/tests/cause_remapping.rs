@@ -457,7 +457,7 @@ fn ordinary_remap_cancellation_and_all_due_families_keep_real_support() {
     eprintln!("ordinary remap cancellation/due work={work:?}");
 }
 
-fn preserving_patch(m: &Machine<()>, at: u64) -> Transaction<()> {
+pub(super) fn preserving_patch(m: &Machine<()>, at: u64) -> Transaction<()> {
     let p = m
         .prepare_patch(
             m.patch()
@@ -510,7 +510,7 @@ fn ordinary_remap_restore_and_qualified_source_translations_remain_real() {
         assert_eq!(work.old_record_rewrites, 0); // First patch wraps ordinary source facts.
         assert!(result.migration().is_some());
         check_jump(&result);
-        assert!(result.provenance().records.iter().any(
+        assert!(m.store.provenance.as_ref().unwrap().records.iter().any(
             |r| matches!(r,ProvenanceRecord::Checkpoint {fact,..} if fact.windows(b"module_node".len()).any(|part| part==b"module_node"))
         ));
         assert!(!crate::causal_store::same_lineage(
@@ -675,6 +675,20 @@ fn ordinary_remap_preparation_faults_preserve_complete_warm_predecessor() {
                 assert_eq!(work.nodes_created, 0);
             } else {
                 assert!(work.nodes_created > 0);
+            }
+            if matches!(
+                fault,
+                causal_work::Fault::DigestPreparation
+                    | causal_work::Fault::Result
+                    | causal_work::Fault::Projection
+            ) {
+                assert!(work.result_selection.root_visits > 0);
+                assert!(work.result_selection.records_selected > 0);
+            } else {
+                assert_eq!(
+                    work.result_selection,
+                    causal_work::ResultSelectionWork::default()
+                );
             }
             if patch
                 && matches!(

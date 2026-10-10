@@ -117,6 +117,102 @@ fn bindings(fixture: &Fixture, reverse: bool) -> BindingSet<InputId, OutputId> {
 }
 
 #[test]
+fn result_parts_keep_projected_causes_owned_after_continuation_and_machine_drop() {
+    let f = fixture(1, false);
+    let mut bound = BoundMachine::spawn(&f.compiled, policy(), bindings(&f, false)).unwrap();
+    let first = bound
+        .initialize(
+            Time::from_ticks(0),
+            [
+                InputObservation::Level {
+                    input: InputId::Level,
+                    value: LogicLevel::Low,
+                },
+                InputObservation::Pulse {
+                    input: InputId::Pulse,
+                    count: PulseCount::new(2),
+                },
+            ],
+        )
+        .unwrap();
+    let (ordinary, projected) = first.into_parts();
+    assert_eq!(projected.len(), 2);
+    let view = ordinary.provenance().clone();
+    let current = bound.machine().inspect_output(f.level_output).unwrap();
+    bound
+        .advance(
+            Time::from_ticks(1),
+            [InputObservation::Level {
+                input: InputId::Level,
+                value: LogicLevel::High,
+            }],
+        )
+        .unwrap();
+    drop(bound);
+    assert!(
+        current
+            .provenance()
+            .inspect(current.current_support.unwrap())
+            .is_ok()
+    );
+    for (event, projected) in ordinary.output_events().iter().zip(&projected) {
+        let original = match event {
+            OutputEvent::LevelEstablished {
+                cause,
+                stamp,
+                revision,
+                ..
+            }
+            | OutputEvent::LevelChanged {
+                cause,
+                stamp,
+                revision,
+                ..
+            }
+            | OutputEvent::Pulsed {
+                cause,
+                stamp,
+                revision,
+                ..
+            } => (*cause, *stamp, *revision),
+            _ => panic!("new output variants require an ownership/projection assertion"),
+        };
+        let mapped = match projected {
+            ProjectedOutputEvent::LevelEstablished {
+                cause,
+                stamp,
+                revision,
+                ..
+            }
+            | ProjectedOutputEvent::LevelChanged {
+                cause,
+                stamp,
+                revision,
+                ..
+            }
+            | ProjectedOutputEvent::Pulsed {
+                cause,
+                stamp,
+                revision,
+                ..
+            } => (*cause, *stamp, *revision),
+        };
+        assert_eq!(original, mapped);
+        assert!(ordinary.provenance().inspect(mapped.0).is_ok());
+    }
+    drop(ordinary);
+    drop(current);
+    for projected in projected {
+        let cause = match projected {
+            ProjectedOutputEvent::LevelEstablished { cause, .. }
+            | ProjectedOutputEvent::LevelChanged { cause, .. }
+            | ProjectedOutputEvent::Pulsed { cause, .. } => cause,
+        };
+        assert!(view.inspect(cause).is_ok());
+    }
+}
+
+#[test]
 fn bindings_are_bidirectional_and_insertion_order_independent_without_identifier_ordering() {
     let fixture = fixture(1, false);
     let forward = bindings(&fixture, false);

@@ -453,7 +453,7 @@ fn pulse_delay_schedules_exact_future_work_and_fires_once() {
         revision,
         supporters,
         ..
-    } = initialized
+    } = inspection
         .provenance()
         .inspect(pending.cause())
         .unwrap_or_else(|failure| panic!("pending cause must resolve: {failure}"))

@@ -376,16 +376,16 @@ fn ready_reactions_set_reset_retain_and_repeat_transient_conflicts() {
         .unwrap_or_else(|failure| panic!("same-value set reaction must commit: {failure}"));
     assert!(repeated_set.occurrences().is_empty());
     assert_eq!(machine.output_level(fixture.output), Some(LogicLevel::High));
-    let repeated_set_cause = machine
+    let repeated_inspection = machine
         .inspect_pulse_set_reset_latch(fixture.node)
-        .unwrap_or_else(|failure| panic!("repeated set latch must inspect: {failure:?}"))
-        .latest_establishment();
+        .unwrap_or_else(|failure| panic!("repeated set latch must inspect: {failure:?}"));
+    let repeated_set_cause = repeated_inspection.latest_establishment();
     assert_ne!(
         repeated_set_cause, set_cause,
         "an explicit same-value control refreshes the state-establishing cause"
     );
     assert!(
-        repeated_set
+        repeated_inspection
             .provenance()
             .inspect(repeated_set_cause)
             .is_ok()
@@ -597,7 +597,7 @@ fn deadline_and_target_time_occurrences_keep_chronological_order_and_provenance(
     let delayed = machine
         .inspect_pulse_set_reset_latch(fixture.delayed_latch)
         .unwrap_or_else(|failure| panic!("delayed latch must inspect: {failure:?}"));
-    match result
+    match delayed
         .provenance()
         .inspect(delayed.latest_establishment())
         .unwrap_or_else(|failure| panic!("state cause must resolve: {failure}"))

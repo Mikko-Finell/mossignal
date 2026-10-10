@@ -201,6 +201,8 @@ impl<D> Records<D> {
             pending.push(Arc::clone(&self.nodes[position]));
         }
         while let Some(node) = pending.pop() {
+            #[cfg(test)]
+            crate::causal_work::update(|work| work.owned_closure_handles_visited += 1);
             let position = match self.position(node.cause) {
                 Some(position) => position,
                 None => panic!("owned closure must contain every predecessor's membership"),

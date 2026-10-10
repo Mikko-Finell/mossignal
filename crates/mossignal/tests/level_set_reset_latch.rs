@@ -446,7 +446,7 @@ fn ordinary_history_and_same_value_requests_preserve_state_and_causes() {
         (4, LOW, HIGH, LOW, 4),
         (5, LOW, LOW, LOW, 4),
     ] {
-        let result = m
+        let _result = m
             .apply(Transaction::advance(
                 Time::from_ticks(t),
                 m.revision(),
@@ -456,12 +456,11 @@ fn ordinary_history_and_same_value_requests_preserve_state_and_causes() {
         let view = m.inspect_level_set_reset_latch(f.node).unwrap();
         assert_eq!(view.committed(), value);
         assert!(
-            result
-                .provenance()
+            view.provenance()
                 .inspect(view.latest_establishment())
                 .is_ok()
         );
-        let mossignal::CauseInspection::Derived { supporters, .. } = result
+        let mossignal::CauseInspection::Derived { supporters, .. } = view
             .provenance()
             .inspect(view.latest_establishment())
             .unwrap()
@@ -470,7 +469,7 @@ fn ordinary_history_and_same_value_requests_preserve_state_and_causes() {
         };
         let transaction_times = supporters
             .iter()
-            .filter_map(|cause| match result.provenance().inspect(*cause).unwrap() {
+            .filter_map(|cause| match view.provenance().inspect(*cause).unwrap() {
                 mossignal::CauseInspection::ReadyTransaction { at, .. } => Some(at.time().ticks()),
                 _ => None,
             })

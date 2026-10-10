@@ -1294,7 +1294,7 @@ fn inherited_input_and_retimed_pending_work_restore_against_target() {
             .finish(),
     );
     let target = prepared.resulting_compiled().clone();
-    let committed = machine
+    let _committed = machine
         .apply(
             Transaction::advance(
                 Time::from_ticks(4),
@@ -1311,7 +1311,7 @@ fn inherited_input_and_retimed_pending_work_restore_against_target() {
     );
     let inspection = machine.inspect_pulse_delay(node).unwrap();
     let pending = inspection.pending()[0].cause();
-    let provenance = committed.provenance();
+    let provenance = inspection.provenance();
     let mossignal::CauseInspection::PendingPulseDelay { supporters, .. } =
         provenance.inspect(pending).unwrap()
     else {
@@ -1728,6 +1728,11 @@ fn resetting_an_active_latch_publishes_episode_termination() {
         .compiled()
         .restore(machine.snapshot(), policy())
         .unwrap();
+    drop(machine);
+    drop(initial);
+    for change in result.diagnostic_episode_changes() {
+        result.provenance().explain_cause(change.cause()).unwrap();
+    }
 }
 
 #[test]

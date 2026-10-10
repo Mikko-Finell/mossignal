@@ -576,7 +576,8 @@ fn at_least_zero_provenance_is_independent_of_inputs() {
     let retained_cause = machine
         .output_cause(output)
         .unwrap_or_else(|| panic!("AtLeast(0) must retain an output cause"));
-    assert!(observed_level_inputs(changed.provenance(), retained_cause).is_empty());
+    let inspected = machine.inspect_output(output).unwrap();
+    assert!(observed_level_inputs(inspected.provenance(), retained_cause).is_empty());
 }
 
 #[test]
@@ -657,7 +658,8 @@ fn at_least_above_arity_provenance_is_independent_of_inputs() {
             let cause = machine
                 .output_cause(expected_output)
                 .unwrap_or_else(|| panic!("constant Low output must retain a cause"));
-            assert!(observed_level_inputs(changed.provenance(), cause).is_empty());
+            let inspected = machine.inspect_output(expected_output).unwrap();
+            assert!(observed_level_inputs(inspected.provenance(), cause).is_empty());
         }
     }
 }
@@ -939,7 +941,7 @@ fn parity_provenance_cancels_even_source_multiplicity() {
     let y_support = BTreeSet::from([y_key.as_u128()]);
     let xy_support = BTreeSet::from([x_key.as_u128(), y_key.as_u128()]);
     let assert_output = |machine: &mossignal::Machine<TestTicks>,
-                         result: &mossignal::TransactionResult<TestTicks>,
+                         _result: &mossignal::TransactionResult<TestTicks>,
                          output: ExternalOutputKey<Level>,
                          expected: LogicLevel,
                          expected_support: BTreeSet<u128>| {
@@ -947,8 +949,9 @@ fn parity_provenance_cancels_even_source_multiplicity() {
         let cause = machine
             .output_cause(output)
             .unwrap_or_else(|| panic!("Parity output must retain a cause"));
+        let inspected = machine.inspect_output(output).unwrap();
         assert_eq!(
-            observed_level_inputs(result.provenance(), cause),
+            observed_level_inputs(inspected.provenance(), cause),
             expected_support
         );
     };

@@ -183,7 +183,7 @@ fn family_exhausts_previous_observations_current_levels_and_successors() {
                 assert_eq!(inspected.committed(), EdgeObservation::Established(current));
                 assert_eq!(inspected.input(), current);
                 assert!(
-                    result
+                    inspected
                         .provenance()
                         .inspect(inspected.observation_cause())
                         .is_ok()
@@ -251,7 +251,7 @@ fn edge_pulse_activity_is_result_owned_while_remembered_state_remains_inspectabl
     assert_eq!(inspected.input(), LogicLevel::High);
     assert_eq!(inspected.at(), Time::from_ticks(2));
     assert!(
-        later
+        inspected
             .provenance()
             .inspect(inspected.observation_cause())
             .is_ok()
@@ -309,7 +309,7 @@ fn assume_policy_compares_the_first_observation_normally() {
                 );
                 assert_eq!(ready_inspection.input(), next);
                 assert!(
-                    ready
+                    ready_inspection
                         .provenance()
                         .inspect(ready_inspection.observation_cause())
                         .is_ok()
@@ -377,19 +377,17 @@ fn remembered_observation_does_not_inherit_obsolete_comparisons() {
                     ))
                     .unwrap();
                 for step in 1..=10 {
-                    let result = machine
+                    let _result = machine
                         .apply(Transaction::advance(
                             Time::from_ticks(step),
                             machine.revision(),
                             fixture.compiled.input_delta().finish().unwrap(),
                         ))
                         .unwrap();
-                    let memory = machine
-                        .inspect_edge_detector(fixture.node)
-                        .unwrap()
-                        .observation_cause();
+                    let inspected = machine.inspect_edge_detector(fixture.node).unwrap();
+                    let memory = inspected.observation_cause();
                     let CauseInspection::Derived { supporters, .. } =
-                        result.provenance().inspect(memory).unwrap()
+                        inspected.provenance().inspect(memory).unwrap()
                     else {
                         panic!("edge memory must be Derived")
                     };
@@ -400,8 +398,8 @@ fn remembered_observation_does_not_inherit_obsolete_comparisons() {
                         2,
                         "{detector:?}/{initialization:?}/{level:?}, reaction {step}"
                     );
-                    assert!(supporters.iter().any(|cause| matches!(result.provenance().inspect(*cause).unwrap(), CauseInspection::ReadyTransaction { at, .. } if at.time() == Time::from_ticks(step))));
-                    assert!(supporters.iter().any(|cause| matches!(result.provenance().inspect(*cause).unwrap(), CauseInspection::ExternalObservation { input, value, .. } if input == fixture.input && value == level)));
+                    assert!(supporters.iter().any(|cause| matches!(inspected.provenance().inspect(*cause).unwrap(), CauseInspection::ReadyTransaction { at, .. } if at.time() == Time::from_ticks(step))));
+                    assert!(supporters.iter().any(|cause| matches!(inspected.provenance().inspect(*cause).unwrap(), CauseInspection::ExternalObservation { input, value, .. } if input == fixture.input && value == level)));
                 }
             }
         }
@@ -610,17 +608,15 @@ fn edge_family_patch_preserve_reset_and_cross_kind_support_survive_two_restores(
                             )
                             .unwrap();
                         assert_pulse(result.output_events(), fixture.output, expected);
-                        let memory = machine
-                            .inspect_edge_detector(fixture.node)
-                            .unwrap()
-                            .observation_cause();
+                        let inspected = machine.inspect_edge_detector(fixture.node).unwrap();
+                        let memory = inspected.observation_cause();
                         let CauseInspection::Derived { supporters, .. } =
-                            result.provenance().inspect(memory).unwrap()
+                            inspected.provenance().inspect(memory).unwrap()
                         else {
                             panic!("memory")
                         };
                         assert_eq!(supporters.len(), 2);
-                        assert!(supporters.iter().any(|cause|matches!(result.provenance().inspect(*cause).unwrap(),CauseInspection::TopologyChange { at: stamp,.. } if stamp.time()==Time::from_ticks(at))));
+                        assert!(supporters.iter().any(|cause|matches!(inspected.provenance().inspect(*cause).unwrap(),CauseInspection::TopologyChange { at: stamp,.. } if stamp.time()==Time::from_ticks(at))));
                         let restored = encoded_restore(&machine);
                         assert_eq!(machine.snapshot(), restored.snapshot());
                     }
@@ -667,19 +663,17 @@ fn edge_observation_initialization_patch_declared_checkpoint_restores() {
                 .unwrap()
                 .finish()
                 .unwrap();
-            let result = machine
+            let _result = machine
                 .apply(
                     Transaction::initialize(Time::from_ticks(7), machine.revision(), input)
                         .with_patch(patch, mossignal::ReconfigurationPolicy::RejectStateLoss)
                         .unwrap(),
                 )
                 .unwrap();
-            let memory = machine
-                .inspect_edge_detector(fixture.node)
-                .unwrap()
-                .observation_cause();
+            let inspected = machine.inspect_edge_detector(fixture.node).unwrap();
+            let memory = inspected.observation_cause();
             let CauseInspection::Derived { supporters, .. } =
-                result.provenance().inspect(memory).unwrap()
+                inspected.provenance().inspect(memory).unwrap()
             else {
                 panic!("memory")
             };
@@ -688,19 +682,19 @@ fn edge_observation_initialization_patch_declared_checkpoint_restores() {
                 .iter()
                 .find(|cause| {
                     matches!(
-                        result.provenance().inspect(**cause).unwrap(),
+                        inspected.provenance().inspect(**cause).unwrap(),
                         CauseInspection::Checkpoint { .. }
                     )
                 })
                 .unwrap();
             let CauseInspection::Checkpoint { supporters, .. } =
-                result.provenance().inspect(checkpoint).unwrap()
+                inspected.provenance().inspect(checkpoint).unwrap()
             else {
                 panic!("declared-state checkpoint")
             };
             assert_eq!(supporters.len(), 2);
-            assert!(supporters.iter().any(|cause|matches!(result.provenance().inspect(*cause).unwrap(),CauseInspection::InitializationTransaction { at,.. } if at.time()==Time::from_ticks(7))));
-            assert!(supporters.iter().any(|cause|matches!(result.provenance().inspect(*cause).unwrap(),CauseInspection::TopologyChange { at,.. } if at.time()==Time::from_ticks(7))));
+            assert!(supporters.iter().any(|cause|matches!(inspected.provenance().inspect(*cause).unwrap(),CauseInspection::InitializationTransaction { at,.. } if at.time()==Time::from_ticks(7))));
+            assert!(supporters.iter().any(|cause|matches!(inspected.provenance().inspect(*cause).unwrap(),CauseInspection::TopologyChange { at,.. } if at.time()==Time::from_ticks(7))));
             let mut restored = encoded_restore(&machine);
             assert_eq!(machine.snapshot(), restored.snapshot());
             let next = Transaction::advance(

@@ -316,14 +316,14 @@ fn incremental_freezing_qualified_source_bytes_survive_changed_target_slots_and_
     .with_patch(p, crate::ReconfigurationPolicy::RejectStateLoss)
     .unwrap();
     causal_work::reset();
-    let r = m.apply(tx).unwrap();
+    let _result = m.apply(tx).unwrap();
     let w = causal_work::read();
     no_old_freeze(w);
     assert!(w.source_translation_lookups > 0 && w.freeze.new_nodes > 0);
     assert_eq!(w.freeze.new_nodes, w.nodes_created);
     for cause in roots {
         let payload = &explicit.records[&explicit.cause(cause)];
-        assert!(r.provenance().records.iter().any(|record|matches!(record,ProvenanceRecord::Checkpoint{fact,..} if fact.windows(payload.len()).any(|s|s==payload))));
+        assert!(m.store.provenance.as_ref().unwrap().records.iter().any(|record|matches!(record,ProvenanceRecord::Checkpoint{fact,..} if fact.windows(payload.len()).any(|s|s==payload))));
     }
     for i in 0..prior.len() {
         let cause = prior.records.cause(i);

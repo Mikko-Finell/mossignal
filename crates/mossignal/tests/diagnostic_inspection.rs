@@ -419,6 +419,18 @@ fn post_patch_snapshot_and_patch_free_replay_preserve_diagnostic_lifecycle() {
             .ticks(),
         4
     );
+    drop(machine);
+    drop(direct);
+    drop(recorded);
+    drop(replayed);
+    for result in std::iter::once(&migrated)
+        .chain(results.iter())
+        .chain(expected.iter())
+    {
+        for change in result.diagnostic_episode_changes() {
+            result.provenance().explain_cause(change.cause()).unwrap();
+        }
+    }
 }
 
 #[test]

@@ -517,7 +517,7 @@ fn nested_instances_keep_state_pending_work_and_provenance_independent() {
     let CauseInspection::Derived {
         subject: ProvenanceSubject::QualifiedNode(node),
         ..
-    } = initialized
+    } = first
         .provenance()
         .inspect(first_delay_node.cause().unwrap())
         .unwrap()
@@ -529,7 +529,7 @@ fn nested_instances_keep_state_pending_work_and_provenance_independent() {
     assert!(second_delay_node.pending().is_empty());
     let pending_cause = first_delay_node.pending()[0].cause();
     let CauseInspection::PendingPulseDelay { owner, .. } =
-        initialized.provenance().inspect(pending_cause).unwrap()
+        first.provenance().inspect(pending_cause).unwrap()
     else {
         panic!("module PulseDelay pending work must retain temporal provenance")
     };

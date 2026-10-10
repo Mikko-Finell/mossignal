@@ -2078,7 +2078,14 @@ impl<D> TransactionResult<D> {
         self.schedule
     }
 
-    /// Returns the immutable view that resolves every event cause.
+    /// Returns the owned ancestry of every output-event and episode-change cause.
+    ///
+    /// This covers the complete stream, including intermediate deadlines and
+    /// events produced before a topology replacement. A result without such
+    /// causes has an empty view. Current machine facts are available through
+    /// owned inspections such as [`Machine::inspect_node`] and
+    /// [`Machine::inspect_output`], including the candidate's inspections on
+    /// [`crate::ForecastState`] for a forecast.
     #[must_use]
     pub const fn provenance(&self) -> &ProvenanceView<D> {
         &self.provenance
@@ -4486,14 +4493,12 @@ fn publish_success<D>(
     report: PublicationReport<D>,
     candidate: PublishedCandidate<D>,
 ) -> Result<TransactionResult<D>, RuntimeFailure<D>> {
-    let mut roots: Vec<_> = report
+    // SPEC: docs/specs/contracts/provenance-retention.yaml "independent-artifact-ownership"
+    // Own all exposed result causes; machine facts have their separate manifest.
+    let roots: Vec<_> = report
         .output_events
         .iter()
-        .map(|event| match event {
-            OutputEvent::LevelEstablished { cause, .. }
-            | OutputEvent::LevelChanged { cause, .. }
-            | OutputEvent::Pulsed { cause, .. } => *cause,
-        })
+        .map(output_event_cause)
         .chain(
             report
                 .diagnostic_episode_changes
@@ -4501,34 +4506,11 @@ fn publish_success<D>(
                 .map(crate::DiagnosticEpisodeChange::cause),
         )
         .collect();
-    roots.extend(candidate.operation_causes.iter().copied());
-    roots.extend(candidate.input_causes.values().copied());
-    roots.extend(candidate.output_causes.values().copied());
-    roots.extend(
-        candidate
-            .standard_history
-            .values()
-            .flat_map(|history| history.retained_causes()),
-    );
-    for causes in [
-        &candidate.edge_observation_causes,
-        &candidate.toggle_inversion_causes,
-        &candidate.establishment_causes,
-        &candidate.transport_transition_causes,
-        &candidate.inertial_cancellation_causes,
-        &candidate.periodic_anchor_causes,
-        &candidate.periodic_cancellation_causes,
-    ] {
-        roots.extend(causes.values().copied());
-    }
-    roots.extend(
-        candidate
-            .pending_events
-            .values()
-            .flatten()
-            .map(|event| event.identity().5),
-    );
+    #[cfg(test)]
+    let selection_before = crate::causal_work::read();
     let provenance = report.provenance.owned_roots(&roots);
+    #[cfg(test)]
+    crate::causal_work::record_result_selection(selection_before, roots.len());
     publish_candidate(machine, candidate);
     #[cfg(test)]
     causal_preparation_fault(
@@ -6184,6 +6166,10 @@ mod incremental_freezing_tests;
 #[cfg(test)]
 #[path = "transaction/tests/cause_remapping.rs"]
 mod cause_remapping_tests;
+
+#[cfg(test)]
+#[path = "transaction/tests/result_ownership.rs"]
+mod result_ownership_tests;
 
 #[cfg(test)]
 mod tests {
@@ -8118,12 +8104,9 @@ mod tests {
             ))
             .unwrap();
         assert!(even_result.output_events().is_empty());
-        let retained = machine
-            .inspect_toggle(NodeKey::from_u128(10))
-            .unwrap()
-            .latest_inversion()
-            .unwrap();
-        assert!(even_result.provenance().inspect(retained).is_ok());
+        let inspected = machine.inspect_toggle(NodeKey::from_u128(10)).unwrap();
+        let retained = inspected.latest_inversion().unwrap();
+        assert!(inspected.provenance().inspect(retained).is_ok());
 
         let odd = compiled
             .input_delta()
@@ -9281,7 +9264,8 @@ mod tests {
         let reasserted_cause = machine
             .output_cause(output)
             .unwrap_or_else(|| panic!("unchanged output must retain a cause"));
-        assert!(reasserted.provenance().inspect(reasserted_cause).is_ok());
+        let inspected = machine.inspect_output(output).unwrap();
+        assert!(inspected.provenance().inspect(reasserted_cause).is_ok());
 
         let empty = machine
             .apply(Transaction::advance(
@@ -9298,7 +9282,8 @@ mod tests {
         let empty_cause = machine
             .output_cause(output)
             .unwrap_or_else(|| panic!("unchanged output must retain a cause"));
-        assert!(empty.provenance().inspect(empty_cause).is_ok());
+        let inspected = machine.inspect_output(output).unwrap();
+        assert!(inspected.provenance().inspect(empty_cause).is_ok());
         assert!(
             initialization
                 .provenance()
