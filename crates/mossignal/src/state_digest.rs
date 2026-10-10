@@ -1,6 +1,6 @@
 //! Canonical execution-state and observable-state projections.
 //!
-//! Projection version 3 is the record written here and locked by the golden
+//! Projection version 4 is the record written here and locked by the golden
 //! digest-input vectors. `standard_history` stays out of both digests: it is
 //! last-reaction inspection cache, and current explanation is the execution
 //! projection plus the required provenance closure.
@@ -29,14 +29,14 @@ pub(crate) struct CompletedDigests {
 }
 
 pub(crate) fn execution_state_digest<D>(machine: &Machine<D>) -> ExecutionStateDigest {
-    let input = execution_digest_input(machine, 3, 3);
+    let input = execution_digest_input(machine, 4, 4);
     #[cfg(test)]
     crate::projection_work::update(|work| work.execution_hashes += 1);
     ExecutionStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
 pub(crate) fn observable_state_digest<D>(machine: &Machine<D>) -> ObservableStateDigest {
-    let input = observable_digest_input(machine, 3, 3);
+    let input = observable_digest_input(machine, 4, 4);
     #[cfg(test)]
     crate::projection_work::update(|work| work.observable_hashes += 1);
     ObservableStateDigest::from_digest(*blake3::hash(&input).as_bytes())
@@ -487,7 +487,7 @@ fn digest_record<D>(
         work.canonical_encodes += 1;
         work.canonical_hashes += 1;
     });
-    let input = domain_separated(PROVENANCE_RECORD_DOMAIN, 3, &payload);
+    let input = domain_separated(PROVENANCE_RECORD_DOMAIN, 4, &payload);
     let digest = *blake3::hash(&input).as_bytes();
     let canonical = crate::causal_store::CanonicalRecord {
         digest,
@@ -606,7 +606,7 @@ fn provenance_payload<D>(
             }
         });
     }
-    payload.field("provenance_semantics_version", |writer| writer.uint(3));
+    payload.field("provenance_semantics_version", |writer| writer.uint(4));
     match record {
         ProvenanceRecord::InitializationTransaction { revision, .. }
         | ProvenanceRecord::ReadyTransaction { revision, .. }
@@ -1560,6 +1560,7 @@ mod tests {
     fn assert_golden(name: &str, bytes: &[u8]) {
         let path = golden_path(name);
         let actual = hex(bytes);
+
         let expected = fs::read_to_string(&path)
             .unwrap_or_else(|failure| panic!("missing golden {}: {failure}", path.display()));
         assert_eq!(actual, expected.trim(), "golden {}", path.display());
@@ -1763,9 +1764,9 @@ mod tests {
                 assert_eq!(crate::causal_work::read().closure_records_emitted, 0);
                 assert_eq!(work.records_emitted, 0);
                 let expected =
-                    crate::state_digest_reference::observable_digest_input(&machine, 3, 3);
+                    crate::state_digest_reference::observable_digest_input(&machine, 4, 4);
                 crate::projection_work::reset();
-                assert_eq!(observable_digest_input(&machine, 3, 3), expected);
+                assert_eq!(observable_digest_input(&machine, 4, 4), expected);
                 let observable = crate::projection_work::read();
                 assert!(observable.records_indexed > 0);
                 assert!(observable.closure_visits > 0);
@@ -1833,16 +1834,18 @@ mod tests {
             [8, 100, 4, 8, 100],
         );
         assert_eq!(machine.revision().value(), 0);
+        crate::state_digest_reference::assert_machine(&machine);
         assert_golden(
             "execution_state_uninitialized.hex",
-            &execution_digest_input(&machine, 3, 3),
+            &execution_digest_input(&machine, 4, 4),
         );
         assert_golden(
             "observable_state_uninitialized.hex",
-            &observable_digest_input(&machine, 3, 3),
+            &observable_digest_input(&machine, 4, 4),
         );
         let uninitialized_execution = machine.execution_state_digest();
         let result = initialize(&mut machine, 1);
+        crate::state_digest_reference::assert_machine(&machine);
         assert_eq!(result.before_execution_digest(), uninitialized_execution);
         assert_eq!(
             result.after_execution_digest(),
@@ -1858,11 +1861,11 @@ mod tests {
         );
         assert_golden(
             "execution_state_ready.hex",
-            &execution_digest_input(&machine, 3, 3),
+            &execution_digest_input(&machine, 4, 4),
         );
         assert_golden(
             "observable_state_ready.hex",
-            &observable_digest_input(&machine, 3, 3),
+            &observable_digest_input(&machine, 4, 4),
         );
         assert_golden(
             "execution_state_digest_ready.hex",
@@ -1885,13 +1888,62 @@ mod tests {
     }
 
     #[test]
+    fn current_profile_parses_exact_e4_o4_domains_and_projections() {
+        use crate::cbor_decode::{self, Value};
+        fn field<'a>(value: &'a Value, name: &str) -> &'a Value {
+            let Value::Array(pairs) = value else {
+                panic!("record")
+            };
+            pairs.iter().find_map(|pair| match pair {
+                Value::Array(pair) if matches!(&pair[0], Value::Text(found) if found == name) => Some(&pair[1]),
+                _ => None,
+            }).unwrap()
+        }
+        let machine = spawn(
+            golden_toggle(DiagnosticMeta::default()),
+            [8, 100, 4, 8, 100],
+        );
+        for (bytes, expected_domain) in [
+            (
+                execution_digest_input(&machine, 4, 4),
+                "mossignal/execution_state_digest/v4",
+            ),
+            (
+                observable_digest_input(&machine, 4, 4),
+                "mossignal/observable_state_digest/v4",
+            ),
+        ] {
+            let (value, consumed) = cbor_decode::parse(
+                &bytes,
+                cbor_decode::Limits {
+                    total_bytes: 1_000_000,
+                    nesting: 64,
+                    text_bytes: 1_000_000,
+                    byte_string_bytes: 1_000_000,
+                    collection_items: 100_000,
+                },
+            )
+            .unwrap();
+            assert_eq!(consumed, bytes.len());
+            assert!(
+                matches!(field(&value,"domain"), Value::Text(domain) if domain == expected_domain)
+            );
+            assert!(matches!(field(&value, "version"), Value::Uint(4)));
+            assert!(matches!(
+                field(field(&value, "payload"), "projection_version"),
+                Value::Uint(4)
+            ));
+        }
+    }
+
+    #[test]
     fn uninitialized_projection_has_no_fabricated_ready_facts() {
         let machine = spawn(
             golden_toggle(DiagnosticMeta::default()),
             [8, 100, 4, 8, 100],
         );
-        let execution = execution_digest_input(&machine, 3, 3);
-        let observable = observable_digest_input(&machine, 3, 3);
+        let execution = execution_digest_input(&machine, 4, 4);
+        let observable = observable_digest_input(&machine, 4, 4);
         assert!(
             execution
                 .windows(b"awaiting_initialization".len())
@@ -1945,7 +1997,7 @@ mod tests {
             golden_toggle(DiagnosticMeta::default()),
             [8, 100, 4, 8, 100],
         );
-        let current = execution_digest_input(&machine, 3, 3);
+        let current = execution_digest_input(&machine, 4, 4);
         assert_ne!(current, execution_digest_input(&machine, 2, 1));
         assert_ne!(current, execution_digest_input(&machine, 1, 2));
         assert_ne!(
@@ -2222,12 +2274,12 @@ mod tests {
             .unwrap_or_else(|failure| panic!("fixture initialization must commit: {failure}"));
         let before_keys = machine.pending_keys_in_storage_order();
         assert!(before_keys.len() >= 2);
-        let execution = execution_digest_input(&machine, 3, 3);
-        let observable = observable_digest_input(&machine, 3, 3);
+        let execution = execution_digest_input(&machine, 4, 4);
+        let observable = observable_digest_input(&machine, 4, 4);
         machine.reverse_pending_batches_for_test();
         assert_ne!(machine.pending_keys_in_storage_order(), before_keys);
-        assert_eq!(execution_digest_input(&machine, 3, 3), execution);
-        assert_eq!(observable_digest_input(&machine, 3, 3), observable);
+        assert_eq!(execution_digest_input(&machine, 4, 4), execution);
+        assert_eq!(observable_digest_input(&machine, 4, 4), observable);
     }
 
     fn pulse_delay_node(node: u128, input: InPortKey<Pulse>, output: u128) -> NodeDef<()> {
@@ -2271,12 +2323,12 @@ mod tests {
         initialize(&mut machine, 1);
         let ordinals = machine.supporter_ordinals_for_test();
         assert!(ordinals.len() >= 2);
-        let execution = execution_digest_input(&machine, 3, 3);
-        let observable = observable_digest_input(&machine, 3, 3);
+        let execution = execution_digest_input(&machine, 4, 4);
+        let observable = observable_digest_input(&machine, 4, 4);
         machine.reverse_provenance_supporters_for_test();
         assert_ne!(machine.supporter_ordinals_for_test(), ordinals);
-        assert_eq!(execution_digest_input(&machine, 3, 3), execution);
-        assert_eq!(observable_digest_input(&machine, 3, 3), observable);
+        assert_eq!(execution_digest_input(&machine, 4, 4), execution);
+        assert_eq!(observable_digest_input(&machine, 4, 4), observable);
 
         let identities: Vec<_> = machine
             .store
@@ -2294,8 +2346,8 @@ mod tests {
         resorted.sort();
         assert_eq!(sorted, resorted);
         machine.rebuild_episodes_reversed_for_test();
-        assert_eq!(execution_digest_input(&machine, 3, 3), execution);
-        let bytes = execution_digest_input(&machine, 3, 3);
+        assert_eq!(execution_digest_input(&machine, 4, 4), execution);
+        let bytes = execution_digest_input(&machine, 4, 4);
         let first = bytes.windows(32).position(|window| window == sorted[0]);
         let second = bytes.windows(32).position(|window| window == sorted[1]);
         match (first, second) {
@@ -2375,7 +2427,7 @@ mod tests {
         );
         let compiled = compile(network);
         let machine = compiled.clone().spawn(generous_policy());
-        let bytes = execution_digest_input(&machine, 3, 3);
+        let bytes = execution_digest_input(&machine, 4, 4);
         assert!(
             bytes
                 .windows(b"module_node".len())
@@ -2781,7 +2833,7 @@ mod tests {
     }
 
     #[test]
-    fn version_three_migrated_graph_inputs_and_snapshot_match_goldens() {
+    fn version_four_migrated_graph_inputs_and_snapshot_match_goldens() {
         let mut machine = spawn(
             golden_toggle(DiagnosticMeta::default()),
             [100, 10_000, 100, 100, 10_000],
@@ -2832,15 +2884,15 @@ mod tests {
         let snapshot = machine.snapshot();
         for (name, bytes) in [
             (
-                "execution_state_migrated_v3.hex",
-                execution_digest_input(&machine, 3, 3),
+                "execution_state_migrated_v4.hex",
+                execution_digest_input(&machine, 4, 4),
             ),
             (
-                "observable_state_migrated_v3.hex",
-                observable_digest_input(&machine, 3, 3),
+                "observable_state_migrated_v4.hex",
+                observable_digest_input(&machine, 4, 4),
             ),
             (
-                "machine_snapshot_migrated_v3.hex",
+                "machine_snapshot_migrated_v4.hex",
                 snapshot.artifact_bytes().to_vec(),
             ),
         ] {

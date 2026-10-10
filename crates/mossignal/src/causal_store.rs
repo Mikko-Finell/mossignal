@@ -184,6 +184,8 @@ impl<D> Records<D> {
                 None => panic!("owned closure must contain every predecessor's membership"),
             };
             if selected.insert(position) {
+                #[cfg(test)]
+                crate::causal_work::update(|work| work.owned_closure_records_visited += 1);
                 pending.extend(node.predecessors.iter().map(Arc::clone));
             }
         }

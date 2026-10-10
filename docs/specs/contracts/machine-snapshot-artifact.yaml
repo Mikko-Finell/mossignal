@@ -5,8 +5,8 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: 2100fc027ead42e5526c81eda611443af2de8f83
-  working_tree: dirty
+  commit: a8eb40380b40fcda0ba25da4b848f3956a444c1e
+  working_tree: dirty # Independently reviewed P4/E4/O4 enactment at this proposal baseline.
   modified_spec_paths:
     - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
@@ -83,7 +83,7 @@ requirements:
       built-in node semantics, topology-patch semantics, provenance semantics,
       and diagnostic schema. Each component is an unsigned 32-bit identifier.
       Numeric adjacency has no compatibility meaning. The current root-directed
-      profile emits snapshot artifact schema 3, provenance semantics 3,
+      profile emits snapshot artifact schema 3, provenance semantics 4,
       and unchanged other components 2. The payload
       carries the same semantic components, which are core, built-in node,
       topology-patch, provenance, and diagnostic schema versions, and does not
@@ -334,7 +334,7 @@ sources:
       - Part III — Version and compatibility model
       - 16. Version responsibilities
       - 16.10 Current root-directed machine and replay version profile
-    reviewed_hash: sha256:985b1ecd9b17c7391e75d0ce92727c4fc769146c27d19a398c7df952fb42e290
+    reviewed_hash: sha256:593497d67164dbf23a721069460de46c2e27d270229957e55234db3978d32c43
   canonical-bytes:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part I — Persistence model and boundaries, 3. Persistence axioms]
@@ -364,7 +364,7 @@ sources:
   version-responsibilities:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part III — Version and compatibility model, 16. Version responsibilities]
-    reviewed_hash: sha256:cf21fa1a8e42625f80561cc86fbea5911cedcfac232be5a84032ff5dadbe4812
+    reviewed_hash: sha256:54793cd26e788c002e6e14c8a8596b24e8d1e429dcc5c2732d6a67d04aced5a1
   no-downgrade:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part III — Version and compatibility model, 26. No implicit downgrade]

@@ -1661,6 +1661,13 @@ mod tests {
             .unwrap();
         let delay = builder.pulse_output("delayed", delayed).unwrap();
         let direct = builder.pulse_output("direct", pulse).unwrap();
+        let level = builder.constant(LogicLevel::Low);
+        builder
+            .any_edge(
+                level,
+                crate::EdgeConfig::new(crate::EdgeInitialization::Baseline),
+            )
+            .unwrap();
         let compiled = builder
             .finish()
             .require_artifact()
@@ -1755,6 +1762,8 @@ mod tests {
         );
         let before = bound.machine().snapshot();
         let digest = bound.machine().execution_state_digest();
+        let edge_causes = bound.machine.store.edge_observation_causes.clone();
+        let operation_causes = bound.machine.store.operation_causes.clone();
         for (transaction, target) in [(ordinary, None), (patched.clone(), Some(target.clone()))] {
             for reject_at in [1, 2] {
                 let mut attempts = 0;
@@ -1790,6 +1799,8 @@ mod tests {
                     .err()
                     .unwrap();
                 let work = crate::execution_work::read();
+                assert_eq!(bound.machine.store.edge_observation_causes, edge_causes);
+                assert_eq!(bound.machine.store.operation_causes, operation_causes);
                 assert_eq!(work.staged_stores_cloned, 1);
                 assert_eq!(work.working_collections_cloned, 0);
                 assert_eq!(

@@ -1,8 +1,8 @@
-//! Uncached version-3 vector/recursive canonical reference, independent of node caches.
+//! Uncached version-4 vector/recursive canonical reference, independent of node caches.
 
 //! Canonical execution-state and observable-state projections.
 //!
-//! Projection version 3 is the record written here and locked by the golden
+//! Projection version 4 is the record written here and locked by the golden
 //! digest-input vectors. `standard_history` stays out of both digests: it is
 //! last-reaction inspection cache, and current explanation is the execution
 //! projection plus the required provenance closure.
@@ -24,12 +24,12 @@ use crate::transaction::{
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn execution_state_digest<D>(machine: &Machine<D>) -> ExecutionStateDigest {
-    let input = execution_digest_input(machine, 3, 3);
+    let input = execution_digest_input(machine, 4, 4);
     ExecutionStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
 pub(crate) fn observable_state_digest<D>(machine: &Machine<D>) -> ObservableStateDigest {
-    let input = observable_digest_input(machine, 3, 3);
+    let input = observable_digest_input(machine, 4, 4);
     ObservableStateDigest::from_digest(*blake3::hash(&input).as_bytes())
 }
 
@@ -456,7 +456,7 @@ fn digest_record<D>(
     let compiled = view.sources[index].unwrap_or(compiled);
     let relations = predecessor_relations(compiled, view, index, memo, stack, table);
     let payload = provenance_payload(compiled, view.records()[index], &relations);
-    let input = domain_separated(PROVENANCE_RECORD_DOMAIN, 3, &payload);
+    let input = domain_separated(PROVENANCE_RECORD_DOMAIN, 4, &payload);
     let digest = *blake3::hash(&input).as_bytes();
     table.insert(digest, payload);
     memo[index] = Some(digest);
@@ -561,7 +561,7 @@ fn provenance_payload<D>(
             }
         });
     }
-    payload.field("provenance_semantics_version", |writer| writer.uint(3));
+    payload.field("provenance_semantics_version", |writer| writer.uint(4));
     match record {
         ProvenanceRecord::InitializationTransaction { revision, .. }
         | ProvenanceRecord::ReadyTransaction { revision, .. }
@@ -1457,13 +1457,13 @@ fn assert_machine_inner<D>(machine: &Machine<D>) {
         assert_view(&machine.compiled, episode.provenance());
     }
     assert_eq!(
-        execution_digest_input(machine, 3, 3),
-        crate::state_digest::execution_digest_input(machine, 3, 3),
+        execution_digest_input(machine, 4, 4),
+        crate::state_digest::execution_digest_input(machine, 4, 4),
         "execution canonical input"
     );
     assert_eq!(
-        observable_digest_input(machine, 3, 3),
-        crate::state_digest::observable_digest_input(machine, 3, 3),
+        observable_digest_input(machine, 4, 4),
+        crate::state_digest::observable_digest_input(machine, 4, 4),
         "observable canonical input"
     );
 }

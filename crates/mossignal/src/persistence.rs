@@ -443,7 +443,8 @@ fn semantic_versions() -> Vec<u8> {
 fn version(record: &mut Record, name: &'static str) {
     record.field(name, |writer| {
         writer.uint(match name {
-            "artifact_schema_version" | "provenance_semantics_version" => 3,
+            "artifact_schema_version" => 3,
+            "provenance_semantics_version" => 4,
             _ => SEMANTIC_VERSION,
         })
     });
@@ -1126,7 +1127,7 @@ mod tests {
 
     const PREFIX: [u8; 8] = [0x4d, 0x53, 0x49, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
     const SNAPSHOT_DOMAIN: &str = "mossignal/snapshot_digest/v2";
-    const PROVENANCE_DOMAIN: &str = "mossignal/provenance_record/v3";
+    const PROVENANCE_DOMAIN: &str = "mossignal/provenance_record/v4";
     const ENVELOPE_FIELDS: &[&str] = &[
         "artifact_kind",
         "artifact_schema_version",
@@ -1365,6 +1366,7 @@ mod tests {
     fn assert_golden(name: &str, bytes: &[u8]) {
         let path = golden_path(name);
         let actual = hex(bytes);
+
         let expected = fs::read_to_string(&path)
             .unwrap_or_else(|failure| panic!("missing golden {}: {failure}", path.display()));
         assert_eq!(actual, expected.trim(), "golden {}", path.display());
@@ -1624,13 +1626,10 @@ mod tests {
         for name in VERSION_FIELDS {
             assert_eq!(
                 uint(field(&fields, name)),
-                if matches!(
-                    *name,
-                    "artifact_schema_version" | "provenance_semantics_version"
-                ) {
-                    3
-                } else {
-                    2
+                match *name {
+                    "artifact_schema_version" => 3,
+                    "provenance_semantics_version" => 4,
+                    _ => 2,
                 },
                 "{name}"
             );
@@ -1679,7 +1678,7 @@ mod tests {
             assert_eq!(
                 uint(field(&versions, name)),
                 if name == "provenance_semantics_version" {
-                    3
+                    4
                 } else {
                     2
                 },
@@ -1703,6 +1702,10 @@ mod tests {
         let records = array(field(&provenance, "records"));
         let mut record_digests = Vec::new();
         for item in records {
+            assert_eq!(
+                uint(field(&record(item), "provenance_semantics_version")),
+                4
+            );
             record_digests.push(provenance_digest(item));
         }
         let mut sorted = record_digests.clone();
@@ -1837,7 +1840,7 @@ mod tests {
 
     fn provenance_digest(record: &Value) -> Vec<u8> {
         let encoded = encode_value(record);
-        blake3::hash(&domain_record(PROVENANCE_DOMAIN, 3, &encoded))
+        blake3::hash(&domain_record(PROVENANCE_DOMAIN, 4, &encoded))
             .as_bytes()
             .to_vec()
     }

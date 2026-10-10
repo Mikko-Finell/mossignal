@@ -27,6 +27,7 @@ pub(crate) struct Work {
     pub namespace_allocations: usize,
     pub catalogue_handles_copied: usize,
     pub membership_entries_copied: usize,
+    pub owned_closure_records_visited: usize,
     pub closure_records_visited: usize,
     pub closure_records_emitted: usize,
     pub closure_bytes_emitted: usize,

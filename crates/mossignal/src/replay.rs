@@ -316,7 +316,7 @@ impl<D> fmt::Debug for RecordedTransaction<D> {
 /// Version vector stored with a replay log.
 ///
 /// Replay artifacts use schema 2 and the shared current semantic components,
-/// including provenance semantics 3. Snapshot schema 3 is kind-specific.
+/// including provenance semantics 4. Snapshot schema 3 is kind-specific.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SemanticVersions {
     artifact_schema_version: u64,
@@ -340,7 +340,7 @@ impl SemanticVersions {
         envelope_schema_version: VERSION,
         node_semantics_version: VERSION,
         patch_semantics_version: VERSION,
-        provenance_semantics_version: 3,
+        provenance_semantics_version: 4,
     };
 
     fn component(self, name: &str) -> Option<u64> {
@@ -1627,7 +1627,7 @@ fn envelope_at(
         record.field(name, |writer| {
             writer.uint(
                 if *name == "provenance_semantics_version" && version == VERSION {
-                    3
+                    4
                 } else {
                     version
                 },

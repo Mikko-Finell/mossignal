@@ -352,6 +352,484 @@ fn reachable_levels(
 }
 
 #[test]
+fn remembered_observation_does_not_inherit_obsolete_comparisons() {
+    // SPEC: docs/specs/contracts/edge-detector-family.yaml
+    // "comparison-and-successor-observation-support": memory establishes
+    // the current input; a previous comparison is not its premise.
+    for detector in [
+        EdgeDetectorKind::Rising,
+        EdgeDetectorKind::Falling,
+        EdgeDetectorKind::Any,
+    ] {
+        for initialization in [
+            EdgeInitialization::Baseline,
+            EdgeInitialization::Assume(LogicLevel::Low),
+            EdgeInitialization::Assume(LogicLevel::High),
+        ] {
+            for level in [LogicLevel::Low, LogicLevel::High] {
+                let fixture = edge_fixture(detector, EdgeConfig::new(initialization));
+                let mut machine = fixture.compiled.spawn(policy(100_000));
+                machine
+                    .apply(Transaction::initialize(
+                        Time::from_ticks(0),
+                        machine.revision(),
+                        snapshot(&fixture, level),
+                    ))
+                    .unwrap();
+                for step in 1..=10 {
+                    let result = machine
+                        .apply(Transaction::advance(
+                            Time::from_ticks(step),
+                            machine.revision(),
+                            fixture.compiled.input_delta().finish().unwrap(),
+                        ))
+                        .unwrap();
+                    let memory = machine
+                        .inspect_edge_detector(fixture.node)
+                        .unwrap()
+                        .observation_cause();
+                    let CauseInspection::Derived { supporters, .. } =
+                        result.provenance().inspect(memory).unwrap()
+                    else {
+                        panic!("edge memory must be Derived")
+                    };
+                    // Detached semantic oracle: the only two direct premises are
+                    // this reaction and the unchanged external observation.
+                    assert_eq!(
+                        supporters.len(),
+                        2,
+                        "{detector:?}/{initialization:?}/{level:?}, reaction {step}"
+                    );
+                    assert!(supporters.iter().any(|cause| matches!(result.provenance().inspect(*cause).unwrap(), CauseInspection::ReadyTransaction { at, .. } if at.time() == Time::from_ticks(step))));
+                    assert!(supporters.iter().any(|cause| matches!(result.provenance().inspect(*cause).unwrap(), CauseInspection::ExternalObservation { input, value, .. } if input == fixture.input && value == level)));
+                }
+            }
+        }
+    }
+}
+
+fn encoded_restore(machine: &mossignal::Machine<TestDomain>) -> mossignal::Machine<TestDomain> {
+    let context = mossignal::PersistenceContext::new(machine.compiled().time_domain_id());
+    let encoded = mossignal::encode_snapshot(&context, &machine.snapshot()).unwrap();
+    let limits = mossignal::DecodePolicy::new(
+        8_000_000, 64, 2_000_000, 8_000_000, 200_000, 10_000, 10_000, 10_000, 1_000, 10_000,
+        100_000, 100_000, 10_000, 1_000, 1_000_000,
+    );
+    let decoded = mossignal::decode_snapshot(&context, encoded.as_bytes(), &limits).unwrap();
+    machine
+        .compiled()
+        .restore(decoded, machine.runtime_policy().clone())
+        .unwrap_or_else(|failure| panic!("encoded restore: {:?}", failure.problem().evidence()))
+}
+
+#[test]
+fn ordered_edge_observations_continue_through_encoded_restore_replay_and_forecast() {
+    for kind in [
+        EdgeDetectorKind::Rising,
+        EdgeDetectorKind::Falling,
+        EdgeDetectorKind::Any,
+    ] {
+        for initialization in [
+            EdgeInitialization::Baseline,
+            EdgeInitialization::Assume(LogicLevel::Low),
+            EdgeInitialization::Assume(LogicLevel::High),
+        ] {
+            let fixture = edge_fixture(kind, EdgeConfig::new(initialization));
+            let mut direct = fixture.compiled.spawn(policy(100_000));
+            direct
+                .apply(Transaction::initialize(
+                    Time::from_ticks(0),
+                    direct.revision(),
+                    snapshot(&fixture, LogicLevel::Low),
+                ))
+                .unwrap();
+            let starting = direct.snapshot();
+            let mut restored = encoded_restore(&direct);
+            let mut transactions = Vec::new();
+            let mut previous = LogicLevel::Low;
+            for current in [
+                LogicLevel::Low,
+                LogicLevel::High,
+                LogicLevel::Low,
+                LogicLevel::Low,
+            ] {
+                let tx = Transaction::advance(
+                    Time::from_ticks(0),
+                    direct.revision(),
+                    delta(&fixture, current),
+                );
+                let before = direct.snapshot();
+                let forecast = direct.forecast(tx.clone()).unwrap();
+                assert_eq!(direct.snapshot(), before);
+                let result = direct.apply_recorded(tx.clone()).unwrap();
+                transactions.push(tx.clone());
+                restored.apply(tx).unwrap();
+                let expected = match kind {
+                    EdgeDetectorKind::Rising => {
+                        previous == LogicLevel::Low && current == LogicLevel::High
+                    }
+                    EdgeDetectorKind::Falling => {
+                        previous == LogicLevel::High && current == LogicLevel::Low
+                    }
+                    EdgeDetectorKind::Any => previous != current,
+                };
+                assert_pulse(result.result().output_events(), fixture.output, expected);
+                assert_eq!(
+                    result.result().after_execution_digest(),
+                    forecast.result().after_execution_digest()
+                );
+                assert_eq!(direct.snapshot(), restored.snapshot());
+                restored = encoded_restore(&restored);
+                previous = current;
+            }
+            let context = mossignal::PersistenceContext::new(fixture.compiled.time_domain_id());
+            let limits = mossignal::DecodePolicy::new(
+                8_000_000, 64, 2_000_000, 8_000_000, 200_000, 10_000, 10_000, 10_000, 1_000,
+                10_000, 100_000, 100_000, 10_000, 1_000, 1_000_000,
+            );
+            let mut recorder = fixture
+                .compiled
+                .restore(starting.clone(), policy(100_000))
+                .unwrap();
+            let log = mossignal::record_replay_log(&mut recorder, transactions).unwrap();
+            let encoded = mossignal::encode_replay_log(&context, &log).unwrap();
+            let log = mossignal::decode_replay_log(&context, encoded.as_bytes(), &limits).unwrap();
+            let mut replayed = fixture.compiled.restore(starting, policy(100_000)).unwrap();
+            replayed.replay_log(&log).unwrap();
+            assert_eq!(direct.snapshot(), replayed.snapshot());
+        }
+    }
+}
+
+#[test]
+fn edge_family_patch_preserve_reset_and_cross_kind_support_survive_two_restores() {
+    use mossignal::{NodeMigrationDirective, ReconfigurationPolicy};
+    let kinds = [
+        EdgeDetectorKind::Rising,
+        EdgeDetectorKind::Falling,
+        EdgeDetectorKind::Any,
+    ];
+    for source in kinds {
+        for target in kinds {
+            for reset in [false, true] {
+                for initialization in [
+                    EdgeInitialization::Baseline,
+                    EdgeInitialization::Assume(LogicLevel::Low),
+                    EdgeInitialization::Assume(LogicLevel::High),
+                ] {
+                    let fixture =
+                        edge_fixture(source, EdgeConfig::new(EdgeInitialization::Baseline));
+                    let mut machine = fixture.compiled.spawn(policy(100_000));
+                    machine
+                        .apply(Transaction::initialize(
+                            Time::from_ticks(0),
+                            machine.revision(),
+                            snapshot(&fixture, LogicLevel::Low),
+                        ))
+                        .unwrap();
+                    for (at, current) in [(1, LogicLevel::High), (2, LogicLevel::Low)] {
+                        machine = encoded_restore(&machine);
+                        let old = machine
+                            .compiled()
+                            .graph()
+                            .nodes()
+                            .iter()
+                            .find(|node| node.key() == fixture.node)
+                            .unwrap();
+                        let config = EdgeConfig::new(initialization);
+                        let kind = match target {
+                            EdgeDetectorKind::Rising => NodeKind::rising_edge(config),
+                            EdgeDetectorKind::Falling => NodeKind::falling_edge(config),
+                            EdgeDetectorKind::Any => NodeKind::any_edge(config),
+                        };
+                        let replacement = NodeDef::new(
+                            fixture.node,
+                            kind,
+                            old.ports().clone(),
+                            DiagnosticMeta {
+                                name: Some(format!("edge patch {at}")),
+                                ..DiagnosticMeta::default()
+                            },
+                        );
+                        let patch = machine
+                            .prepare_patch(
+                                machine
+                                    .patch()
+                                    .replace_node(
+                                        fixture.node,
+                                        replacement,
+                                        if reset {
+                                            NodeMigrationDirective::Reset
+                                        } else {
+                                            NodeMigrationDirective::Standard
+                                        },
+                                    )
+                                    .unwrap()
+                                    .finish(),
+                            )
+                            .require_artifact()
+                            .unwrap();
+                        let delta = patch
+                            .resulting_compiled()
+                            .input_delta()
+                            .set(fixture.input, current)
+                            .unwrap()
+                            .finish()
+                            .unwrap();
+                        let previous = if reset {
+                            match initialization {
+                                EdgeInitialization::Baseline => None,
+                                EdgeInitialization::Assume(level) => Some(level),
+                            }
+                        } else {
+                            Some(if at == 1 {
+                                LogicLevel::Low
+                            } else {
+                                LogicLevel::High
+                            })
+                        };
+                        let expected = match (target, previous) {
+                            (_, None) => false,
+                            (EdgeDetectorKind::Rising, Some(level)) => {
+                                level == LogicLevel::Low && current == LogicLevel::High
+                            }
+                            (EdgeDetectorKind::Falling, Some(level)) => {
+                                level == LogicLevel::High && current == LogicLevel::Low
+                            }
+                            (EdgeDetectorKind::Any, Some(level)) => level != current,
+                        };
+                        let result = machine
+                            .apply(
+                                Transaction::advance(
+                                    Time::from_ticks(at),
+                                    machine.revision(),
+                                    delta,
+                                )
+                                .with_patch(patch, ReconfigurationPolicy::AllowReportedStateLoss)
+                                .unwrap(),
+                            )
+                            .unwrap();
+                        assert_pulse(result.output_events(), fixture.output, expected);
+                        let memory = machine
+                            .inspect_edge_detector(fixture.node)
+                            .unwrap()
+                            .observation_cause();
+                        let CauseInspection::Derived { supporters, .. } =
+                            result.provenance().inspect(memory).unwrap()
+                        else {
+                            panic!("memory")
+                        };
+                        assert_eq!(supporters.len(), 2);
+                        assert!(supporters.iter().any(|cause|matches!(result.provenance().inspect(*cause).unwrap(),CauseInspection::TopologyChange { at: stamp,.. } if stamp.time()==Time::from_ticks(at))));
+                        let restored = encoded_restore(&machine);
+                        assert_eq!(machine.snapshot(), restored.snapshot());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn edge_observation_initialization_patch_declared_checkpoint_restores() {
+    for kind in [
+        EdgeDetectorKind::Rising,
+        EdgeDetectorKind::Falling,
+        EdgeDetectorKind::Any,
+    ] {
+        for initialization in [
+            EdgeInitialization::Baseline,
+            EdgeInitialization::Assume(LogicLevel::Low),
+            EdgeInitialization::Assume(LogicLevel::High),
+        ] {
+            let fixture = edge_fixture(kind, EdgeConfig::new(initialization));
+            let mut machine = fixture.compiled.spawn(policy(100_000));
+            let patch = machine
+                .prepare_patch(
+                    machine
+                        .patch()
+                        .set_diagnostic_meta(
+                            mossignal::StructuralSubjectRef::Node(fixture.node),
+                            DiagnosticMeta {
+                                name: Some("initialize patch".to_owned()),
+                                ..DiagnosticMeta::default()
+                            },
+                        )
+                        .unwrap()
+                        .finish(),
+                )
+                .require_artifact()
+                .unwrap();
+            let input = patch
+                .resulting_compiled()
+                .input_snapshot()
+                .set(fixture.input, LogicLevel::High)
+                .unwrap()
+                .finish()
+                .unwrap();
+            let result = machine
+                .apply(
+                    Transaction::initialize(Time::from_ticks(7), machine.revision(), input)
+                        .with_patch(patch, mossignal::ReconfigurationPolicy::RejectStateLoss)
+                        .unwrap(),
+                )
+                .unwrap();
+            let memory = machine
+                .inspect_edge_detector(fixture.node)
+                .unwrap()
+                .observation_cause();
+            let CauseInspection::Derived { supporters, .. } =
+                result.provenance().inspect(memory).unwrap()
+            else {
+                panic!("memory")
+            };
+            assert_eq!(supporters.len(), 2);
+            let checkpoint = *supporters
+                .iter()
+                .find(|cause| {
+                    matches!(
+                        result.provenance().inspect(**cause).unwrap(),
+                        CauseInspection::Checkpoint { .. }
+                    )
+                })
+                .unwrap();
+            let CauseInspection::Checkpoint { supporters, .. } =
+                result.provenance().inspect(checkpoint).unwrap()
+            else {
+                panic!("declared-state checkpoint")
+            };
+            assert_eq!(supporters.len(), 2);
+            assert!(supporters.iter().any(|cause|matches!(result.provenance().inspect(*cause).unwrap(),CauseInspection::InitializationTransaction { at,.. } if at.time()==Time::from_ticks(7))));
+            assert!(supporters.iter().any(|cause|matches!(result.provenance().inspect(*cause).unwrap(),CauseInspection::TopologyChange { at,.. } if at.time()==Time::from_ticks(7))));
+            let mut restored = encoded_restore(&machine);
+            assert_eq!(machine.snapshot(), restored.snapshot());
+            let next = Transaction::advance(
+                Time::from_ticks(7),
+                machine.revision(),
+                machine
+                    .compiled()
+                    .input_delta()
+                    .set(fixture.input, LogicLevel::Low)
+                    .unwrap()
+                    .finish()
+                    .unwrap(),
+            );
+            machine.apply(next.clone()).unwrap();
+            restored.apply(next).unwrap();
+            assert_eq!(machine.snapshot(), restored.snapshot());
+        }
+    }
+}
+
+#[test]
+fn edge_observation_rewiring_equal_unequal_and_reassociation_use_genuine_memory() {
+    for kind in [
+        EdgeDetectorKind::Rising,
+        EdgeDetectorKind::Falling,
+        EdgeDetectorKind::Any,
+    ] {
+        for target_level in [LogicLevel::Low, LogicLevel::High] {
+            let fixture = edge_fixture(kind, EdgeConfig::new(EdgeInitialization::Baseline));
+            let mut machine = fixture.compiled.spawn(policy(100_000));
+            machine
+                .apply(Transaction::initialize(
+                    Time::from_ticks(0),
+                    machine.revision(),
+                    snapshot(&fixture, LogicLevel::Low),
+                ))
+                .unwrap();
+            let connection = machine.compiled().graph().connections()[0].clone();
+            let added = ExternalInputKey::<Level>::from_u128(99);
+            let patch = machine
+                .prepare_patch(
+                    machine
+                        .patch()
+                        .add_external_input(ExternalInputDef::new(
+                            added.into(),
+                            DiagnosticMeta::default(),
+                        ))
+                        .unwrap()
+                        .replace_connection(
+                            connection.key(),
+                            ConnectionDef::new(
+                                connection.key(),
+                                added.into(),
+                                connection.to(),
+                                DiagnosticMeta::default(),
+                            ),
+                        )
+                        .unwrap()
+                        .finish(),
+                )
+                .require_artifact()
+                .unwrap();
+            let input = patch
+                .resulting_compiled()
+                .input_delta()
+                .set(added, target_level)
+                .unwrap()
+                .finish()
+                .unwrap();
+            let result = machine
+                .apply(
+                    Transaction::advance(Time::from_ticks(1), machine.revision(), input)
+                        .with_patch(patch, mossignal::ReconfigurationPolicy::RejectStateLoss)
+                        .unwrap(),
+                )
+                .unwrap();
+            assert_pulse(
+                result.output_events(),
+                fixture.output,
+                target_level == LogicLevel::High && kind != EdgeDetectorKind::Falling,
+            );
+            machine = encoded_restore(&machine);
+            let old = machine.compiled().graph().nodes()[0].clone();
+            let successor = NodeKey::from_u128(100);
+            let patch = machine
+                .prepare_patch(
+                    machine
+                        .patch()
+                        .remove_node(fixture.node)
+                        .unwrap()
+                        .add_node(NodeDef::new(
+                            successor,
+                            old.kind().clone(),
+                            old.ports().clone(),
+                            DiagnosticMeta::default(),
+                        ))
+                        .unwrap()
+                        .reassociate(mossignal::SubjectReassociation::Node {
+                            from: fixture.node,
+                            to: successor,
+                            migration: mossignal::NodeMigrationDirective::Standard,
+                        })
+                        .unwrap()
+                        .finish(),
+                )
+                .require_artifact()
+                .unwrap();
+            let input = patch.resulting_compiled().input_delta().finish().unwrap();
+            let result = machine
+                .apply(
+                    Transaction::advance(Time::from_ticks(2), machine.revision(), input)
+                        .with_patch(patch, mossignal::ReconfigurationPolicy::RejectStateLoss)
+                        .unwrap(),
+                )
+                .unwrap();
+            assert_pulse(result.output_events(), fixture.output, false);
+            assert_eq!(
+                machine
+                    .inspect_edge_detector(successor)
+                    .unwrap()
+                    .committed(),
+                EdgeObservation::Established(target_level)
+            );
+            assert_eq!(encoded_restore(&machine).snapshot(), machine.snapshot());
+        }
+    }
+}
+
+#[test]
 fn emitted_edge_provenance_reaches_current_and_remembered_observations() {
     let fixture = edge_fixture(
         EdgeDetectorKind::Rising,
@@ -861,6 +1339,67 @@ fn dynamic_shape_cycle_and_typed_module_paths_are_coherent() {
         Some(EdgeObservation::Established(LogicLevel::High))
     );
     assert!(edge.edge_observation_cause().is_some());
+    let restored = encoded_restore(&machine);
+    assert_eq!(machine.snapshot(), restored.snapshot());
+    let patch = machine
+        .prepare_patch(
+            machine
+                .patch()
+                .set_diagnostic_meta(
+                    mossignal::StructuralSubjectRef::Module(instance),
+                    DiagnosticMeta {
+                        name: Some("qualified preserve".to_owned()),
+                        ..DiagnosticMeta::default()
+                    },
+                )
+                .unwrap()
+                .finish(),
+        )
+        .require_artifact()
+        .unwrap();
+    let delta = patch.resulting_compiled().input_delta().finish().unwrap();
+    machine
+        .apply(
+            Transaction::advance(Time::from_ticks(1), machine.revision(), delta)
+                .with_patch(patch, mossignal::ReconfigurationPolicy::RejectStateLoss)
+                .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(encoded_restore(&machine).snapshot(), machine.snapshot());
+    let definition = machine.compiled().graph().module_instances()[0].clone();
+    let patch = machine
+        .prepare_patch(
+            machine
+                .patch()
+                .replace_module_instance(
+                    instance,
+                    definition,
+                    mossignal::ModuleMigrationDirective::Explicit {
+                        node_overrides: vec![mossignal::ModuleNodeMigrationDirective::new(
+                            NodeKey::from_u128(82),
+                            mossignal::NodeMigrationDirective::Reset,
+                        )],
+                        internal_reassociations: Vec::new(),
+                    },
+                )
+                .unwrap()
+                .finish(),
+        )
+        .require_artifact()
+        .unwrap();
+    let delta = patch.resulting_compiled().input_delta().finish().unwrap();
+    let reset = machine
+        .apply(
+            Transaction::advance(Time::from_ticks(2), machine.revision(), delta)
+                .with_patch(
+                    patch,
+                    mossignal::ReconfigurationPolicy::AllowReportedStateLoss,
+                )
+                .unwrap(),
+        )
+        .unwrap();
+    assert_pulse(reset.output_events(), output, true);
+    assert_eq!(encoded_restore(&machine).snapshot(), machine.snapshot());
 }
 
 #[test]

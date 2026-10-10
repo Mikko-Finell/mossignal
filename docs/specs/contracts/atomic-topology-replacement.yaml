@@ -5,11 +5,9 @@ kind: lifecycle
 status: reviewed
 
 source_baseline:
-  commit: 2100fc027ead42e5526c81eda611443af2de8f83
-  working_tree: dirty
+  commit: a8eb40380b40fcda0ba25da4b848f3956a444c1e
+  working_tree: dirty # Independently reviewed P4/E4/O4 enactment at this proposal baseline.
   modified_spec_paths:
-    - docs/specs/processor_and_runtime_architecture.md
-    - docs/specs/reconfiguration_and_topology_patch_spec.md
     - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
@@ -332,7 +330,7 @@ sources:
       - Part III — Version and compatibility model
       - 16. Version responsibilities
       - 16.10 Current root-directed machine and replay version profile
-    reviewed_hash: sha256:985b1ecd9b17c7391e75d0ce92727c4fc769146c27d19a398c7df952fb42e290
+    reviewed_hash: sha256:593497d67164dbf23a721069460de46c2e27d270229957e55234db3978d32c43
   effective-time:
     document: docs/specs/reconfiguration_and_topology_patch_spec.md
     heading_path: [Part VIII — Transaction-time finalization and commitment, 63. Effective-time ordering]

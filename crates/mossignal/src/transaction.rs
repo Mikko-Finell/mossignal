@@ -1784,6 +1784,17 @@ impl<D> ProvenanceView<D> {
     }
 
     #[cfg(test)]
+    pub(crate) fn append_record_for_test(
+        &mut self,
+        compiled: &crate::CompiledNetwork<D>,
+        record: ProvenanceRecord<D>,
+    ) -> CauseRef {
+        let cause = Arc::make_mut(&mut self.records).push(record);
+        crate::state_digest::freeze_provenance(compiled, self);
+        cause
+    }
+
+    #[cfg(test)]
     pub(crate) fn duplicate_allocation_for_test(
         &mut self,
         compiled: &crate::CompiledNetwork<D>,
@@ -5441,10 +5452,13 @@ fn append_evaluation_provenance<D>(
                 current: _,
                 emitted: _,
             } => {
-                let mut supporters = vec![
+                let mut observation_supporters = vec![
                     transaction_cause,
                     operation_cause(&operation_causes, *input),
                 ];
+                observation_supporters.sort();
+                observation_supporters.dedup();
+                let mut supporters = observation_supporters.clone();
                 if let Some(previous_cause) = retained_edge_cause(
                     previous_state.as_ref(),
                     &edge_observation_causes,
@@ -5463,7 +5477,19 @@ fn append_evaluation_provenance<D>(
                         supporters,
                     },
                 );
-                edge_observation_causes.insert(*node, reference);
+                // SPEC: docs/specs/contracts/edge-detector-family.yaml
+                // "comparison-and-successor-observation-support": the successor
+                // establishes the current input, independently of the comparison.
+                // Both logical appends charge even when canonical facts coincide.
+                let observation = push_record(
+                    scope,
+                    records,
+                    ProvenanceRecord::Derived {
+                        subject: provenance_subject(input_causes.compiled, *node),
+                        supporters: observation_supporters,
+                    },
+                );
+                edge_observation_causes.insert(*node, observation);
                 reference
             }
             EvaluationCause::Toggle {
@@ -6293,6 +6319,10 @@ fn causal_preparation_fault<D>(
 #[cfg(test)]
 #[path = "transaction/tests/execution_preparation.rs"]
 mod preparation_tests;
+
+#[cfg(test)]
+#[path = "transaction/tests/edge_provenance.rs"]
+mod edge_provenance_tests;
 
 #[cfg(test)]
 mod tests {
@@ -7151,9 +7181,9 @@ mod tests {
             );
             result.provenance().explain_cause(ancestor).unwrap();
 
-            let reference = crate::state_digest_reference::observable_digest_input(&machine, 3, 3);
+            let reference = crate::state_digest_reference::observable_digest_input(&machine, 4, 4);
             crate::causal_work::reset();
-            let actual = crate::state_digest::observable_digest_input(&machine, 3, 3);
+            let actual = crate::state_digest::observable_digest_input(&machine, 4, 4);
             let work = crate::causal_work::read();
             assert_eq!(actual, reference);
             assert_eq!(work.canonical_encodes, 0);
@@ -7852,7 +7882,7 @@ mod tests {
     }
 
     #[derive(Debug, PartialEq, Eq)]
-    struct MachineObservation {
+    pub(super) struct MachineObservation {
         network_key: NetworkKey,
         network_fingerprint: crate::NetworkFingerprint,
         input_schema_fingerprint: crate::InputSchemaFingerprint,
@@ -7893,7 +7923,7 @@ mod tests {
         periodic_cancellation_causes: std::collections::BTreeMap<NodeKey, CauseRef>,
     }
 
-    fn observe(machine: &crate::Machine<()>) -> MachineObservation {
+    pub(super) fn observe(machine: &crate::Machine<()>) -> MachineObservation {
         MachineObservation {
             network_key: machine.compiled.network_key(),
             network_fingerprint: machine.compiled.fingerprint(),

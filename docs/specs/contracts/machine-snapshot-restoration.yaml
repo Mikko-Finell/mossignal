@@ -5,8 +5,8 @@ kind: lifecycle
 status: reviewed
 
 source_baseline:
-  commit: 2100fc027ead42e5526c81eda611443af2de8f83
-  working_tree: dirty
+  commit: a8eb40380b40fcda0ba25da4b848f3956a444c1e
+  working_tree: dirty # Independently reviewed P4/E4/O4 enactment at this proposal baseline.
   modified_spec_paths:
     - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
@@ -125,7 +125,7 @@ requirements:
     statement: >-
       Current snapshot acceptance checks each component of the exact mixed
       root-directed version profile independently, with matching envelope and
-      payload components. All-2, all-3 and any unsupported component reject
+      payload components. All-2, all-3, all-4 and any unsupported component reject
       through the structured version failure. Every provenance record and source
       fact inside a checkpoint wrapper is validated under the current provenance
       meaning and domain, with independently recomputed content and complete
@@ -135,7 +135,13 @@ requirements:
       including stable operation/port and module reset/toggle/capture roles and
       original cause content. Generic transaction/snapshot-state substitutes must
       not change later TopologyChange supporters. Raw caches and persistent pulse
-      state are not required to represent those causal roots.
+      state are not required to represent those causal roots. After current
+      aliases are recovered, edge observation state is node-owned Derived with
+      exactly current reaction-establishment and settled-input support; the
+      comparison includes those same premises. The current profile admits
+      ordinary, target TopologyChange and initialization-patch declared checkpoint
+      establishment, including coalesced first facts and qualified owners, and
+      rejects forged or stale memory even with recomputed artifact hashes.
     sources: [current-root-profile, required-provenance, support-table]
 
   - id: identity-and-policy
@@ -371,7 +377,7 @@ sources:
       - Part III — Version and compatibility model
       - 16. Version responsibilities
       - 16.10 Current root-directed machine and replay version profile
-    reviewed_hash: sha256:985b1ecd9b17c7391e75d0ce92727c4fc769146c27d19a398c7df952fb42e290
+    reviewed_hash: sha256:593497d67164dbf23a721069460de46c2e27d270229957e55234db3978d32c43
   axioms:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part I — Persistence model and boundaries, 3. Persistence axioms]

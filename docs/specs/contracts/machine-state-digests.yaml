@@ -5,10 +5,10 @@ kind: artifact
 status: reviewed
 
 source_baseline:
-  commit: fd5076544bbd2d55384f66217765f706c7cc2e22
-  working_tree: dirty
+  commit: a8eb40380b40fcda0ba25da4b848f3956a444c1e
+  working_tree: dirty # Independently reviewed P4/E4/O4 enactment at this proposal baseline.
   modified_spec_paths:
-    - docs/specs/processor_and_runtime_architecture.md
+    - docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
 
 summary: >-
   ExecutionStateDigest and ObservableStateDigest are distinct domain-separated
@@ -203,11 +203,11 @@ requirements:
   - id: current-root-version-profile
     kind: compatibility
     statement: >-
-      The current root-directed provenance profile uses provenance semantics 3
-      and mossignal/provenance_record/v3 at domain version 3. Execution and
-      observable projections use projection_version 3 and their respective
-      mossignal/execution_state_digest/v3 and mossignal/observable_state_digest/v3
-      domains at version 3. The current unkeyed BLAKE3-256 digest suite remains 2;
+      The current root-directed provenance profile uses provenance semantics 4
+      and mossignal/provenance_record/v4 at domain version 4. Execution and
+      observable projections use projection_version 4 and their respective
+      mossignal/execution_state_digest/v4 and mossignal/observable_state_digest/v4
+      domains at version 4. The current unkeyed BLAKE3-256 digest suite remains 2;
       unchanged components and other identity projections do not advance merely
       because provenance meaning changes. Source migration roots are the current
       source manifest, not all allocations or external artifact roots. Collection
@@ -298,7 +298,7 @@ sources:
       - Part III — Version and compatibility model
       - 16. Version responsibilities
       - 16.10 Current root-directed machine and replay version profile
-    reviewed_hash: sha256:985b1ecd9b17c7391e75d0ce92727c4fc769146c27d19a398c7df952fb42e290
+    reviewed_hash: sha256:593497d67164dbf23a721069460de46c2e27d270229957e55234db3978d32c43
   persistence-axioms:
     document: docs/specs/persistence_canonical_encoding_and_compatibility_spec.md
     heading_path: [Part I — Persistence model and boundaries, 3. Persistence axioms]

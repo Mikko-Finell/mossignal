@@ -44,7 +44,8 @@ use std::collections::{BTreeMap, BTreeSet};
 const ARTIFACT_PREFIX: [u8; 8] = [0x4d, 0x53, 0x49, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 fn supported_version(name: &str) -> u64 {
     match name {
-        "artifact_schema_version" | "provenance_semantics_version" => 3,
+        "artifact_schema_version" => 3,
+        "provenance_semantics_version" => 4,
         _ => 2,
     }
 }
@@ -2493,7 +2494,7 @@ fn parse_record<D>(
 ) -> Result<ParsedRecord, DecodeFailure<D>> {
     let path = "payload.provenance.records";
     let bytes = cbor_decode::encode(&value);
-    let digest = *blake3::hash(&domain_separated(PROVENANCE_RECORD_DOMAIN, 3, &bytes)).as_bytes();
+    let digest = *blake3::hash(&domain_separated(PROVENANCE_RECORD_DOMAIN, 4, &bytes)).as_bytes();
     let mut fields = into_fields(value, path)?;
     reject_unknown_fields(
         &fields,
@@ -4410,8 +4411,8 @@ fn restore_ready_provenance<D>(
         &mut restored,
     )?;
     assign_state(compiled, artifact, records, &ordinals, scope, &mut restored)?;
-    require_edge_observation_causes(compiled, &restored)?;
     assign_current_roles(compiled, artifact, records, &ordinals, scope, &mut restored)?;
+    require_edge_observation_causes(compiled, artifact, records, &ordinals, &restored)?;
     restored.episodes = episode_views(compiled, artifact, episodes, records, graph)?;
     Ok(restored)
 }
@@ -4549,21 +4550,14 @@ fn current_record_matches<D>(
     let current_stamp = |record: &ParsedRecord| {
         record.time == Some(ready.time) && record.order == Some(ready.order)
     };
-    let reaction_fact = |record: &ParsedRecord| {
-        current_stamp(record)
-            && record.revision == Some(artifact.revision.value())
-            && matches!(
-                record.kind,
-                RecordKind::Initialization | RecordKind::Ready | RecordKind::TopologyChange { .. }
-            )
-    };
+    let reaction_fact =
+        |record: &ParsedRecord| current_reaction_establishment(artifact, records, record);
     let current_support = reaction_fact(record)
         || record.predecessors.iter().any(|parent| {
             records
                 .get(&parent.digest)
                 .is_some_and(|record| reaction_fact(record))
-        })
-        || matches!(&record.kind, RecordKind::Checkpoint { fact } if checkpoint_declares_state(fact));
+        });
     if !current_stamp(record) && !current_support {
         return false;
     }
@@ -4622,8 +4616,7 @@ fn current_record_matches<D>(
         }
         None if tag == "external_pulse_input" => {
             // Zero pulse values are reaction-local transaction aliases, not stored pulse state.
-            return reaction_fact(record)
-                || matches!(&record.kind, RecordKind::Checkpoint { fact } if checkpoint_declares_state(fact));
+            return reaction_fact(record);
         }
         _ => return false,
     }
@@ -5469,25 +5462,151 @@ fn assign_state<D>(
 
 fn require_edge_observation_causes<D>(
     compiled: &CompiledNetwork<D>,
+    artifact: &Artifact,
+    records: &BTreeMap<[u8; 32], &ParsedRecord>,
+    ordinals: &BTreeMap<[u8; 32], u32>,
     restored: &RestoredProvenance<D>,
 ) -> Result<(), RestoreFailure<D>> {
-    // SPEC: docs/specs/contracts/machine-snapshot-restoration.yaml "events-episodes-and-provenance"
-    // A ready edge retains the cause of its previous observation. The next
-    // transaction reads that cause from the restored machine.
+    let Some(view) = &restored.view else {
+        return Err(fail_graph(GraphFault::Closure, "", "edge", "view"));
+    };
+    let digests: BTreeMap<_, _> = ordinals
+        .iter()
+        .map(|(digest, ordinal)| (CauseRef::from_parts(view.scope(), *ordinal), *digest))
+        .collect();
+    let resolve = |cause: CauseRef| {
+        digests
+            .get(&cause)
+            .and_then(|digest| records.get(digest).copied())
+    };
+    // SPEC: docs/specs/contracts/edge-detector-family.yaml
+    // "comparison-and-successor-observation-support": aliases recover the actual
+    // current input; memory must establish exactly it and this reaction.
     for node in compiled.snapshot_nodes() {
         if !matches!(node.family, SnapshotNodeFamily::Edge { .. }) {
             continue;
         }
-        if !restored.edges.contains_key(&node.flat) {
+        let Some(memory) = restored.edges.get(&node.flat).copied() else {
             return Err(fail_graph(
                 GraphFault::Closure,
                 &node_label(node.flat),
                 "derived",
                 "edge",
             ));
+        };
+        let invalid = || {
+            fail_graph(
+                GraphFault::Conflict,
+                &node_label(node.flat),
+                "derived",
+                "edge observation support",
+            )
+        };
+        let memory = resolve(memory).ok_or_else(invalid)?;
+        let input = compiled
+            .edge_input_operation(node.flat)
+            .and_then(|index| restored.operations.get(index))
+            .and_then(|cause| digests.get(cause))
+            .copied()
+            .ok_or_else(invalid)?;
+        let comparison = compiled
+            .node_operation(node.flat)
+            .and_then(|index| restored.operations.get(index))
+            .and_then(|cause| resolve(*cause))
+            .ok_or_else(invalid)?;
+        let owned_derived = |record: &ParsedRecord| {
+            matches!(record.kind, RecordKind::Derived)
+                && record
+                    .subject
+                    .as_ref()
+                    .and_then(|subject| node_key(compiled, subject))
+                    == Some(node.flat)
+                && record
+                    .predecessors
+                    .iter()
+                    .all(|parent| matches!(parent.role, PredecessorRole::Supporter))
+        };
+        if !owned_derived(memory) || !owned_derived(comparison) {
+            return Err(invalid());
+        }
+        let establishments: Vec<_> = comparison
+            .predecessors
+            .iter()
+            .filter(|parent| {
+                records
+                    .get(&parent.digest)
+                    .is_some_and(|record| current_reaction_establishment(artifact, records, record))
+            })
+            .map(|parent| parent.digest)
+            .collect();
+        let [reaction] = establishments.as_slice() else {
+            return Err(invalid());
+        };
+        let expected = BTreeSet::from([*reaction, input]);
+        let remembered: BTreeSet<_> = memory
+            .predecessors
+            .iter()
+            .map(|parent| parent.digest)
+            .collect();
+        let compared: BTreeSet<_> = comparison
+            .predecessors
+            .iter()
+            .map(|parent| parent.digest)
+            .collect();
+        if memory.predecessors.len() != expected.len()
+            || remembered != expected
+            || !expected.is_subset(&compared)
+            || compared.len() > expected.len() + 1
+        {
+            return Err(invalid());
         }
     }
     Ok(())
+}
+
+fn current_reaction_establishment(
+    artifact: &Artifact,
+    records: &BTreeMap<[u8; 32], &ParsedRecord>,
+    record: &ParsedRecord,
+) -> bool {
+    let Lifecycle::Ready(ready) = &artifact.lifecycle else {
+        return false;
+    };
+    let current = |record: &ParsedRecord| {
+        record.time == Some(ready.time)
+            && record.order == Some(ready.order)
+            && record.revision == Some(artifact.revision.value())
+    };
+    let patch = |record: &ParsedRecord| {
+        current(record)
+            && matches!(record.kind, RecordKind::TopologyChange { target, .. } if target == artifact.fingerprint.as_bytes())
+    };
+    if current(record) && matches!(record.kind, RecordKind::Initialization | RecordKind::Ready)
+        || patch(record)
+    {
+        return true;
+    }
+    // Initialization with a patch establishes declared state through exactly
+    // the initialization and target topology facts at the committed stamp.
+    if !matches!(&record.kind, RecordKind::Checkpoint { fact } if checkpoint_declares_state(fact))
+        || record.predecessors.len() != 2
+        || record
+            .predecessors
+            .iter()
+            .any(|parent| !matches!(parent.role, PredecessorRole::Supporter))
+    {
+        return false;
+    }
+    let parents: Vec<_> = record
+        .predecessors
+        .iter()
+        .filter_map(|parent| records.get(&parent.digest).copied())
+        .collect();
+    parents.len() == 2
+        && parents
+            .iter()
+            .any(|parent| current(parent) && matches!(parent.kind, RecordKind::Initialization))
+        && parents.iter().any(|parent| patch(parent))
 }
 
 fn assign_node_roots<D>(
@@ -6509,7 +6628,7 @@ mod tests {
 
     fn record_digest(record: &Value) -> [u8; 32] {
         let bytes = cbor_decode::encode(record);
-        *blake3::hash(&domain_separated(PROVENANCE_RECORD_DOMAIN, 3, &bytes)).as_bytes()
+        *blake3::hash(&domain_separated(PROVENANCE_RECORD_DOMAIN, 4, &bytes)).as_bytes()
     }
 
     fn provenance_items<'a>(artifact: &'a mut Value, name: &str) -> &'a mut Vec<Value> {
@@ -7185,41 +7304,43 @@ mod tests {
             )
             .unwrap();
         let original = encoded(&machine);
-        let bad = edited(&original, |artifact| {
-            let records = provenance_items(artifact, "records");
-            let record = records
-                .iter_mut()
-                .find(|record| contains_text(record_field(record, "kind"), "checkpoint"))
+        for old_version in [2, 3] {
+            let bad = edited(&original, |artifact| {
+                let records = provenance_items(artifact, "records");
+                let record = records
+                    .iter_mut()
+                    .find(|record| contains_text(record_field(record, "kind"), "checkpoint"))
+                    .unwrap();
+                let Value::Array(kind) = record_field_mut(record, "kind") else {
+                    panic!("kind");
+                };
+                let Value::Bytes(bytes) = &mut kind[1] else {
+                    panic!("fact");
+                };
+                let (mut fact, _) = cbor_decode::parse(
+                    bytes,
+                    cbor_decode::Limits {
+                        total_bytes: 2_000_000,
+                        nesting: 64,
+                        text_bytes: 1_000_000,
+                        byte_string_bytes: 1_000_000,
+                        collection_items: 100_000,
+                    },
+                )
                 .unwrap();
-            let Value::Array(kind) = record_field_mut(record, "kind") else {
-                panic!("kind");
-            };
-            let Value::Bytes(bytes) = &mut kind[1] else {
-                panic!("fact");
-            };
-            let (mut fact, _) = cbor_decode::parse(
-                bytes,
-                cbor_decode::Limits {
-                    total_bytes: 2_000_000,
-                    nesting: 64,
-                    text_bytes: 1_000_000,
-                    byte_string_bytes: 1_000_000,
-                    collection_items: 100_000,
-                },
-            )
-            .unwrap();
-            set_uint(
-                record_field_mut(&mut fact, "record"),
-                "provenance_semantics_version",
-                2,
-            );
-            *bytes = cbor_decode::encode(&fact);
-            records.sort_by_key(record_digest);
-        });
-        assert!(matches!(
-            decode_with(&target, &bad, &decode_policy()),
-            Err(DecodeFailure::UnsupportedVersion(_))
-        ));
+                set_uint(
+                    record_field_mut(&mut fact, "record"),
+                    "provenance_semantics_version",
+                    old_version,
+                );
+                *bytes = cbor_decode::encode(&fact);
+                records.sort_by_key(record_digest);
+            });
+            assert!(matches!(
+                decode_with(&target, &bad, &decode_policy()),
+                Err(DecodeFailure::UnsupportedVersion(_))
+            ));
+        }
         let forged = edited(&original, |artifact| {
             let records = provenance_items(artifact, "records");
             let mut known: Vec<_> = records.iter().map(record_digest).collect();
@@ -7950,6 +8071,131 @@ mod tests {
             policy(),
             "persistence.provenance_incomplete_root_closure",
         );
+    }
+
+    #[test]
+    fn edge_observation_resigned_role_swaps_stale_and_wrong_kind_roots_reject() {
+        use crate::CauseInspection;
+        let (compiled, mut machine) = families();
+        machine
+            .apply(Transaction::advance(
+                Time::from_ticks(2),
+                machine.revision(),
+                compiled.input_delta().finish().unwrap(),
+            ))
+            .unwrap();
+        let bytes = encoded(&machine);
+        let edge = crate::key::NodeKey::from_u128(20);
+        for variant in 0..11 {
+            let mut forged = must_restore(&compiled, &bytes, policy());
+            let operation = compiled.node_operation(edge).unwrap();
+            let comparison = forged.store.operation_causes[operation];
+            let memory = forged.store.edge_observation_causes[&edge];
+            let view = forged.store.provenance.as_ref().unwrap();
+            let replacement = match variant {
+                0 | 1 => comparison,
+                2 => {
+                    let CauseInspection::Derived { supporters, .. } =
+                        view.inspect(comparison).unwrap()
+                    else {
+                        panic!("comparison")
+                    };
+                    *supporters.iter().find(|cause| matches!(view.inspect(**cause).unwrap(), CauseInspection::Derived { subject: crate::ProvenanceSubject::Node(owner), .. } if owner == edge)).unwrap()
+                }
+                3 => {
+                    let CauseInspection::Derived { supporters, .. } = view.inspect(memory).unwrap()
+                    else {
+                        panic!("memory")
+                    };
+                    *supporters
+                        .iter()
+                        .find(|cause| {
+                            matches!(
+                                view.inspect(**cause).unwrap(),
+                                CauseInspection::ReadyTransaction { .. }
+                            )
+                        })
+                        .unwrap()
+                }
+                4 => {
+                    forged.store.operation_causes[compiled
+                        .node_operation(crate::key::NodeKey::from_u128(21))
+                        .unwrap()]
+                }
+                9 | 10 => memory,
+                _ => {
+                    let CauseInspection::Derived { supporters, .. } = view.inspect(memory).unwrap()
+                    else {
+                        panic!("memory")
+                    };
+                    let reaction = *supporters
+                        .iter()
+                        .find(|cause| {
+                            matches!(
+                                view.inspect(**cause).unwrap(),
+                                CauseInspection::ReadyTransaction { .. }
+                            )
+                        })
+                        .unwrap();
+                    let input =
+                        forged.store.operation_causes[compiled.edge_input_operation(edge).unwrap()];
+                    let wrong_input = forged.store.operation_causes[compiled
+                        .node_operation(crate::key::NodeKey::from_u128(21))
+                        .unwrap()];
+                    let supporters = match variant {
+                        5 => vec![reaction], // Missing settled input.
+                        6 => vec![input],    // Missing current reaction.
+                        7 => vec![reaction, wrong_input],
+                        _ => vec![reaction, input, comparison],
+                    };
+                    let view = forged.store.provenance.as_mut().unwrap();
+                    view.append_record_for_test(
+                        &compiled,
+                        crate::transaction::ProvenanceRecord::Derived {
+                            subject: crate::ProvenanceSubject::Node(edge),
+                            supporters,
+                        },
+                    )
+                }
+            };
+            forged
+                .store
+                .edge_observation_causes
+                .insert(edge, replacement);
+            if variant == 1 {
+                forged.store.operation_causes[operation] = memory;
+            }
+            if variant == 9 {
+                let stamp = forged.last_reaction().unwrap();
+                forged.store.last_reaction = Some(crate::ReactionStamp::from_parts(
+                    stamp.time(),
+                    stamp.order() + 1,
+                ));
+            } else if variant == 10 {
+                let time = Time::from_ticks(3);
+                forged.store.status = crate::MachineStatus::Ready { now: time };
+                forged.store.last_reaction = Some(crate::ReactionStamp::from_parts(time, 0));
+            }
+            // Recompute graph content, both machine projections, snapshot digest
+            // and envelope integrity: these are semantic forgeries, not bad hashes.
+            forged.prepare_digests();
+            let forged = encoded(&forged);
+            let decoded = decode_with(&compiled, &forged, &decode_policy()).unwrap();
+            let failure = compiled
+                .restore(decoded, policy())
+                .err()
+                .expect("forged edge memory must reject");
+            assert!(
+                matches!(
+                    failure.code().as_str(),
+                    "persistence.provenance_conflicting_record"
+                        | "persistence.provenance_incomplete_root_closure"
+                ),
+                "variant {variant}: {}",
+                failure.code().as_str()
+            );
+        }
+        assert_eq!(encoded(&machine), bytes);
     }
 
     #[test]

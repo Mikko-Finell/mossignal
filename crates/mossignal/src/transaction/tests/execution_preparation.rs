@@ -65,6 +65,12 @@ pub(super) fn fixture() -> CompiledNetwork<()> {
         )
         .unwrap();
     b.level_output("latch", latch).unwrap();
+    // Include the distinct C/M ownership boundary in the existing complete
+    // predecessor, fault, clone-preparation and deadline/patch refinement tests.
+    let edge = b
+        .any_edge(enable, EdgeConfig::new(EdgeInitialization::Baseline))
+        .unwrap();
+    b.pulse_output("edge", edge).unwrap();
     b.finish()
         .require_artifact()
         .unwrap()

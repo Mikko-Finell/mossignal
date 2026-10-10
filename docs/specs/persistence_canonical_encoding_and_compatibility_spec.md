@@ -387,7 +387,8 @@ Rendered diagnostic wording is not versioned semantic data.
 
 Root-directed `TopologyChange` supporters use the current source retention
 manifest defined in Processor and Runtime Architecture sections 68.1 and 70.
-This changes provenance interpretation. The current machine snapshot and
+Edge-detector comparisons and successor observations are separate causal facts.
+These rules define the current provenance interpretation. The current machine snapshot and
 implemented replay/input/transaction artifact families use this component vector:
 
 | Component | Current value |
@@ -400,17 +401,17 @@ implemented replay/input/transaction artifact families use this component vector
 | CoreSemanticsVersion | 2 |
 | BuiltInNodeSemanticsVersion | 2 |
 | TopologyPatchSemanticsVersion | 2 |
-| ProvenanceSemanticsVersion | 3 |
+| ProvenanceSemanticsVersion | 4 |
 | DiagnosticSchemaVersion | 2 |
 
 The unchanged current digest suite uses unkeyed BLAKE3-256 and the existing
 canonical domain/payload/version construction. This is a provenance and digest
 namespace change, not a new algorithm or suite. Every canonical provenance record
-contains `provenance_semantics_version = 3` and uses domain label
-`mossignal/provenance_record/v3` with domain version 3. Execution and observable
-digest inputs contain `projection_version = 3`, with respectively
-`mossignal/execution_state_digest/v3` and
-`mossignal/observable_state_digest/v3`, each at domain version 3.
+contains `provenance_semantics_version = 4` and uses domain label
+`mossignal/provenance_record/v4` with domain version 4. Execution and observable
+digest inputs contain `projection_version = 4`, with respectively
+`mossignal/execution_state_digest/v4` and
+`mossignal/observable_state_digest/v4`, each at domain version 4.
 
 Snapshot, artifact-integrity and replay-log-content digest labels and domain
 versions remain their current `/v2` and 2 values. Network, input-schema, module
@@ -428,7 +429,7 @@ transaction records and input artifacts. Current decode/restore/replay accepts
 the exact mixed vector for its artifact kind and rejects unsupported components
 with the existing structured version failure. Artifact schema is kind-specific,
 not a shared semantic component required to match between snapshots and replay.
-A blanket all-2 or all-3 vector is unsupported; no
+A blanket all-2, all-3 or all-4 vector is unsupported; no
 numeric adjacency, historical decoder, implicit upgrade or downgrade is implied.
 Every provenance record, including the source fact inside a checkpoint wrapper,
 is validated under the current provenance meaning and domain. Recomputed hashes
@@ -443,7 +444,7 @@ module reset/toggle/capture roots even when the corresponding raw inspection
 cache is excluded. Restore must recover their stable subject/role and original
 canonical cause content, rather than substitute a generic transaction or
 snapshot-state cause that changes later patch supporters. This is additional
-required current provenance under semantics 3, not a pulse valuation or an
+required current provenance under semantics 4, not a pulse valuation or an
 optional historical archive. An unordered digest set does not identify the
 owner of each current role. Section 97 records missing role associations explicitly
 in snapshot artifact schema 3. A different separately changed schema or semantic
@@ -455,6 +456,28 @@ Private collection cannot change the projection of a fixed semantic state.
 Versioned vectors must compare complete canonical inputs and artifact bytes with
 the independent root-directed reference; unacknowledged golden replacement is
 not evidence. This profile is not a cross-revision compatibility freeze.
+
+Within this current profile, each settled edge detector uses node-owned Derived
+facts C for its current comparison and M for its successor observation. C has
+the canonical supporter set {T, I, M_prev when established}; M has exactly
+{T, I}, where I is the fully settled current input operation cause and T is
+the current reaction establishment. Declared initialization/reset supplies the
+prior premise without an established M_prev. Genuine input and topology/SOURCE
+ancestry remains complete. Both logical appends charge required provenance
+growth even when first-reaction C and M canonical content coalesces.
+
+A ready snapshot binds C through the detector current operation role and M
+through its state root. After recovering current operation/input aliases,
+restoration validates node ownership, Derived kind and M's exact current T/I
+support, and requires C to include those same premises. T is the admitted
+initialization/ready transaction or target TopologyChange at the current time,
+same-time order and revision. Initialization with a patch instead uses a
+declared-state checkpoint supported by exactly the initialization and target
+TopologyChange at that stamp/revision. Stale, swapped or comparison-shaped
+memory roots reject even when artifact hashes have been recomputed. Coalesced
+first-reaction facts and qualified node owners remain valid. This validation
+supplements current-role, settled-value, complete DAG/SOURCE and independently
+recomputed digest validation; it does not require replay of past computations.
 
 ## 17. Compatibility levels
 
