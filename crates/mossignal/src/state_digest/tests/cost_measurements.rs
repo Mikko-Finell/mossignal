@@ -23,6 +23,15 @@ enum Family {
 }
 
 fn fixture(family: Family, width: usize, episode: bool) -> CompiledNetwork<()> {
+    fixture_with_inspection(family, width, episode, false)
+}
+
+fn fixture_with_inspection(
+    family: Family,
+    width: usize,
+    episode: bool,
+    inspection: bool,
+) -> CompiledNetwork<()> {
     let mut b = NetworkBuilder::with_key(NetworkKey::from_u128(1), TimeDomainId::from_u128(2));
     let level = b.add_level_input(INPUT, DiagnosticMeta::default()).unwrap();
     let visible = b
@@ -61,6 +70,15 @@ fn fixture(family: Family, width: usize, episode: bool) -> CompiledNetwork<()> {
                 .unwrap();
             }
         }
+    }
+    if inspection {
+        b.add_any_edge(
+            NodeKey::from_u128(9000),
+            level,
+            EdgeConfig::new(EdgeInitialization::Baseline),
+            DiagnosticMeta::default(),
+        )
+        .unwrap();
     }
     if episode {
         let set = b.add_level_input(SET, DiagnosticMeta::default()).unwrap();
@@ -399,9 +417,28 @@ fn warm(m: &Machine<()>, visible: bool, label: &str) -> crate::projection_work::
     assert_eq!(result.output_events().len(), usize::from(visible));
     assert!(result.diagnostic_episode_changes().is_empty());
     result_manifest(&result);
+    assert_eq!(
+        c.content_selection.calls,
+        c.content_selection.empty
+            + c.content_selection.full
+            + c.content_selection.dense
+            + c.content_selection.sparse
+    );
+    assert!(c.content_selection.visits <= c.membership_content_visits);
+    assert!(c.content_selection.nodes_created <= c.membership_content_nodes_created);
     if visible {
         assert_eq!(result.provenance().len(), 3);
         assert!(c.result_selection.records_selected > 0 && c.result_selection.root_visits > 0);
+        assert_eq!(
+            c.result_selection,
+            crate::causal_work::ResultSelectionWork {
+                root_visits: 1,
+                handles_visited: 3,
+                records_selected: 3,
+                content_visits: 6,
+                content_nodes_created: 6,
+            }
+        );
     } else {
         assert_eq!(
             c.result_selection,
@@ -460,6 +497,213 @@ fn artifacts(m: &Machine<()>, label: &str) -> crate::Explanation<()> {
     let restored = m.compiled().restore(snapshot, policy()).unwrap();
     assert_eq!(inputs(&restored), inputs(m));
     explanation
+}
+
+fn content_selection_reduction(full: bool) {
+    let c = fixture(Family::GenuineToggle, 1, false);
+    let mut m = initialized(&c, Family::GenuineToggle, None);
+    build_history(&mut m, Family::GenuineToggle, 1, 10);
+    let view = m.store.provenance.as_ref().unwrap();
+    let count = view.len() - usize::from(!full);
+    // Every preceding source position is selected; the final record has no later consumer.
+    let roots: Vec<_> = (0..count).map(|p| view.records().cause(p)).collect();
+    let (expected, _) = walk(view, &roots);
+    assert_eq!(expected.len(), count);
+    let digests: BTreeSet<_> = (0..count)
+        .map(|p| view.records().canonical(p).get().unwrap().digest)
+        .collect();
+    crate::causal_work::reset();
+    let selected = view.owned_roots(&roots);
+    let work = crate::causal_work::read();
+    eprintln!(
+        "MS_QJR regression full={full} source={} selected={count} unique={} visits={} nodes={}",
+        view.len(),
+        digests.len(),
+        work.membership_content_visits,
+        work.membership_content_nodes_created
+    );
+    assert_eq!(selected.len(), count);
+    assert_eq!(
+        selected.records().content_for_test(),
+        (0..count)
+            .map(|p| {
+                let canonical = view.records().canonical(p).get().unwrap();
+                (canonical.digest, Arc::clone(&canonical.payload))
+            })
+            .collect()
+    );
+    assert_eq!(
+        (0..selected.len())
+            .map(|p| selected.records().cause(p))
+            .collect::<BTreeSet<_>>(),
+        expected
+    );
+    if full {
+        assert_eq!(work.membership_content_nodes_created, 0);
+    } else {
+        assert!(
+            work.membership_content_nodes_created < digests.len(),
+            "{work:?}"
+        );
+    }
+}
+
+#[test]
+fn content_selection_full_genuine_closure_does_not_rebuild_content() {
+    content_selection_reduction(true);
+}
+
+#[test]
+fn content_selection_nearly_full_genuine_closure_reuses_content() {
+    content_selection_reduction(false);
+}
+
+#[test]
+fn content_selection_direct_genuine_and_quiet_matrix_preserves_complete_content() {
+    let live = crate::causal_work::live_nodes();
+    let content_live = crate::causal_work::live_content_nodes();
+    for (family, width, histories) in [
+        (Family::GenuineToggle, 1, vec![1, 10, 1000]),
+        (Family::GenuineToggle, 4, vec![10, 1000]),
+        (Family::QuietEdge, 1, vec![10, 1000]),
+    ] {
+        let c = fixture(family, width, false);
+        for history in histories {
+            let mut m = initialized(&c, family, None);
+            build_history(&mut m, family, 1, history);
+            let original = inputs(&m);
+            let snapshot = m.snapshot();
+            let view = m.store.provenance.as_ref().unwrap();
+            let unique = view.records().content_for_test().len();
+            for full in [true, false] {
+                let count = view.len() - usize::from(!full);
+                let roots: Vec<_> = (0..count).map(|p| view.records().cause(p)).collect();
+                let (expected, _) = walk(view, &roots);
+                let bytes: BTreeMap<_, _> = expected
+                    .iter()
+                    .map(|cause| {
+                        let canonical = view
+                            .records()
+                            .canonical(view.records().position(*cause).unwrap())
+                            .get()
+                            .unwrap();
+                        (canonical.digest, Arc::clone(&canonical.payload))
+                    })
+                    .collect();
+                crate::causal_work::reset();
+                let selected = view.owned_roots(&roots);
+                let w = crate::causal_work::read();
+                let work = w.content_selection;
+                eprintln!(
+                    "MS_QJR direct family={family:?} width={width} history={history} full={full} source={} selected={} unique={} work={work:?}",
+                    view.len(),
+                    selected.len(),
+                    bytes.len()
+                );
+                assert_eq!(selected.len(), count);
+                assert_eq!(
+                    (0..selected.len())
+                        .map(|p| selected.records().cause(p))
+                        .collect::<BTreeSet<_>>(),
+                    expected
+                );
+                assert_eq!(selected.records().content_for_test(), bytes);
+                assert_eq!(work.insertions + work.leaves_created, 0);
+                if full {
+                    assert_eq!(work.roots_shared, 1);
+                    assert_eq!(work.visits + work.nodes_created + work.keys_inserted, 0);
+                } else {
+                    assert_eq!(work.dense, 1);
+                    assert_eq!(work.keys_inserted, count);
+                    assert_eq!(work.visits, 2 * unique - 1);
+                    assert!(work.visits < 4 * count);
+                    assert!(work.nodes_created <= (unique - 1).min(256 * (unique - bytes.len())));
+                }
+                crate::state_digest_reference::assert_view(&c, &selected);
+                if family == Family::GenuineToggle {
+                    let times: BTreeSet<_> = selected
+                        .records()
+                        .iter()
+                        .filter_map(|r| match r {
+                            ProvenanceRecord::ReadyTransaction { at, .. } => {
+                                Some(at.time().ticks())
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    assert_eq!(times, (1..=history).collect());
+                }
+            }
+            assert_eq!(inputs(&m), original);
+            assert_eq!(m.snapshot(), snapshot);
+        }
+    }
+    assert_eq!(crate::causal_work::live_nodes(), live);
+    assert_eq!(crate::causal_work::live_content_nodes(), content_live);
+}
+
+#[test]
+fn content_selection_targeted_inspection_avoids_unrelated_genuine_history() {
+    let c = fixture_with_inspection(Family::GenuineToggle, 1, false, true);
+    let mut sizes = Vec::new();
+    for history in [1, 10, 1000] {
+        let mut m = initialized(&c, Family::GenuineToggle, None);
+        build_history(&mut m, Family::GenuineToggle, 1, history);
+        let before = inputs(&m);
+        let source = m.store.provenance.as_ref().unwrap().len();
+        reset();
+        let inspection = m.inspect_node(NodeKey::from_u128(9000)).unwrap();
+        let w = crate::causal_work::read();
+        let projection = crate::projection_work::read();
+        let selected = inspection.provenance().len();
+        let work = w.content_selection;
+        eprintln!(
+            "MS_QJR small history={history} source={source} selected={selected} work={work:?}"
+        );
+        assert_eq!(work.sparse, 1);
+        assert_eq!(work.empty + work.full + work.dense, 0);
+        assert_eq!(work.keys_inserted, 0);
+        assert_eq!(work.insertions, selected);
+        // A rebuilt selected-only compressed trie has at most k leaves and k-1 branches.
+        assert!(work.visits <= selected * (2 * selected + 1));
+        assert!(work.nodes_created <= selected * (selected + 1));
+        assert_eq!(projection, crate::projection_work::Work::default());
+        let contents: BTreeMap<_, _> = inspection
+            .provenance()
+            .records()
+            .iter()
+            .enumerate()
+            .map(|(p, _)| {
+                let record = inspection
+                    .provenance()
+                    .records()
+                    .canonical(p)
+                    .get()
+                    .unwrap();
+                (record.digest, Arc::clone(&record.payload))
+            })
+            .collect();
+        assert_eq!(
+            inspection.provenance().records().content_for_test(),
+            contents
+        );
+        assert_eq!(inputs(&m), before);
+        sizes.push(selected);
+        drop(m);
+        for p in 0..inspection.provenance().len() {
+            assert!(
+                inspection
+                    .provenance()
+                    .inspect(inspection.provenance().records().cause(p))
+                    .is_ok()
+            );
+        }
+        drop(inspection);
+        drop(contents);
+        assert_eq!(crate::causal_work::live_nodes(), 0);
+        assert_eq!(crate::causal_work::live_content_nodes(), 0);
+    }
+    assert!(sizes.iter().all(|size| *size == sizes[0]));
 }
 
 #[test]

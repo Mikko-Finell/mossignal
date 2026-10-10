@@ -52,7 +52,26 @@ pub(crate) struct ResultSelectionWork {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ContentSelectionWork {
+    pub calls: usize,
+    pub empty: usize,
+    pub full: usize,
+    pub dense: usize,
+    pub sparse: usize,
+    pub keys_inserted: usize,
+    pub insertions: usize,
+    pub visits: usize,
+    pub nodes_created: usize,
+    pub leaves_created: usize,
+    pub leaves_shared: usize,
+    pub branches_shared: usize,
+    pub branches_promoted: usize,
+    pub roots_shared: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Work {
+    pub content_selection: ContentSelectionWork,
     pub result_selection: ResultSelectionWork,
     pub freeze: FreezeWork,
     pub membership_content_visits: usize,
@@ -86,6 +105,24 @@ thread_local! {
     static LIVE_CONTENT: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
     static FAULT: Cell<Option<Fault>> = const { Cell::new(None) };
     static FREEZING: Cell<bool> = const { Cell::new(false) };
+    static SELECTING_CONTENT: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) struct ContentSelectionScope(bool);
+
+impl Drop for ContentSelectionScope {
+    fn drop(&mut self) {
+        SELECTING_CONTENT.with(|cell| cell.set(self.0));
+    }
+}
+
+pub(crate) fn content_selection_scope() -> ContentSelectionScope {
+    update(|w| w.content_selection.calls += 1);
+    ContentSelectionScope(SELECTING_CONTENT.with(|cell| cell.replace(true)))
+}
+
+pub(crate) fn is_selecting_content() -> bool {
+    SELECTING_CONTENT.with(Cell::get)
 }
 
 pub(crate) fn is_freezing() -> bool {

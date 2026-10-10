@@ -191,6 +191,11 @@ impl<D> Records<D> {
         self.nodes.iter().map(|node| &node.record)
     }
 
+    #[cfg(test)]
+    pub(crate) fn content_for_test(&self) -> BTreeMap<[u8; 32], Arc<Vec<u8>>> {
+        self.content.contents_for_test()
+    }
+
     pub(crate) fn owned_closure(&self, roots: &[CauseRef]) -> Self {
         let mut selected = BTreeSet::new();
         let mut pending = Vec::new();
@@ -213,8 +218,26 @@ impl<D> Records<D> {
                 pending.extend(node.predecessors.iter().map(Arc::clone));
             }
         }
-        // Only the selected closure is visited; no full catalogue sweep.
+        // Logical selection never sweeps the catalogue. Dense content filtering is bounded by k.
+        #[cfg(test)]
+        let _content_selection = crate::causal_work::content_selection_scope();
+        let count = selected.len();
+        let full = count == self.nodes.len();
+        let dense = !full && count != 0 && self.nodes.len() - count <= count;
+        #[cfg(test)]
+        crate::causal_work::update(|w| {
+            if count == 0 {
+                w.content_selection.empty += 1;
+            } else if full {
+                w.content_selection.full += 1;
+            } else if dense {
+                w.content_selection.dense += 1;
+            } else {
+                w.content_selection.sparse += 1;
+            }
+        });
         let mut content = ContentIndex::default();
+        let mut digests = BTreeSet::new();
         let nodes: Vec<_> = selected
             .into_iter()
             .map(|position| {
@@ -222,10 +245,25 @@ impl<D> Records<D> {
                 let Some(canonical) = node.canonical.get() else {
                     panic!("selected causal nodes must have complete canonical content");
                 };
-                content.insert(canonical);
+                if dense {
+                    #[cfg(test)]
+                    crate::causal_work::update(|w| w.content_selection.keys_inserted += 1);
+                    digests.insert(canonical.digest);
+                } else if !full {
+                    content.insert(canonical);
+                }
                 Arc::clone(node)
             })
             .collect();
+        if count != 0 && full {
+            // SPEC: docs/specs/contracts/machine-state-digests.yaml "equality-is-not-validation"
+            // Admission already validated these immutable bytes; no newly combined content exists.
+            content = self.content.clone();
+            #[cfg(test)]
+            crate::causal_work::update(|w| w.content_selection.roots_shared += 1);
+        } else if dense {
+            content = self.content.select(&digests);
+        }
         let positions = nodes
             .iter()
             .enumerate()
@@ -294,6 +332,155 @@ impl<D> Index<usize> for Records<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compiled() -> crate::CompiledNetwork<()> {
+        let mut b = crate::NetworkBuilder::new(crate::TimeDomainId::from_u128(2));
+        let signal = b.constant(crate::signal::LogicLevel::High);
+        b.level_output("value", signal).unwrap();
+        b.finish()
+            .require_artifact()
+            .unwrap()
+            .compile()
+            .require_artifact()
+            .unwrap()
+    }
+
+    fn independent(records: &mut Records<()>, c: &crate::CompiledNetwork<()>, at: u64) -> CauseRef {
+        records.push(
+            c,
+            ProvenanceRecord::ReadyTransaction {
+                at: crate::ReactionStamp::from_parts(crate::time::Time::from_ticks(at), 0),
+                revision: crate::NetworkRevision::from_value(0),
+            },
+        )
+    }
+
+    #[test]
+    fn content_selection_exact_membership_and_threshold_neighbors() {
+        let c = compiled();
+        for count in [0, 1, 2, 5, 6, 7, 10] {
+            let mut source = Records::new(fresh_scope(None));
+            for i in 0..count {
+                independent(&mut source, &c, (i / 2) as u64);
+            }
+            for k in 0..=count {
+                let roots: Vec<_> = source
+                    .nodes
+                    .iter()
+                    .skip(count - k)
+                    .map(|node| node.cause)
+                    .collect();
+                let expected: BTreeMap<_, _> = source
+                    .nodes
+                    .iter()
+                    .skip(count - k)
+                    .map(|node| {
+                        let content = node.canonical.get().unwrap();
+                        (content.digest, Arc::clone(&content.payload))
+                    })
+                    .collect();
+                crate::causal_work::reset();
+                let selected = source.owned_closure(&roots);
+                let w = crate::causal_work::read();
+                assert_eq!(selected.len(), k);
+                assert_eq!(selected.positions.len(), k);
+                assert_eq!(
+                    selected
+                        .nodes
+                        .iter()
+                        .map(|node| node.cause)
+                        .collect::<Vec<_>>(),
+                    roots
+                );
+                assert_eq!(selected.content_for_test(), expected);
+                for cause in &roots {
+                    assert!(source.shared_node(&selected, *cause));
+                }
+                let work = w.content_selection;
+                assert_eq!(work.calls, 1);
+                assert_eq!(work.empty + work.full + work.dense + work.sparse, 1);
+                assert_eq!(work.visits, w.membership_content_visits);
+                assert_eq!(work.nodes_created, w.membership_content_nodes_created);
+                if k == 0 {
+                    assert_eq!(work.empty, 1);
+                    assert_eq!(
+                        work.visits + work.nodes_created + work.insertions + work.keys_inserted,
+                        0
+                    );
+                } else if k == count {
+                    assert_eq!((work.full, work.roots_shared), (1, 1));
+                    assert_eq!(
+                        work.visits + work.nodes_created + work.insertions + work.keys_inserted,
+                        0
+                    );
+                } else if count - k <= k {
+                    assert_eq!(work.dense, 1);
+                    assert_eq!(work.keys_inserted, k);
+                    assert!(work.visits < 4 * k);
+                    assert_eq!(work.insertions + work.leaves_created, 0);
+                    let unique = source.content_for_test().len();
+                    assert!(
+                        work.nodes_created <= (unique - 1).min(256 * (unique - expected.len()))
+                    );
+                } else {
+                    assert_eq!(work.sparse, 1);
+                    assert_eq!(work.insertions, k);
+                    assert_eq!(work.keys_inserted, 0);
+                    assert!(work.visits <= 513 * k && work.nodes_created <= 258 * k);
+                }
+            }
+            let foreign = CauseRef::from_parts(fresh_scope(None), 0);
+            let before = source.content_for_test();
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || source.owned_closure(&[foreign])
+                ))
+                .is_err()
+            );
+            assert_eq!(source.content_for_test(), before);
+            assert_eq!(source.len(), count);
+        }
+        assert_eq!(crate::causal_work::live_nodes(), 0);
+        assert_eq!(crate::causal_work::live_content_nodes(), 0);
+    }
+
+    #[test]
+    fn content_selection_coalesced_bytes_do_not_retain_excluded_logical_nodes() {
+        let c = compiled();
+        let mut source = Records::new(fresh_scope(None));
+        let first = independent(&mut source, &c, 0);
+        let duplicate = independent(&mut source, &c, 0);
+        let keep = independent(&mut source, &c, 1);
+        let excluded = independent(&mut source, &c, 2);
+        let first_node = Arc::downgrade(&source.nodes[0]);
+        let excluded_node = Arc::downgrade(&source.nodes[3]);
+        let first_payload = Arc::downgrade(&source.nodes[0].canonical.get().unwrap().payload);
+        let excluded_payload = Arc::downgrade(&source.nodes[3].canonical.get().unwrap().payload);
+        assert!(!Arc::ptr_eq(
+            &source.nodes[0].canonical.get().unwrap().payload,
+            &source.nodes[1].canonical.get().unwrap().payload
+        ));
+        let selected = source.owned_closure(&[duplicate, keep]);
+        let other = selected.clone();
+        let bytes = selected.content_for_test();
+        assert_eq!(selected.len(), 2);
+        assert_eq!(bytes.len(), 2);
+        assert!(selected.position(first).is_none() && selected.position(excluded).is_none());
+        drop(bytes);
+        drop(source);
+        assert!(first_node.upgrade().is_none() && excluded_node.upgrade().is_none());
+        assert!(excluded_payload.upgrade().is_none());
+        // The source leaf's equal bytes are still needed by the distinct selected cause.
+        assert!(first_payload.upgrade().is_some());
+        assert_eq!(crate::causal_work::live_nodes(), 2);
+        assert_eq!(crate::causal_work::live_content_nodes(), 3);
+        drop(selected);
+        assert!(other.position(duplicate).is_some());
+        drop(other);
+        assert!(first_payload.upgrade().is_none());
+        assert_eq!(crate::causal_work::live_nodes(), 0);
+        assert_eq!(crate::causal_work::live_content_nodes(), 0);
+    }
     #[test]
     fn incremental_freezing_include_checks_result_only_content_and_selection_releases_lookup() {
         let mut b = crate::NetworkBuilder::<()>::new(crate::TimeDomainId::from_u128(2));
