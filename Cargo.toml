@@ -10,3 +10,19 @@ version = "0.1.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# Keep ordinary dev/test builds compact while retaining native line tables.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
+# Opt in to full native and dependency symbols with --profile debugging.
+[profile.debugging]
+inherits = "dev"
+debug = true
+
+[profile.debugging.package."*"]
+debug = true
