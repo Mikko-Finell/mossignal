@@ -33,6 +33,7 @@ ScheduleFailure::NotInitialized|lifecycle.not_initialized
 PulseDelayInspectionFailure::UnknownNode|inspection.unknown_subject
 PulseDelayInspectionFailure::NotPulseDelay|inspection.wrong_subject_kind
 PulseDelayInspectionFailure::NotInitialized|lifecycle.not_initialized
+PulseDelayInspectionFailure::PendingCountOverflow|runtime.pulse_count_overflow
 ModuleInspectionFailure::UnknownModule|inspection.unknown_subject
 ModuleInspectionFailure::NotInitialized|lifecycle.not_initialized
 EdgeDetectorInspectionFailure::UnknownNode|inspection.unknown_subject

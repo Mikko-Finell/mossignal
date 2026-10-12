@@ -121,6 +121,16 @@ fn main() {
     assert_eq!(same_time.processed_reactions()[0].order(), 1);
     assert!(same_time.output_events().is_empty());
     let pending = original.inspect_pending_events().unwrap();
+    // Ordinary status needs just the owed count and next release. This indexed
+    // read copies no pending provenance and creates no reaction.
+    let summary = match original.inspect_pulse_delay_summary(delay_node) {
+        Ok(summary) => summary,
+        Err(failure) => {
+            panic!("initialized example delay must have a representable summary: {failure:?}")
+        }
+    };
+    assert_eq!(summary.pending_count().get(), 1);
+    assert_eq!(summary.next_deadline(), Some(Time::from_ticks(5)));
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].owner, NodeSubject::Node(delay_node));
     assert_eq!(pending[0].origin.ticks(), 0);

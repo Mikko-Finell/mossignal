@@ -3392,7 +3392,7 @@ mod tests {
                 "public failure leaf uses a code that forbids failure delivery: {leaf}"
             );
         }
-        assert_eq!(leaves.len(), 195);
+        assert_eq!(leaves.len(), 196);
     }
 
     fn missing<D>(node: u128, missing: u128) -> Diagnostic<D> {

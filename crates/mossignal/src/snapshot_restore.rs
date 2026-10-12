@@ -5962,7 +5962,8 @@ fn publish_machine<D>(
             machine.store.periodic_anchor_causes = provenance.anchors;
             machine.store.periodic_cancellation_causes = provenance.periodic_cancels;
             machine.store.active_episodes = provenance.episodes;
-            machine.store.pending_events = provenance.pending;
+            machine.store.pending_events =
+                crate::pending_calendar::PendingCalendar::from_events(provenance.pending);
             machine.store.operation_causes = provenance.operations;
             machine.store.standard_causes = provenance.standard_causes;
             let roots = crate::causal_roots::machine(&machine);

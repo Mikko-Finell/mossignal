@@ -116,6 +116,7 @@ workspace.
 | [`src/input.rs`](crates/mossignal/src/input.rs) | Network-bound complete `InputSnapshot` and partial `InputDelta` builders. |
 | [`src/policy.rs`](crates/mossignal/src/policy.rs) | Required runtime budgets and canonical `RuntimePolicyId`. |
 | [`src/machine.rs`](crates/mossignal/src/machine.rs) | Mutable machine lifecycle, semantic store, scheduling, output/state/module inspections, and inspection failures. |
+| [`src/pending_calendar.rs`](crates/mossignal/src/pending_calendar.rs) | Ordered temporal work and owner-maintained PulseDelay summaries. |
 | [`src/transaction.rs`](crates/mossignal/src/transaction.rs) | Initialization and advancement transactions, temporal execution, output events, provenance, budget enforcement, runtime failures, and publication. |
 | [`src/episode.rs`](crates/mossignal/src/episode.rs) | Persistent diagnostic episode identity and lifecycle for retained level-latch conflicts. |
 | [`src/diagnostic_inspection.rs`](crates/mossignal/src/diagnostic_inspection.rs) | Pure node/module selections of committed occurrences, episode changes, and active conditions. |
@@ -299,6 +300,10 @@ result-owned and reaction-scoped; it is not retained as a current output value.
 ### Temporal execution
 
 Pending work is stored in a `BTreeMap<Time<D>, Vec<PendingEvent<D>>>`.
+The private calendar owner also maintains PulseDelay totals and per-node
+deadline counts as work is admitted and completed. Restoration and topology
+migration rebuild this derived index from their validated replacement calendars.
+The index does not enter persisted artifacts or semantic digests.
 
 For an advancement to target time `T`:
 
@@ -449,6 +454,15 @@ within their owning retained `ProvenanceView`. Provenance retains stable
 subjects, input observations, stateful transitions, selected pulse
 contributions, scheduled temporal causes, pending-event causes, output causes,
 and episode causes.
+
+For ordinary delay status, `Machine::inspect_pulse_delay_summary(node)` returns
+`PulseDelaySummary`: total owed `PulseCount` and the earliest retained deadline.
+This ready-only read uses the calendar-owned node index without walking unrelated
+pending events or copying provenance. Empty work is zero with no deadline.
+`PendingCountOverflow` is an inspection failure when valid groups collectively
+exceed the summary's `u64` representation; it does not restrict admission or
+change release behavior. Full `inspect_pulse_delay` remains the deliberate
+owned group/provenance interface. The lifecycle example demonstrates both reads.
 
 Inspection is a projection of semantic machine state. It exposes definition
 facts and committed runtime facts separately, including qualified module nodes,

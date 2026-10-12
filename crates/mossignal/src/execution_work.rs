@@ -5,6 +5,7 @@ use std::cell::Cell;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Work {
     pub(crate) binding_slots_checked: usize,
+    pub(crate) pulse_summary_lookups: usize,
     pub(crate) staged_stores_cloned: usize,
     pub(crate) working_collections_cloned: usize,
     pub(crate) working_items_cloned: usize,

@@ -2418,7 +2418,7 @@ impl<D> Machine<D> {
             migration_report.as_ref().zip(declared_checkpoint),
         );
         let mut created_pending_events = 0_u64;
-        let mut pending_events = BTreeMap::new();
+        let mut pending_events = crate::pending_calendar::PendingCalendar::default();
         let mut next_pending_event_serial = 0;
         let mut inertial_cancellation_causes = BTreeMap::new();
         let mut periodic_anchors = BTreeMap::new();
@@ -3856,7 +3856,7 @@ struct DuePulseDelays {
 
 struct PulseDelayScheduling<'a, D> {
     compiled: &'a crate::CompiledNetwork<D>,
-    pending: &'a mut BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
+    pending: &'a mut crate::pending_calendar::PendingCalendar<D>,
     next_serial: &'a mut u64,
     created_events: &'a mut u64,
 }
@@ -4037,11 +4037,7 @@ fn schedule_pulse_delays<D>(
                     scheduling.compiled.node_subject(pending.node),
                     scheduling_cause,
                 );
-                scheduling
-                    .pending
-                    .entry(deadline)
-                    .or_default()
-                    .push(PendingEvent::PulseDelay(pending));
+                scheduling.pending.push(PendingEvent::PulseDelay(pending));
                 *scheduling.created_events = scheduling.created_events.saturating_add(1);
                 enforce_budget::<D>(
                     policy,
@@ -4091,8 +4087,6 @@ fn schedule_pulse_delays<D>(
                 );
                 scheduling
                     .pending
-                    .entry(deadline)
-                    .or_default()
                     .push(PendingEvent::TransportDelay(pending));
                 *scheduling.created_events = scheduling.created_events.saturating_add(1);
                 enforce_budget::<D>(
@@ -4106,8 +4100,7 @@ fn schedule_pulse_delays<D>(
                     Some(cause) => cause,
                     None => panic!("every InertialDelay proposal must retain a scheduling cause"),
                 };
-                if let Some(canceled) = remove_inertial_candidate(scheduling.pending, proposal.node)
-                {
+                if let Some(canceled) = scheduling.pending.take_inertial(proposal.node) {
                     let cancellation = provenance.append_inertial_cancellation(
                         scheduling.compiled,
                         scheduling.compiled.node_subject(proposal.node),
@@ -4153,11 +4146,7 @@ fn schedule_pulse_delays<D>(
                     scheduling.compiled.node_subject(pending.node),
                     scheduling_cause,
                 );
-                scheduling
-                    .pending
-                    .entry(deadline)
-                    .or_default()
-                    .push(PendingEvent::Inertial(pending));
+                scheduling.pending.push(PendingEvent::Inertial(pending));
                 *scheduling.created_events = scheduling.created_events.saturating_add(1);
                 enforce_budget::<D>(
                     policy,
@@ -4185,7 +4174,9 @@ fn schedule_pulse_delays<D>(
                 }
                 if proposal.enable.is_low() {
                     if transitioned || proposal.due_ordinal.is_some() {
-                        let canceled = remove_periodic_boundary(scheduling.pending, proposal.node)
+                        let canceled = scheduling
+                            .pending
+                            .take_periodic(proposal.node)
                             .map(|event| event.cause)
                             .unwrap_or(scheduling_cause);
                         let cancellation = provenance.append_inertial_cancellation(
@@ -4298,11 +4289,7 @@ fn schedule_pulse_delays<D>(
                     scheduling.compiled.node_subject(pending.node),
                     scheduling_cause,
                 );
-                scheduling
-                    .pending
-                    .entry(deadline)
-                    .or_default()
-                    .push(PendingEvent::Periodic(pending));
+                scheduling.pending.push(PendingEvent::Periodic(pending));
                 *scheduling.created_events = scheduling.created_events.saturating_add(1);
                 enforce_budget::<D>(
                     policy,
@@ -4319,68 +4306,6 @@ fn schedule_pulse_delays<D>(
         count_as_u64(pending_count),
     )?;
     Ok(())
-}
-
-fn remove_inertial_candidate<D>(
-    pending: &mut BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
-    node: NodeKey,
-) -> Option<PendingInertialDelay<D>> {
-    let deadlines = pending.keys().copied().collect::<Vec<_>>();
-    let mut removed = None;
-    for deadline in deadlines {
-        let Some(batch) = pending.get_mut(&deadline) else {
-            continue;
-        };
-        let mut retained = Vec::with_capacity(batch.len());
-        for event in batch.drain(..) {
-            match event {
-                PendingEvent::Inertial(candidate)
-                    if candidate.node == node && removed.is_none() =>
-                {
-                    removed = Some(candidate);
-                }
-                other => retained.push(other),
-            }
-        }
-        *batch = retained;
-        if batch.is_empty() {
-            pending.remove(&deadline);
-        }
-        if removed.is_some() {
-            break;
-        }
-    }
-    removed
-}
-
-fn remove_periodic_boundary<D>(
-    pending: &mut BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
-    node: NodeKey,
-) -> Option<PendingPeriodicBoundary<D>> {
-    let deadlines = pending.keys().copied().collect::<Vec<_>>();
-    let mut removed = None;
-    for deadline in deadlines {
-        let Some(batch) = pending.get_mut(&deadline) else {
-            continue;
-        };
-        let mut retained = Vec::with_capacity(batch.len());
-        for event in batch.drain(..) {
-            match event {
-                PendingEvent::Periodic(boundary) if boundary.node == node && removed.is_none() => {
-                    removed = Some(boundary);
-                }
-                other => retained.push(other),
-            }
-        }
-        *batch = retained;
-        if batch.is_empty() {
-            pending.remove(&deadline);
-        }
-        if removed.is_some() {
-            break;
-        }
-    }
-    removed
 }
 
 fn enforce_outer_reaction_budgets<D>(
@@ -4468,7 +4393,7 @@ struct PublishedCandidate<D> {
     periodic_anchor_causes: BTreeMap<NodeKey, CauseRef>,
     periodic_cancellation_causes: BTreeMap<NodeKey, CauseRef>,
     active_episodes: crate::episode::ActiveEpisodes<D>,
-    pending_events: BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
+    pending_events: crate::pending_calendar::PendingCalendar<D>,
     next_pending_event_serial: u64,
     installed_network: Option<crate::CompiledNetwork<D>>,
     revision: NetworkRevision,
@@ -4909,7 +4834,7 @@ fn checkpoint_migration<D>(
             ));
         }
     }
-    for event in finalized.pending_events.values_mut().flatten() {
+    finalized.pending_events.remap_causes(|event| {
         let (key, node, origin, deadline, revision, previous_cause) = event.identity();
         let owner = finalized.compiled.node_subject(node);
         let rule = match finalized
@@ -4977,14 +4902,8 @@ fn checkpoint_migration<D>(
                 supporters,
             },
         };
-        let cause = records.push(&finalized.compiled, record);
-        match event {
-            PendingEvent::PulseDelay(event) => event.cause = cause,
-            PendingEvent::TransportDelay(event) => event.cause = cause,
-            PendingEvent::Inertial(event) => event.cause = cause,
-            PendingEvent::Periodic(event) => event.cause = cause,
-        }
-    }
+        records.push(&finalized.compiled, record)
+    });
     let growth = records.len().saturating_sub(replacement_count);
     MigrationProvenance {
         view: ProvenanceView {
@@ -7820,7 +7739,7 @@ mod tests {
             stored_levels: machine.store.stored_levels.clone(),
             toggle_inversion_causes: machine.store.toggle_inversion_causes.clone(),
             establishment_causes: machine.store.establishment_causes.clone(),
-            pending_events: machine.store.pending_events.clone(),
+            pending_events: (*machine.store.pending_events).clone(),
             next_pending_event_serial: machine.store.next_pending_event_serial,
             transport_transition_causes: machine.store.transport_transition_causes.clone(),
             inertial_cancellation_causes: machine.store.inertial_cancellation_causes.clone(),

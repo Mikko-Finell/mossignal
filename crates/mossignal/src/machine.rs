@@ -1126,13 +1126,16 @@ impl<D> PulseDelayInspection<D> {
     }
 }
 
-/// A structural or lifecycle failure to inspect one node as PulseDelay.
+/// A structural, lifecycle or count-representation failure to inspect PulseDelay.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PulseDelayInspectionFailure {
     UnknownNode(NodeKey),
     NotPulseDelay(NodeKey),
     NotInitialized,
+    /// Pending work is valid, but its total cannot be represented by PulseCount.
+    /// This is a read failure and never rejects admission or changes the calendar.
+    PendingCountOverflow(NodeKey),
 }
 
 impl PulseDelayInspectionFailure {
@@ -1158,7 +1161,55 @@ impl PulseDelayInspectionFailure {
             Self::NotInitialized => {
                 lifecycle_not_initialized(OperationSubjectRef::MachineLifecycle)
             }
+            Self::PendingCountOverflow(node) => Problem::new(
+                SubjectRef::Node(node),
+                Vec::new(),
+                ProblemEvidence::RuntimePulseCountOverflow {
+                    evidence: crate::diagnostics::ParameterEvidence {
+                        owner: Some(crate::diagnostics::NodeEvidence::Node(node)),
+                        parameter: "pending_pulse_count",
+                        expected_domain: "u64 total",
+                        encountered: None,
+                        operands: Vec::new(),
+                    },
+                    marker: PhantomData,
+                },
+            ),
         }
+    }
+}
+
+/// Minimal current PulseDelay work, read without groups, history or provenance.
+/// An empty calendar has zero owed pulses and no release deadline. Several
+/// retained groups may coexist and keep their deadlines after delay retuning.
+pub struct PulseDelaySummary<D> {
+    pending_count: PulseCount,
+    next_deadline: Option<Time<D>>,
+}
+impl<D> Clone for PulseDelaySummary<D> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<D> Copy for PulseDelaySummary<D> {}
+impl<D> fmt::Debug for PulseDelaySummary<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PulseDelaySummary")
+            .field("pending_count", &self.pending_count)
+            .field("next_deadline", &self.next_deadline)
+            .finish()
+    }
+}
+impl<D> PulseDelaySummary<D> {
+    /// Total pulses still owed across every admitted group.
+    #[must_use]
+    pub const fn pending_count(&self) -> PulseCount {
+        self.pending_count
+    }
+    /// Earliest retained release deadline, absent when empty.
+    #[must_use]
+    pub const fn next_deadline(&self) -> Option<Time<D>> {
+        self.next_deadline
     }
 }
 
@@ -1660,7 +1711,7 @@ pub(crate) struct MachineStore<D> {
     pub(crate) periodic_anchor_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) periodic_cancellation_causes: BTreeMap<NodeKey, CauseRef>,
     pub(crate) active_episodes: crate::episode::ActiveEpisodes<D>,
-    pub(crate) pending_events: BTreeMap<Time<D>, Vec<PendingEvent<D>>>,
+    pub(crate) pending_events: crate::pending_calendar::PendingCalendar<D>,
     pub(crate) next_pending_event_serial: u64,
 }
 
@@ -1840,6 +1891,14 @@ impl<D> ForecastState<D> {
         node: NodeKey,
     ) -> Result<PulseDelayInspection<D>, PulseDelayInspectionFailure> {
         self.machine.inspect_pulse_delay(node)
+    }
+
+    /// Projects the same indexed summary as Machine::inspect_pulse_delay_summary.
+    pub fn inspect_pulse_delay_summary(
+        &self,
+        node: NodeKey,
+    ) -> Result<PulseDelaySummary<D>, PulseDelayInspectionFailure> {
+        self.machine.inspect_pulse_delay_summary(node)
     }
 
     /// Projects the same TransportDelay definition as [`Machine::inspect_transport_delay_definition`].
@@ -2800,7 +2859,7 @@ impl<D> Machine<D> {
                 periodic_anchor_causes: BTreeMap::new(),
                 periodic_cancellation_causes: BTreeMap::new(),
                 active_episodes: BTreeMap::new(),
-                pending_events: BTreeMap::new(),
+                pending_events: crate::pending_calendar::PendingCalendar::default(),
                 next_pending_event_serial: 0,
             },
         }
@@ -2919,9 +2978,7 @@ impl<D> Machine<D> {
 
     #[cfg(test)]
     pub(crate) fn reverse_pending_batches_for_test(&mut self) {
-        for batch in self.store.pending_events.values_mut() {
-            batch.reverse();
-        }
+        self.store.pending_events.reverse_batches();
         self.prepare_digests();
     }
 
@@ -3111,6 +3168,30 @@ impl<D> Machine<D> {
             revision: self.store.revision,
             at: now,
             pending,
+            next_deadline,
+        })
+    }
+
+    /// Reads only the indexed total and earliest deadline for one direct PulseDelay.
+    ///
+    /// This ready-only query does not enumerate pending events, copy provenance,
+    /// advance time, allocate a reaction or change revision/digests. Unknown and
+    /// wrong-kind keys use the same structural failures as full inspection.
+    /// If the total exceeds u64, PendingCountOverflow rejects only this summary
+    /// read; all admitted obligations and normal machine execution remain intact.
+    pub fn inspect_pulse_delay_summary(
+        &self,
+        node: NodeKey,
+    ) -> Result<PulseDelaySummary<D>, PulseDelayInspectionFailure> {
+        self.inspect_pulse_delay_definition(node)?;
+        if !self.is_initialized() {
+            return Err(PulseDelayInspectionFailure::NotInitialized);
+        }
+        let (count, next_deadline) = self.store.pending_events.pulse_totals(node);
+        let count = u64::try_from(count)
+            .map_err(|_| PulseDelayInspectionFailure::PendingCountOverflow(node))?;
+        Ok(PulseDelaySummary {
+            pending_count: PulseCount::new(count),
             next_deadline,
         })
     }
@@ -4180,6 +4261,7 @@ mod tests {
             PulseDelayInspectionFailure::UnknownNode(node),
             PulseDelayInspectionFailure::NotPulseDelay(node),
             PulseDelayInspectionFailure::NotInitialized,
+            PulseDelayInspectionFailure::PendingCountOverflow(node),
         ] {
             assert_problem(failure.code(), failure.problem());
         }

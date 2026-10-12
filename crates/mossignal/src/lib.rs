@@ -64,6 +64,7 @@ mod migration;
 mod module;
 mod node_schema;
 mod patch;
+mod pending_calendar;
 mod persistence;
 mod policy;
 #[cfg(test)]
@@ -128,7 +129,7 @@ pub use machine::{
     PendingInertialDelayInspection, PendingPeriodicBoundaryInspection, PendingPulseDelayInspection,
     PendingTransportDelayInspection, PeriodicDefinitionInspection, PeriodicInspection,
     PeriodicInspectionFailure, PulseDelayDefinitionInspection, PulseDelayInspection,
-    PulseDelayInspectionFailure, PulseSetResetLatchDefinitionInspection,
+    PulseDelayInspectionFailure, PulseDelaySummary, PulseSetResetLatchDefinitionInspection,
     PulseSetResetLatchInspection, PulseSetResetLatchInspectionFailure,
     SampleHoldDefinitionInspection, SampleHoldInspection, SampleHoldInspectionFailure, Schedule,
     ScheduleFailure, ToggleDefinitionInspection, ToggleInspection, ToggleInspectionFailure,
