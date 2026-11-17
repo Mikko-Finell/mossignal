@@ -2976,6 +2976,24 @@ impl<D> Machine<D> {
         crate::persistence::snapshot_from_machine(self)
     }
 
+    /// Exports committed state only after allocation-free resource preflight.
+    ///
+    /// Limits cover source causal records/edges, a conservative artifact bound,
+    /// and additional allocation including projection scratch and result bytes.
+    /// A limit failure leaves the machine unchanged and starts no projection.
+    /// Optional replay history is not exported. Use `MachineSnapshot::into_artifact`
+    /// to transfer the result's bytes without another allocation.
+    pub fn snapshot_bounded(
+        &self,
+        limits: crate::SnapshotLimits,
+    ) -> Result<
+        (crate::MachineSnapshot<D>, crate::SnapshotAllocation),
+        crate::SnapshotResourceFailure,
+    > {
+        let allocation = crate::persistence::bounds::export(self, limits)?;
+        Ok((crate::persistence::snapshot_from_machine(self), allocation))
+    }
+
     #[cfg(test)]
     pub(crate) fn reverse_pending_batches_for_test(&mut self) {
         self.store.pending_events.reverse_batches();

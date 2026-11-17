@@ -158,6 +158,7 @@ pub use patch::{
     PulseDelayMigration, RegionChange, RegionChangeKind, StateCompatibility, StaticMigrationPlan,
     StructuralSubjectRef, SubjectPlan, SubjectReassociation, TransportDelayMigration,
 };
+pub use persistence::bounds::{SnapshotAllocation, SnapshotLimits, SnapshotResourceFailure};
 pub use persistence::{
     ArtifactBytes, EncodeFailure, MachineSnapshot, PersistenceContext, encode_snapshot,
 };
@@ -169,6 +170,7 @@ pub use replay::{
     decode_replay_frame, decode_replay_log, encode_replay_frame, encode_replay_log,
     record_replay_log,
 };
+pub use snapshot_restore::bounded::BoundedRestoreFailure;
 pub use snapshot_restore::{DecodeFailure, DecodePolicy, RestoreFailure, decode_snapshot};
 pub use standard::{
     AllEqualDependency, AllEqualExplanation, AllEqualInspection, AtMostDependency,

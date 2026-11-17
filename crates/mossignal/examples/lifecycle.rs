@@ -9,8 +9,8 @@ use mossignal::signal::{Level, LogicLevel, Pulse, PulseCount};
 use mossignal::time::{NonZeroSpan, Time};
 use mossignal::{
     DecodePolicy, NetworkBuilder, NodeSubject, OutputEvent, PendingPayload, PersistenceContext,
-    PulseDelayConfig, RuntimePolicy, TimeDomainId, ToggleConfig, Transaction, TransactionResult,
-    decode_snapshot, encode_snapshot,
+    PulseDelayConfig, RuntimePolicy, SnapshotLimits, TimeDomainId, ToggleConfig, Transaction,
+    TransactionResult,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -24,7 +24,7 @@ fn assert_lamp_changed(result: &TransactionResult<Ticks>, lamp: ExternalOutputKe
     ));
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The host chooses the time domain and stable identities. No wall clock runs here.
     let mut builder =
         NetworkBuilder::<Ticks>::with_key(NetworkKey::from_u128(1), TimeDomainId::from_u128(2));
@@ -140,9 +140,16 @@ fn main() {
 
     // InputSnapshot initializes inputs; MachineSnapshot preserves the whole machine.
     // The host owns storage. This demonstration keeps the saved artifact in memory.
-    let saved = original.snapshot();
+    let (saved, capture_allocation) = original.snapshot_bounded(SnapshotLimits {
+        records: 1000,
+        edges: 2000,
+        artifact_bytes: 1_000_000,
+        allocation_bytes: 64_000_000,
+    })?;
+    let saved_digest = saved.snapshot_digest();
     let context = PersistenceContext::new(network.time_domain_id());
-    let bytes = encode_snapshot(&context, &saved).unwrap();
+    let bytes = saved.into_artifact(&context)?;
+    println!("capture reservation: {} bytes", capture_allocation.bytes);
     let limits = DecodePolicy::new(
         1_000_000, // total artifact bytes
         64,        // nesting depth
@@ -160,9 +167,10 @@ fn main() {
         0,         // replay frames
         0,         // optional history bytes
     );
-    let decoded = decode_snapshot(&context, bytes.as_bytes(), &limits).unwrap();
-    let mut resumed = network.restore(decoded, policy).unwrap();
-    assert_eq!(resumed.snapshot(), saved);
+    let (mut resumed, restore_allocation) =
+        network.restore_snapshot_bounded(bytes.as_bytes(), &limits, policy, 64_000_000)?;
+    println!("restore reservation: {} bytes", restore_allocation.bytes);
+    assert_eq!(resumed.snapshot().snapshot_digest(), saved_digest);
     assert_eq!(resumed.now(), Some(Time::from_ticks(2)));
     assert_eq!(resumed.output_level(lamp), Some(LogicLevel::Low));
     let restored_pending = resumed.inspect_pending(pending[0].event).unwrap();
@@ -213,9 +221,10 @@ fn main() {
     // This earlier owned observation retains its cause even after the event fires.
     assert!(pending[0].provenance().inspect(pending[0].cause).is_ok());
     println!("committed tick 5: lamp is High; resumed and uninterrupted execution agree");
+    Ok(())
 }
 
 #[test]
 fn lifecycle_usage_runs() {
-    main();
+    main().expect("bounded lifecycle example");
 }

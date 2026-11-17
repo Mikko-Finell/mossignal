@@ -3,6 +3,8 @@
 //! Encoding produces one prefixed CBOR envelope. Decoding and restoration use
 //! that same envelope and do not own filesystem access.
 
+pub(crate) mod bounds;
+
 use crate::compile::{SnapshotNode, SnapshotNodeFamily};
 use crate::identity::{
     Cbor, ExecutionStateDigest, NetworkFingerprint, ObservableStateDigest, SNAPSHOT_DIGEST_DOMAIN,
@@ -78,6 +80,12 @@ impl ArtifactBytes {
         &self.0
     }
 
+    /// Transfers the owned prefixed bytes to a host container without copying.
+    #[must_use]
+    pub fn into_vec(self) -> Vec<u8> {
+        self.0
+    }
+
     pub(crate) fn from_canonical(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
@@ -133,6 +141,18 @@ pub struct MachineSnapshot<D> {
 }
 
 impl<D> MachineSnapshot<D> {
+    /// Moves the canonical artifact out without allocating or copying its bytes.
+    /// A mismatched time-domain context returns an error and emits no artifact.
+    pub fn into_artifact(
+        self,
+        context: &PersistenceContext<D>,
+    ) -> Result<ArtifactBytes, EncodeFailure> {
+        if context.time_domain != self.time_domain {
+            return Err(EncodeFailure::TimeDomainMismatch);
+        }
+        Ok(ArtifactBytes(self.bytes))
+    }
+
     /// Returns the lifecycle state captured by this snapshot.
     #[must_use]
     pub const fn status(&self) -> MachineStatus<D> {
@@ -1110,6 +1130,7 @@ impl Record {
 
 #[cfg(test)]
 mod tests {
+    mod bounded;
     use super::snapshot_with_label;
     use crate::key::{ExternalInputKey, ExternalOutputKey, ModuleInstanceKey, NetworkKey, NodeKey};
     use crate::metadata::DiagnosticMeta;

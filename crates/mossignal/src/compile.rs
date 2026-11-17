@@ -1,5 +1,7 @@
 //! Immutable dense execution topology for validated restricted networks.
 
+mod persistence;
+
 use crate::authored::{
     ConflictPolicy, ConnectionDef, ConnectionEndpoint, EdgeDetectorKind, EdgeObservation,
     ExternalInputDef, ExternalOutputDef, FirstEmissionPolicy, InputPortRole, ModuleInstanceDef,

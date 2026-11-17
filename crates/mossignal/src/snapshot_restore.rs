@@ -5,6 +5,8 @@
 
 #![allow(clippy::result_large_err)]
 
+pub(crate) mod bounded;
+
 use crate::cbor_decode::{self, DecodeError, Limits, Value};
 use crate::compile::{CompiledNetwork, FullEvaluation, SnapshotNodeFamily};
 use crate::diagnostics::{
